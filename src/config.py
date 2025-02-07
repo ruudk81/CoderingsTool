@@ -169,15 +169,30 @@ class CacheConfig:
 
 @dataclass
 class LabellerConfig:
-    """Configuration for hierarchical labeller"""
-    model: str = DEFAULT_MODEL
-    temperature: float = 0.3
+    """Configuration for hierarchical labelling"""
+    # Model settings
+    model: str = "gpt-4o-mini"  # Primary model for labelling
+    temperature: float = 0.1  # Lower for more consistent output
     max_tokens: int = 4000
+    seed: int = 42  # For reproducibility
+    api_key: Optional[str] = None  # Will use env var if not provided
+    
+    # Language and localization
     language: str = DEFAULT_LANGUAGE
+    
+    # Processing parameters
+    top_k_representatives: int = 3  # Representative examples per cluster
+    map_reduce_threshold: int = 30  # Use MapReduce if more clusters
+    batch_size: int = 10  # Clusters per batch in MapReduce
+    assignment_threshold: float = 0.7  # Minimum probability for assignment
+    
+    # LLM refinement option
+    use_llm_refinement: bool = False  # For Phase 4 enhancement
+    
+    # Retry and concurrency settings
     max_retries: int = 3
-    batch_size: int = 8  # Micro-clusters per batch
-    top_k_representatives: int = 3  # Representative codes per cluster
     concurrent_requests: int = 5
+    retry_delay: int = 2  # Seconds between retries
 
 @dataclass
 class SpellCheckConfig:
