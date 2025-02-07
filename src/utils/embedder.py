@@ -4,7 +4,7 @@ import asyncio
 from typing import List, Dict
 from openai import AsyncOpenAI
 import models
-from config import OPENAI_API_KEY, DEFAULT_EMBEDDING_MODEL, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
+from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class Embedder:
@@ -124,7 +124,6 @@ class Embedder:
         async def process_batch(batch_responses, batch_indices, batch_num):
             nonlocal processed_count
             async with semaphore:
-                self.verbose_reporter.stat_line(f"Processing batch {batch_num}/{len(batches_responses)} ({len(batch_responses)} segments)...")
                 batch_embeddings = await self.process_batches(batch_responses)
                 
                 for (resp_idx, seg_idx), embedding in zip(batch_indices, batch_embeddings):
@@ -145,19 +144,6 @@ class Embedder:
             for i, (batch_responses, batch_indices) in enumerate(zip(batches_responses, batches_indices))]
         
         await asyncio.gather(*tasks)
-        
-        # Show sample embeddings
-        sample_segments = []
-        for resp in data[:self.config.max_sample_responses]:  # First N responses
-            if resp.response_segment:
-                seg = resp.response_segment[0]
-                if is_description:
-                    sample_segments.append(f"{seg.descriptive_code}: {seg.code_description[:50]}...")
-                else:
-                    sample_segments.append(f"{seg.descriptive_code}")
-        
-        if sample_segments:
-            self.verbose_reporter.sample_list(f"Sample {'description' if is_description else 'code'} embeddings", sample_segments)
         
         return data
     
