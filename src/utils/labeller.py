@@ -965,6 +965,155 @@ class Labeller:
         
         return label_models
 
+    @staticmethod
+    def display_hierarchical_results(label_results: List[models.LabelModel], 
+                                   theme_summaries: Optional[List[ThemeSummary]] = None,
+                                   unique_clusters_count: Optional[int] = None):
+        """Display detailed hierarchical labeling results - extracted from __main__ section"""
+        from collections import Counter, defaultdict
+        
+        print("\n=== UNPACKING HIERARCHICAL LABELS ===")
+        
+        # Data structures to collect hierarchy and examples  
+        themes = {}
+        theme_summary_texts = {}
+        theme_topics = defaultdict(lambda: {})
+        topic_codes = defaultdict(lambda: defaultdict(list))
+        theme_response_examples = defaultdict(list)
+        topic_response_examples = defaultdict(lambda: defaultdict(list))
+        code_response_examples = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        theme_response_counts = defaultdict(int)
+        topic_response_counts = defaultdict(lambda: defaultdict(int))
+        
+        # Use provided theme summaries if available
+        if theme_summaries:
+            for summary in theme_summaries:
+                theme_summary_texts[int(summary.theme_id)] = summary.summary
+        
+        # Extract themes first
+        for result in label_results:
+            for segment in result.response_segment:
+                if segment.Theme:
+                    theme_id, theme_label = list(segment.Theme.items())[0]
+                    themes[theme_id] = theme_label
+        
+        # Process results to extract hierarchy and examples
+        for result in label_results:
+            for segment in result.response_segment:
+                if segment.Theme:
+                    theme_id, theme_label = list(segment.Theme.items())[0] 
+                    themes[theme_id] = theme_label
+                    theme_response_counts[theme_id] += 1
+                    
+                    # Collect response examples for themes
+                    example = {
+                        'response': segment.segment_response,
+                        'code': segment.descriptive_code,
+                        'description': segment.code_description
+                    }
+                    if len(theme_response_examples[theme_id]) < 5:
+                        theme_response_examples[theme_id].append(example)
+                    
+                    if segment.Topic:
+                        topic_id, topic_label = list(segment.Topic.items())[0]
+                        theme_topics[theme_id][topic_id] = topic_label
+                        topic_response_counts[theme_id][topic_id] += 1
+                        
+                        if len(topic_response_examples[theme_id][topic_id]) < 3:
+                            topic_response_examples[theme_id][topic_id].append(example)
+                        
+                        if segment.Keyword:
+                            code_id, code_label = list(segment.Keyword.items())[0]
+                            topic_codes[theme_id][topic_id].append((code_id, code_label))
+                            
+                            if len(code_response_examples[theme_id][topic_id][code_id]) < 2:
+                                code_response_examples[theme_id][topic_id][code_id].append(example)
+        
+        # Display hierarchical structure  
+        print(f"\n{'='*80}")
+        print("HIERARCHICAL LABELING RESULTS")
+        print(f"{'='*80}")
+        print(f"\nFound {len(themes)} themes across {len(label_results)} respondents:")
+        
+        # Theme distribution
+        print("\n📊 THEME DISTRIBUTION:")
+        for theme_id in sorted(themes.keys()):
+            response_count = theme_response_counts[theme_id]
+            percentage = (response_count / sum(len(r.response_segment) for r in label_results)) * 100
+            print(f"  Theme {theme_id}: {themes[theme_id]} - {response_count} segments ({percentage:.1f}%)")
+        
+        # Detailed theme analysis
+        for theme_id in sorted(themes.keys()):
+            print(f"\n\n{'='*80}")
+            print(f"🎯 THEME {theme_id}: {themes[theme_id]}")
+            print(f"{'='*80}")
+            print(f"Segments in this theme: {theme_response_counts[theme_id]}")
+            
+            # Theme summary
+            if theme_id in theme_summary_texts:
+                print("\n📝 Summary:")
+                print(f"{theme_summary_texts[theme_id]}")
+            else:
+                print(f"\n📝 Summary: No summary available for Theme {theme_id}")
+            
+            # Topics in this theme
+            topics_in_theme = theme_topics[theme_id]
+            print(f"\n📋 Topics in this theme ({len(topics_in_theme)}):")
+            
+            for topic_idx, topic_id in enumerate(sorted(topics_in_theme.keys()), 1):
+                topic_label = topics_in_theme[topic_id]
+                topic_count = topic_response_counts[theme_id][topic_id]
+                print(f"\n  {topic_idx}. TOPIC {topic_id}: {topic_label} ({topic_count} segments)")
+                
+                # Codes in this topic
+                codes_in_topic = topic_codes[theme_id][topic_id]
+                code_counts = Counter(codes_in_topic)
+                sorted_code_counts = sorted(code_counts.items(), key=lambda x: x[1], reverse=True)
+                
+                print(f"\n     Codes ({len(sorted_code_counts)}):")
+                for (code_id, code_label), count in sorted_code_counts[:5]:
+                    print(f"       • {code_label} (appears {count}x)")
+                    if code_id in code_response_examples[theme_id][topic_id]:
+                        for example in code_response_examples[theme_id][topic_id][code_id][:1]:
+                            print(f"         Example: \"{example['response'][:80]}...\"")
+                
+                if len(sorted_code_counts) > 5:
+                    print(f"       ... and {len(sorted_code_counts) - 5} more codes")
+        
+        # Summary statistics
+        print(f"\n\n{'='*80}")
+        print("📈 SUMMARY STATISTICS & QUALITY METRICS") 
+        print(f"{'='*80}")
+        
+        total_segments = sum(len(r.response_segment) for r in label_results)
+        print("\n📊 Overall Statistics:")
+        print(f"  • Total respondents processed: {len(label_results)}")
+        print(f"  • Total segments processed: {total_segments}")
+        print(f"  • Total themes: {len(themes)}")
+        total_topics = sum(len(topics) for topics in theme_topics.values())
+        print(f"  • Total topics: {total_topics}")
+        total_codes = len(set([code for theme in topic_codes.values() for topic in theme.values() for code in topic]))
+        print(f"  • Total unique codes: {total_codes}")
+        if unique_clusters_count:
+            print(f"  • Original clusters: {unique_clusters_count}")
+        
+        print("\n📏 Distribution Metrics:")
+        print(f"  • Average segments per theme: {total_segments / len(themes):.1f}")
+        print(f"  • Average topics per theme: {total_topics / len(themes):.1f}")
+        print(f"  • Average codes per topic: {total_codes / total_topics:.1f}")
+        
+        # Theme size distribution
+        print("\n📊 Theme Size Distribution:")
+        theme_sizes = sorted([(theme_id, theme_response_counts[theme_id]) for theme_id in themes.keys()], 
+                           key=lambda x: x[1], reverse=True)
+        for theme_id, count in theme_sizes:
+            bar_length = int((count / max(theme_response_counts.values())) * 30)
+            bar = '█' * bar_length
+            print(f"  Theme {theme_id}: {bar} {count} segments")
+        
+        print("\n✅ Quality Check Complete")
+        print(f"{'='*80}")
+
 
 if __name__ == "__main__":
     """Test the labeller with cached cluster data"""
@@ -1026,202 +1175,8 @@ if __name__ == "__main__":
         cache_manager.save_to_cache(theme_summaries, filename, summary_cache_key)
         print(f"Saved {len(theme_summaries)} theme summaries to cache with key '{summary_cache_key}'")
         
-        # Unpack and analyze the results
-        print("\n=== UNPACKING HIERARCHICAL LABELS ===")
-        
-        # Data structures to collect hierarchy and examples
-        themes = {}
-        theme_summaries = {}
-        theme_topics = defaultdict(lambda: {})
-        topic_codes = defaultdict(lambda: defaultdict(list))
-        theme_response_examples = defaultdict(list)
-        topic_response_examples = defaultdict(lambda: defaultdict(list))
-        code_response_examples = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-        theme_response_counts = defaultdict(int)
-        topic_response_counts = defaultdict(lambda: defaultdict(int))
-        
-        # First pass: Extract themes to know what we're looking for
-        for result in label_results:
-            for segment in result.response_segment:
-                if segment.Theme:
-                    theme_id, theme_label = list(segment.Theme.items())[0]
-                    themes[theme_id] = theme_label
-        
-        # Load summaries directly from cache to avoid parsing concatenated text
-        cached_summaries = cache_manager.load_from_cache(filename, "theme_summaries", ThemeSummary)
-        theme_summary_texts = {}
-        
-        if cached_summaries:
-            print(f"DEBUG: Found {len(cached_summaries)} cached theme summaries")
-            for summary in cached_summaries:
-                theme_summary_texts[int(summary.theme_id)] = summary.summary
-                print(f"DEBUG: Theme {summary.theme_id}: '{summary.theme_label}' -> Summary length: {len(summary.summary)}")
-        else:
-            # Fallback: try to extract from label results (but this is problematic due to concatenation)
-            print("DEBUG: No cached summaries found, attempting to parse from concatenated results...")
-            all_summaries = set()
-            for result in label_results:
-                if result.summary:
-                    all_summaries.add(result.summary)
-            
-            print(f"DEBUG: Found {len(all_summaries)} unique summary combinations in results")
-            for i, summary in enumerate(all_summaries):
-                print(f"DEBUG: Summary {i+1} length: {len(summary)} chars")
-                print(f"DEBUG: Summary {i+1} preview: {summary[:200]}...")
-        
-        # Store the extracted summaries
-        theme_summaries = theme_summary_texts
-        
-        # Process each result to extract hierarchy and examples
-        for result in label_results:
-            # Extract hierarchical structure and collect examples
-            for segment in result.response_segment:
-                if segment.Theme:
-                    theme_id, theme_label = list(segment.Theme.items())[0]
-                    themes[theme_id] = theme_label
-                    theme_response_counts[theme_id] += 1
-                    
-                    # Collect response examples for themes
-                    example = {
-                        'response': segment.segment_response,
-                        'code': segment.descriptive_code,
-                        'description': segment.code_description
-                    }
-                    if len(theme_response_examples[theme_id]) < 5:  # Keep up to 5 examples
-                        theme_response_examples[theme_id].append(example)
-                    
-                    if segment.Topic:
-                        topic_id, topic_label = list(segment.Topic.items())[0]
-                        theme_topics[theme_id][topic_id] = topic_label
-                        topic_response_counts[theme_id][topic_id] += 1
-                        
-                        # Collect response examples for topics
-                        if len(topic_response_examples[theme_id][topic_id]) < 3:  # Keep up to 3 examples
-                            topic_response_examples[theme_id][topic_id].append(example)
-                        
-                        if segment.Keyword:
-                            code_id, code_label = list(segment.Keyword.items())[0]
-                            topic_codes[theme_id][topic_id].append((code_id, code_label))
-                            
-                            # Collect response examples for codes
-                            if len(code_response_examples[theme_id][topic_id][code_id]) < 2:  # Keep up to 2 examples
-                                code_response_examples[theme_id][topic_id][code_id].append(example)
-        
-        # Display the hierarchical structure with improved formatting
-        print(f"\n{'='*80}")
-        print("HIERARCHICAL LABELING RESULTS")
-        print(f"{'='*80}")
-        print(f"\nFound {len(themes)} themes across {len(label_results)} respondents:")
-        
-        # Display theme-level statistics first
-        print("\n📊 THEME DISTRIBUTION:")
-        for theme_id in sorted(themes.keys()):
-            response_count = theme_response_counts[theme_id]
-            percentage = (response_count / sum(len(r.response_segment) for r in label_results)) * 100
-            print(f"  Theme {theme_id}: {themes[theme_id]} - {response_count} segments ({percentage:.1f}%)")
-        
-        # Detailed theme analysis
-        for theme_id in sorted(themes.keys()):
-            print(f"\n\n{'='*80}")
-            print(f"🎯 THEME {theme_id}: {themes[theme_id]}")
-            print(f"{'='*80}")
-            print(f"Segments in this theme: {theme_response_counts[theme_id]}")
-            
-            # Theme summary (if available)
-            if theme_id in theme_summaries:
-                print("\n📝 Summary:")
-                print(f"{theme_summaries[theme_id]}")
-            else:
-                # Try to find summary in all_summaries that might contain this theme
-                print("\n📝 Summary: [No parsed summary found, checking raw summaries...]")
-                found_summary = False
-                for summary in all_summaries:
-                    # More aggressive search - look for theme label or related words
-                    theme_words = [w.lower() for w in themes[theme_id].split() if len(w) > 3]
-                    if any(word in summary.lower() for word in theme_words):
-                        # Extract the relevant paragraph
-                        paragraphs = summary.split('\n')
-                        for para in paragraphs:
-                            if any(word in para.lower() for word in theme_words):
-                                print(f"{para}")
-                                found_summary = True
-                                break
-                        if found_summary:
-                            break
-                if not found_summary:
-                    print(f"No summary found. Theme '{themes[theme_id]}' may not have generated a summary.")
-            
-            # # Example responses for the theme
-            # print("\n💬 Example responses in this theme:")
-            # for i, example in enumerate(theme_response_examples[theme_id][:3], 1):
-            #     print(f"  {i}. \"{example['response']}\"")
-            #     print(f"     → Code: {example['code']}")
-            #     print(f"     → Description: {example['description']}")
-            
-            # Topics in this theme
-            topics_in_theme = theme_topics[theme_id]
-            print(f"\n📋 Topics in this theme ({len(topics_in_theme)}):")
-            
-            for topic_idx, topic_id in enumerate(sorted(topics_in_theme.keys()), 1):
-                topic_label = topics_in_theme[topic_id]
-                topic_count = topic_response_counts[theme_id][topic_id]
-                print(f"\n  {topic_idx}. TOPIC {topic_id}: {topic_label} ({topic_count} segments)")
-                
-                # # Example responses for this topic
-                # if topic_response_examples[theme_id][topic_id]:
-                #     print("     Examples:")
-                #     for ex_idx, example in enumerate(topic_response_examples[theme_id][topic_id][:2], 1):
-                #         print(f"       {ex_idx}) \"{example['response'][:100]}...\" ")
-                
-                # Codes in this topic
-                codes_in_topic = topic_codes[theme_id][topic_id]
-                code_counts = Counter(codes_in_topic)
-                sorted_code_counts = sorted(code_counts.items(), key=lambda x: x[1], reverse=True)
-                
-                print(f"\n     Codes ({len(sorted_code_counts)}):")
-                # Show top 5 codes with counts
-                for (code_id, code_label), count in sorted_code_counts[:5]:
-                    print(f"       • {code_label} (appears {count}x)")
-                    # Show example for this code if available
-                    if code_id in code_response_examples[theme_id][topic_id]:
-                        for example in code_response_examples[theme_id][topic_id][code_id][:1]:
-                            print(f"         Example: \"{example['response'][:80]}...\"")
-                
-                if len(sorted_code_counts) > 5:
-                    print(f"       ... and {len(sorted_code_counts) - 5} more codes")
-        
-        # Summary statistics with quality metrics
-        print(f"\n\n{'='*80}")
-        print("📈 SUMMARY STATISTICS & QUALITY METRICS")
-        print(f"{'='*80}")
-        
-        total_segments = sum(len(r.response_segment) for r in label_results)
-        print("\n📊 Overall Statistics:")
-        print(f"  • Total respondents processed: {len(label_results)}")
-        print(f"  • Total segments processed: {total_segments}")
-        print(f"  • Total themes: {len(themes)}")
-        total_topics = sum(len(topics) for topics in theme_topics.values())
-        print(f"  • Total topics: {total_topics}")
-        total_codes = len(set([code for theme in topic_codes.values() for topic in theme.values() for code in topic]))
-        print(f"  • Total unique codes: {total_codes}")
-        print(f"  • Original clusters: {len(unique_clusters)}")
-        
-        print("\n📏 Distribution Metrics:")
-        print(f"  • Average segments per theme: {total_segments / len(themes):.1f}")
-        print(f"  • Average topics per theme: {total_topics / len(themes):.1f}")
-        print(f"  • Average codes per topic: {total_codes / total_topics:.1f}")
-        
-        # Theme size distribution
-        print("\n📊 Theme Size Distribution:")
-        theme_sizes = sorted([(theme_id, theme_response_counts[theme_id]) for theme_id in themes.keys()], 
-                           key=lambda x: x[1], reverse=True)
-        for theme_id, count in theme_sizes:
-            bar_length = int((count / max(theme_response_counts.values())) * 30)
-            bar = '█' * bar_length
-            print(f"  Theme {theme_id}: {bar} {count} segments")
-        
-        print("\n✅ Quality Check Complete")
-        print(f"{'='*80}")
+        # Display results using the reusable function
+        Labeller.display_hierarchical_results(label_results, theme_summaries, len(unique_clusters))
         
     else:
         print("No cached cluster data found.")
