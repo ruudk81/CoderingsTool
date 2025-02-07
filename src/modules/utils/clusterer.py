@@ -61,6 +61,8 @@ class ClusterGenerator:
         self.embedding_type = embedding_type
         self.output_list: List[ResultMapper] = []
         self.verbose = verbose
+        # Store the original input list to preserve response data
+        self.original_input_list = input_list if input_list else []
        
         if input_list:
             self.populate_from_input_list(input_list)
@@ -561,16 +563,30 @@ class ClusterGenerator:
         for item in self.output_list:
             items_by_respondent[item.respondent_id].append(item)
         
+        # Create mapping of respondent_id to original response data
+        response_mapping = {}
+        segment_mapping = {}
+        for original_item in self.original_input_list:
+            response_mapping[original_item.respondent_id] = original_item.response
+            if original_item.response_segment:
+                for segment in original_item.response_segment:
+                    segment_key = (original_item.respondent_id, segment.segment_id)
+                    segment_mapping[segment_key] = segment.segment_response
+        
         # Create ClusterModel instances
         result_models = []
         
         for respondent_id, items in items_by_respondent.items():
-            # Find the original response
-            response = ""  # This should be populated from original data if available
+            # Get the original response from mapping
+            response = response_mapping.get(respondent_id, "")
             
             # Create submodels for each segment
             submodels = []
             for item in items:
+                # Get original segment response
+                segment_key = (respondent_id, item.segment_id)
+                segment_response = segment_mapping.get(segment_key, "")
+                
                 # Create cluster mappings
                 meta_cluster = {item.meta_cluster: ""} if item.meta_cluster is not None else None
                 
@@ -588,7 +604,7 @@ class ClusterGenerator:
                 # Create submodel
                 submodel = models.ClusterSubmodel(
                     segment_id=item.segment_id,
-                    segment_response="",  # This should be populated from original data if available
+                    segment_response=segment_response,
                     descriptive_code=item.descriptive_code,
                     code_description=item.code_description,
                     code_embedding=item.code_embedding,
