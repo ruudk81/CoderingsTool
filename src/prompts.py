@@ -526,11 +526,12 @@ CRITICAL REQUIREMENTS:
 2. STRICT hierarchy enforcement:
    - Every Theme MUST have at least one Topic
    - Every Topic MUST have at least one Subject
-   - ONLY Subjects can contain micro_clusters
+   - ONLY Subjects can contain micro_clusters (in the "micro_clusters" field)
    - For simple themes, create a general topic/subject (e.g., "General Concerns")
 3. Each label must be maximum 4 words and express ONE clear idea
 4. Avoid compound labels with "and", "&", or multiple concepts
 5. Create an "Other" theme with appropriate topic/subject structure for outliers
+6. **MANDATORY**: You MUST distribute ALL {all_cluster_ids} clusters across subjects' micro_clusters arrays
 
 Output format (JSON - NO COMMENTS):
 {{
@@ -585,6 +586,14 @@ Output format (JSON - NO COMMENTS):
 }}
 
 Language: {language}
+
+VERIFICATION CHECKLIST - Before submitting your response:
+✓ Every cluster ID from {all_cluster_ids} is assigned to exactly one subject's micro_clusters array
+✓ Every theme has at least one topic
+✓ Every topic has at least one subject  
+✓ No themes or topics have micro_clusters (only subjects do)
+✓ All subjects have non-empty micro_clusters arrays
+
 Remember: All clusters from {all_cluster_ids} must appear in your output!
 """
 
