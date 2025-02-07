@@ -6,20 +6,37 @@ from openai import AsyncOpenAI
 import logging
 from tqdm.asyncio import tqdm
 import networkx as nx
+import sys
+import os
+from pathlib import Path
+
+# Add the src directory to the path for imports
+src_dir = str(Path(__file__).resolve().parents[2])
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 try:
-    # When running as a script
+    # Try direct import (from utils folder)
     from labeller import (
         LabellerConfig, ClusterData, InitialLabel, MergeMapping,
         BatchSimilarityResponse, SimilarityScore
     )
+    from prompts import SIMILARITY_SCORING_PROMPT
 except ImportError:
-    # When imported as a module
-    from .labeller import (
-        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
-        BatchSimilarityResponse, SimilarityScore
-    )
-from prompts import SIMILARITY_SCORING_PROMPT
+    try:
+        # Try relative import (as module)
+        from .labeller import (
+            LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+            BatchSimilarityResponse, SimilarityScore
+        )
+        from ..prompts import SIMILARITY_SCORING_PROMPT
+    except ImportError:
+        # Try absolute import (from any directory)
+        from src.modules.utils.labeller import (
+            LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+            BatchSimilarityResponse, SimilarityScore
+        )
+        from src.prompts import SIMILARITY_SCORING_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -338,20 +355,16 @@ class Phase2Merger:
 
 if __name__ == "__main__":
     """Test Phase 2 with actual cached cluster data"""
-    import sys
-    from pathlib import Path
     import json
     import pickle
-    
-    # Add project paths
-    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
-    
-    from config import OPENAI_API_KEY, DEFAULT_MODEL
-    from cache_manager import CacheManager
-    from cache_config import CacheConfig
-    import data_io
-    import models
     import instructor
+    
+    # Import from src
+    from src.config import OPENAI_API_KEY, DEFAULT_MODEL
+    from src.cache_manager import CacheManager
+    from src.cache_config import CacheConfig
+    from src.modules.utils import data_io
+    import src.models as models
     
     # Initialize cache manager
     cache_config = CacheConfig()
@@ -372,7 +385,10 @@ if __name__ == "__main__":
         print(f"Loaded {len(phase1_labels)} phase 1 labels from cache")
         
         # Extract cluster data from the results
-        from labeller import Labeller
+        try:
+            from labeller import Labeller
+        except ImportError:
+            from src.modules.utils.labeller import Labeller
         temp_labeller = Labeller()
         cluster_data = temp_labeller.extract_cluster_data(cluster_results)
         print(f"Extracted data for {len(cluster_data)} clusters")
