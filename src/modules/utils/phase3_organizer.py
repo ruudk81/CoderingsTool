@@ -407,22 +407,22 @@ if __name__ == "__main__":
             try:
                 # Create hierarchy
                 hierarchy = await phase3.create_hierarchy(merged_clusters, var_lab)
-            
-            # Display results
-            print("\n=== Hierarchical Structure ===")
-            
-            for theme in hierarchy.themes:
-                print(f"\nTHEME {theme.node_id}: {theme.label}")
-                print(f"  Clusters: {theme.cluster_ids}")
                 
-                for topic in theme.children:
-                    print(f"\n  TOPIC {topic.node_id}: {topic.label}")
-                    print(f"    Clusters: {topic.cluster_ids}")
+                # Display results
+                print("\n=== Hierarchical Structure ===")
+                
+                for theme in hierarchy.themes:
+                    print(f"\nTHEME {theme.node_id}: {theme.label}")
+                    print(f"  Clusters: {theme.cluster_ids}")
                     
-                    for code in topic.children:
-                        print(f"\n    CODE {code.node_id}: {code.label}")
-                        print(f"      Original clusters: {code.cluster_ids}")
-            
+                    for topic in theme.children:
+                        print(f"\n  TOPIC {topic.node_id}: {topic.label}")
+                        print(f"    Clusters: {topic.cluster_ids}")
+                        
+                        for code in topic.children:
+                            print(f"\n    CODE {code.node_id}: {code.label}")
+                            print(f"      Original clusters: {code.cluster_ids}")
+                
                 # Save to cache for phase 4
                 cache_key = 'phase3_hierarchy'
                 cache_data = {
