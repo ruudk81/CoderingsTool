@@ -11,21 +11,7 @@ import models
 
 from pydantic import BaseModel, ConfigDict
 from prompts import MERGE_PROMPT
-from config import OPENAI_API_KEY, DEFAULT_MODEL, DEFAULT_LANGUAGE
-
-class MergerConfig(BaseModel):
-    """Configuration for the ClusterMerger"""
-    model: str = DEFAULT_MODEL
-    api_key: str = OPENAI_API_KEY
-    max_concurrent_requests: int = 5 #10
-    batch_size: int = 5  # Reduced for better prompt management
-    similarity_threshold: float = 0.95   
-    max_retries: int = 3
-    retry_delay: int = 2
-    language: str = DEFAULT_LANGUAGE
-    verbose: bool = True
-    temperature: float = 0.3
-    max_tokens: int = 4000
+from config import OPENAI_API_KEY, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
 
 class ClusterData(BaseModel):
     """Internal representation of cluster with extracted data"""
@@ -77,12 +63,14 @@ class ClusterMerger:
         self, 
         input_list: List[models.ClusterModel] = None, 
         var_lab: str = None, 
-        config: MergerConfig = None, 
+        config: ClusteringConfig = None, 
         client = None, 
-        verbose: bool = True):
+        verbose: bool = None):
         
-        self.config = config or MergerConfig()
-        self.verbose = verbose
+        # Use ClusteringConfig and extract merger config
+        self.clustering_config = config or DEFAULT_CLUSTERING_CONFIG
+        self.config = self.clustering_config.merger
+        self.verbose = verbose if verbose is not None else self.config.verbose
         self.var_lab = var_lab
         self.client = client
         self.similarity_threshold = self.config.similarity_threshold
@@ -372,7 +360,7 @@ class ClusterMerger:
         # Initialize instructor client if needed
         if self.instructor_client is None:
             self.instructor_client = instructor.from_openai(
-                AsyncOpenAI(api_key=self.config.api_key)
+                AsyncOpenAI(api_key=OPENAI_API_KEY)
             )
         
         messages = [
