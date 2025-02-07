@@ -174,10 +174,11 @@ class Phase1Labeller:
 
 
 if __name__ == "__main__":
-    """Test Phase 1 with sample cluster data"""
+    """Test Phase 1 with actual cached cluster data"""
     import sys
     from pathlib import Path
     import json
+    import pickle
     
     # Add project paths
     sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
@@ -185,86 +186,103 @@ if __name__ == "__main__":
     from openai import AsyncOpenAI
     import instructor
     from config import OPENAI_API_KEY, DEFAULT_MODEL
+    from cache_manager import CacheManager
+    from cache_config import CacheConfig
+    import data_io
+    import models
     
-    # Create sample cluster data for testing
-    sample_clusters = {
-        1: ClusterData(
-            cluster_id=1,
-            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal", "Biologisch afbreekbaar"],
-            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen", "Wil biologisch afbreekbare opties"],
-            embeddings=np.random.randn(3, 768),  # Mock embeddings
-            centroid=np.random.randn(768),
-            size=3
-        ),
-        2: ClusterData(
-            cluster_id=2,
-            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten", "Eerlijke prijs"],
-            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn", "Prijs moet eerlijk zijn"],
-            embeddings=np.random.randn(3, 768),  # Mock embeddings
-            centroid=np.random.randn(768),
-            size=3
-        )
-    }
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
     
-    # Test parameters
-    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    # File and variable info
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    var_name = "Q20"
     
-    # Initialize configuration
-    config = LabellerConfig(
-        api_key=OPENAI_API_KEY,
-        model=DEFAULT_MODEL,
-        batch_size=2
-    )
+    # Load cluster results from cache
+    cluster_results = cache_manager.load_from_cache(filename, "clusters", models.ClusterModel)
     
-    # Initialize phase 1 labeller
-    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
-    phase1 = Phase1Labeller(config, client)
-    
-    async def run_test():
-        """Run the test"""
-        print("=== Testing Phase 1: Initial Label Generation ===")
-        print(f"Variable label: {var_lab}")
-        print(f"Number of clusters: {len(sample_clusters)}")
+    if cluster_results:
+        print(f"Loaded {len(cluster_results)} cluster results from cache")
         
-        try:
-            # Generate labels
-            labels = await phase1.label_clusters(sample_clusters, var_lab)
+        # Extract cluster data from the results (same as in labeller.py)
+        from labeller import Labeller
+        temp_labeller = Labeller()
+        cluster_data = temp_labeller.extract_cluster_data(cluster_results)
+        print(f"Extracted data for {len(cluster_data)} clusters")
+        
+        # Get variable label
+        data_loader = data_io.DataLoader()
+        var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+        print(f"Variable label: {var_lab}")
+        
+        # Initialize configuration
+        config = LabellerConfig(
+            api_key=OPENAI_API_KEY,
+            model=DEFAULT_MODEL,
+            batch_size=10  # Process in larger batches for real data
+        )
+        
+        # Initialize phase 1 labeller
+        client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+        phase1 = Phase1Labeller(config, client)
+        
+        async def run_test():
+            """Run the test"""
+            print("=== Testing Phase 1: Initial Label Generation with Real Data ===")
+            print(f"Variable label: {var_lab}")
+            print(f"Number of clusters: {len(cluster_data)}")
             
-            # Display results
-            print("\n=== Results ===")
-            for cluster_id, label in labels.items():
-                print(f"\nCluster {cluster_id}:")
-                print(f"  Label: {label.label}")
-                print(f"  Keywords: {', '.join(label.keywords)}")
-                print(f"  Confidence: {label.confidence:.2f}")
+            try:
+                # Generate labels
+                labels = await phase1.label_clusters(cluster_data, var_lab)
                 
-                # Show representative items
-                cluster = sample_clusters[cluster_id]
-                reps = phase1._get_representative_items(cluster, n=3)
-                print("  Representative items:")
-                for i, item in enumerate(reps, 1):
-                    print(f"    {i}. {item['code']} ({item['similarity']:.3f})")
-            
-            # Save results
-            output_data = {
-                cluster_id: {
-                    "label": label.label,
-                    "keywords": label.keywords,
-                    "confidence": label.confidence
+                # Display results (sample)
+                print("\n=== Results (showing first 10) ===")
+                for i, (cluster_id, label) in enumerate(labels.items()):
+                    if i >= 10:
+                        print(f"\n... and {len(labels) - 10} more")
+                        break
+                    print(f"\nCluster {cluster_id}:")
+                    print(f"  Label: {label.label}")
+                    print(f"  Keywords: {', '.join(label.keywords[:5])}")
+                    print(f"  Confidence: {label.confidence:.2f}")
+                    
+                    # Show representative items
+                    cluster = cluster_data[cluster_id]
+                    reps = phase1._get_representative_items(cluster, n=3)
+                    print("  Representative items:")
+                    for j, item in enumerate(reps, 1):
+                        print(f"    {j}. {item['code'][:50]}... ({item['similarity']:.3f})")
+                
+                # Save to cache for phase 2
+                cache_key = 'phase1_labels'
+                cache_manager.cache_intermediate_data(labels, filename, cache_key)
+                print(f"\nSaved results to cache with key '{cache_key}'")
+                
+                # Also save to JSON for inspection
+                output_file = Path("phase1_test_results.json")
+                output_data = {
+                    str(cluster_id): {
+                        "label": label.label,
+                        "keywords": label.keywords,
+                        "confidence": label.confidence
+                    }
+                    for cluster_id, label in labels.items()
                 }
-                for cluster_id, label in labels.items()
-            }
-            
-            output_file = Path("phase1_test_results.json")
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"\nResults saved to: {output_file}")
-            
-        except Exception as e:
-            print(f"Error during testing: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    # Run the test
-    asyncio.run(run_test())
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                
+                print(f"Results saved to: {output_file}")
+                
+            except Exception as e:
+                print(f"Error during testing: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Run the test
+        asyncio.run(run_test())
+    else:
+        print("No cached cluster data found.")
+        print("Please run the clustering pipeline first:")
+        print("  python clusterer.py")

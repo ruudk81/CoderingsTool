@@ -399,10 +399,11 @@ class Phase2Merger:
 
 
 if __name__ == "__main__":
-    """Test Phase 2 with sample cluster data and labels"""
+    """Test Phase 2 with actual cached data from Phase 1"""
     import sys
     from pathlib import Path
     import json
+    import pickle
     
     # Add project paths
     sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
@@ -410,137 +411,138 @@ if __name__ == "__main__":
     from openai import AsyncOpenAI
     import instructor
     from config import OPENAI_API_KEY, DEFAULT_MODEL
+    from cache_manager import CacheManager
+    from cache_config import CacheConfig
+    import data_io
+    import models
     
-    # Create sample cluster data for testing
-    sample_clusters = {
-        1: ClusterData(
-            cluster_id=1,
-            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal"],
-            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen"],
-            embeddings=np.random.randn(2, 768),  # Mock embeddings
-            centroid=np.random.randn(768),
-            size=2
-        ),
-        2: ClusterData(
-            cluster_id=2,
-            descriptive_codes=["Biologisch afbreekbaar", "Milieuvriendelijk verpakken"],
-            code_descriptions=["Wil biologisch afbreekbare opties", "Duurzame verpakkingsmaterialen"],
-            embeddings=np.random.randn(2, 768),  # Mock embeddings
-            centroid=np.random.randn(768),
-            size=2
-        ),
-        3: ClusterData(
-            cluster_id=3,
-            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten"],
-            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn"],
-            embeddings=np.random.randn(2, 768),  # Mock embeddings
-            centroid=np.random.randn(768),
-            size=2
-        )
-    }
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
     
-    # Create sample initial labels
-    sample_labels = {
-        1: InitialLabel(
-            cluster_id=1,
-            label="Minder afval en verpakking",
-            keywords=["afval", "verpakkingen", "minder"],
-            confidence=0.9
-        ),
-        2: InitialLabel(
-            cluster_id=2,
-            label="Milieuvriendelijke verpakkingen",
-            keywords=["milieu", "duurzaam", "biologisch"],
-            confidence=0.85
-        ),
-        3: InitialLabel(
-            cluster_id=3,
-            label="Prijs-kwaliteit verhouding",
-            keywords=["prijs", "kwaliteit", "betaalbaar"],
-            confidence=0.8
-        )
-    }
+    # File and variable info
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    var_name = "Q20"
     
-    # Make clusters 1 and 2 similar (environmental concerns)
-    sample_clusters[1].centroid = np.random.randn(768)
-    sample_clusters[2].centroid = sample_clusters[1].centroid + np.random.randn(768) * 0.1
-    sample_clusters[3].centroid = np.random.randn(768) * 2  # Very different
+    # Load cluster results from cache
+    cluster_results = cache_manager.load_from_cache(filename, "clusters", models.ClusterModel)
     
-    # Test parameters
-    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    # Load phase 1 labels from cache
+    phase1_labels = cache_manager.load_intermediate_data(filename, "phase1_labels", dict)
     
-    # Initialize configuration
-    config = LabellerConfig(
-        api_key=OPENAI_API_KEY,
-        model=DEFAULT_MODEL,
-        batch_size=10,
-        similarity_threshold=0.85,  # For auto-merge
-        merge_score_threshold=0.7   # For LLM merge
-    )
-    
-    # Initialize phase 2 merger
-    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
-    phase2 = Phase2Merger(config, client)
-    
-    async def run_test():
-        """Run the test"""
-        print("=== Testing Phase 2: Cluster Merging ===")
-        print(f"Variable label: {var_lab}")
-        print(f"Number of clusters: {len(sample_clusters)}")
+    if cluster_results and phase1_labels:
+        print(f"Loaded {len(cluster_results)} cluster results from cache")
+        print(f"Loaded {len(phase1_labels)} phase 1 labels from cache")
         
-        try:
-            # Test auto-merge first
-            auto_groups = phase2._auto_merge_by_similarity(sample_clusters)
-            print(f"\nAuto-merge groups: {auto_groups}")
-            
-            # Run full merge process
-            merge_mapping = await phase2.merge_similar_clusters(
-                sample_clusters, sample_labels, var_lab
-            )
-            
-            # Display results
-            print("\n=== Merge Results ===")
-            print(f"Merge groups: {merge_mapping.merge_groups}")
-            print(f"\nCluster mapping:")
-            for cid, merged_id in merge_mapping.cluster_to_merged.items():
-                print(f"  Cluster {cid} → Merged cluster {merged_id}")
-            
-            print(f"\nMerge reasons:")
-            for merged_id, reason in merge_mapping.merge_reasons.items():
-                print(f"  Merged {merged_id}: {reason}")
-            
-            # Calculate statistics
-            original_count = len(sample_clusters)
-            merged_count = len(merge_mapping.merge_groups)
-            reduction = (1 - merged_count/original_count) * 100
-            
-            print(f"\nStatistics:")
-            print(f"  Original clusters: {original_count}")
-            print(f"  Merged clusters: {merged_count}")
-            print(f"  Reduction: {reduction:.1f}%")
-            
-            # Save results
-            output_data = {
-                "merge_groups": merge_mapping.merge_groups,
-                "cluster_mapping": merge_mapping.cluster_to_merged,
-                "merge_reasons": merge_mapping.merge_reasons,
-                "statistics": {
-                    "original": original_count,
-                    "merged": merged_count,
-                    "reduction_percent": reduction
-                }
-            }
-            
-            output_file = Path("phase2_test_results.json")
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"\nResults saved to: {output_file}")
-            
-        except Exception as e:
-            print(f"Error during testing: {e}")
-            import traceback
-            traceback.print_exc()
+        # Extract cluster data from the results
+        from labeller import Labeller
+        temp_labeller = Labeller()
+        cluster_data = temp_labeller.extract_cluster_data(cluster_results)
+        print(f"Extracted data for {len(cluster_data)} clusters")
+        
+        # Convert labels to InitialLabel objects
+        initial_labels = {}
+        for cluster_id, label_data in phase1_labels.items():
+            initial_labels[cluster_id] = InitialLabel(**label_data)
+        
+        # Get variable label
+        data_loader = data_io.DataLoader()
+        var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+        print(f"Variable label: {var_lab}")
+        
+        # Initialize configuration
+        config = LabellerConfig(
+            api_key=OPENAI_API_KEY,
+            model=DEFAULT_MODEL,
+            batch_size=10,
+            similarity_threshold=0.95,  # For auto-merge
+            merge_score_threshold=0.7   # For LLM merge
+        )
     
-    # Run the test
-    asyncio.run(run_test())
+        # Initialize phase 2 merger
+        client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+        phase2 = Phase2Merger(config, client)
+        
+        async def run_test():
+            """Run the test"""
+            print("=== Testing Phase 2: Cluster Merging with Real Data ===")
+            print(f"Variable label: {var_lab}")
+            print(f"Number of clusters: {len(cluster_data)}")
+            
+            try:
+                # Test auto-merge first
+                auto_groups = phase2._auto_merge_by_similarity(cluster_data)
+                print(f"\nAuto-merge groups (showing groups with >1 clusters):")
+                multi_groups = [g for g in auto_groups if len(g) > 1]
+                print(f"  Found {len(multi_groups)} multi-cluster groups")
+                for i, group in enumerate(multi_groups[:5]):
+                    print(f"  Group {i}: {group}")
+                if len(multi_groups) > 5:
+                    print(f"  ... and {len(multi_groups) - 5} more")
+                
+                # Run full merge process
+                merge_mapping = await phase2.merge_similar_clusters(
+                    cluster_data, initial_labels, var_lab
+                )
+                
+                # Display results
+                print("\n=== Merge Results ===")
+                print(f"Number of merge groups: {len(merge_mapping.merge_groups)}")
+                
+                # Show some examples of merged clusters
+                print(f"\nSample cluster mappings (first 10):")
+                for i, (cid, merged_id) in enumerate(merge_mapping.cluster_to_merged.items()):
+                    if i >= 10:
+                        break
+                    print(f"  Cluster {cid} → Merged cluster {merged_id}")
+                
+                # Calculate statistics
+                original_count = len(cluster_data)
+                merged_count = len(merge_mapping.merge_groups)
+                reduction = (1 - merged_count/original_count) * 100
+                
+                print(f"\nStatistics:")
+                print(f"  Original clusters: {original_count}")
+                print(f"  Merged clusters: {merged_count}")
+                print(f"  Reduction: {reduction:.1f}%")
+                
+                # Save to cache for phase 3
+                cache_key = 'phase2_merge_mapping'
+                cache_data = {
+                    'merge_mapping': merge_mapping,
+                    'cluster_data': cluster_data,
+                    'initial_labels': initial_labels
+                }
+                cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
+                print(f"\nSaved results to cache with key '{cache_key}'")
+                
+                # Save to JSON for inspection
+                output_data = {
+                    "merge_groups": merge_mapping.merge_groups,
+                    "cluster_mapping": merge_mapping.cluster_to_merged,
+                    "merge_reasons": merge_mapping.merge_reasons,
+                    "statistics": {
+                        "original": original_count,
+                        "merged": merged_count,
+                        "reduction_percent": reduction
+                    }
+                }
+                
+                output_file = Path("phase2_test_results.json")
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                
+                print(f"Results saved to: {output_file}")
+                
+            except Exception as e:
+                print(f"Error during testing: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Run the test
+        asyncio.run(run_test())
+    else:
+        print("Missing required cached data.")
+        print("Please ensure you have run:")
+        print("  1. python clusterer.py")
+        print("  2. python phase1_labeller.py")
