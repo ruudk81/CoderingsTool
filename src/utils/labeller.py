@@ -679,7 +679,7 @@ class Labeller:
             
             # Collect information from all topics and codes
             code_frequency = {}
-            desc_samples = []
+            #desc_samples = []
             
             for topic in theme.children:
                 topic_info = {
@@ -970,7 +970,7 @@ if __name__ == "__main__":
     """Test the labeller with cached cluster data"""
     #import sys
     #from pathlib import Path
-    from collections import Counter, defaultdict
+    from collections import Counter #, defaultdict
     
     from cache_manager import CacheManager
     from config import CacheConfig
@@ -1109,7 +1109,7 @@ if __name__ == "__main__":
         
         # Display the hierarchical structure with improved formatting
         print(f"\n{'='*80}")
-        print(f"HIERARCHICAL LABELING RESULTS")
+        print("HIERARCHICAL LABELING RESULTS")
         print(f"{'='*80}")
         print(f"\nFound {len(themes)} themes across {len(label_results)} respondents:")
         
@@ -1129,11 +1129,11 @@ if __name__ == "__main__":
             
             # Theme summary (if available)
             if theme_id in theme_summaries:
-                print(f"\n📝 Summary:")
+                print("\n📝 Summary:")
                 print(f"{theme_summaries[theme_id]}")
             else:
                 # Try to find summary in all_summaries that might contain this theme
-                print(f"\n📝 Summary: [No parsed summary found, checking raw summaries...]")
+                print("\n📝 Summary: [No parsed summary found, checking raw summaries...]")
                 found_summary = False
                 for summary in all_summaries:
                     # More aggressive search - look for theme label or related words
@@ -1151,12 +1151,12 @@ if __name__ == "__main__":
                 if not found_summary:
                     print(f"No summary found. Theme '{themes[theme_id]}' may not have generated a summary.")
             
-            # Example responses for the theme
-            print(f"\n💬 Example responses in this theme:")
-            for i, example in enumerate(theme_response_examples[theme_id][:3], 1):
-                print(f"  {i}. \"{example['response']}\"")
-                print(f"     → Code: {example['code']}")
-                print(f"     → Description: {example['description']}")
+            # # Example responses for the theme
+            # print("\n💬 Example responses in this theme:")
+            # for i, example in enumerate(theme_response_examples[theme_id][:3], 1):
+            #     print(f"  {i}. \"{example['response']}\"")
+            #     print(f"     → Code: {example['code']}")
+            #     print(f"     → Description: {example['description']}")
             
             # Topics in this theme
             topics_in_theme = theme_topics[theme_id]
@@ -1167,11 +1167,11 @@ if __name__ == "__main__":
                 topic_count = topic_response_counts[theme_id][topic_id]
                 print(f"\n  {topic_idx}. TOPIC {topic_id}: {topic_label} ({topic_count} segments)")
                 
-                # Example responses for this topic
-                if topic_response_examples[theme_id][topic_id]:
-                    print(f"     Examples:")
-                    for ex_idx, example in enumerate(topic_response_examples[theme_id][topic_id][:2], 1):
-                        print(f"       {ex_idx}) \"{example['response'][:100]}...\" ")
+                # # Example responses for this topic
+                # if topic_response_examples[theme_id][topic_id]:
+                #     print("     Examples:")
+                #     for ex_idx, example in enumerate(topic_response_examples[theme_id][topic_id][:2], 1):
+                #         print(f"       {ex_idx}) \"{example['response'][:100]}...\" ")
                 
                 # Codes in this topic
                 codes_in_topic = topic_codes[theme_id][topic_id]
@@ -1196,7 +1196,7 @@ if __name__ == "__main__":
         print(f"{'='*80}")
         
         total_segments = sum(len(r.response_segment) for r in label_results)
-        print(f"\n📊 Overall Statistics:")
+        print("\n📊 Overall Statistics:")
         print(f"  • Total respondents processed: {len(label_results)}")
         print(f"  • Total segments processed: {total_segments}")
         print(f"  • Total themes: {len(themes)}")
@@ -1206,13 +1206,13 @@ if __name__ == "__main__":
         print(f"  • Total unique codes: {total_codes}")
         print(f"  • Original clusters: {len(unique_clusters)}")
         
-        print(f"\n📏 Distribution Metrics:")
+        print("\n📏 Distribution Metrics:")
         print(f"  • Average segments per theme: {total_segments / len(themes):.1f}")
         print(f"  • Average topics per theme: {total_topics / len(themes):.1f}")
         print(f"  • Average codes per topic: {total_codes / total_topics:.1f}")
         
         # Theme size distribution
-        print(f"\n📊 Theme Size Distribution:")
+        print("\n📊 Theme Size Distribution:")
         theme_sizes = sorted([(theme_id, theme_response_counts[theme_id]) for theme_id in themes.keys()], 
                            key=lambda x: x[1], reverse=True)
         for theme_id, count in theme_sizes:
@@ -1220,7 +1220,7 @@ if __name__ == "__main__":
             bar = '█' * bar_length
             print(f"  Theme {theme_id}: {bar} {count} segments")
         
-        print(f"\n✅ Quality Check Complete")
+        print("\n✅ Quality Check Complete")
         print(f"{'='*80}")
         
     else:
