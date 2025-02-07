@@ -32,20 +32,20 @@ class Phase2Merger:
                                    initial_labels: Dict[int, InitialLabel],
                                    var_lab: str) -> MergeMapping:
         """Main method to identify and merge similar clusters"""
-        logger.info("Phase 2: Analyzing cluster similarity and merging based on labels...")
+        logger.info("Phase 2: Analyzing cluster similarity and merging based on descriptive codes...")
         
-        # Get label embeddings instead of using centroids
-        label_embeddings, cluster_ids = await self._get_label_embeddings(initial_labels)
+        # Get descriptive codes embeddings instead of label embeddings
+        descriptive_embeddings, cluster_ids = await self._get_descriptive_codes_embeddings(cluster_data)
         
-        # Calculate similarities based on label embeddings
-        similarities = cosine_similarity(label_embeddings)
+        # Calculate similarities based on descriptive code embeddings
+        similarities = cosine_similarity(descriptive_embeddings)
         
-        # Show similarity distribution analysis for label embeddings
-        self._show_label_similarity_distribution(similarities, cluster_ids)
+        # Show similarity distribution analysis for descriptive code embeddings
+        self._show_descriptive_codes_similarity_distribution(similarities, cluster_ids)
         
-        # Auto-merge clusters based on label similarity
-        auto_merge_groups = self._auto_merge_by_label_similarity(similarities, cluster_ids)
-        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on label similarity")
+        # Auto-merge clusters based on descriptive codes similarity
+        auto_merge_groups = self._auto_merge_by_descriptive_similarity(similarities, cluster_ids)
+        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on descriptive codes similarity")
         
         # Create final merge mapping
         merge_mapping = self._create_merge_mapping(auto_merge_groups, initial_labels)
@@ -55,39 +55,39 @@ class Phase2Merger:
         return merge_mapping
     
     
-    async def _get_label_embeddings(self, initial_labels: Dict[int, InitialLabel]) -> Tuple[np.ndarray, List[int]]:
-        """Get embeddings for labels enriched with keywords"""
+    async def _get_descriptive_codes_embeddings(self, cluster_data: Dict[int, ClusterData]) -> Tuple[np.ndarray, List[int]]:
+        """Get embeddings for descriptive codes of each cluster"""
         
-        cluster_ids = list(initial_labels.keys())
+        cluster_ids = list(cluster_data.keys())
         
-        # Create enriched text: label + keywords
-        enriched_texts = []
+        # Create text from descriptive codes for each cluster
+        descriptive_texts = []
         for cid in cluster_ids:
-            label = initial_labels[cid]
-            # Combine label with top 5 keywords
-            text = f"{label.label}. Keywords: {', '.join(label.keywords[:5])}"
-            enriched_texts.append(text)
+            cluster = cluster_data[cid]
+            # Use the descriptive codes (top 10 or all if less)
+            codes_text = ". ".join(cluster.descriptive_codes[:10])
+            descriptive_texts.append(codes_text)
         
-        logger.info(f"Getting embeddings for {len(enriched_texts)} enriched labels...")
+        logger.info(f"Getting embeddings for {len(descriptive_texts)} clusters' descriptive codes...")
         
         # Get embeddings in batches
         embeddings = []
-        batch_size = 100  # OpenAI can handle up to 2048
+        batch_size = 50  # Smaller batch since texts might be longer
         
-        for i in range(0, len(enriched_texts), batch_size):
-            batch = enriched_texts[i:i + batch_size]
+        for i in range(0, len(descriptive_texts), batch_size):
+            batch = descriptive_texts[i:i + batch_size]
             response = await self.openai_client.embeddings.create(
                 model="text-embedding-3-small",
                 input=batch
             )
             embeddings.extend([e.embedding for e in response.data])
         
-        logger.info(f"Successfully obtained {len(embeddings)} label embeddings")
+        logger.info(f"Successfully obtained {len(embeddings)} descriptive code embeddings")
         
         return np.array(embeddings), cluster_ids
     
-    def _show_label_similarity_distribution(self, similarities: np.ndarray, cluster_ids: List[int]):
-        """Show distribution analysis of label similarities"""
+    def _show_descriptive_codes_similarity_distribution(self, similarities: np.ndarray, cluster_ids: List[int]):
+        """Show distribution analysis of descriptive codes similarities"""
         if len(cluster_ids) <= 1:
             return
         
@@ -117,7 +117,7 @@ class Phase2Merger:
         bins = np.concatenate([bins_coarse, bins_fine])
         hist, bin_edges = np.histogram(all_similarities, bins=bins)
         
-        logger.info("\n=== Label Cosine Similarity Distribution Analysis ===")
+        logger.info("\n=== Descriptive Codes Cosine Similarity Distribution Analysis ===")
         logger.info(f"Total pairs analyzed: {len(all_similarities)}")
         logger.info("\nStatistics:")
         logger.info(f"  Min:    {stats['min']:.4f}")
@@ -149,8 +149,8 @@ class Phase2Merger:
         logger.info("=" * 50)
     
     
-    def _auto_merge_by_label_similarity(self, similarities: np.ndarray, cluster_ids: List[int]) -> List[List[int]]:
-        """Auto-merge clusters based on label similarity"""
+    def _auto_merge_by_descriptive_similarity(self, similarities: np.ndarray, cluster_ids: List[int]) -> List[List[int]]:
+        """Auto-merge clusters based on descriptive codes similarity"""
         if len(cluster_ids) <= 1:
             return [[cid] for cid in cluster_ids]
         
@@ -166,7 +166,7 @@ class Phase2Merger:
         high_similarity_pairs.sort(key=lambda x: x[2], reverse=True)
         
         # Log the highest similarity pairs
-        logger.info("High label similarity pairs (>0.9):")
+        logger.info("High descriptive codes similarity pairs (>0.9):")
         for i, (cid1, cid2, score) in enumerate(high_similarity_pairs[:10]):
             logger.info(f"  Clusters {cid1} & {cid2}: {score:.4f}")
         if len(high_similarity_pairs) > 10:
@@ -197,9 +197,9 @@ class Phase2Merger:
             merge_groups.append(group)
         
         # Log merge decisions
-        logger.info(f"\nAuto-merge decisions based on labels (threshold={self.config.similarity_threshold}):")
+        logger.info(f"\nAuto-merge decisions based on descriptive codes (threshold={self.config.similarity_threshold}):")
         for cid1, cid2, score in merge_decisions[:10]:
-            logger.info(f"  Merging {cid1} & {cid2} (label similarity: {score:.4f})")
+            logger.info(f"  Merging {cid1} & {cid2} (descriptive codes similarity: {score:.4f})")
         if len(merge_decisions) > 10:
             logger.info(f"  ... and {len(merge_decisions) - 10} more merges")
         
@@ -347,21 +347,21 @@ if __name__ == "__main__":
                 
                 print("\n=== Starting detailed merge analysis ===\n")
                 
-                # Now we'll use label embeddings for merge analysis
-                print("=== LABEL-BASED MERGE ANALYSIS ===")
+                # Now we'll use descriptive codes embeddings for merge analysis
+                print("=== DESCRIPTIVE CODES-BASED MERGE ANALYSIS ===")
                 
-                # Get label embeddings
-                label_embeddings, cluster_ids = await phase2._get_label_embeddings(initial_labels)
+                # Get descriptive codes embeddings
+                desc_embeddings, cluster_ids = await phase2._get_descriptive_codes_embeddings(cluster_data)
                 
-                # Calculate pairwise similarities of labels
-                similarities = cosine_similarity(label_embeddings)
+                # Calculate pairwise similarities of descriptive codes
+                similarities = cosine_similarity(desc_embeddings)
                 
                 # Capture all similarity scores
-                label_merge_scores = []
+                desc_merge_scores = []
                 for i in range(len(cluster_ids)):
                     for j in range(i+1, len(cluster_ids)):
                         sim_score = similarities[i, j]
-                        label_merge_scores.append({
+                        desc_merge_scores.append({
                             'cluster1': cluster_ids[i],
                             'cluster2': cluster_ids[j],
                             'score': sim_score,
@@ -369,29 +369,27 @@ if __name__ == "__main__":
                         })
                 
                 # Sort by score descending
-                label_merge_scores.sort(key=lambda x: x['score'], reverse=True)
+                desc_merge_scores.sort(key=lambda x: x['score'], reverse=True)
                 
-                print(f"\nTop 20 Label similarity scores (threshold={config.similarity_threshold}):")
-                for i, score_info in enumerate(label_merge_scores[:20]):
+                print(f"\nTop 20 Descriptive codes similarity scores (threshold={config.similarity_threshold}):")
+                for i, score_info in enumerate(desc_merge_scores[:20]):
                     status = "MERGED" if score_info['merged'] else "not merged"
                     cid1 = score_info['cluster1']
                     cid2 = score_info['cluster2']
-                    label1_obj = initial_labels[cid1]
-                    label2_obj = initial_labels[cid2]
                     print(f"  {i+1}. Clusters {cid1} & {cid2}: {score_info['score']:.4f} ({status})")
-                    print(f"     Label 1: {label1_obj.label} | Keywords: {', '.join(label1_obj.keywords[:5])}")
-                    print(f"     Label 2: {label2_obj.label} | Keywords: {', '.join(label2_obj.keywords[:5])}")
+                    print(f"     Codes 1: {', '.join(cluster_data[cid1].descriptive_codes[:3])}...")
+                    print(f"     Codes 2: {', '.join(cluster_data[cid2].descriptive_codes[:3])}...")
                 
-                # Create histogram of label merge scores
-                label_scores_only = [s['score'] for s in label_merge_scores]
+                # Create histogram of descriptive codes merge scores
+                desc_scores_only = [s['score'] for s in desc_merge_scores]
                 
                 # Create bins: 0.05 steps up to 0.9, then 0.01 steps from 0.9 to 1.0
                 bins_coarse = np.arange(0, 0.9, 0.05)
                 bins_fine = np.arange(0.9, 1.01, 0.01)
                 bins = np.concatenate([bins_coarse, bins_fine])
-                hist, bin_edges = np.histogram(label_scores_only, bins=bins)
+                hist, bin_edges = np.histogram(desc_scores_only, bins=bins)
                 
-                print("\nLabel similarity score distribution:")
+                print("\nDescriptive codes similarity score distribution:")
                 max_count = max(hist)
                 for i, count in enumerate(hist):
                     start = bin_edges[i]
@@ -400,8 +398,8 @@ if __name__ == "__main__":
                     bar = '█' * bar_length
                     print(f"  {start:.3f}-{end:.3f}: {bar} ({count} pairs)")
                 
-                # Now run merge process (label similarity)
-                print("\n=== MERGE PROCESS (Label Similarity) ===")
+                # Now run merge process (descriptive codes similarity)
+                print("\n=== MERGE PROCESS (Descriptive Codes Similarity) ===")
                 
                 # Run merge process
                 merge_mapping = await phase2.merge_similar_clusters(
@@ -411,8 +409,8 @@ if __name__ == "__main__":
                 print(f"\nThreshold Analysis:")
                 print(f"Auto-merge threshold: {config.similarity_threshold}")
                 
-                label_merged_count = sum(1 for s in label_merge_scores if s['merged'])
-                print(f"Label-based merge merged: {label_merged_count} pairs")
+                desc_merged_count = sum(1 for s in desc_merge_scores if s['merged'])
+                print(f"Descriptive codes-based merge merged: {desc_merged_count} pairs")
                 
                 # Display results
                 print("\n=== Merge Results ===")
@@ -438,16 +436,16 @@ if __name__ == "__main__":
                 # Provide threshold recommendations
                 print("\n=== THRESHOLD RECOMMENDATIONS ===")
                 
-                # Analyze label-merge scores to suggest threshold
-                label_scores_sorted = sorted([s['score'] for s in label_merge_scores], reverse=True)
-                percentiles = np.percentile(label_scores_sorted, [99, 98, 97, 96, 95])
+                # Analyze descriptive codes-merge scores to suggest threshold
+                desc_scores_sorted = sorted([s['score'] for s in desc_merge_scores], reverse=True)
+                percentiles = np.percentile(desc_scores_sorted, [99, 98, 97, 96, 95])
                 
-                print("\nLabel similarity score percentiles:")
+                print("\nDescriptive codes similarity score percentiles:")
                 for i, (p, val) in enumerate(zip([99, 98, 97, 96, 95], percentiles)):
                     print(f"  {p}th percentile: {val:.4f}")
                 
                 print("\nSuggested adjustments to reduce merging:")
-                print(f"  Current label-merge threshold: {config.similarity_threshold}")
+                print(f"  Current descriptive codes-merge threshold: {config.similarity_threshold}")
                 print(f"  Consider raising to: {percentiles[1]:.4f} (98th percentile) or {percentiles[0]:.4f} (99th percentile)")
                 
                 # Save to cache for phase 3
