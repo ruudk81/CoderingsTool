@@ -71,7 +71,7 @@ class Embedder:
         return batches_responses, batches_indices
 
     async def process_batches(self, responses: List[str]):
-        response = await self.client.embeddings.create(input=responses, model=self.embedding_model, seed=42)
+        response = await self.client.embeddings.create(input=responses, model=self.embedding_model)
         return [item.embedding for item in response.data]
         
     def get_code_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = 5):
@@ -208,8 +208,7 @@ class Embedder:
         for cluster_text in cluster_texts:
             task = client.embeddings.create(
                 input=cluster_text,
-                model="text-embedding-3-large",
-                seed=42
+                model="text-embedding-3-large"
             )
             tasks.append(task)
     
@@ -232,8 +231,7 @@ class Embedder:
                 self.verbose_reporter.stat_line(f"Processing batch of {len(batch_words)} words")
                 response = await self.client.embeddings.create(
                     input=batch_words,
-                    model=self.embedding_model,
-                    seed=42
+                    model=self.embedding_model
                 )
                 
                 # Map each word to its embedding
