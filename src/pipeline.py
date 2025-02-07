@@ -25,6 +25,7 @@ import models
 from modules.utils import data_io
 from cache_manager import CacheManager
 from cache_config import CacheConfig, ProcessingConfig
+from modules.utils.clustering_config import ClusteringConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -44,6 +45,26 @@ parser.add_argument('--force-recalculate', action='store_true', help='Force reca
 parser.add_argument('--force-step', type=str, help='Force recalculation of specific step')
 parser.add_argument('--cleanup', action='store_true', help='Clean up old cache files')
 parser.add_argument('--stats', action='store_true', help='Show cache statistics')
+parser.add_argument('--show-metrics', action='store_true', help='Show clustering quality metrics')
+
+# Clustering specific arguments
+parser.add_argument('--embedding-type', 
+                   choices=['description', 'code'], 
+                   default='description',
+                   help='Type of embeddings to use for clustering (default: description)')
+parser.add_argument('--language', 
+                   choices=['nl', 'en'], 
+                   default='nl',
+                   help='Language for clustering (default: nl)')
+parser.add_argument('--min-quality-score', 
+                   type=float, 
+                   default=0.3,
+                   help='Minimum acceptable clustering quality (default: 0.3)')
+parser.add_argument('--max-noise-ratio', 
+                   type=float, 
+                   default=0.5,
+                   help='Maximum noise ratio before micro-clustering (default: 0.5)')
+
 args = parser.parse_args()
 
 # Handle cache operations
@@ -60,6 +81,24 @@ if args.stats:
     print("\nBy step:")
     for step, info in stats['by_step'].items():
         print(f"  {step}: {info['count']} files, {info['size'] / (1024**2):.2f} MB")
+    exit(0)
+
+if args.show_metrics:
+    metrics = cache_manager.get_clustering_metrics(filename, limit=5)
+    print(f"\nClustering Metrics for {filename}:")
+    for i, metric in enumerate(metrics):
+        print(f"\n--- Run {i+1} ({metric['timestamp']}) ---")
+        print(f"Embedding type: {metric['embedding_type']}")
+        print(f"Language: {metric['language']}")
+        print(f"Overall quality: {metric['overall_quality']:.3f}")
+        print(f"Silhouette score: {metric['silhouette_score']:.3f}")
+        print(f"Noise ratio: {metric['noise_ratio']:.3f}")
+        print(f"Coverage: {metric['coverage']:.3f}")
+        print(f"Clusters: {metric['num_clusters']}")
+        print(f"Meta-clusters: {metric.get('num_meta_clusters', 'N/A')}")
+        print(f"Attempts: {metric['attempts']}")
+        if metric['parameters']:
+            print(f"Parameters: {metric['parameters']}")
     exit(0)
 
 # === STEP 1 ========================================================================================================
@@ -213,14 +252,77 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
     print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
-    start_time              = time.time()
-    clusterer               = clusterer.ClusterGenerator(input_list=embedded_text, var_lab=var_lab, embedding_type="code", verbose=True)
+    start_time = time.time()
+    
+    # Create clustering configuration from command line arguments
+    clustering_config = ClusteringConfig(
+        embedding_type=args.embedding_type,
+        language=args.language,
+        min_quality_score=args.min_quality_score,
+        max_noise_ratio=args.max_noise_ratio
+    )
+    
+    print(f"\nClustering with config: embedding_type={clustering_config.embedding_type}, "
+          f"language={clustering_config.language}, min_quality={clustering_config.min_quality_score}")
+    
+    # Create clusterer with config
+    clusterer = clusterer.ClusterGenerator(
+        input_list=embedded_text, 
+        var_lab=var_lab, 
+        config=clustering_config,
+        verbose=True
+    )
+    
     clusterer.run_pipeline()
-    cluster_results         = clusterer.to_cluster_model()
-    end_time                = time.time()
-    elapsed_time            = end_time - start_time
-
+    cluster_results = clusterer.to_cluster_model()
+    
+    # Extract and display quality metrics
+    quality_metrics = None
+    if clusterer.clustering_attempts:
+        quality_metrics = clusterer.clustering_attempts[-1]
+        
+        # Count meta clusters
+        meta_cluster_ids = set()
+        for result in cluster_results:
+            for segment in result.response_segment:
+                if segment.meta_cluster:
+                    meta_cluster_ids.add(list(segment.meta_cluster.keys())[0])
+        
+        quality_metrics['num_meta_clusters'] = len(meta_cluster_ids)
+        
+        print("\n📊 Clustering Quality Metrics:")
+        for key, value in quality_metrics.items():
+            if isinstance(value, (int, float)):
+                print(f"  {key}: {value:.3f}")
+            else:
+                print(f"  {key}: {value}")
+        
+        # Warn if quality is below threshold
+        if quality_metrics['overall_quality'] < clustering_config.min_quality_score:
+            print(f"\n⚠️ WARNING: Clustering quality ({quality_metrics['overall_quality']:.3f}) "
+                  f"is below threshold ({clustering_config.min_quality_score})")
+    
+    # Show retry attempts if any
+    if len(clusterer.clustering_attempts) > 1:
+        print(f"\n🔄 Clustering attempts: {len(clusterer.clustering_attempts)}")
+        for i, attempt in enumerate(clusterer.clustering_attempts):
+            print(f"  Attempt {i+1}: quality={attempt['overall_quality']:.3f}")
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Save clustering results and metrics to cache
     cache_manager.save_to_cache(cluster_results, filename, step_name, processing_config, elapsed_time)
+    
+    # Save quality metrics separately
+    if quality_metrics:
+        # Update config with actual parameters used
+        clustering_config.min_samples = clusterer.min_samples
+        clustering_config.min_cluster_size = clusterer.min_cluster_size
+        
+        # Save metrics with all attempts
+        cache_manager.save_clustering_metrics(filename, clusterer.clustering_attempts, clustering_config)
+    
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
 # debug print

@@ -77,6 +77,29 @@ class CacheDatabase:
                 
                 CREATE INDEX IF NOT EXISTS idx_history_filename 
                 ON processing_history(filename);
+                
+                CREATE TABLE IF NOT EXISTS clustering_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    overall_quality REAL,
+                    silhouette_score REAL,
+                    noise_ratio REAL,
+                    coverage REAL,
+                    mean_cluster_size REAL,
+                    size_variance REAL,
+                    num_clusters INTEGER,
+                    num_meta_clusters INTEGER,
+                    embedding_type TEXT,
+                    language TEXT,
+                    min_quality_score REAL,
+                    max_noise_ratio REAL,
+                    parameters TEXT,
+                    attempts INTEGER
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_metrics_filename 
+                ON clustering_metrics(filename);
             ''')
     
     def record_cache_entry(self, 
@@ -310,3 +333,65 @@ class CacheDatabase:
             }
             
             return stats
+    
+    def record_clustering_metrics(self, 
+                                filename: str, 
+                                metrics: Dict,
+                                config: 'ClusteringConfig',
+                                attempts: int = 1) -> int:
+        """Record clustering quality metrics"""
+        with self._get_connection() as conn:
+            # Extract metrics
+            overall_quality = metrics.get('overall_quality', 0)
+            silhouette_score = metrics.get('silhouette_score', 0)
+            noise_ratio = metrics.get('noise_ratio', 0)
+            coverage = metrics.get('coverage', 0)
+            mean_cluster_size = metrics.get('mean_cluster_size', 0)
+            size_variance = metrics.get('size_variance', 0)
+            num_clusters = metrics.get('num_clusters', 0)
+            num_meta_clusters = metrics.get('num_meta_clusters', 0)
+            
+            # Get additional metrics from config
+            embedding_type = config.embedding_type
+            language = config.language
+            min_quality_score = config.min_quality_score
+            max_noise_ratio = config.max_noise_ratio
+            
+            # Extract parameters used (min_samples, min_cluster_size)
+            parameters = json.dumps({
+                'min_samples': config.min_samples if hasattr(config, 'min_samples') else None,
+                'min_cluster_size': config.min_cluster_size if hasattr(config, 'min_cluster_size') else None
+            })
+            
+            cursor = conn.execute('''
+                INSERT INTO clustering_metrics 
+                (filename, overall_quality, silhouette_score, noise_ratio, coverage,
+                 mean_cluster_size, size_variance, num_clusters, num_meta_clusters,
+                 embedding_type, language, min_quality_score, max_noise_ratio, 
+                 parameters, attempts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (filename, overall_quality, silhouette_score, noise_ratio, coverage,
+                  mean_cluster_size, size_variance, num_clusters, num_meta_clusters,
+                  embedding_type, language, min_quality_score, max_noise_ratio, 
+                  parameters, attempts))
+            
+            return cursor.lastrowid
+    
+    def get_clustering_metrics(self, filename: str, limit: int = 1) -> List[Dict]:
+        """Get clustering metrics for a file"""
+        with self._get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM clustering_metrics 
+                WHERE filename = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            ''', (filename, limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                result = dict(row)
+                if result['parameters']:
+                    result['parameters'] = json.loads(result['parameters'])
+                results.append(result)
+            
+            return results
