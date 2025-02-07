@@ -245,13 +245,13 @@ else:
     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     
     start_time = time.time()
-    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG,)
+    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
     labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
     
     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-    print(f"\n'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
+    verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 # Display final summary of the hierarchical structure
 print("\n" + "=" * 80)
