@@ -326,12 +326,45 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 - **Clusters**: 791 segments → 58 clusters → 28 meta-clusters
 - **Performance**: No retries needed, automatic parameters worked well
 
+### Phase 3: Simplified Clustering and Improved Labeling (Current)
+
+#### Clusterer Simplification ✓ COMPLETED
+1. **Removed complex logic** - No more retry mechanism or parameter adjustments
+2. **Single clustering pass** - Just dimension reduction → clustering → save
+3. **Quality metrics for display only** - Calculate and show metrics but make no decisions
+4. **Hardcoded parameters** - Reverted to original UMAP and HDBSCAN settings
+5. **Only micro-clusters** - No meta or meso clustering in clusterer
+6. **Pipeline compatibility** - Updated pipeline to work with simplified clusterer
+
+#### Labeling System Improvements (TODO)
+1. **Update labeller to handle clustering hierarchy**
+   - Take micro-clusters from simplified clusterer
+   - Use LLM to label each cluster
+   - Use LLM to identify semantically similar clusters
+   - Create merge/remap dictionary
+   - Apply merging to create meta-clusters
+
+2. **Smart semantic merging**
+   - LLM analyzes cluster labels and content
+   - Identifies clusters that should be merged
+   - Returns mapping dictionary
+   - Preserves cluster IDs for traceability
+
+3. **Domain-aware labeling**
+   - Already uses var_lab for context ✓
+   - Prompts adapt to survey question ✓
+
+#### Key Changes Made
+1. **Clusterer renamed** - `simple_clusterer.py` → `clusterer.py`
+2. **Class renamed** - `SimpleClusterGenerator` → `ClusterGenerator`
+3. **Pipeline updated** - Works with simplified clusterer, no config needed
+4. **Debug output** - Shows micro-clusters instead of meta-clusters
+
 ### Future Phases
-1. Phase 3: Improve labeling system (step 6)
-2. Phase 4: Add proper error handling throughout
-3. Phase 5: Implement results display (step 7)
-4. Phase 6: Add data visualization
-5. Phase 7: Create export options
+1. Phase 4: Add proper error handling throughout
+2. Phase 5: Implement results display (step 7)
+3. Phase 6: Add data visualization
+4. Phase 7: Create export options
 
 ## Environment Requirements
 - Python 3.8+
@@ -349,9 +382,10 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 - UI is set up but not connected to all pipeline functions
 - Focus should be on improving existing steps before adding new features
 
-## Current Focus: Automatic Clustering
-- Simplified config with only user-relevant options
-- Automatic parameter selection based on data size
-- Quality metrics for clustering evaluation
-- Default to description embeddings (user configurable)
-- Micro-clusters for outlier handling (Option C)
+## Current Focus: Simplified Clustering and Smart Labeling
+- Simplified clusterer with hardcoded parameters (Phase 3)
+- Single-pass clustering with quality metrics for display only
+- Labeller handles all semantic intelligence
+- LLM-based cluster merging based on semantic similarity
+- Domain context derived from var_lab
+- Pipeline runs steps 1-5 successfully, step 6 being improved
