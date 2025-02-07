@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import pyreadstat
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 class DataLoader:
     def __init__(self, data_dir: str = None, verbose: bool = False):

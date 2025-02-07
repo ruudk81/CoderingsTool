@@ -12,7 +12,7 @@ import models
 from pydantic import BaseModel, ConfigDict
 from prompts import MERGE_PROMPT
 from config import OPENAI_API_KEY, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
-from utils.verbose_reporter import VerboseReporter
+from utils.verboseReporter import VerboseReporter
 
 class ClusterData(BaseModel):
     """Internal representation of cluster with extracted data"""

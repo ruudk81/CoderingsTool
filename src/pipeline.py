@@ -14,8 +14,8 @@ nest_asyncio.apply()
 import models
 
 # === CONFIG ========================================================================================================
-from utils import data_io
-from utils.cache_manager import CacheManager
+from utils import dataLoader
+from utils.cacheManager import CacheManager
 from config import CacheConfig
 
 # Initialize cache manager
@@ -38,7 +38,7 @@ EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
 
 # Initialize data loader and get variable label
-data_loader = data_io.DataLoader(verbose=False)
+data_loader = dataLoader.DataLoader(verbose=False)
 var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
 # Display configuration
@@ -55,13 +55,13 @@ print("=" * 80)
 
 # === STEP 1 ========================================================================================================
 """get data"""
-from utils.verbose_reporter import VerboseReporter
+from utils.verboseReporter import VerboseReporter
 
 step_name = "data"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
-data_loader = data_io.DataLoader(verbose=VERBOSE)
+data_loader = dataLoader.DataLoader(verbose=VERBOSE)
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     raw_text_list = cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
@@ -82,7 +82,7 @@ else:
 # === STEP 2 ========================================================================================================
 """preprocess data"""
 from utils import textNormalizer, spellChecker, textFinalizer
-from utils.verbose_reporter import VerboseReporter
+from utils.verboseReporter import VerboseReporter
 
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name

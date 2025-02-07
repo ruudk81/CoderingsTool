@@ -2,7 +2,7 @@ import re
 from typing import List, Union, Optional 
 from pydantic import BaseModel, Field, field_validator
 import models
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 
 class NormalizerConfig(BaseModel):

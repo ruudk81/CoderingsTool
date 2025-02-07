@@ -5,7 +5,7 @@ from typing import List, Dict
 from openai import AsyncOpenAI
 import models
 from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 class Embedder:
     def __init__(
@@ -259,7 +259,7 @@ class Embedder:
 # Example usage
 if __name__ == "__main__":
     
-    from utils import data_io, csvHandler
+    from utils import dataLoader, csvHandler
     
     filename                = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column               = "DLNMID"
@@ -267,7 +267,7 @@ if __name__ == "__main__":
 
     csv_handler             = csvHandler.CsvHandler()
     filepath                = csv_handler.get_filepath(filename, 'segmented_descriptions')
-    data_loader             = data_io.DataLoader()
+    data_loader             = dataLoader.DataLoader()
     var_lab                 = data_loader.get_varlab(filename=filename, var_name=var_name)
 
     segmented_text          = csv_handler.load_from_csv(filename, 'segmented_descriptions', models.DescriptiveModel)

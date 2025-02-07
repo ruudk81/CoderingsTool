@@ -11,8 +11,8 @@ from sklearn.feature_extraction.text import CountVectorizer
 # config
 import models
 from config import DEFAULT_LANGUAGE, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
-from utils.cluster_quality import ClusterQualityAnalyzer
-from utils.verbose_reporter import VerboseReporter
+from utils.clusterQualifier import ClusterQualityAnalyzer
+from utils.verboseReporter import VerboseReporter
 import warnings  # hard coded warning in umap about hidden stat
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
 
@@ -488,10 +488,10 @@ class ClusterGenerator:
 # Example usage and testing
 if __name__ == "__main__":
     """Test the simple clusterer with actual embeddings"""
-    from utils.cache_manager import CacheManager
+    from utils.cacheManager import CacheManager
     from config import CacheConfig
     import models
-    import data_io
+    import dataLoader
     
     # Initialize cache manager
     cache_config = CacheConfig()
@@ -507,7 +507,7 @@ if __name__ == "__main__":
         print(f"Loaded {len(input_list)} embeddings from cache")
         
         # Get variable label
-        data_loader = data_io.DataLoader()
+        data_loader = dataLoader.DataLoader()
         var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
         
         print("\n=== Running simple clustering ===")

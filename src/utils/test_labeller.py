@@ -13,10 +13,10 @@ from collections import defaultdict
 from pathlib import Path
 
 # Import your modules
-from cache_manager import CacheManager
+from cacheManager import CacheManager
 from config import CacheConfig, LabellerConfig
 from utils.labeller import Labeller
-from utils.data_io import DataLoader
+from utils.dataLoader import DataLoader
 import models
 
 # Test configuration
