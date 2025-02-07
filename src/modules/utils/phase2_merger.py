@@ -5,10 +5,18 @@ from sklearn.metrics.pairwise import cosine_similarity
 from tqdm.asyncio import tqdm
 import logging
 
-from .labeller import (
-    LabellerConfig, ClusterData, InitialLabel, MergeMapping,
-    SimilarityScore, BatchSimilarityResponse
-)
+try:
+    # When running as a script
+    from labeller import (
+        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+        SimilarityScore, BatchSimilarityResponse
+    )
+except ImportError:
+    # When imported as a module
+    from .labeller import (
+        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+        SimilarityScore, BatchSimilarityResponse
+    )
 from prompts import SIMILARITY_SCORING_PROMPT
 
 logger = logging.getLogger(__name__)
