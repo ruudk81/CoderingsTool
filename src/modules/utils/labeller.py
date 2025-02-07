@@ -230,12 +230,12 @@ class Labeller:
                                  var_lab: str) -> MergeMapping:
         """Phase 2: Merge clusters that are not meaningfully differentiated"""
         try:
-            from phase2_merger import Phase2Merger
+            from clusterMerger import ClusterMerger
         except ImportError:
-            from .phase2_merger import Phase2Merger
+            from .clusterMerger import ClusterMerger
         
-        phase2 = Phase2Merger(self.config, self.client)
-        return await phase2.merge_similar_clusters(cluster_data, initial_labels, var_lab)
+        merger = ClusterMerger(self.config, self.client)
+        return await merger.merge_similar_clusters(cluster_data, initial_labels, var_lab)
     
     def apply_merging(self,
                      cluster_data: Dict[int, ClusterData],
