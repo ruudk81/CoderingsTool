@@ -222,6 +222,9 @@ else:
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
 
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+
 step_name = "labels"
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
@@ -254,6 +257,39 @@ else:
     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
+#debug
+# idx = 1
+# for cluster in thematic_labeller.labeled_clusters:
+#      print(f"{idx}) {cluster.label}")
+#      idx += 1
 
+# codebook = thematic_labeller.initial_codebook
+# lines = []
+# for theme in codebook.themes:
+#     lines.append(f"\n{theme.id}. {theme.label.upper()}")
+    
+#     related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
+#     for topic in related_topics:
+#         lines.append(f"\n   {topic.id} {topic.label}")
+        
+#         related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
+#         for code in related_codes:
+#             lines.append(f"      {code.id} {code.label}")
+# print("\n".join(lines))
+
+# codebook = thematic_labeller.codebook
+# lines = []
+# for theme in codebook.themes:
+#     lines.append(f"\n{theme.id}. {theme.label.upper()}")
+    
+#     related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
+#     for topic in related_topics:
+#         lines.append(f"\n   {topic.id} {topic.label}")
+        
+#         related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
+#         for code in related_codes:
+#             lines.append(f"      {code.id} {code.label}")
+
+# print("\n".join(lines))
 
 

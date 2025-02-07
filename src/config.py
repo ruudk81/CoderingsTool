@@ -45,7 +45,7 @@ class ModelConfig:
     description_model: str = "gpt-4o-mini"           # Fast model for description generation
     embedding_model: str = "text-embedding-3-large"  # Embedding model
     cluster_merge_model: str = "gpt-4o-mini"         # Fast model for cluster merging
-    labelling_model: str = "gpt-4o-mini"             # High-quality model for final labelling
+    labelling_model: str = "gpt-4.1-mini"             # High-quality model for final labelling
     
     # Global parameters
     seed: int = 42
