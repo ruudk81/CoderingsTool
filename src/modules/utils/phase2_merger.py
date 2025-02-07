@@ -121,37 +121,48 @@ class Phase2Merger:
         self.semaphore = asyncio.Semaphore(config.max_concurrent_requests)
         self.client = client or AsyncOpenAI(api_key=config.api_key)
         self.max_merge_group_size = 5      # Maximum size for any merge group
-        self.min_similarity_threshold = 0.8  # Initial threshold for candidate filtering
-        self.learned_threshold = 0.8       # Dynamic threshold that will be updated based on LLM judgments
+        self.similarity_threshold = 0.95   # Fixed threshold for high similarity pairs
     
     async def merge_similar_clusters(self,
                                    cluster_data: Dict[int, ClusterData],
                                    initial_labels: Dict[int, InitialLabel],
                                    var_lab: str) -> MergeMapping:
-        """Main method to identify and merge similar clusters with dynamic similarity threshold learning"""
+        """Main method to identify and merge similar clusters using sorted similarity pairs"""
         logger.info(f"Phase 2: Analyzing cluster similarity for research question: '{var_lab}'")
         
         # Calculate all pairwise similarities between clusters
         similarities_dict = await self._calculate_all_similarities(cluster_data)
         logger.info(f"Calculated similarities between all {len(cluster_data)} clusters")
-        logger.info(f"Starting with similarity threshold of {self.learned_threshold}")
         
-        # Merge clusters using similarity-guided LLM decisions
-        merge_groups = await self._similarity_guided_merging(
-            list(cluster_data.keys()), 
-            similarities_dict, 
+        # Sort all pairs by similarity (highest first) and filter by threshold
+        sorted_pairs = self._get_sorted_similarity_pairs(similarities_dict)
+        high_similarity_pairs = [(c1, c2, sim) for c1, c2, sim in sorted_pairs if sim >= self.similarity_threshold]
+        logger.info(f"Found {len(high_similarity_pairs)} pairs with similarity ≥ {self.similarity_threshold}")
+        
+        # Merge clusters by processing sorted pairs
+        merge_groups = await self._sorted_pairs_merging(
+            high_similarity_pairs,
             cluster_data, 
             initial_labels, 
             var_lab
         )
         
         logger.info(f"Final merge: {len(cluster_data)} clusters → {len(merge_groups)} groups")
-        logger.info(f"Final learned similarity threshold: {self.learned_threshold}")
         
         # Create final merge mapping
         merge_mapping = self._create_merge_mapping(merge_groups, initial_labels)
         
         return merge_mapping
+        
+    def _get_sorted_similarity_pairs(self, similarities: Dict[Tuple[int, int], float]) -> List[Tuple[int, int, float]]:
+        """Get all similarity pairs sorted by similarity (highest first)"""
+        # Convert dictionary to list of (cluster1, cluster2, similarity) tuples
+        pairs = [(c1, c2, sim) for (c1, c2), sim in similarities.items()]
+        
+        # Sort by similarity (highest first)
+        pairs.sort(key=lambda x: x[2], reverse=True)
+        
+        return pairs
     
     async def _calculate_all_similarities(self, cluster_data: Dict[int, ClusterData]) -> Dict[Tuple[int, int], float]:
         """Calculate all pairwise similarities between cluster centroids and store in a dictionary"""
@@ -202,81 +213,80 @@ class Phase2Merger:
             logger.error(f"No similarity found for clusters {cluster1} and {cluster2}")
             return 0.0
     
-    async def _similarity_guided_merging(self,
-                                     cluster_ids: List[int],
-                                     similarities: Dict[Tuple[int, int], float],
-                                     cluster_data: Dict[int, ClusterData],
-                                     initial_labels: Dict[int, InitialLabel],
-                                     var_lab: str) -> List[List[int]]:
-        """Merge clusters using similarity-guided LLM decisions with dynamic threshold learning"""
-        logger.info(f"Starting similarity-guided merging for {len(cluster_ids)} clusters...")
+    async def _sorted_pairs_merging(self,
+                                sorted_pairs: List[Tuple[int, int, float]],
+                                cluster_data: Dict[int, ClusterData],
+                                initial_labels: Dict[int, InitialLabel],
+                                var_lab: str) -> List[List[int]]:
+        """Merge clusters by processing similarity pairs in sorted order"""
+        logger.info(f"Starting pair-based merging with {len(sorted_pairs)} high-similarity pairs...")
         
-        # Set of clusters we've already processed
-        processed_clusters = set()
+        # Initialize cluster groups (initially each cluster is in its own group)
+        cluster_to_group = {}  # Maps cluster ID to its group index
+        merge_groups = []      # List of merge groups (each group is a list of cluster IDs)
         
-        # Final merge groups - we'll build this up as we go
-        final_groups = []
+        # Initialize with singleton groups
+        all_clusters = set()
+        for c1, c2, _ in sorted_pairs:
+            all_clusters.add(c1)
+            all_clusters.add(c2)
         
-        # Process each cluster sequentially
-        for current_cluster in cluster_ids:
-            # Skip if already processed
-            if current_cluster in processed_clusters:
+        # Add all clusters (including those not in any pair)
+        all_clusters.update(cluster_data.keys())
+        
+        # Start with individual groups
+        for i, cid in enumerate(all_clusters):
+            merge_groups.append([cid])
+            cluster_to_group[cid] = i
+        
+        # Process pairs in descending order of similarity
+        llm_calls = 0
+        for c1, c2, similarity in sorted_pairs:
+            # Get current groups
+            g1 = cluster_to_group.get(c1)
+            g2 = cluster_to_group.get(c2)
+            
+            # Skip if both clusters are in the same group
+            if g1 == g2:
+                logger.debug(f"Skipping: clusters {c1} and {c2} are already in the same group {g1}")
                 continue
             
-            logger.info(f"Processing cluster {current_cluster}...")
+            # Skip if merging would exceed max group size
+            if len(merge_groups[g1]) + len(merge_groups[g2]) > self.max_merge_group_size:
+                logger.info(f"Skipping: merging groups would exceed max size ({len(merge_groups[g1])} + {len(merge_groups[g2])})")
+                continue
             
-            # Create a new group with just this cluster
-            new_group = [current_cluster]
-            processed_clusters.add(current_cluster)
+            # Check if these should be merged using LLM
+            logger.info(f"Checking clusters {c1} and {c2} (similarity: {similarity:.4f})...")
+            should_merge = await self._check_should_merge(
+                c1, c2, cluster_data, initial_labels, var_lab)
+            llm_calls += 1
             
-            # Find candidate clusters for comparison
-            candidates = []
-            for compare_cluster in cluster_ids:
-                # Skip if already processed or same as current cluster
-                if compare_cluster in processed_clusters:
-                    continue
+            if should_merge:
+                # Merge the two groups
+                logger.info(f"Merging groups containing clusters {c1} and {c2}")
                 
-                # Get similarity
-                sim = self._get_similarity(current_cluster, compare_cluster, similarities)
+                # Always keep the smaller group index and merge the larger one into it
+                if g1 > g2:
+                    g1, g2 = g2, g1  # Swap to ensure g1 < g2
                 
-                # Only consider candidates above learned threshold
-                if sim >= self.learned_threshold:
-                    candidates.append((compare_cluster, sim))
-            
-            # Sort candidates by similarity (highest first)
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            logger.info(f"Found {len(candidates)} candidates with similarity >= {self.learned_threshold:.4f}")
-            
-            # Process candidates in order of similarity
-            for compare_cluster, sim in candidates:
-                # Skip if would exceed max size
-                if len(new_group) >= self.max_merge_group_size:
-                    logger.info(f"Group would exceed max size, stopping comparisons for cluster {current_cluster}")
-                    break
+                # Merge group g2 into g1
+                merge_groups[g1].extend(merge_groups[g2])
                 
-                # Skip if already processed (could have been added in a previous iteration)
-                if compare_cluster in processed_clusters:
-                    continue
+                # Update group assignments for merged clusters
+                for cid in merge_groups[g2]:
+                    cluster_to_group[cid] = g1
                 
-                # Check if these should be merged
-                logger.info(f"Checking clusters {current_cluster} and {compare_cluster} (similarity: {sim:.4f})...")
-                should_merge = await self._check_should_merge(
-                    current_cluster, compare_cluster, cluster_data, initial_labels, var_lab)
-                
-                if should_merge:
-                    # Add to the current group and mark as processed
-                    logger.info(f"Merging cluster {compare_cluster} into group with {current_cluster}")
-                    new_group.append(compare_cluster)
-                    processed_clusters.add(compare_cluster)
-                else:
-                    # Update learned threshold if this pair was more similar than our current threshold
-                    if sim > self.learned_threshold:
-                        logger.info(f"Updating learned threshold from {self.learned_threshold:.4f} to {sim:.4f}")
-                        self.learned_threshold = sim
-            
-            # Add the new group to final groups
-            final_groups.append(new_group)
-            logger.info(f"Created merge group with {len(new_group)} clusters")
+                # Mark group g2 as empty (will be filtered out later)
+                merge_groups[g2] = []
+            else:
+                logger.info(f"Not merging: clusters {c1} and {c2} are meaningfully differentiated")
+        
+        # Filter out empty groups
+        final_groups = [group for group in merge_groups if group]
+        
+        logger.info(f"Merging completed with {llm_calls} LLM calls")
+        logger.info(f"Created {len(final_groups)} merge groups from {len(all_clusters)} clusters")
         
         return final_groups
     
@@ -534,8 +544,7 @@ if __name__ == "__main__":
         config = LabellerConfig(
             api_key=OPENAI_API_KEY,
             model=DEFAULT_MODEL,
-            batch_size=5,  # Process a smaller batch size for merge analysis
-            similarity_threshold=0.98  # For auto-merge by embedding similarity (will be overridden in init)
+            batch_size=5  # Process a smaller batch size for merge analysis
         )
         
         # Initialize phase 2 merger with quiet HTTP logging
@@ -619,20 +628,25 @@ if __name__ == "__main__":
                 reduction = (1 - len(merge_mapping.merge_groups)/len(cluster_data)) * 100
                 print(f"Reduction: {reduction:.1f}%")
                 
-                # Show some examples of merged clusters
-                print(f"\nSample merge groups (first 10):")
-                for i, group in enumerate(merge_mapping.merge_groups):
-                    if i >= 10:
-                        break
-                    
-                    if len(group) > 1:
+                # Show all multi-cluster groups first
+                multi_cluster_groups = [group for group in merge_mapping.merge_groups if len(group) > 1]
+                if multi_cluster_groups:
+                    print(f"\nMerged groups ({len(multi_cluster_groups)}):")
+                    for i, group in enumerate(multi_cluster_groups):
                         group_labels = [initial_labels[cid].label for cid in group]
-                        print(f"\nGroup {i} ({len(group)} clusters):")
+                        print(f"\nMerged Group {i+1} ({len(group)} clusters):")
                         for j, (cid, label) in enumerate(zip(group, group_labels)):
                             print(f"  {j+1}. Cluster {cid}: {label}")
-                    else:
-                        print(f"\nGroup {i} (1 cluster):")
-                        print(f"  Cluster {group[0]}: {initial_labels[group[0]].label}")
+                else:
+                    print("\nNo clusters were merged.")
+                
+                # Then show sample of singleton groups
+                singleton_groups = [group for group in merge_mapping.merge_groups if len(group) == 1]
+                if singleton_groups:
+                    sample_size = min(5, len(singleton_groups))
+                    print(f"\nSample of singleton groups ({len(singleton_groups)} total):")
+                    for i, group in enumerate(singleton_groups[:sample_size]):
+                        print(f"  Group {i+1}: Cluster {group[0]} - {initial_labels[group[0]].label}")
                 
                 # Count distribution of group sizes
                 group_sizes = [len(group) for group in merge_mapping.merge_groups]
