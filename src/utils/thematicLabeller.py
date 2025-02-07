@@ -770,6 +770,7 @@ class ThematicLabeller:
             }
         
         # Optional LLM-based refinement
+        print(f"🔧 DEBUG: self.config.use_llm_refinement = {self.config.use_llm_refinement}")
         if self.config.use_llm_refinement:
             print("    🔄 Performing LLM-based label refinement...")
             refined_labels = await self._llm_refinement(final_labels, codebook)
@@ -852,6 +853,10 @@ class ThematicLabeller:
             # Convert to LabelModel using the to_model method
             label_model = cluster_model.to_model(models.LabelModel)
             
+            # Force rebuild model to clear any cached schema
+            if hasattr(label_model, 'model_rebuild'):
+                label_model.model_rebuild()
+            
             # Generate a summary for the model (optional)
             segment_count = len(label_model.response_segment) if label_model.response_segment else 0
             label_model.summary = f"Response with {segment_count} segments analyzed"
@@ -879,6 +884,10 @@ class ThematicLabeller:
                             if topic_id_str in topic_str_lookup:
                                 topic = topic_str_lookup[topic_id_str]
                                 topic_id_float = topic.numeric_id  # Already a float from model
+                                # Debug: Check the Topic field type
+                                topic_field_type = segment.__class__.__annotations__.get('Topic', 'NOT_FOUND')
+                                if 'int' in str(topic_field_type):
+                                    print(f"🚨 DEBUG: Topic field still expects int! Type: {topic_field_type}")
                                 segment.Topic = {topic_id_float: f"{topic.label}: {topic.description}"}
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}
@@ -1031,9 +1040,11 @@ if __name__ == "__main__":
         print("4. Refinement - Finalize labels")
         print("=" * 50)
         
-        # Initialize thematic labeller
+        # Initialize thematic labeller with fresh config to avoid caching
+        fresh_config = LabellerConfig()
+        print(f"🔧 Config check: use_llm_refinement = {fresh_config.use_llm_refinement}")
         labeller = ThematicLabeller(
-            config=DEFAULT_LABELLER_CONFIG,
+            config=fresh_config,
             cache_manager=cache_manager,
             filename=filename
         )
