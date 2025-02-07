@@ -480,37 +480,240 @@ python clusterer.py  # Test clustering standalone
 python labeller.py   # Test labeling standalone
 ```
 
-### Next TODO: Optimize Labeller Performance
+### Current TODO: Create Fresh Labeller from Scratch
 
-**Priority: Refine and optimize the labeller, specifically Phase 2: Semantic merging analysis**
+**Status: Redesigning labeller with optimized architecture**
 
-Current issues:
-- Sequential merging is still too slow (processing 52 clusters one by one)
-- LLM calls are synchronous and blocking
-- Too many comparisons even with sequential approach
+#### Step 1: Aligned Objective and Output ✓ COMPLETED
 
-Optimization strategies to implement:
-1. **Async LLM calls throughout labeller**
-   - Convert all LLM calls to async operations
-   - Process multiple requests concurrently
-   - Implement proper async/await patterns
+**Objective**
+The labeller should analyze clustered survey responses and create a hierarchical labeling system that:
+1. Provides meaningfully differentiated and mutually exclusive labels for clusters
+2. Creates a 3-level hierarchy of labels (Theme/Topic/Code)
+3. Keeps track of how merged and new labels (Theme/Topic/Code) can be mapped back to the initial clusters provided by clusterer
+4. Merges labels that are not meaningfully differentiated
+5. Writes a summary for each theme, explaining how each theme addresses the research question
 
-2. **Phase 2 Specific Optimizations:**
-   - Pre-filter using cosine similarity of centroid embeddings
-     - Auto-merge clusters with similarity > 0.95 or 0.98
-     - Only send remaining clusters to LLM for analysis
-   - Change LLM approach from pairwise to scoring
-     - Ask LLM to score clusters on 0-1 scale for similarity
-     - Process multiple clusters in single prompt
-     - Merge based on score thresholds
-   - Consider embedding-based clustering before LLM analysis
-     - Use hierarchical clustering on centroid embeddings
-     - Only use LLM to validate/refine merge decisions
+**Input (from models.py)**
+- `var_lab`: str - The survey question being analyzed
+- `cluster_results`: List[models.ClusterModel] - The clustered survey responses
+  - `respondent_id`: Identifier for the respondent
+  - `response`: Original response text
+  - `response_segment`: List[ClusterSubmodel] with:
+    - Segment details (ID, text, embeddings)
+    - `segment_response`: str - response segments
+    - `descriptive_code`: str - a descriptive code given to each response segment
+    - `code_description`: str - a description of the code, explaining how the code addresses the research question
 
-3. **General Performance Improvements:**
-   - Increase batch sizes where possible
-   - Add caching for repeated LLM calls
-   - Implement parallel processing for independent operations
+**Output (to models.py)**
+- `label_results`: List[models.LabelModel] - Each containing:
+  - `respondent_id`: Identifier for the respondent
+  - `response`: Original response text
+  - `response_segment`: List[LabelSubmodel] with:
+    - Segment details (ID, text, embeddings)
+    - Hierarchical labels:
+      - `Theme`: High-level category (meta) = level-1 node
+      - `Topic`: Mid-level category (meso) = level-2 node  
+      - `Code`: Detailed category (micro) = level-3 node
+    - Cluster assignments
+  - `summary`: Response summary
+
+**Key Deliverables**
+1. Hierarchical label structure with meaningful differentiation
+2. Mapping table from original clusters to final labels
+3. Theme summaries explaining relevance to research question
+
+#### Step 2: Strategy ✓ COMPLETED
+
+**Guiding Principles**
+1. Develop robust code - write modular code, work with structured models including the labeller (see models.py), validate input and output of models (use pydantic) and prompts for LLMs have a response format (use instructor)
+2. Adhere to previous code - build classes for each phase, including the labeller
+3. Be efficient and quick - batch and run batches async with asyncio if possible
+
+**Job to be Done**
+We segmented responses to a survey question and clustered these segments by their code descriptions, particularly: embeddings of these description with HBDscan. We did not constrain segmentation with HBDscan, so we have many clusters. Some of the clusters are not meaningfully differentiated from the viewpoint of the research question. Our task is to merge initial clusters that are not meaningfully differentiated, after which we organise these merged clusters in a 3-level hierarchy. Themes = level-1 node; Topics=level-2 node; Codes= level-3 node. The merged clusters are level-3 node. In completing this job, we cannot lose track of how the merged and new clusters can be mapped back on the original clusters given to us by the clusterer.
+
+**Overall Workflow**
+
+The labeller will follow a multi-phase approach to create hierarchical labels:
+
+1. **Phase 1: Initial Label Generation**
+   - Extract descriptive codes and descriptions from clusters
+   - Generate initial labels for each cluster using LLM
+
+2. **Phase 2: Merge initial clusters that are not meaningfully differentiated**
+   - Merge initial clusters with super high cosine similarity of embeddings (label+most representative descriptive codes and code descriptions. Auto-merge >0.95 similarity)
+   - Use LLM to score the similarity of the remaining clusters. This needs to be done as efficiently as possible.
+   - Apply semantic merging of the remaining clusters to create differentiated labels
+   - Track cluster-to-label mappings throughout
+
+3. **Phase 3: Hierarchical Organization**
+   - Organize merged clusters into 3-level hierarchy
+   - Ensure meaningful differentiation at each level
+   - Validate mutual exclusivity within levels
+
+4. **Phase 4: Theme Summarization**
+   - Generate summaries for each theme
+   - Explain how each theme addresses the research question
+   - Finalize the hierarchical structure
+
+**Optimization Strategies**
+
+1. **Performance Optimizations**
+   - Async LLM calls with concurrency limits
+   - Batch processing of clusters (10-20 at a time)
+   - Embedding-based pre-filtering to reduce LLM calls
+   - Caching for repeated operations
+
+2. **Quality Optimizations**
+   - Use centroid embeddings for representative sampling
+   - LLM scoring for merging decisions
+   - Iterative refinement of labels
+   - Context-aware prompting with var_lab
+
+3. **Architecture Patterns**
+   - Async/await throughout
+   - Configurable settings class
+   - Structured data models for each phase
+   - Clear separation of concerns
+
+#### Step 3: Architecture Inspiration ✓ COMPLETED
+
+**Key Architectural Patterns from Existing Code**
+
+Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
+
+1. **Class Structure**
+   - Main class with configuration in `__init__`
+   - Use of config parameters with defaults
+   - Clear separation of sync and async methods
+   - Builder pattern for complex chains (LangChain)
+
+2. **Async Patterns**
+   - Use `AsyncOpenAI` client for async operations
+   - `async def` for methods that perform I/O
+   - `await` for async calls
+   - `asyncio.run()` to run async methods from sync context
+   - Batch processing with concurrency control
+   - Retry logic for resilience
+
+3. **Data Models (Pydantic)**
+   - Inherit from appropriate base models
+   - Use `Optional` for nullable fields
+   - `ConfigDict(arbitrary_types_allowed=True)` for numpy arrays
+   - Clear hierarchy: Base → Submodel → Model
+   - Type hints throughout
+
+4. **LLM Integration**
+   - Use `instructor` library for structured output
+   - Patch OpenAI client: `instructor.from_openai(AsyncOpenAI())`
+   - Response models with Pydantic
+   - Error handling and retries
+   - Token management for batching
+
+5. **Batch Processing**
+   - Calculate token budgets
+   - Create batches based on size limits
+   - Process batches concurrently
+   - Maintain index mappings
+
+6. **Prompting**
+   - Separate prompts file
+   - Template substitution for dynamic values
+   - Structured response format
+   - Context-aware prompting
+
+#### Step 4: Outline Structure ✓ COMPLETED
+
+**Labeller Class Structure**
+
+1. **Main Classes**
+   - `LabellerConfig`: Configuration with defaults
+   - `Labeller`: Main orchestrator class
+   - Phase methods for each stage of processing
+
+2. **Phase-Specific Classes**
+   - `Phase1Labeller`: Initial label generation
+   - `Phase2Merger`: Similarity analysis & merging
+   - `Phase3Organizer`: Hierarchical organization
+   - `Phase4Summarizer`: Theme summarization
+
+3. **Supporting Data Models**
+   - `ClusterData`: Internal cluster representation
+   - `InitialLabel`: Phase 1 output
+   - `MergeMapping`: Phase 2 output
+   - `HierarchicalStructure`: Phase 3 output
+   - `ThemeSummary`: Phase 4 output
+
+4. **Utility Methods**
+   - Data extraction
+   - Embedding operations
+   - Batch creation
+   - Mapping utilities
+
+5. **Async Workflow**
+   - Main sync entry point calls async implementation
+   - Phases run sequentially with async operations within
+
+6. **Prompts**
+   - To be written in `prompts.py`
+   - Similarity scoring example/guidance:
+     ```
+     "You are tasked with comparing clusters based on their labels and most representative 
+     descriptive codes and code descriptions. Please give a score from 0 to 1 for how 
+     similar they are from the point of view of addressing the research question.
+     
+     0 = maximally differentiated
+     0.5 = pretty similar, probably sharing an overarching theme or response pattern
+     1 = not positively differentiated at all, there is no difference or the difference 
+         does not help in any way to explain how respondents answered the research 
+         question differently"
+     ```
+   - Merge threshold: 0.7
+   - Simple, research question-focused
+
+**Key Design Decisions**
+- Keep it simple, don't overcomplicate
+- Focus on research question relevance
+- Use 0-1 similarity scale with clear meanings
+- Write prompts in prompts.py when needed
+
+#### Step 5: Implementation ✓ COMPLETED
+
+**Created Files**
+1. `labeller.py` - Main labeller class with orchestration logic
+2. `phase1_labeller.py` - Initial label generation
+3. `phase2_merger.py` - Similarity analysis and merging
+4. `phase3_organizer.py` - Hierarchical organization
+5. `phase4_summarizer.py` - Theme summarization
+6. Added new prompts to `prompts.py`
+7. `test_labeller.py` - Test script for validation
+
+**Key Features Implemented**
+- Async processing throughout with configurable concurrency
+- Batch processing for efficiency
+- Embedding-based pre-filtering for similarity (>0.95)
+- LLM-based similarity scoring with 0.7 merge threshold
+- 3-level hierarchy (Theme/Topic/Code)
+- Cluster tracking and mapping throughout
+- Theme summaries explaining research question relevance
+- Robust error handling and retries
+- Progress tracking with tqdm
+
+**Architecture Highlights**
+- Follows established patterns from other modules
+- Pydantic models for all data structures
+- Instructor for structured LLM outputs
+- Clear separation of concerns by phase
+- Configurable settings
+- JSON response format for all LLM calls
+
+**Testing**
+Run the test script to validate:
+```bash
+cd /workspaces/CoderingsTool/src/modules/utils
+python test_labeller.py
+```
 
 ### Future Phases
 1. Phase 4: Complete labeller optimization (current priority)
