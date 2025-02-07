@@ -217,7 +217,104 @@ class CacheManager:
         cache_path = self.get_cache_path(filename, step)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Use atomic write with temporary file
+        # Check if we should use atomic writes
+        import platform
+        use_atomic = self.config.use_atomic_writes and platform.system() != 'Windows'
+        
+        if not use_atomic:
+            # Direct write for Windows
+            try:
+                with open(cache_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    
+                    # Get field names from first item
+                    sample = data[0]
+                    serialize_method = getattr(sample, 'model_dump' if hasattr(sample, 'model_dump') else 'dict')
+                    fieldnames = list(serialize_method().keys())
+                    writer.writerow(fieldnames)
+                    
+                    # Custom JSON encoder for numpy types
+                    class NumpyEncoder(json.JSONEncoder):
+                        def default(self, obj):
+                            if isinstance(obj, np.ndarray):
+                                return obj.tolist()
+                            if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, 
+                                              np.int32, np.int64, np.uint8, np.uint16, 
+                                              np.uint32, np.uint64)):
+                                return int(obj)
+                            if isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+                                return float(obj)
+                            if isinstance(obj, (np.bool_)):
+                                return bool(obj)
+                            return json.JSONEncoder.default(self, obj)
+                    
+                    # Write data rows
+                    for item in data:
+                        row = []
+                        for field in fieldnames:
+                            value = getattr(item, field)
+                            
+                            if value is None:
+                                row.append('')
+                                continue
+                            
+                            # Serialize complex types
+                            def serialize_pydantic(obj):
+                                if isinstance(obj, np.ndarray):
+                                    return obj.tolist()
+                                elif hasattr(obj, 'model_dump'):
+                                    return obj.model_dump()
+                                elif hasattr(obj, 'dict'):
+                                    return obj.dict()
+                                elif isinstance(obj, list):
+                                    return [serialize_pydantic(item) for item in obj]
+                                elif isinstance(obj, dict):
+                                    return {k: serialize_pydantic(v) for k, v in obj.items()}
+                                else:
+                                    return obj
+                            
+                            if isinstance(value, (list, dict)) or hasattr(value, 'dict') or hasattr(value, 'model_dump'):
+                                serialized_value = serialize_pydantic(value)
+                                row.append(json.dumps(serialized_value, cls=NumpyEncoder))
+                            else:
+                                # Handle numpy scalar types
+                                if isinstance(value, (np.int_, np.intc, np.intp, np.int8, np.int16, 
+                                                   np.int32, np.int64, np.uint8, np.uint16, 
+                                                   np.uint32, np.uint64)):
+                                    row.append(int(value))
+                                elif isinstance(value, (np.float_, np.float16, np.float32, np.float64)):
+                                    row.append(float(value))
+                                elif isinstance(value, (np.bool_)):
+                                    row.append(bool(value))
+                                else:
+                                    row.append(value)
+                        
+                        writer.writerow(row)
+                
+                # Calculate file hash
+                file_hash = self._calculate_file_hash(cache_path)
+                file_size = cache_path.stat().st_size
+                
+                # Record in database
+                config_hash = processing_config.get_hash() if processing_config else None
+                self.db.record_cache_entry(
+                    filename=filename,
+                    step_name=step,
+                    cache_path=str(cache_path),
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    processing_time=processing_time,
+                    config_hash=config_hash
+                )
+                
+                logger.info(f"Saved {len(data)} items to cache for {filename} at step {step}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error saving cache for {filename} at step {step}: {e}")
+                return False
+        
+        # Use atomic write with temporary file (non-Windows)
         temp_file = None
         try:
             # Create temporary file in same directory for atomic move
@@ -295,6 +392,9 @@ class CacheManager:
                                 row.append(value)
                     
                     writer.writerow(row)
+            
+            # Explicitly close the file handle
+            os.close(temp_fd)
             
             # Calculate file hash
             file_hash = self._calculate_file_hash(temp_file)
