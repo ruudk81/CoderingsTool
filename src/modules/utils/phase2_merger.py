@@ -623,7 +623,7 @@ if __name__ == "__main__":
             api_key=OPENAI_API_KEY,
             model=DEFAULT_MODEL,
             batch_size=10,
-            similarity_threshold=0.95,  # For auto-merge
+            similarity_threshold=0.98,  # For auto-merge - raised to be less aggressive
             merge_score_threshold=0.7   # For LLM merge
         )
     
