@@ -440,10 +440,15 @@ if __name__ == "__main__":
         cluster_data = temp_labeller.extract_cluster_data(cluster_results)
         print(f"Extracted data for {len(cluster_data)} clusters")
         
-        # Convert labels to InitialLabel objects
+        # Convert labels to InitialLabel objects if needed
         initial_labels = {}
         for cluster_id, label_data in phase1_labels.items():
-            initial_labels[cluster_id] = InitialLabel(**label_data)
+            if isinstance(label_data, InitialLabel):
+                # Already an InitialLabel object
+                initial_labels[cluster_id] = label_data
+            else:
+                # Convert from dict
+                initial_labels[cluster_id] = InitialLabel(**label_data)
         
         # Get variable label
         data_loader = data_io.DataLoader()
