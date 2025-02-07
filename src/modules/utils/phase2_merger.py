@@ -695,13 +695,13 @@ if __name__ == "__main__":
                 llm_scores = []
                 
                 # Monkey-patch the phase2 instance to capture LLM scores
-                original_score_batch = phase2._score_similarity_batch
+                original_score_batch = phase2._score_batch
                 
                 async def capture_scores(*args, **kwargs):
                     result = await original_score_batch(*args, **kwargs)
                     # Capture the scores for our analysis
-                    if hasattr(result, 'scores'):
-                        for score in result.scores:
+                    if isinstance(result, list):  # _score_batch returns a list of scores
+                        for score in result:
                             llm_scores.append({
                                 'cluster1': score.cluster_id_1,
                                 'cluster2': score.cluster_id_2,
@@ -711,7 +711,7 @@ if __name__ == "__main__":
                             })
                     return result
                 
-                phase2._score_similarity_batch = capture_scores
+                phase2._score_batch = capture_scores
                 
                 # Run full merge process
                 merge_mapping = await phase2.merge_similar_clusters(
@@ -719,7 +719,7 @@ if __name__ == "__main__":
                 )
                 
                 # Restore original method
-                phase2._score_similarity_batch = original_score_batch
+                phase2._score_batch = original_score_batch
                 
                 # Analyze LLM scores
                 if llm_scores:
