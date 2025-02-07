@@ -277,12 +277,78 @@ class LabellerConfig:
 
 
 # =============================================================================
+# PIPELINE STEP CONFIGURATIONS
+# =============================================================================
+
+@dataclass
+class SpellCheckConfig:
+    """Configuration for spell checking step"""
+    batch_size: int = 20
+    temperature: float = 0.0
+    max_tokens: int = 4000
+    retries: int = 3
+    retry_delay: int = 2
+    max_batch_size: int = 5
+    completion_reserve: int = 1000
+    cache_size: int = 10000
+    spacy_batch_size: int = 32
+    repeated_char_threshold: int = 5  # Characters repeated 5+ times
+    max_correction_examples: int = 10  # For verbose output
+    seed: int = 42
+
+
+@dataclass
+class QualityFilterConfig:
+    """Configuration for quality filtering step"""
+    batch_size: int = 20
+    temperature: float = 0.0
+    max_tokens: int = 4000
+    retries: int = 3
+    instructor_retries: int = 3
+    high_quality_threshold: float = 0.7
+    medium_quality_threshold: float = 0.4
+    max_filter_examples: int = 5  # For verbose output
+
+
+@dataclass
+class SegmentationConfig:
+    """Configuration for segmentation and description step"""
+    max_tokens: int = 16000
+    completion_reserve: int = 1000
+    max_batch_size: int = 5
+    retry_delay: int = 2
+    max_retries: int = 3
+    spacy_batch_size: int = 32
+    umap_n_jobs: int = 1
+    max_code_examples: int = 5  # For verbose output
+    max_sample_responses: int = 3  # For verbose output
+
+
+@dataclass
+class EmbeddingConfig:
+    """Configuration for embedding generation step"""
+    batch_size: int = 100
+    max_concurrent_requests: int = 5
+    embedding_model: str = "text-embedding-3-large"
+    max_sample_responses: int = 3  # For verbose output
+
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
-# Global configuration instances (only keep what's actually used)
+# Global configuration instances
+DEFAULT_CACHE_CONFIG = CacheConfig()
+DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
+DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_MODEL_CONFIG = ModelConfig()
+
+# Pipeline step configurations
+DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
+DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
+DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
+DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 
 # Environment-based model overrides
 if os.getenv("CODERINGSTOOL_SPELL_MODEL"):
