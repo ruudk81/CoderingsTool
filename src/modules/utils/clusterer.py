@@ -772,24 +772,26 @@ class ClusterGenerator:
 # Example usage and testing
 if __name__ == "__main__":
     import data_io
-    import csvHandler
+    from cache_manager import CacheManager
     from clustering_config import ClusteringConfig
     import os
     
-    csv_handler = csvHandler.CsvHandler()
     data_loader = data_io.DataLoader()
+    cache_manager = CacheManager()
     
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     var_name = "Q20"
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
    
-    # Check if embeddings file exists
-    embeddings_path = os.path.join('data', f"{os.path.splitext(filename)[0]}_embeddings.csv")
-    if not os.path.exists(embeddings_path):
-        print(f"Embeddings file not found: {embeddings_path}")
-        print("Please run the full pipeline first to generate embeddings:")
-        print("  python pipeline.py")
-        print("\nOr create test data using the code below.")
+    # Try to load from cache first
+    try:
+        input_list = cache_manager.load_step_data(filename, 'embeddings', models.EmbeddingsModel)
+        if input_list:
+            print(f"Loaded {len(input_list)} embeddings from cache")
+        else:
+            raise ValueError("No embeddings in cache")
+    except Exception as e:
+        print(f"Could not load embeddings from cache: {e}")
         
         # Create minimal test data for demonstration
         print("\nCreating test data for demonstration...")
@@ -811,8 +813,6 @@ if __name__ == "__main__":
             )
             test_embeddings.append(response)
         input_list = test_embeddings
-    else:
-        input_list = csv_handler.load_from_csv(filename, 'embeddings', models.EmbeddingsModel)
 
     # Create configuration (uses defaults: description embeddings, Dutch language)
     config = ClusteringConfig()
