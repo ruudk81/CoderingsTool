@@ -2,7 +2,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # Add project paths
 sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
@@ -111,12 +111,13 @@ if __name__ == "__main__":
                 topic_label = topics_in_theme[topic_id]
                 print(f"\n  TOPIC {topic_id}: {topic_label}")
                 
-                # Codes in this topic
                 codes_in_topic = topic_codes[theme_id][topic_id]
-                print(f"  Codes ({len(codes_in_topic)}):")
+                code_counts = Counter(codes_in_topic)
+                sorted_code_counts = sorted(code_counts.items())
                 
-                for code_id, code_label in sorted(codes_in_topic):
-                    print(f"    CODE {code_id}: {code_label}")
+                print(f"  Unique Codes ({len(sorted_code_counts)}):")
+                for (code_id, code_label), count in sorted_code_counts:
+                    print(f"    CODE {code_id}: {code_label} (#{count})")
         
         # Summary statistics
         print("\n=== SUMMARY STATISTICS ===")
@@ -125,7 +126,7 @@ if __name__ == "__main__":
         print(f"Total themes: {len(themes)}")
         total_topics = sum(len(topics) for topics in theme_topics.values())
         print(f"Total topics: {total_topics}")
-        total_codes = sum(sum(len(codes) for codes in topic.values()) for topic in topic_codes.values())
+        total_codes = len(set([code for theme in topic_codes.values() for topic in theme.values() for code in topic]))
         print(f"Total codes: {total_codes}")
         print(f"Original clusters: {len(unique_clusters)}")
         
