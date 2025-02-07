@@ -220,233 +220,59 @@ Return a JSON object with a single key "decisions", containing an array of objec
 - "cluster_id_2": Second cluster ID  
 - "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
 - "reason": Brief explanation of your decision (1-2 sentences maximum)
+
 """
 
-INITIAL_LABEL_PROMPT = """
-You are a {language} expert in labeling micro-clusters of survey responses to this research question:
-"{var_lab}"
-
-Each cluster contains representative response segments that express a distinct idea or perspective related to the research question.
-
-TASK:
-- Assign a precise and unique label to each cluster, and identify the core concepts that justify the label.
-
-LABELING RULES:
-- Focus on the underlying meaning, not surface wording
-- Labels should be specific, non-generic, and clearly differentiated
-- Use 2–6 words for each label
-- Avoid vague terms like "miscellaneous" or "general concerns"
-- Mark clusters as "off-topic" if they do not contribute meaningfully to answering the research question
-
-OUTPUT FORMAT:
-Return a JSON object with the following structure:
-
-{
-"labels": [
-{
-"cluster_id": "38",
-"label": "Portie grootte vergroten",
-"keywords": ["portie", "groter", "meer", "hoeveelheid"],
-"confidence": 0.94
-},
-{
-"cluster_id": "12", 
-"label": "Verse ingrediënten gebruiken",
-"keywords": ["vers", "ingrediënten", "kwaliteit", "natuurlijk"],
-"confidence": 0.89
-}
-]
-}
-
-Language: {language}
-
-Input clusters:
-{clusters}
-"""
-
-
-TOPIC_CREATION_PROMPT = """
-You are a {language} expert organizing survey responses about ready-made meals (kant-en-klaar maaltijden).
-Research question: "{var_lab}"
-
-TASK: Group micro-clusters into 15-20 SPECIFIC topics (Level 2 nodes).
-
-CRITICAL RULES:
-1. Create AT LEAST 15 distinct topics from the clusters
-2. Each topic should be SPECIFIC and ACTIONABLE
-3. NO topic should contain more than 8% of total responses
-4. Absolutely NO generic catch-all topics like "Overige aspecten" or "Algemene kwaliteit"
-5. Topics must be mutually exclusive
-
-GOOD TOPIC EXAMPLES:
-✓ "Zoutgehalte verminderen" (specific nutritional aspect)
-✓ "Verpakking verduurzamen" (specific sustainability aspect)  
-✓ "Bereidingsinstructies verduidelijken" (specific usability aspect)
-✓ "Vegetarische opties uitbreiden" (specific product range aspect)
-✓ "Portiegrootte voor één persoon" (specific size aspect)
-
-BAD TOPIC EXAMPLES:
-✗ "Algemene kwaliteitsverbetering" (too vague)
-✗ "Overige wensen" (catch-all category)
-✗ "Gezondheid en voeding" (too broad - split into salt, sugar, fat, etc.)
-✗ "Product samenstelling" (too broad - split into specific aspects)
-
-OUTPUT FORMAT:
-{
-"topics": [
-{
-"label": "Zoutgehalte verminderen",
-"cluster_ids": ["4", "15", "22"],
-"explanation": "Clusters specifically about reducing salt content in meals"
-},
-{
-"label": "Vegetarische varianten uitbreiden", 
-"cluster_ids": ["12", "29"],
-"explanation": "Clusters about adding more vegetarian meal options"
-}
-// ... AT LEAST 15 topics total ...
-],
-"cluster_to_topic_mapping": {
-"4": "Zoutgehalte verminderen",
-"15": "Zoutgehalte verminderen",
-// ... mapping for ALL clusters ...
-}
-}
-
-Language: {language}
-
-Input cluster labels:
-{clusters}
-"""
-
-THEME_CREATION_PROMPT = """
-You are a {language} expert grouping topics into HIGH-LEVEL THEMES for research question:
-"{var_lab}"
-
-TASK: Group the 15-20 topics into 5-8 THEMES (Level 1 nodes).
-
-CRITICAL RULES:
-1. Create exactly 5-8 themes total
-2. Each theme MUST contain at least 2 topics (no single-topic themes!)
-3. NO theme should contain more than 25% of all topics
-4. NO generic themes like "Overige" - redistribute those topics to relevant themes
-5. Themes should represent major dimensions of consumer concerns
-
-GOOD THEME EXAMPLES:
-✓ "Nutritionele samenstelling" (groups: salt reduction, sugar reduction, fat content, additives)
-✓ "Duurzaamheid en milieu" (groups: packaging, local sourcing, waste reduction)
-✓ "Product diversiteit" (groups: vegetarian options, portion sizes, cuisine variety)
-✓ "Gebruiksgemak" (groups: preparation time, instructions, shelf life)
-
-BAD THEME EXAMPLES:
-✗ "Algemene verbeteringen" (too vague)
-✗ "Overige aspecten" (catch-all - redistribute!)
-✗ "Kwaliteit" (too broad - be specific about which quality aspects)
-
-REQUIRED STRUCTURE:
-- 5-8 themes total
-- Each theme has 2-5 topics
-- Clear conceptual boundaries between themes
-- Together they cover ALL major consumer concerns
-
-OUTPUT FORMAT:
-{
-"themes": [
-{
-"label": "Nutritionele samenstelling",
-"topic_labels": ["Zoutgehalte verminderen", "Suikergehalte verlagen", "Vetgehalte beperken", "E-nummers vermijden"],
-"explanation": "Consumer concerns about specific nutritional content and additives in ready-made meals"
-},
-{
-"label": "Product diversiteit en keuze",
-"topic_labels": ["Vegetarische opties uitbreiden", "Veganistische varianten", "Internationale keukens", "Seizoensgebonden menu's"],
-"explanation": "Consumer demand for wider variety in meal types and dietary options"
-}
-// ... 5-8 themes total covering ALL topics ...
-],
-"topic_to_theme_mapping": {
-"Zoutgehalte verminderen": "Nutritionele samenstelling",
-"Suikergehalte verlagen": "Nutritionele samenstelling",
-// ... mapping for ALL topics ...
-}
-}
-
-Language: {language}
-
-Input topics to group:
-{topics}
-"""
-
-HIERARCHICAL_THEME_SUMMARY_PROMPT = """
-You are a {language} expert in analyzing a theme derived from survey responses to the question:
-"{var_lab}"
-
-Theme: {theme_label}
-
-Structure:
-{theme_structure}
-
-TASK:
-- Write an analytical summary of this theme. Your goal is to explain what the theme reveals about how respondents interpret or experience the issue.
-
-FOCUS:
-- What dimension of the research question does this theme address?
-- What are the key ideas, concerns, or viewpoints expressed?
-- How do the topics within this theme offer different perspectives or nuances?
-- What are the implications for interpreting the overall dataset?
-
-OUTPUT FORMAT:
-Return a JSON object with the following structure:
-
-{
-"summary": "This theme highlights respondents' shared focus on improving the physical composition of ready-made meals, particularly around portion sizes and ingredient quality. Topics within this theme show nuanced differences, from requests for larger portions to demands for fresher ingredients. Collectively, they reveal that consumers want more control over meal composition and higher quality standards.",
-"relevance": "This theme explains how respondents want producers to fundamentally change what goes into meals and how much is provided."
-}
-
-Language: {language}
-"""
-
-# MapReduce prompts for hierarchical labeller
 BATCH_SUMMARY_PROMPT = """
-You are a qualitative researcher performing thematic analysis.
+I want you to act as a qualitative researcher conducting thematic analysis on grouped user input called micro-clusters. 
+You are given a batch of micro-clusters.
+Each batch contains several responses that reflect a shared concern or idea, in response to a research question.
 
-You are given a batch of micro-clusters (each cluster contains ~3-5 short statements with similar meaning). Your task is to analyze this batch and produce a hierarchical code structure.
+**CRITICAL REQUIREMENT**: You MUST include EVERY micro-cluster ID from the input in your output. No micro-cluster can be left out.
 
-**Instructions:**
-- Identify Level 1 nodes (broad themes), Level 2 nodes (specific subthemes), and link each micro-cluster (Level 3) to its appropriate location.
-- Each node name must be no more than 4 words and semantically clear.
-- Do not rely on external knowledge — use only the given text.
-- Maintain semantic integrity: use only the meanings in the micro-cluster texts.
+Your tasks:
+1. Organize ALL micro-clusters into a three-level hierarchical structure:
+    - Level 1: Broad theme (e.g. "Gebouwvoorzieningen")
+    - Level 2: Specific sub-theme, labeled numerically (e.g., 2.1 "WIFI verbeteren" under 2 "Gebouwvoorzieningen")
+    - Level 3: References to the original micro-cluster IDs (e.g., Micro-cluster 18)
+2. Adhere to the following rules:
+    - Themes and sub-themes must be **mutually exclusive** and make sense in light of the research question
+    - Each theme and sub-theme must represent EXACTLY ONE overarching idea
+    - The labels of themes and sub-themes MUST reflect this overarching idea and MUST NOT consist of compound sub-ideas (e.g. sub-idea 1 AND sub-idea 2)
+    - Each label must be max 4 words, clear and descriptive
+3. Base your analysis only on what is explicitly stated in the micro-clusters — no outside assumptions.
 
-**Output format:**
-Return a JSON object with this exact structure:
+Instructions:
+- Do not assign unique clusters or sub-themes unnecessarily to a group. A theme may contain only one sub-theme if that best reflects the data. 
+- Avoid duplication: assign micro-clusters to only one sub-theme unless strong conceptual overlap justifies multiple placement.    
+- Output a structured Python dictionary that shows which micro-clusters belong under which sub-theme and overarching theme.
+
+**Output format (STRICT JSON - NO COMMENTS ALLOWED):**
 {{
   "batch_id": "{batch_id}",
   "hierarchy": {{
     "1": {{
-      "node": "Theme Name",
+      "label": "[Theme Name]",
       "subthemes": {{
         "1.1": {{
-          "node": "Subtheme Name",
+          "label": "[Sub-theme Name]",
           "micro_clusters": [0, 1]
-        }},
-        "1.2": {{
-          "node": "Another Subtheme",
-          "micro_clusters": [2]
         }}
       }}
     }},
     "2": {{
-      "node": "Another Theme",
+      "label": "[Another Theme]",
       "subthemes": {{
         "2.1": {{
-          "node": "Subtheme Name",
-          "micro_clusters": [3, 4]
+          "label": "[Sub-theme Name]",
+          "micro_clusters": [2]
         }}
       }}
     }}
   }}
 }}
+
+IMPORTANT: Return ONLY valid JSON. No comments (//), no text outside the JSON structure, no checkboxes.
 
 Variable label/context: {var_lab}
 Language: {language}
@@ -457,46 +283,58 @@ Micro-cluster batch:
 """
 
 REDUCE_SUMMARY_PROMPT = """
-You are a qualitative researcher merging thematic structures from multiple batches into one unified codebook.
+You are a qualitative researcher merging thematic codeboods from multiple batches into one unified codebook.
 
-Each structure contains a partial thematic hierarchy with Level 1 and Level 2 codes. Your task is to synthesize these into a single consistent hierarchy.
+Each partical codebook contains a hierarchy with Level 1, Level 2 and lever 3 codes.
+    - Level 1: Meta-clusters or "themes" (e.g. "Gebouwvoorzieningen")
+    - Level 2: Macro-clusters or "sub-themes", labeled numerically (e.g., 2.1 "WIFI verbeteren" under 2 "Gebouwvoorzieningen")
+    - Level 3: Micro-clusters pr "topics" (e.g., Micro-cluster 18)
+
+Your task is to synthesize these into a single unified codebook while preserving ALL cluster IDs.
 
 **Instructions:**
-- Merge similar themes and subthemes where meanings clearly overlap.
-- Ensure Level 1 and Level 2 themes are **mutually exclusive**, **concise**, and **clearly distinguishable**.
-- Each node name must be no more than 4 words.
-- Adjust theme labels if needed to clarify differences.
-- Reassign Level 1 and Level 2 numbers to maintain proper hierarchy.
-- Preserve all micro-cluster assignments.
+1. Organize the meta-clusters ("themes"), macro-clusters ("sub-themes") and ALL micro-clusters ("topics") into the 3-level hierarchy.
+2. Collate the partial codebooks by adhering to these rules:
+    - Merged themes and sub-themes where their meanings clearly overlap in the partial codebooks
+    - Final themes should represent mutually exclusive ideas or concerns in light of the research question
+    - Labels of final themes and finale subthemes should not compound sub-ideas or sub-concerns. Instead, the label should reflect exactly ONE idea, concern or concept
+3. Return the unified codebook by following these additional rules:
+    - Every meta-cluster or theme (Level 1), macro-cluster or sub-theme (Level 2), and micro-cluster or subject (Level 3) must have an ID
+    - Complex themes can be divided into multiple sub-themes, each with assigned micro-clusters
+    - Simple themes must still use a single sub-theme and a single subject
+4. **CRITICAL REQUIREMENT**: You MUST include EVERY micro-cluster ID from the input in your output. No micro-cluster can be left out.
+5. Output MUST be valid JSON format — no explanatory text or comments.
 
-**Output format:**
-Return a JSON object with this structure:
+
+**Output format (STRICT JSON - NO COMMENTS ALLOWED):**
 {{
   "unified_hierarchy": {{
     "1": {{
-      "node": "Unified Theme Name",
+      "label": "Unified Theme Name",
       "subthemes": {{
         "1.1": {{
-          "node": "Subtheme Name",
+          "label": "Subtheme Name",
           "micro_clusters": [0, 1, 9]
         }},
         "1.2": {{
-          "node": "Another Subtheme",
-          "micro_clusters": [2, 15]
+           "label": "Another Subtheme",
+           "micro_clusters": [2, 15]
         }}
       }}
     }},
     "2": {{
-      "node": "Another Theme",
+      "label": "Another Theme",
       "subthemes": {{
         "2.1": {{
-          "node": "Subtheme Name",
+          "label": "Subtheme Name",
           "micro_clusters": [3, 4, 10]
         }}
       }}
     }}
   }}
 }}
+
+IMPORTANT: Return ONLY valid JSON. No comments, no checkboxes, no text outside the JSON block.
 
 Variable label/context: {var_lab}
 Language: {language}
@@ -510,34 +348,46 @@ You are finalizing a hierarchical codebook for thematic analysis based on qualit
 
 You are given:
 - A consolidated hierarchical structure from previous analysis
-- A list of all original micro-clusters for reference
+- The micro-clusters contain responses to a research question
 
-Your task is to:
-- Refine all node labels at Level 1 and Level 2 to make them mutually exclusive and unambiguous
-- Ensure all labels reflect the intent of the underlying micro-cluster data
-- Each node name must be no more than 4 words
-- Align labels with the research context: {var_lab}
-- Make sure no cluster is ambiguously assigned
-- Verify complete coverage of all micro-clusters
+Your task is to create a clean, logically sound, and complete hierarchical codebook.
 
-**Output format:**
-Return a cleaned-up hierarchical structure in this exact JSON format:
+**Instructions:**
+1. Critically review the themes and subthemes and evaluate if these objectives are met:
+    - Themes should represent mutually exclusive ideas or concerns in light of the research question
+    - Labels of themes and subthemes should not compound sub-ideas or sub-concerns. Instead, the label should reflect exactly ONE idea, concern or concept
+    - Check specifically for words like "and", "en", "&" in theme labels - these often indicate compound themes that must be split
+2. If objectives are not met, you MUST:
+    - Split themes that compound sub-themes that don't logically form a theme (e.g., "House and speed" → "House" + "Speed")
+    - Redistribute subthemes appropriately to the new split themes
+    - OR re-label themes or sub-themes to reflect a single concept
+3. Return the codebook by following these additional rules:
+    - Every theme (Level 1), sub-theme (Level 2), and micro-cluster (Level 3) must have an ID
+    - Complex themes can be divided into multiple sub-themes, each with assigned micro-clusters
+    - Simple themes must still use a single sub-theme — do not assign clusters directly to themes
+    - Avoid duplication: assign micro-clusters to only one sub-theme unless strong conceptual overlap justifies multiple placement
+4. Ensure full inclusion and consistency:
+    - Every micro-cluster ID from the reference list must appear in your output
+    - There must be no missing or duplicated micro-cluster IDs
+5. Output MUST be valid JSON format — no explanatory text or comments.
+
+**Output format (STRICT JSON - NO COMMENTS):**
 {{
   "themes": [
     {{
       "id": "1",
-      "name": "Final Theme",
+      "label": "a label for a final Theme",
       "description": "Brief description of this theme",
-      "topics": [
+      "subthemes": [
         {{
           "id": "1.1",
-          "name": "Refined Subtheme",
-          "description": "Brief description of this topic",
+          "label": "a label for a refined Subtheme",
+          "description": "Brief description of this subtheme",
           "micro_clusters": [2, 4]
         }},
         {{
           "id": "1.2",
-          "name": "Another Subtheme",
+          "label": "a label for another Subtheme",
           "description": "Brief description",
           "micro_clusters": [7, 12]
         }}
@@ -545,27 +395,313 @@ Return a cleaned-up hierarchical structure in this exact JSON format:
     }},
     {{
       "id": "2",
-      "name": "Another Theme",
-      "description": "Theme description",
-      "topics": [
+      "label": "a label for another theme",
+      "description": "Brief description of this theme",
+      "subthemes": [
         {{
           "id": "2.1",
-          "name": "Subtheme Name",
-          "description": "Topic description",
-          "micro_clusters": [0, 3, 8]
+          "label": "a label for a standalone Subtheme",
+          "description": "Brief description of this theme/subtheme",
+          "micro_clusters": [8]
         }}
       ]
     }}
   ]
 }}
 
+IMPORTANT: Return ONLY valid JSON. No comments, no text outside the JSON, no checkboxes.
+
+Variable label/context: {var_lab}
 Language: {language}
 
 Consolidated hierarchy:
 {final_summary}
 
-All micro-clusters for reference:
-{micro_cluster_list}
+**CRITICAL CHECK - The following micro-cluster IDs MUST ALL appear in your output:**
+{all_cluster_ids}
+
+If any clusters from the above list are missing from the consolidated hierarchy, you MUST:
+1. Create an appropriate theme/subtheme for them
+2. OR add them to the most relevant existing theme/subtheme
+3. Never exclude any cluster - if unsure, create an "Other concerns" theme
 """
 
+# VALIDATION_CHECK_PROMPT = """
+# Review this hierarchy and verify:
 
+# 1. Total clusters in input: {total_expected}
+# 2. Total clusters assigned: {total_assigned}
+# 3. Duplicate assignments: {duplicates}
+# 4. Missing clusters: {missing}
+
+# Is this hierarchy complete and valid? If not, what needs to be fixed?
+# """
+
+# HISTORY:
+
+# BATCH_SUMMARY_PROMPT = """
+# You are a qualitative researcher performing thematic analysis.
+
+# You are given a batch of micro-clusters. Your task is to organize them into a hierarchical structure.
+
+# **CRITICAL RULES**:
+# 1. Use EVERY micro-cluster ID exactly ONCE
+# 2. Never assign the same cluster to multiple places
+# 3. Output MUST be valid JSON - no comments, no emojis, no checkboxes
+
+# **STRUCTURAL FLEXIBILITY**:
+# - Create sub-themes only when they add meaningful organization
+# - For simple/unified themes, assign clusters directly to the theme
+# - Avoid creating artificial subdivisions
+
+# **Output format (STRICT JSON - NO COMMENTS ALLOWED):**
+# {{
+#   "batch_id": "{batch_id}",
+#   "hierarchy": {{
+#     "1": {{
+#       "node": "Theme Name",
+#       "subthemes": {{
+#         "1.1": {{
+#           "node": "Subtheme Name", 
+#           "micro_clusters": [0, 1]
+#         }}
+#       }},
+#       "direct_clusters": []
+#     }},
+#     "2": {{
+#       "node": "Simple Theme",
+#       "subthemes": {{}},
+#       "direct_clusters": [3, 4]
+#     }}
+#   }}
+# }}
+
+# IMPORTANT: Return ONLY valid JSON. No comments (//), no text outside the JSON structure, no checkboxes.
+
+# Variable label/context: {var_lab}
+# Language: {language}
+# Batch ID: {batch_id}
+
+# Micro-cluster batch:
+# {batch_clusters}
+# """
+
+# REDUCE_SUMMARY_PROMPT = """
+# You are a qualitative researcher merging thematic structures from multiple batches into one unified codebook.
+
+# Each structure contains a partial thematic hierarchy with Level 1 and Level 2 codes. Your task is to synthesize these into a single consistent hierarchy.
+
+# **Instructions:**
+# - Merge similar themes and subthemes where meanings clearly overlap
+# - Each micro-cluster ID must appear exactly once in the output
+# - Output MUST be valid JSON format - no comments allowed
+
+# **Output format (STRICT JSON):**
+# {{
+#   "unified_hierarchy": {{
+#     "1": {{
+#       "node": "Unified Theme Name",
+#       "subthemes": {{
+#         "1.1": {{
+#           "node": "Subtheme Name",
+#           "micro_clusters": [0, 1, 9]
+#         }},
+#         "1.2": {{
+#           "node": "Another Subtheme",
+#           "micro_clusters": [2, 15]
+#         }}
+#       }},
+#       "direct_clusters": []
+#     }},
+#     "2": {{
+#       "node": "Another Theme",
+#       "subthemes": {{
+#         "2.1": {{
+#           "node": "Subtheme Name",
+#           "micro_clusters": [3, 4, 10]
+#         }}
+#       }},
+#       "direct_clusters": []
+#     }}
+#   }}
+# }}
+
+# Variable label/context: {var_lab}
+# Language: {language}
+
+# Input hierarchies to merge:
+# {summaries}
+# """
+
+
+# BATCH_SUMMARY_PROMPT = """
+# You are a qualitative researcher performing thematic analysis.
+
+# You are given a batch of micro-clusters (each cluster contains ~3-5 short statements with similar meaning). Your task is to analyze this batch and produce a hierarchical code structure.
+
+# **IMPORTANT STRUCTURAL FLEXIBILITY**:
+# - Some themes naturally have sub-themes (e.g., "Health" might have "Salt Reduction", "Fat Reduction", etc.)
+# - Other themes are standalone concepts that don't need sub-themes (e.g., "Satisfaction with Current Product")
+# - You should create sub-themes ONLY when they add meaningful organization
+# - If a theme is simple/unified, assign micro-clusters directly to the theme level
+
+# **Instructions:**
+# - Identify Level 1 nodes (broad themes)
+# - For complex themes: create Level 2 nodes (specific subthemes) and assign micro-clusters there
+# - For simple themes: assign micro-clusters directly to the Level 1 theme
+# - Each node name must be no more than 4 words and semantically clear
+# - Each micro-cluster ID must be assigned exactly once
+
+# **Output format:**
+# Return a JSON object with this exact structure:
+# {{
+#   "batch_id": "{batch_id}",
+#   "hierarchy": {{
+#     "1": {{
+#       "node": "Complex Theme Name",
+#       "subthemes": {{
+#         "1.1": {{
+#           "node": "Subtheme Name",
+#           "micro_clusters": [0, 1]
+#         }},
+#         "1.2": {{
+#           "node": "Another Subtheme",
+#           "micro_clusters": [2]
+#         }}
+#       }},
+#       "direct_clusters": []  // Empty for themes with subthemes
+#     }},
+#     "2": {{
+#       "node": "Simple Theme Name",
+#       "subthemes": {{}},  // Empty for simple themes
+#       "direct_clusters": [3, 4]  // Clusters assigned directly to theme
+#     }}
+#   }}
+# }}
+
+# Variable label/context: {var_lab}
+# Language: {language}
+# Batch ID: {batch_id}
+
+# Micro-cluster batch:
+# {batch_clusters}
+# """
+
+# REDUCE_SUMMARY_PROMPT = """
+# You are a qualitative researcher merging thematic structures from multiple batches into one unified codebook.
+
+# Each structure contains a partial thematic hierarchy with Level 1 and Level 2 codes. Your task is to synthesize these into a single consistent hierarchy.
+
+# **Instructions:**
+# - Merge similar themes and subthemes where meanings clearly overlap.
+# - Ensure Level 1 and Level 2 themes are **mutually exclusive**, **concise**, and **clearly distinguishable**.
+# - Each node name must be no more than 4 words.
+# - Adjust theme labels if needed to clarify differences.
+# - Reassign Level 1 and Level 2 numbers to maintain proper hierarchy.
+# - Preserve all micro-cluster assignments.
+# - **CRITICAL**: When merging, ensure each micro-cluster ID appears in exactly ONE location. If you see the same cluster ID in multiple places, keep it in only the most appropriate location.
+
+# **Duplicate Prevention Rules:**
+# 1. Before assigning a cluster ID, check if it already exists elsewhere
+# 2. If a cluster ID appears in multiple input hierarchies, assign it to the most semantically appropriate theme/subtheme
+# 3. Never duplicate cluster IDs in your output
+
+# **Output format:**
+# Return a JSON object with this structure:
+# {{
+#   "unified_hierarchy": {{
+#     "1": {{
+#       "node": "Unified Theme Name",
+#       "subthemes": {{
+#         "1.1": {{
+#           "node": "Subtheme Name",
+#           "micro_clusters": [0, 1, 9]  // No duplicates across entire structure
+#         }},
+#         "1.2": {{
+#           "node": "Another Subtheme",
+#           "micro_clusters": [2, 15]  // Each ID unique
+#         }}
+#       }}
+#     }},
+#     "2": {{
+#       "node": "Another Theme",
+#       "subthemes": {{
+#         "2.1": {{
+#           "node": "Subtheme Name",
+#           "micro_clusters": [3, 4, 10]  // Never repeat IDs from above
+#         }}
+#       }}
+#     }}
+#   }}
+# }}
+
+# Variable label/context: {var_lab}
+# Language: {language}
+
+# Input hierarchies to merge:
+# {summaries}
+# """
+
+
+# HIERARCHICAL_LABELING_PROMPT = """
+# You are finalizing a hierarchical codebook for thematic analysis based on qualitative data.
+
+# You are given:
+# - A consolidated hierarchical structure from previous analysis
+# - A list of all original micro-clusters for reference
+
+# **STRUCTURAL GUIDELINES**:
+# 1. Some themes naturally require topics (sub-themes) for organization
+# 2. Other themes are standalone and should NOT have artificial sub-divisions
+# 3. Create topics ONLY when they represent meaningfully different aspects of a theme
+# 4. For simple/unified themes, assign clusters directly to the theme level
+
+# **Examples of when to use topics**:
+# - "Health & Nutrition" → "Salt Reduction", "Fat Reduction", "More Vegetables" (distinct aspects)
+# - "Product Range" → "Vegetarian Options", "Vegan Options", "Portion Sizes" (different categories)
+
+# **Examples of when NOT to use topics**:
+# - "Satisfaction" → Just assign satisfied responses directly (don't create "Types of Satisfaction")
+# - "Price" → If all clusters are about "lower price", don't subdivide
+
+# **Your task**:
+# - Review the hierarchy and remove unnecessary topic levels
+# - For simple themes, move micro-clusters to direct assignment
+# - Ensure each micro-cluster appears exactly once
+# - All micro-clusters must be assigned
+
+# **Output format:**
+# {{
+#   "themes": [
+#     {{
+#       "id": "1",
+#       "name": "Complex Theme",
+#       "description": "Theme requiring sub-organization",
+#       "topics": [
+#         {{
+#           "id": "1.1",
+#           "name": "Specific Aspect",
+#           "description": "One aspect of the theme",
+#           "micro_clusters": [2, 4]
+#         }}
+#       ],
+#       "direct_clusters": []  // Empty when using topics
+#     }},
+#     {{
+#       "id": "2",
+#       "name": "Simple Theme",
+#       "description": "Standalone theme",
+#       "topics": [],  // No topics needed
+#       "direct_clusters": [0, 3, 8]  // Clusters assigned directly
+#     }}
+#   ]
+# }}
+
+# Language: {language}
+
+# Consolidated hierarchy:
+# {final_summary}
+
+# All micro-clusters for reference (each must be assigned exactly once):
+# {micro_cluster_list}
+# """
