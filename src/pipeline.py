@@ -242,7 +242,7 @@ for result in embedded_text[:1]:
 
 # === STEP 5 ========================================================================================================
 "get clusters"
-from modules.utils import clusterer  
+from modules.utils import clusterer, clusterMerger
 
 step_name = "clusters"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -253,23 +253,28 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
 else:
     start_time = time.time()
     
-    # Create simplified clusterer
+    # Step 5a: Initial clustering
     print(f"\nClustering with embedding_type={args.embedding_type}")
     
     # Create clusterer - no config needed for simplified version
-    clusterer = clusterer.ClusterGenerator(
+    cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
         embedding_type=args.embedding_type,
         verbose=True
     )
     
-    clusterer.run_pipeline()
-    cluster_results = clusterer.to_cluster_model()
+    cluster_gen.run_pipeline()
+    initial_clusters = cluster_gen.to_cluster_model()
     
     # Quality metrics are already displayed by the simplified clusterer
-    # No need to extract or display them again
-    print("\nClustering completed successfully")
+    print("\nInitial clustering completed successfully")
+    
+    # Step 5b: Merge similar clusters
+    print("\nMerging similar clusters...")
+    merger = clusterMerger.ClusterMerger(input_list=initial_clusters, var_lab=var_lab)
+    cluster_results = merger.merge_clusters()
+    print("\nCluster merging completed successfully")
     
     end_time = time.time()
     elapsed_time = end_time - start_time
