@@ -7,7 +7,7 @@ def display_codebook(codebook, title="CODEBOOK"):
     print(f"📚 {title}")
     print("="*80)
     print(f"Survey Question: {codebook.survey_question}")
-    print(f"\nStructure: {len(codebook.themes)} Themes, {len(codebook.topics)} Topics, {len(codebook.subjects)} Subjects")
+    print(f"\nStructure: {len(codebook.themes)} Themes, {len(codebook.topics)} Topics, {len(codebook.codes)} Codes")
     print("-"*80)
     
     # Track all assigned clusters
@@ -33,16 +33,16 @@ def display_codebook(codebook, title="CODEBOOK"):
                     print(f"      Direct clusters: {topic.direct_clusters}")
                     all_assigned_clusters.update(topic.direct_clusters)
                 
-                # Find related subjects
-                related_subjects = [s for s in codebook.subjects if s.parent_id == topic.id]
-                if related_subjects:
-                    for subject in sorted(related_subjects, key=lambda x: x.numeric_id):
-                        print(f"\n      🔸 SUBJECT {subject.id}: {subject.label}")
-                        if subject.description:
-                            print(f"         Description: {subject.description}")
-                        if subject.direct_clusters:
-                            print(f"         Clusters: {subject.direct_clusters}")
-                            all_assigned_clusters.update(subject.direct_clusters)
+                # Find related codes
+                related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
+                if related_codes:
+                    for code in sorted(related_codes, key=lambda x: x.numeric_id):
+                        print(f"\n      🔸 CODE {code.id}: {code.label}")
+                        if code.description:
+                            print(f"         Description: {code.description}")
+                        if code.direct_clusters:
+                            print(f"         Clusters: {code.direct_clusters}")
+                            all_assigned_clusters.update(code.direct_clusters)
         else:
             # No topics under this theme
             if not theme.direct_clusters:
@@ -75,7 +75,7 @@ def display_phase4_changes(codebook_before, final_labels, codebook_after=None):
     print("   - Takes assignments from Phase 3")
     print("   - Applies probability threshold (0.5)")
     print("   - Does NOT refine labels via LLM")
-    print("   - Simply maps clusters to themes/topics/subjects")
+    print("   - Simply maps clusters to themes/topics/codes")
     
     print(f"\n📊 Final Labels Generated: {len(final_labels)} clusters")
     
@@ -86,7 +86,7 @@ def display_phase4_changes(codebook_before, final_labels, codebook_after=None):
         print(f"\n   Cluster {cluster_id}: {label_info['label']}")
         print(f"   - Theme: {label_info['theme'][0]} (prob: {label_info['theme'][1]:.2f})")
         print(f"   - Topic: {label_info['topic'][0]} (prob: {label_info['topic'][1]:.2f})")
-        print(f"   - Subject: {label_info['subject'][0]} (prob: {label_info['subject'][1]:.2f})")
+        print(f"   - Code: {label_info['code'][0]} (prob: {label_info['code'][1]:.2f})")
     
     # Check for "other" assignments
     other_themes = sum(1 for v in final_labels.values() if v['theme'][0] == 'other')
@@ -109,8 +109,8 @@ def compare_codebooks(codebook1, codebook2, title1="Codebook 1", title2="Codeboo
     
     # Compare basic counts
     print(f"\n📊 Structure Comparison:")
-    print(f"   {title1}: {len(codebook1.themes)} themes, {len(codebook1.topics)} topics, {len(codebook1.subjects)} subjects")
-    print(f"   {title2}: {len(codebook2.themes)} themes, {len(codebook2.topics)} topics, {len(codebook2.subjects)} subjects")
+    print(f"   {title1}: {len(codebook1.themes)} themes, {len(codebook1.topics)} topics, {len(codebook1.codes)} codes")
+    print(f"   {title2}: {len(codebook2.themes)} themes, {len(codebook2.topics)} topics, {len(codebook2.codes)} codes")
     
     # Compare theme labels
     themes1 = {t.id: t.label for t in codebook1.themes}

@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from config import LabellerConfig
 import models
+from utils.verboseReporter import VerboseReporter
 
 
 # Models for structured data
@@ -87,12 +88,13 @@ class ThemeAssignment(BaseModel):
 class ThematicLabeller:
     """Orchestrator for thematic analysis"""
     
-    def __init__(self, config: LabellerConfig = None): 
+    def __init__(self, config: LabellerConfig = None, verbose: bool = False): 
         self.config = config or LabellerConfig()
         self.survey_question = ""
         self.client = instructor.from_openai(AsyncOpenAI(api_key=self.config.api_key or None), mode=instructor.Mode.JSON)
         self.batch_size = self.config.batch_size
         self.max_rediscovery_attempts = 3  # Maximum attempts for theme discovery
+        self.verbose_reporter = VerboseReporter(verbose)
         
     def _get_representatives(self, cluster: models.ClusterModel) -> List[Tuple[str, float]]:
         """Get top N representative descriptions with similarity scores"""
@@ -167,7 +169,7 @@ class ThematicLabeller:
                     # Use min to cap the delay at 10 seconds
                     delay = min(self.config.retry_delay * (attempt + 1), 10)
                     await asyncio.sleep(delay)
-                    print(f"Retry {attempt + 1}/{max_retries} after error: {str(e)}")
+                    self.verbose_reporter.stat_line(f"Retry {attempt + 1}/{max_retries} after error: {str(e)}")
         
         raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {str(last_error)}")
     
@@ -175,39 +177,38 @@ class ThematicLabeller:
         """Enhanced async processing method with new phases"""
         self.survey_question = survey_question
         
-        print("\n🔄 Starting enhanced hierarchical labeling process...")
+        self.verbose_reporter.section_header("HIERARCHICAL LABELING PROCESS", emoji="🔄")
         
         # Extract micro-clusters
         micro_clusters = self._extract_micro_clusters(cluster_models)
-        print(f"📊 Found {len(micro_clusters)} unique response segments")
+        self.verbose_reporter.stat_line(f"Found {len(micro_clusters)} unique response segments")
         
         # =============================================================================
         # Phase 1: Descriptive Coding
         # =============================================================================
     
         import time
-        print("\n📝 Phase 1: Descriptive Coding - Labeling all clusters...")
+        self.verbose_reporter.step_start("Phase 1: Descriptive Coding", emoji="📝")
         phase1_start = time.time()
         labeled_clusters = await self._phase1_descriptive_coding(micro_clusters)
         
         self.labeled_clusters = labeled_clusters
         
         phase1_time = time.time() - phase1_start
-        print(f"  ✓ Phase 1 completed in {phase1_time:.1f} seconds")
-        print(f"  Generated {len(labeled_clusters)} segment labels")
+        self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} segment labels")
         
 
         # =============================================================================
         # Phase 2: Theme Discovery 
         # =============================================================================
     
-        print("\n🔍 Phase 2: Theme Discovery - Building codebook...")
+        self.verbose_reporter.step_start("Phase 2: Theme Discovery", emoji="🔍")
         phase2_start = time.time()
         
         codebook = await self._phase2_discovery(labeled_clusters)
             
         phase2_time = time.time() - phase2_start
-        print(f"  ✓ Phase 2 completed in {phase2_time:.1f} seconds")
+        self.verbose_reporter.step_complete("Codebook structure created")
             
         self.codebook = codebook
             
@@ -219,39 +220,38 @@ class ThematicLabeller:
         max_review_attempts = 4
         
         while review_attempt < max_review_attempts:
-            print(f"\n⚖️ Phase 3: Theme Judger - Evaluating codebook structure (attempt {review_attempt + 1}/{max_review_attempts})...")
+            self.verbose_reporter.step_start(f"Phase 3: Theme Judger (attempt {review_attempt + 1}/{max_review_attempts})", emoji="⚖️")
             phase3_start = time.time()
             
             judgment = await self._phase3_theme_judger(codebook)
             
             phase3_time = time.time() - phase3_start
-            print(f"  ✓ Phase 3 completed in {phase3_time:.1f} seconds")
+            self.verbose_reporter.step_complete("Codebook evaluation completed")
             
             if judgment.is_logical:
-                print("  ✅ Codebook structure approved!")
+                self.verbose_reporter.stat_line("✅ Codebook structure approved!")
                 break
             else:
-                print("  ⚠️ Structure needs improvement")
+                self.verbose_reporter.stat_line("⚠️ Structure needs improvement")
                 if judgment.specific_issues:
-                    print("  Issues identified:")
+                    self.verbose_reporter.stat_line("Issues identified:")
                     for issue in judgment.specific_issues: #[:3]
-                        print(f"    - {issue}")
+                        self.verbose_reporter.stat_line(f"- {issue}", bullet="  ")
                 
                 review_attempt += 1
                 
                 if review_attempt >= max_review_attempts:
-                    print("  ⚠️ Maximum review attempts reached, proceeding with current structure")
+                    self.verbose_reporter.stat_line("⚠️ Maximum review attempts reached, proceeding with current structure")
                     break
                 
                 # Phase 4: Review and improve structure
-                print("\n🔄 Phase 4: Theme Review - Improving codebook structure...")
+                self.verbose_reporter.step_start("Phase 4: Theme Review", emoji="🔄")
                 phase4_start = time.time()
                 
                 codebook = await self._phase4_theme_review(codebook, judgment)
                 
                 phase4_time = time.time() - phase4_start
-                print(f"  ✓ Phase 4 completed in {phase4_time:.1f} seconds")
-                print("  📝 Codebook structure has been revised")
+                self.verbose_reporter.step_complete("📝 Codebook structure has been revised")
                 
                 self.codebook = codebook
                 
@@ -260,21 +260,21 @@ class ThematicLabeller:
         # Phase 5: Label Refinement  
         # =============================================================================
         
-        print("\n✨ Phase 5: Label Refinement - Polishing labels...")
+        self.verbose_reporter.step_start("Phase 5: Label Refinement", emoji="✨")
         phase5_start = time.time()
         await self._phase5_label_refinement(codebook)
         phase5_time = time.time() - phase5_start
-        print(f"  ✓ Phase 5 completed in {phase5_time:.1f} seconds")
+        self.verbose_reporter.step_complete("Labels polished")
         
         # =============================================================================
         # Phase 6: Assignment
         # =============================================================================
         
-        print("\n🎯 Phase 6: Assignment - Assigning themes to clusters...")
+        self.verbose_reporter.step_start("Phase 6: Assignment", emoji="🎯")
         phase6_start = time.time()
         assignments = await self._phase6_assignment(labeled_clusters, codebook)
         phase6_time = time.time() - phase6_start
-        print(f"  ✓ Phase 6 completed in {phase6_time:.1f} seconds")
+        self.verbose_reporter.step_complete("Themes assigned to clusters")
         
         # Remove empty codes  after assignment
         self._remove_empty_codes(codebook)
@@ -283,10 +283,10 @@ class ThematicLabeller:
         self._display_full_codebook(codebook)
         self.final_labels = self._create_final_labels(labeled_clusters, assignments)
         
-        print("\n✅ Applying hierarchy to responses...")
+        self.verbose_reporter.stat_line("✅ Applying hierarchy to responses...")
         result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, codebook)
         self._print_assignment_diagnostics(self.final_labels, micro_clusters)
-        print("\n🎉 Enhanced hierarchical labeling complete!")
+        self.verbose_reporter.stat_line("🎉 Enhanced hierarchical labeling complete!")
         self._print_summary(codebook)
 
         return result
@@ -1004,37 +1004,32 @@ class ThematicLabeller:
     
     def _print_summary(self, codebook: Codebook):
         """Print summary of the generated hierarchy"""
-        print("\n📊 Codebook Summary:")
-        print(f"  - {len(codebook.themes)} Themes")
-        print(f"  - {len(codebook.topics)} Topics")
-        print(f"  - {len(codebook.codes)} Codes")  # Changed
-        
-        # Count total assigned clusters (only from codes in strict hierarchy)
-        total_clusters = set()
-        for code in codebook.codes:  # Changed
-            total_clusters.update(code.direct_clusters)
-        
-        print(f"  - {len(total_clusters)} clusters assigned")
+        self.verbose_reporter.summary("Codebook Summary", {
+            "Themes": len(codebook.themes),
+            "Topics": len(codebook.topics),
+            "Codes": len(codebook.codes),
+            "Clusters assigned": len(set(cluster for code in codebook.codes for cluster in code.direct_clusters))
+        }, emoji="📊")
         
     def _display_full_codebook(self, codebook: Codebook):
         """Display the full hierarchical codebook with all labels"""
-        print("\n" + "="*80)
-        print("📚 FULL CODEBOOK HIERARCHY")
-        print("="*80)
+        if not self.verbose_reporter.enabled:
+            return
+        self.verbose_reporter.section_header("FULL CODEBOOK HIERARCHY", emoji="📚")
         
         # Display themes
         for theme in sorted(codebook.themes, key=lambda x: x.numeric_id):
-            print(f"\n🎯 THEME {theme.id}: {theme.label}")
+            self.verbose_reporter.stat_line(f"🎯 THEME {theme.id}: {theme.label}", bullet="")
             if theme.description:
-                print(f"   Description: {theme.description}")
+                self.verbose_reporter.stat_line(f"Description: {theme.description}", bullet="   ")
             
             # Find related topics
             related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
             if related_topics:
                 for topic in sorted(related_topics, key=lambda x: x.numeric_id):
-                    print(f"\n   📍 TOPIC {topic.id}: {topic.label}")
+                    self.verbose_reporter.stat_line(f"📍 TOPIC {topic.id}: {topic.label}", bullet="   ")
                     if topic.description:
-                        print(f"      Description: {topic.description}")
+                        self.verbose_reporter.stat_line(f"Description: {topic.description}", bullet="      ")
                     
                     # Find related codes
                     related_codes = [c for c in codebook.codes if c.parent_id == topic.id]  # Changed
@@ -1071,7 +1066,7 @@ class ThematicLabeller:
         topic_other = sum(1 for labels in final_labels.values() if labels['topic'][0] == 'other')
         
         if theme_other > 0 or topic_other > 0:
-            print(f"  - Clusters assigned to 'other': {theme_other} themes, {topic_other} topics")
+            self.verbose_reporter.stat_line(f"Clusters assigned to 'other': {theme_other} themes, {topic_other} topics")
             
 
 # =============================================================================
@@ -1216,18 +1211,18 @@ if __name__ == "__main__":
     print("\n".join(lines))
     
     
-    print("\n=== PHASE 2 CODEBOOK ===")
-    print(f"Themes: {len(labeller.codebook_phase2.themes)}")
-    print(f"Topics: {len(labeller.codebook_phase2.topics)}")
-    print(f"codes : {len(labeller.codebook_phase2.codes )}")
-    
-    print("\n=== PHASE 3 CODEBOOK (after refinement) ===")
-    print(f"Themes: {len(labeller.codebook_phase2.themes)}")
-    print(f"Topics: {len(labeller.codebook_phase2.topics)}")
-    print(f"codes : {len(labeller.codebook_phase2.codes )}")
+    # print("\n=== PHASE 2 CODEBOOK ===")
+    # print(f"Themes: {len(labeller.codebook_phase2.themes)}")
+    # print(f"Topics: {len(labeller.codebook_phase2.topics)}")
+    # print(f"codes : {len(labeller.codebook_phase2.codes )}")
+    # 
+    # print("\n=== PHASE 3 CODEBOOK (after refinement) ===")
+    # print(f"Themes: {len(labeller.codebook_phase2.themes)}")
+    # print(f"Topics: {len(labeller.codebook_phase2.topics)}")
+    # print(f"codes : {len(labeller.codebook_phase2.codes )}")
     
     #phase 2 codebook
-    print("phase 2 codebook:")
+    # print("phase 2 codebook:")
     lines = []
     for theme in labeller.codebook_phase2.themes:
         lines.append(f"\nTHEME {theme.id}: {theme.label}")
@@ -1239,10 +1234,10 @@ if __name__ == "__main__":
                 lines.append(f"    code {code.id}: {code.label}")
                 #lines.append(f"    code {code.id}: {code.description}")
                 
-    print("\n".join(lines))
-    
-    #phase 3 codebook
-    print("\nphase 3 codebook:")
+    # print("\n".join(lines))
+    # 
+    # #phase 3 codebook
+    # print("\nphase 3 codebook:")
     lines = []
     for theme in labeller.codebook_phase2.themes:
         lines.append(f"\nTHEME {theme.id}: {theme.label}")
@@ -1254,18 +1249,19 @@ if __name__ == "__main__":
                 lines.append(f"    code {code.id}: {code.label}")
                 #lines.append(f"    code {code.id}: {code.description}")
                 
-    print("\n".join(lines))
-    
-    
-    # See what changed
-    print("\n=== CHANGES ===")
+    # print("\n".join(lines))
+    # 
+    # 
+    # # See what changed
+    # print("\n=== CHANGES ===")
     # Compare theme labels
     phase2_themes = {t.id: t.label for t in labeller.codebook_phase2.themes}
     phase2_themes = {t.id: t.label for t in labeller.codebook_phase2.themes}
     
     for theme_id in phase2_themes:
         if theme_id in phase2_themes and phase2_themes[theme_id] != phase2_themes[theme_id]:
-            print(f"Theme {theme_id}: '{phase2_themes[theme_id]}' → '{phase2_themes[theme_id]}'")
+            pass
+            # print(f"Theme {theme_id}: '{phase2_themes[theme_id]}' → '{phase2_themes[theme_id]}'")
     
     
 
