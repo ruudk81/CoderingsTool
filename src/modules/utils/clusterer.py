@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Dict
 import numpy.typing as npt
 from collections import defaultdict, Counter
 
