@@ -1,0 +1,12 @@
+{
+  "name": "No Auto Env Setup",
+  "image": "mcr.microsoft.com/devcontainers/python:3.10",
+  "postCreateCommand": "echo 'Skipping environment.yml setup...'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}
