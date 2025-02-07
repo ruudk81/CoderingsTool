@@ -514,22 +514,23 @@ Total clusters to organize: {all_cluster_ids}
 Cluster summaries:
 {cluster_summaries}
 
-Your task: Create a 3-level hierarchical codebook that organizes ALL clusters into meaningful themes.
+Your task: Create a STRICT 3-level hierarchical codebook that organizes ALL clusters into meaningful themes.
 
-Hierarchy Structure:
-- Level 1 (Themes): Broad conceptual categories that group related concerns/ideas
-- Level 2 (Topics): Specific aspects or dimensions within themes
-- Level 3 (Subjects): Granular subjects mapped to original cluster IDs
+STRICT Hierarchy Rules:
+- Level 1 (Themes): Broad conceptual categories - NO direct clusters allowed
+- Level 2 (Topics): Specific aspects within themes - NO direct clusters allowed  
+- Level 3 (Subjects): Granular groupings that contain the actual cluster IDs
 
 CRITICAL REQUIREMENTS:
-1. EVERY cluster ID from {all_cluster_ids} MUST appear exactly ONCE in the hierarchy
-2. Flexible structure based on data:
-   - Simple themes: Can have clusters assigned directly (no topics/subjects needed)
-   - Complex themes: Naturally divide into topics, which may have subjects
-   - Mixed approach: Some clusters direct to theme, others through topics/subjects
+1. EVERY cluster ID from {all_cluster_ids} MUST appear exactly ONCE at the SUBJECT level only
+2. STRICT hierarchy enforcement:
+   - Every Theme MUST have at least one Topic
+   - Every Topic MUST have at least one Subject
+   - ONLY Subjects can contain micro_clusters
+   - For simple themes, create a general topic/subject (e.g., "General Concerns")
 3. Each label must be maximum 4 words and express ONE clear idea
 4. Avoid compound labels with "and", "&", or multiple concepts
-5. Create an "Other" theme for clusters that don't fit main themes
+5. Create an "Other" theme with appropriate topic/subject structure for outliers
 
 Output format (JSON - NO COMMENTS):
 {{
@@ -538,19 +539,23 @@ Output format (JSON - NO COMMENTS):
       "id": "1",
       "label": "Clear Theme Name",
       "description": "What this theme encompasses",
-      "direct_clusters": [5, 8],
       "topics": [
         {{
           "id": "1.1",
           "label": "Specific Topic",
           "description": "What this topic covers",
-          "direct_clusters": [12],
           "subjects": [
             {{
               "id": "1.1.1",
-              "label": "Narrow Subject",
+              "label": "Subject Name",
               "description": "Specific aspect",
-              "micro_clusters": [3, 7]
+              "micro_clusters": [3, 7, 12]
+            }},
+            {{
+              "id": "1.1.2",
+              "label": "Another Subject",
+              "description": "Another aspect",
+              "micro_clusters": [5, 8]
             }}
           ]
         }}
@@ -558,9 +563,23 @@ Output format (JSON - NO COMMENTS):
     }},
     {{
       "id": "2",
-      "label": "Another Theme",
+      "label": "Simple Theme",
       "description": "Description",
-      "direct_clusters": [15, 19, 23]
+      "topics": [
+        {{
+          "id": "2.1",
+          "label": "General Aspects",
+          "description": "Overall topic",
+          "subjects": [
+            {{
+              "id": "2.1.1",
+              "label": "Main Concerns",
+              "description": "Primary subject",
+              "micro_clusters": [15, 19, 23]
+            }}
+          ]
+        }}
+      ]
     }}
   ]
 }}
@@ -579,17 +598,17 @@ Batch ID: {batch_id}
 Cluster summaries from this batch:
 {batch_clusters}
 
-Your task: Create a partial hierarchy for ONLY the clusters in this batch.
+Your task: Create a partial STRICT hierarchy for ONLY the clusters in this batch.
 
-Guidelines:
-1. Create themes that naturally emerge from THIS batch's clusters
-2. Use temporary IDs (temp_1, temp_1.1, etc.) - these will be renumbered later
-3. Some themes may be simple (clusters assigned directly)
-4. Others may need topics or even subjects for better organization
-5. Focus on semantic coherence within this batch
-6. Each label: maximum 4 words, ONE clear concept
+STRICT Hierarchy Rules (MUST FOLLOW):
+1. Themes contain Topics (NOT clusters)
+2. Topics contain Subjects (NOT clusters)
+3. ONLY Subjects contain clusters (as "direct_clusters")
+4. Use temporary IDs (temp_1, temp_1.1, temp_1.1.1) - will be renumbered later
+5. Each label: maximum 4 words, ONE clear concept
+6. For simple themes, still create Topic and Subject levels
 
-IMPORTANT: Every cluster ID mentioned in the batch MUST appear in exactly one place in your output.
+IMPORTANT: Every cluster ID from this batch MUST appear ONCE in a subject's direct_clusters.
 
 Output format (JSON - NO COMMENTS):
 {{
@@ -597,32 +616,42 @@ Output format (JSON - NO COMMENTS):
     {{
       "id": "temp_1",
       "label": "Emergent Theme",
-      "description": "What unifies these clusters",
-      "direct_clusters": [1, 2]
+      "description": "What unifies these topics"
     }},
     {{
       "id": "temp_2",
       "label": "Another Theme",
-      "description": "Description",
-      "direct_clusters": []
+      "description": "Description"
     }}
   ],
   "topics": [
     {{
-      "id": "temp_2.1",
+      "id": "temp_1.1",
       "label": "Specific Topic",
       "description": "What this covers",
-      "parent_id": "temp_2",
-      "direct_clusters": [3]
+      "parent_id": "temp_1"
+    }},
+    {{
+      "id": "temp_2.1",
+      "label": "General Topic",
+      "description": "Overall aspects",
+      "parent_id": "temp_2"
     }}
   ],
   "subjects": [
     {{
-      "id": "temp_2.1.1",
-      "label": "Narrow Subject",
+      "id": "temp_1.1.1",
+      "label": "Subject Name",
       "description": "Specific aspect",
+      "parent_id": "temp_1.1",
+      "direct_clusters": [1, 2]
+    }},
+    {{
+      "id": "temp_2.1.1",
+      "label": "Main Concerns",
+      "description": "Primary aspects",
       "parent_id": "temp_2.1",
-      "direct_clusters": [4, 5]
+      "direct_clusters": [3, 4, 5]
     }}
   ]
 }}
