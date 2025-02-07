@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE #,DEFAULT_MODEL
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 
@@ -126,7 +127,8 @@ class SegmentDescriber:
         max_tokens: int = 16000,  
         completion_reserve: int = 1000,  
         max_batch_size: int = 5,
-        var_lab : str = "" ):
+        var_lab : str = "",
+        verbose: bool = False):
         
         self.provider = provider.lower()
         self.openai_api_key = api_key or OPENAI_API_KEY
@@ -136,6 +138,8 @@ class SegmentDescriber:
         self.max_batch_size = max_batch_size
         self._debug_print_first_prompt = True
         self.varlab = var_lab
+        self.verbose_reporter = VerboseReporter(verbose)
+        self._stats = ProcessingStats()
         
         self.langchain_pipeline = LangChainPipeline(
             model_name=self.openai_model,
@@ -157,7 +161,8 @@ class SegmentDescriber:
         else:
             raise ValueError(f"Unsupported provider: {provider}")
         
-        print(f"Initialized DescriptiveCoder with {provider} provider and {self.openai_model} model")
+        if not self.verbose_reporter.enabled:
+            print(f"Initialized DescriptiveCoder with {provider} provider and {self.openai_model} model")
     
     def create_batches(self, responses: List[models.DescriptiveModel], var_lab: str) -> List[CodingBatch]:
         #encoding = tiktoken.encoding_for_model(self.openai_model)
@@ -191,13 +196,15 @@ class SegmentDescriber:
         avg_tokens_per_response = sum(len(encoding.encode(r.response)) for r in responses) / max(1, len(responses))
         adaptive_max_batch_size = min(self.max_batch_size, max(1, int(token_budget / max(1, avg_tokens_per_response))))
         
-        print(f"estimated number of tokens= {prompt_length + avg_tokens_per_response}")
+        if not self.verbose_reporter.enabled:
+            print(f"estimated number of tokens= {prompt_length + avg_tokens_per_response}")
         
         batches = []
         current_batch_tasks = []
         current_batch_tokens = 0
         
-        print(f"Creating batches with token budget: {token_budget}, adaptive max batch size: {adaptive_max_batch_size}")
+        if not self.verbose_reporter.enabled:
+            print(f"Creating batches with token budget: {token_budget}, adaptive max batch size: {adaptive_max_batch_size}")
         
         for response in responses:
             respondent_id = response.respondent_id
@@ -233,7 +240,8 @@ class SegmentDescriber:
         if current_batch_tasks:
             batches.append(CodingBatch(tasks=current_batch_tasks))
         
-        print(f"Created {len(batches)} batches from {len(responses)} responses")
+        if not self.verbose_reporter.enabled:
+            print(f"Created {len(batches)} batches from {len(responses)} responses")
         return batches
 
     async def process_response(self, respondent_id, response_text, var_lab, max_retries=3):
@@ -322,17 +330,22 @@ class SegmentDescriber:
         return processed_results
     
     async def generate_codes_async(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
-        start_time = datetime.now()
-        print(f"Starting code generation for {len(responses)} responses")
+        self._stats.start_timing()
+        self._stats.input_count = len(responses)
+        
+        self.verbose_reporter.step_start("Descriptive Code Generation", emoji="🏷️")
+        self.verbose_reporter.stat_line(f"Processing {len(responses)} responses...")
         
         batches = self.create_batches(responses, var_lab)
         
         if not batches:
-            print("No batches created. Returning original responses.")
+            if not self.verbose_reporter.enabled:
+                print("No batches created. Returning original responses.")
             return responses
             
         total_batches = len(batches)
-        print(f"Processing {total_batches} batches with max {max_retries} retries per batch if needed")
+        if not self.verbose_reporter.enabled:
+            print(f"Processing {total_batches} batches with max {max_retries} retries per batch if needed")
         
         # Process batches concurrently
         all_results = []
@@ -362,22 +375,62 @@ class SegmentDescriber:
                 if resp.response_segment and len(resp.response_segment) > 0:
                     responses_with_codes += 1
         
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds()
+        self._stats.end_timing()
+        self._stats.output_count = len(all_results)
         
         # Calculate statistics
         total_responses = len(responses)
         processed_responses = len(all_results)
         
-        print(f"Completed code generation in {duration:.2f} seconds")
-        print(f"Batches: {successful_batches} successful, {failed_batches} failed, {total_batches} total")
-        print(f"Responses: {processed_responses} processed out of {total_responses}")
+        # Collect sample codes for verbose output
+        code_examples = []
+        unique_codes = set()
+        multi_code_responses = 0
+        total_code_length = 0
+        code_count = 0
         
-        # Avoid division by zero when calculating percentage
-        if processed_responses > 0:
-            print(f"Responses with codes: {responses_with_codes} out of {processed_responses} ({responses_with_codes/processed_responses*100:.1f}%)")
-        else:
-            print("Responses with codes: 0 out of 0 (0%)")
+        for resp in all_results:
+            if resp.response_segment and len(resp.response_segment) > 0:
+                if len(resp.response_segment) > 1:
+                    multi_code_responses += 1
+                    
+                for segment in resp.response_segment:
+                    if segment.descriptive_code and segment.descriptive_code not in ["NA", "PROCESSING_ERROR"]:
+                        unique_codes.add(segment.descriptive_code)
+                        code_words = segment.descriptive_code.split()
+                        total_code_length += len(code_words)
+                        code_count += 1
+                        
+                        # Collect examples
+                        if len(code_examples) < 5 and segment.segment_response:
+                            code_examples.append(f'"{segment.segment_response}" → "{segment.descriptive_code}"')
+        
+        avg_code_length = total_code_length / code_count if code_count > 0 else 0
+        
+        # Report statistics
+        self.verbose_reporter.stat_line(f"Unique themes identified: {len(unique_codes)}")
+        self.verbose_reporter.stat_line(f"Average code length: {avg_code_length:.1f} words")
+        if multi_code_responses > 0:
+            self.verbose_reporter.stat_line(f"Responses with multiple codes: {multi_code_responses}")
+        
+        # Show code examples
+        if code_examples:
+            self.verbose_reporter.sample_list("Sample generated codes", code_examples)
+        
+        self.verbose_reporter.step_complete("Code generation completed")
+        
+        # Traditional output for non-verbose mode
+        if not self.verbose_reporter.enabled:
+            duration = self._stats.get_duration()
+            print(f"Completed code generation in {duration:.2f} seconds")
+            print(f"Batches: {successful_batches} successful, {failed_batches} failed, {total_batches} total")
+            print(f"Responses: {processed_responses} processed out of {total_responses}")
+            
+            # Avoid division by zero when calculating percentage
+            if processed_responses > 0:
+                print(f"Responses with codes: {responses_with_codes} out of {processed_responses} ({responses_with_codes/processed_responses*100:.1f}%)")
+            else:
+                print("Responses with codes: 0 out of 0 (0%)")
         
         return all_results
     
@@ -389,7 +442,8 @@ class SegmentDescriber:
         self.var_lab = var_lab
         self.langchain_pipeline.var_lab = var_lab
         
-        print(f"\nThe survey question: {var_lab}\n")
+        if not self.verbose_reporter.enabled:
+            print(f"\nThe survey question: {var_lab}\n")
     
         async def main():
             return await self.generate_codes_async(responses, var_lab, max_retries)
