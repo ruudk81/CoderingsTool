@@ -47,7 +47,7 @@ class ClusterModel(EmbeddingsModel):
 class LabelSubmodel(ClusterSubmodel):
     #clusters with labels
     Theme: Optional[Dict[int, str]] = None 
-    Topic: Optional[Dict[int, str]] = None
+    Topic: Optional[Dict[float, str]] = None  # Changed to float to support 1.1, 1.2, etc.
     Keyword: Optional[Dict[int, str]] = None
 
 class LabelModel(ClusterModel):

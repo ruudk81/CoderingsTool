@@ -841,11 +841,7 @@ class ThematicLabeller:
                                      final_labels: Dict[int, Dict], 
                                      codebook: Codebook) -> List[models.LabelModel]:
         """Apply hierarchy to original response models with proper model compatibility"""
-        # Create lookup dictionaries using numeric IDs
-        theme_lookup = {int(t.numeric_id): t for t in codebook.themes}
-        topic_lookup = {t.numeric_id: t for t in codebook.topics}
-        
-        # Also create string ID lookups for assignment matching
+        # Create string ID lookups for assignment matching
         theme_str_lookup = {t.id: t for t in codebook.themes}
         topic_str_lookup = {t.id: t for t in codebook.topics}
         
@@ -869,7 +865,7 @@ class ThematicLabeller:
                             labels = final_labels[cluster_id]
                             
                             # Apply Theme (Dict[int, str])
-                            theme_id_str, theme_prob = labels['theme']
+                            theme_id_str, _ = labels['theme']
                             if theme_id_str in theme_str_lookup:
                                 theme = theme_str_lookup[theme_id_str]
                                 theme_id_int = int(theme.numeric_id)
@@ -877,11 +873,11 @@ class ThematicLabeller:
                             elif theme_id_str == "other":
                                 segment.Theme = {999: "Other: Unclassified"}
                             
-                            # Apply Topic (Dict[float, str]) - ensure float conversion
-                            topic_id_str, topic_prob = labels['topic']
+                            # Apply Topic (Dict[float, str])
+                            topic_id_str, _ = labels['topic']
                             if topic_id_str in topic_str_lookup:
                                 topic = topic_str_lookup[topic_id_str]
-                                topic_id_float = float(topic.numeric_id)  # Ensure it's float, not int
+                                topic_id_float = topic.numeric_id  # Already a float from model
                                 segment.Topic = {topic_id_float: f"{topic.label}: {topic.description}"}
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}

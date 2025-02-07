@@ -187,7 +187,7 @@ class LabellerConfig:
     assignment_threshold: float = 0.5  # Minimum probability for assignment (lowered for better coverage)
     
     # LLM refinement option
-    use_llm_refinement: bool = False  # For Phase 4 enhancement
+    use_llm_refinement: bool = True  # Enable Phase 4 LLM refinement by default
     
     # Retry and concurrency settings
     max_retries: int = 3
