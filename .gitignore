@@ -11,3 +11,10 @@ Technical description.docx
 data/*
 data/**/
 !data/*.sav
+
+# === PYTHON CACHE FILES ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
