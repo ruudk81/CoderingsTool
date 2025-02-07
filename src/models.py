@@ -21,8 +21,8 @@ class PreprocessModel(ResponseModel):
     pass
 
 class DescriptiveSubmodel(ResponseSegmentModel):
-    descriptive_code: Optional[str] = None
-    code_description: Optional[str] = None
+    segment_label: Optional[str] = None
+    segment_description: Optional[str] = None
 
 class DescriptiveModel(ResponseModel):
     quality_filter: Optional[bool] = None

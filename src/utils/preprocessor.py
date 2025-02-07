@@ -27,8 +27,8 @@ from prompts import CODING_INSTRUCTIONS
 class PreprocessingSubmodel(BaseModel):
     segment_id: str
     segment_response: str
-    descriptive_code: str
-    code_description: str
+    segment_label: str
+    segment_description: str
 
 class PreprocessingModel(BaseModel):
     respondent_id: Any
@@ -36,7 +36,7 @@ class PreprocessingModel(BaseModel):
     quality_filter: bool
     response_segment: List[PreprocessingSubmodel] 
 class CodingBatch(BaseModel):
-    tasks: List[PreprocessingModel] = Field(code_description="List of coding tasks in this batch")   
+    tasks: List[PreprocessingModel] = Field(description="List of coding tasks in this batch")   
   
 # Main function
 class DescriptiveCoder:
@@ -79,7 +79,7 @@ class DescriptiveCoder:
         encoding = tiktoken.encoding_for_model(self.openai_model)
         
         # Calculate prompt length internally
-        empty_prompt = CODING_INSTRUCTIONS['descriptive_code_prompt'].format(
+        empty_prompt = CODING_INSTRUCTIONS['segment_label_prompt'].format(
             Language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             responses="")
@@ -146,7 +146,7 @@ class DescriptiveCoder:
                 f"Respondent ID: {task.respondent_id}\n"
                 f"Response: \"{task.response}\"\n\n")
         
-        prompt = CODING_INSTRUCTIONS['descriptive_code_prompt'].format(
+        prompt = CODING_INSTRUCTIONS['segment_label_prompt'].format(
             Language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             responses=tasks_string)

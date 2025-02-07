@@ -35,13 +35,13 @@ class Embedder:
         if self.var_lab:
             for resp_idx, resp_item in enumerate(data):
                 for seg_idx, segment in enumerate(resp_item.response_segment):
-                    text_to_embed = self.var_lab + segment.code_description
+                    text_to_embed = self.var_lab + segment.segment_description
                     all_segments.append(text_to_embed)
                     segment_indices.append((resp_idx, seg_idx))
         else:
             for resp_idx, resp_item in enumerate(data):
                 for seg_idx, segment in enumerate(resp_item.response_segment):
-                    text_to_embed = segment.code_description
+                    text_to_embed = segment.segment_description
                     all_segments.append(text_to_embed)
                     segment_indices.append((resp_idx, seg_idx))
         
@@ -59,13 +59,13 @@ class Embedder:
         if self.var_lab:
             for resp_idx, resp_item in enumerate(data):
                 for seg_idx, segment in enumerate(resp_item.response_segment):
-                    text_to_embed = self.var_lab + segment.descriptive_code.replace("_", " ").title() # Code syntax (capitals + underscore) needs to be converted
+                    text_to_embed = self.var_lab + segment.segment_label.replace("_", " ").title() # Code syntax (capitals + underscore) needs to be converted
                     all_segments.append(text_to_embed)
                     segment_indices.append((resp_idx, seg_idx))
         else:
             for resp_idx, resp_item in enumerate(data):
                 for seg_idx, segment in enumerate(resp_item.response_segment):
-                    text_to_embed = segment.descriptive_code.replace("_", " ").title() # Code syntax (capitals + underscore) needs to be converted
+                    text_to_embed = segment.segment_label.replace("_", " ").title() # Code syntax (capitals + underscore) needs to be converted
                     all_segments.append(text_to_embed)
                     segment_indices.append((resp_idx, seg_idx))
     
@@ -280,11 +280,11 @@ if __name__ == "__main__":
         response_segments = response.response_segment or []
         for segment in response_segments:
             print(f"  - Segment: {segment.segment_response}")
-            print(f"    Code: {segment.descriptive_code}")
+            print(f"    Code: {segment.segment_label}")
             
-            print(segment.descriptive_code.replace("_", " ").title())
+            print(segment.segment_label.replace("_", " ").title())
             
-            print(f"    Description: {segment.code_description}")
+            print(f"    Description: {segment.segment_description}")
     
     embedder                = Embedder()
     
@@ -299,8 +299,8 @@ if __name__ == "__main__":
         response_segments = response.response_segment or []
         for segment in response_segments:
             print(f"  - Segment: {segment.segment_response}")
-            print(f"    Code: {segment.descriptive_code}")
-            print(f"    Description: {segment.code_description}")
+            print(f"    Code: {segment.segment_label}")
+            print(f"    Description: {segment.segment_description}")
             print(f"    Description: {segment.code_embedding}")
             print(f"    Description: {segment.description_embedding}")
         print("\n")
