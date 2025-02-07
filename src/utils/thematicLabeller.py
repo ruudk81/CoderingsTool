@@ -330,8 +330,8 @@ class ThematicLabeller:
         # Format clusters for prompt
         cluster_summaries = []
         for cluster in sorted(labeled_clusters, key=lambda x: x.cluster_id):
-            #summary = f"Cluster {cluster.cluster_id}: {cluster.label} - {cluster.description}\n"
-            summary = f"- Cluster {cluster.cluster_id}: {cluster.label}\n"
+            summary = f"Cluster {cluster.cluster_id}: {cluster.label} - {cluster.description}\n"
+            #summary = f"- Cluster {cluster.cluster_id}: {cluster.label}\n"
             cluster_summaries.append(summary)
         
         all_cluster_ids = ", ".join(str(c.cluster_id) for c in labeled_clusters)
@@ -623,48 +623,36 @@ class ThematicLabeller:
   
     
     def _format_codebook(self, codebook: Codebook) -> str:
-        """Format codebook in readable hierarchy"""
+        """Format codebook in compact hierarchy"""
         lines = []
         
         for theme in codebook.themes:
-            lines.append(f"\nTHEME {theme.id}: {theme.label}")
-            lines.append(f"  Description: {theme.description}")
+            lines.append(f"\n{theme.id}. {theme.label.upper()} - {theme.description}")
             
             related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
             for topic in related_topics:
-                lines.append(f"\n  TOPIC {topic.id}: {topic.label}")
-                lines.append(f"    Description: {topic.description}")
+                lines.append(f"\n   {topic.id} {topic.label} - {topic.description}")
                 
                 related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
                 for code in related_codes:
-                    lines.append(f"\n    CODE {code.id}: {code.label}")
-                    lines.append(f"      Description: {code.description}")
-                    # Optionally add cluster count if available
-                    if code.direct_clusters:
-                        lines.append(f"      Clusters: {len(code.direct_clusters)} responses")  
+                    lines.append(f"      {code.id} {code.label} - {code.description}")
                         
         return "\n".join(lines)
     
     def _format_codebook_for_review(self, codebook: Codebook) -> str:
-        """Format codebook with full details for Phase 4 review"""
+        """Format codebook in compact hierarchy for review"""
         lines = []
         
         for theme in codebook.themes:
-            lines.append(f"\nTHEME {theme.id}: {theme.label}")
-            lines.append(f"  Description: {theme.description}")
+            lines.append(f"\n{theme.id}. {theme.label.upper()} - {theme.description}")
             
             related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
             for topic in related_topics:
-                lines.append(f"\n  TOPIC {topic.id}: {topic.label}")
-                lines.append(f"    Description: {topic.description}")
+                lines.append(f"\n   {topic.id} {topic.label} - {topic.description}")
                 
                 related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
                 for code in related_codes:
-                    lines.append(f"\n    CODE {code.id}: {code.label}")
-                    lines.append(f"      Description: {code.description}")
-                    # Optionally add cluster count if available
-                    if code.direct_clusters:
-                        lines.append(f"      Clusters: {len(code.direct_clusters)} responses")
+                    lines.append(f"      {code.id} {code.label} - {code.description}")
         
         return "\n".join(lines)
     
