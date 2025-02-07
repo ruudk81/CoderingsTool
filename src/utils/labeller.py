@@ -1,6 +1,6 @@
 import asyncio
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pydantic import BaseModel, Field, ConfigDict
 import instructor
 from openai import AsyncOpenAI
@@ -21,8 +21,8 @@ class LabellerConfig(BaseModel):
     """Configuration for the Labeller"""
     model: str = DEFAULT_MODEL
     api_key: str = OPENAI_API_KEY
-    max_concurrent_requests: int = 10
-    batch_size: int = 20
+    max_concurrent_requests: int = 10  # Keep at 10 for stability
+    batch_size: int = 50  # Increased from 20 to reduce API calls
     #similarity_threshold: float = 0.95  # Auto-merge threshold
     #merge_score_threshold: float = 0.7  # LLM merge threshold
     max_retries: int = 3
@@ -74,6 +74,8 @@ class ClusterData(BaseModel):
     embeddings: np.ndarray
     centroid: np.ndarray
     size: int
+    # Cached computations for performance
+    _representative_items: Optional[List[Dict[str, str]]] = None
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
 
 class Labeller:
@@ -184,6 +186,10 @@ class Labeller:
         
         def _get_representative_items(self, cluster: ClusterData, n: int = 5) -> List[Dict[str, str]]:
             """Get most representative items using cosine similarity to centroid"""
+            # Return cached items if available
+            if cluster._representative_items and len(cluster._representative_items) >= n:
+                return cluster._representative_items[:n]
+            
             # Calculate similarities to centroid
             similarities = cosine_similarity([cluster.centroid], cluster.embeddings)[0]
             
@@ -199,6 +205,9 @@ class Labeller:
                         'description': cluster.code_descriptions[idx],
                         'similarity': float(similarities[idx])
                     })
+            
+            # Cache the results
+            cluster._representative_items = representatives
             
             return representatives
         
@@ -274,11 +283,19 @@ class Labeller:
             themes = await self._create_themes(cluster_data, initial_labels, var_lab)
             logger.info(f"Created {len(themes)} themes")
             
-            # Create topics within themes (level 2)
+            # Create topics within themes (level 2) - parallelized
+            topic_tasks = []
             for theme in themes:
-                topics = await self._create_topics(theme, cluster_data, initial_labels, var_lab)
-                theme.children = topics
-                logger.info(f"Created {len(topics)} topics for theme {theme.node_id}")
+                task = self._create_topics(theme, cluster_data, initial_labels, var_lab)
+                topic_tasks.append((theme, task))
+            
+            # Execute all topic creation tasks in parallel
+            with tqdm(total=len(topic_tasks), desc="Creating topics") as pbar:
+                for theme, task in topic_tasks:
+                    topics = await task
+                    theme.children = topics
+                    pbar.update(1)
+                    logger.debug(f"Created {len(topics)} topics for theme {theme.node_id}")
             
             # Assign codes within topics (level 3)
             cluster_to_path = {}
@@ -454,7 +471,7 @@ class Labeller:
                 info = {
                     "cluster_id": cluster_id,
                     "label": label,
-                    "size": len(cluster.descriptive_codes),
+                    "size": cluster.size,  # Use pre-computed size
                     "top_codes": [code for code, _ in top_codes],
                     "top_descriptions": [desc for desc, _ in top_descs]
                 }
