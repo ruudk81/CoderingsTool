@@ -86,6 +86,12 @@ class Labeller:
         """Main method that orchestrates all phases"""
         return asyncio.run(self._create_hierarchical_labels_async(cluster_results, var_lab))
     
+    def run_pipeline(self, 
+                     cluster_results: List[models.ClusterModel], 
+                     var_lab: str) -> List[models.LabelModel]:
+        """Pipeline-compatible method name"""
+        return self.create_hierarchical_labels(cluster_results, var_lab)
+    
     async def _create_hierarchical_labels_async(self, 
                                               cluster_results: List[models.ClusterModel], 
                                               var_lab: str) -> List[models.LabelModel]:
