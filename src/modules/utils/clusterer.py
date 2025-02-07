@@ -223,10 +223,10 @@ class ClusterGenerator:
                 metrics = self.calculate_clustering_quality(reduced_code_embeddings, initial_code_clusters)
                 
                 if self.verbose:
-                    print(f"Quality score: {metrics['quality_score']:.3f}")
+                    print(f"Quality score: {metrics['overall_quality']:.3f}")
                 
                 # Check if quality is acceptable
-                if metrics['quality_score'] >= self.config.min_quality_score:
+                if metrics['overall_quality'] >= self.config.min_quality_score:
                     break
                 
                 # Try with adjusted parameters if quality is low
@@ -277,10 +277,10 @@ class ClusterGenerator:
                 metrics = self.calculate_clustering_quality(reduced_description_embeddings, initial_description_clusters)
                 
                 if self.verbose:
-                    print(f"Quality score: {metrics['quality_score']:.3f}")
+                    print(f"Quality score: {metrics['overall_quality']:.3f}")
                 
                 # Check if quality is acceptable
-                if metrics['quality_score'] >= self.config.min_quality_score:
+                if metrics['overall_quality'] >= self.config.min_quality_score:
                     break
                 
                 # Try with adjusted parameters if quality is low
