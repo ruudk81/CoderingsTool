@@ -7,24 +7,6 @@ from umap import UMAP
 import hdbscan
 import spacy 
 from sklearn.feature_extraction.text import CountVectorizer
-    
-# dynamic import path
-import sys
-from pathlib import Path
-import os
-try:
-    src_dir = str(Path(__file__).resolve().parents[2])
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-except (NameError, AttributeError):
-    current_dir = os.getcwd()
-    if current_dir.endswith('utils'):
-        src_dir = str(Path(current_dir).parents[1])
-    else:
-        src_dir = os.path.abspath('src')
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-    print(f"Added {src_dir} to path for imports")    
 
 # config
 import models
