@@ -13,7 +13,6 @@ ALLOWED_EXTENSIONS = ['.sav']
 # LLM settings (core settings)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # Hunspell path detection
 current_dir = os.getcwd()
@@ -167,99 +166,6 @@ class CacheConfig:
         return self.cache_dir / cache_filename
 
 
-# @dataclass
-# class ProcessingConfig:
-#     """Configuration for processing parameters that affect cache validity"""
-    
-#     # Language settings
-#     language: str = "nl"
-#     spell_check_enabled: bool = True
-    
-#     # Output control
-#     verbose: bool = False
-   
-#     # Clustering settings
-#     clustering_algorithm: str = "hdbscan"
-#     min_cluster_size: int = 5
-#     min_samples: int = 3
-    
-#     # Model configuration
-#     models: ModelConfig = None
-    
-#     def __post_init__(self):
-#         if self.models is None:
-#             self.models = ModelConfig()
-    
-#     def to_dict(self) -> dict:
-#         """Convert to dictionary for serialization"""
-#         return {
-#             k: v for k, v in self.__dict__.items()
-#             if not k.startswith('_')
-#         }
-    
-#     def get_hash(self) -> str:
-#         """Generate hash of configuration for cache invalidation"""
-#         config_str = json.dumps(self.to_dict(), sort_keys=True, default=str)
-#         return hashlib.md5(config_str.encode()).hexdigest()
-
-
-# @dataclass
-# class ClusteringConfig:
-#     """Configuration for automatic clustering mode."""
-    
-#     embedding_type: str = "description"  # Default to description as requested
-#     language: str = "nl"  # Default to Dutch
-    
-#     # Optional overrides (mostly for testing)
-#     min_cluster_size: Optional[int] = None
-#     min_samples: Optional[int] = None
-    
-#     def get_reducer_params(self, data_size: int) -> Dict:
-#         """Get UMAP parameters based on data size."""
-#         n_neighbors = min(30, max(15, data_size // 50))
-#         min_dist = 0.0 if data_size < 1000 else 0.1
-        
-#         return {
-#             'n_neighbors': n_neighbors,
-#             'n_components': 10,
-#             'min_dist': min_dist,
-#             'metric': 'cosine',
-#             'random_state': 42,
-#             'n_jobs': 1
-#         }
-    
-#     def get_auto_params(self, data_size: int) -> Dict:
-#         """Get clustering parameters based on data size."""
-#         # Use override values if provided
-#         if self.min_cluster_size is not None and self.min_samples is not None:
-#             return {
-#                 'min_cluster_size': self.min_cluster_size,
-#                 'min_samples': self.min_samples,
-#                 'metric': 'euclidean',
-#                 'cluster_selection_method': 'eom'
-#             }
-        
-#         # Auto-calculate based on data size
-#         if data_size < 100:
-#             min_cluster_size = 2
-#             min_samples = 1
-#         elif data_size < 500:
-#             min_cluster_size = 3
-#             min_samples = 2
-#         elif data_size < 1000:
-#             min_cluster_size = 5
-#             min_samples = 3
-#         else:
-#             min_cluster_size = 10
-#             min_samples = 5
-            
-#         return {
-#             'min_cluster_size': min_cluster_size,
-#             'min_samples': min_samples,
-#             'metric': 'euclidean',
-#             'cluster_selection_method': 'eom'
-#         }
-
 
 @dataclass
 class LabellerConfig:
@@ -339,11 +245,7 @@ class EmbeddingConfig:
 # =============================================================================
 
 # Global configuration instances
-DEFAULT_CACHE_CONFIG = CacheConfig()
-# DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
-# DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
-DEFAULT_MODEL_CONFIG = ModelConfig()
 
 # Pipeline step configurations
 DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
@@ -351,10 +253,3 @@ DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 
-# Environment-based model overrides
-if os.getenv("CODERINGSTOOL_SPELL_MODEL"):
-    DEFAULT_MODEL_CONFIG.spell_check_model = os.getenv("CODERINGSTOOL_SPELL_MODEL")
-if os.getenv("CODERINGSTOOL_LABELLING_MODEL"):
-    DEFAULT_MODEL_CONFIG.labelling_model = os.getenv("CODERINGSTOOL_LABELLING_MODEL")
-if os.getenv("CODERINGSTOOL_EMBEDDING_MODEL"):
-    DEFAULT_MODEL_CONFIG.embedding_model = os.getenv("CODERINGSTOOL_EMBEDDING_MODEL")
