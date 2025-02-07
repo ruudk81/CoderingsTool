@@ -1,0 +1,24 @@
+# python 3.X
+
+# Core data processing 
+pandas==2.2.3
+numpy==1.26.4
+scikit-learn==1.5.2
+
+# Python packages (pip install)
+pydantic==2.10.4
+pydantic-core==2.27.2
+streamlit==1.40.1
+spacy==3.7.6
+spacy-legacy==3.0.12
+spacy-loggers==1.0.5
+langchain-core==0.3.29
+langchain-openai==0.2.14
+openai==1.59.3
+instructor==1.7.9
+tiktoken==0.8.0
+eval_type_backport==0.2.2
+
+# Language models (install separately)
+# https://github.com/explosion/spacy-models/releases/download/nl_core_news_lg-3.7.0/nl_core_news_lg-3.7.0-py3-none-any.whl
+# https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.7.1/en_core_web_lg-3.7.1-py3-none-any.whl
