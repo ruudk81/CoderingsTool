@@ -480,12 +480,45 @@ python clusterer.py  # Test clustering standalone
 python labeller.py   # Test labeling standalone
 ```
 
+### Next TODO: Optimize Labeller Performance
+
+**Priority: Refine and optimize the labeller, specifically Phase 2: Semantic merging analysis**
+
+Current issues:
+- Sequential merging is still too slow (processing 52 clusters one by one)
+- LLM calls are synchronous and blocking
+- Too many comparisons even with sequential approach
+
+Optimization strategies to implement:
+1. **Async LLM calls throughout labeller**
+   - Convert all LLM calls to async operations
+   - Process multiple requests concurrently
+   - Implement proper async/await patterns
+
+2. **Phase 2 Specific Optimizations:**
+   - Pre-filter using cosine similarity of centroid embeddings
+     - Auto-merge clusters with similarity > 0.95 or 0.98
+     - Only send remaining clusters to LLM for analysis
+   - Change LLM approach from pairwise to scoring
+     - Ask LLM to score clusters on 0-1 scale for similarity
+     - Process multiple clusters in single prompt
+     - Merge based on score thresholds
+   - Consider embedding-based clustering before LLM analysis
+     - Use hierarchical clustering on centroid embeddings
+     - Only use LLM to validate/refine merge decisions
+
+3. **General Performance Improvements:**
+   - Increase batch sizes where possible
+   - Add caching for repeated LLM calls
+   - Implement parallel processing for independent operations
+
 ### Future Phases
-1. Phase 4: Add retry mechanisms for LLM calls
-2. Phase 5: Implement results display (step 7)
-3. Phase 6: Add data visualization
-4. Phase 7: Create export options
-5. Phase 8: Add multilingual support beyond Dutch/English
+1. Phase 4: Complete labeller optimization (current priority)
+2. Phase 5: Add retry mechanisms for LLM calls
+3. Phase 6: Implement results display (step 7)
+4. Phase 7: Add data visualization
+5. Phase 8: Create export options
+6. Phase 9: Add multilingual support beyond Dutch/English
 
 ## Environment Requirements
 - Python 3.8+
