@@ -1,35 +1,37 @@
-# data
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 from typing import List, Any, Optional, Dict
 import numpy.typing as npt
 from collections import defaultdict, Counter
-
-# cluster
 from umap import UMAP
 import hdbscan
-
-# semantics
 import spacy 
 from sklearn.feature_extraction.text import CountVectorizer
+    
+# dynamic import path
+import sys
+from pathlib import Path
+import os
+try:
+    src_dir = str(Path(__file__).resolve().parents[2])
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+except (NameError, AttributeError):
+    current_dir = os.getcwd()
+    if current_dir.endswith('utils'):
+        src_dir = str(Path(current_dir).parents[1])
+    else:
+        src_dir = os.path.abspath('src')
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    print(f"Added {src_dir} to path for imports")    
 
 # config
 import models
+from config import DEFAULT_LANGUAGE
+from utils.cluster_quality import ClusterQualityAnalyzer
 import warnings  # hard coded warning in umap about hidden stat
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
-from config import DEFAULT_LANGUAGE
-
-# clustering improvements
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
-
-# Try both import methods to handle different environments
-try:
-    from cluster_quality import ClusterQualityAnalyzer
-except ImportError:
-    from .cluster_quality import ClusterQualityAnalyzer
-
 
 # Structured formats 
 class ResultMapper(BaseModel):
@@ -416,8 +418,8 @@ class ClusterGenerator:
                     code_embedding=item.code_embedding,
                     description_embedding=item.description_embedding,
                     meta_cluster=None,  # No meta clusters in simple version
-                    meso_cluster=None,  # No meso clusters 
-                    mirco_cluster=micro_cluster  # Only initial clusters
+                    macro_cluster=None,  # No macro clusters 
+                    micro_cluster=micro_cluster  # Only initial clusters
                 )
                 
                 submodels.append(submodel)
@@ -437,12 +439,6 @@ class ClusterGenerator:
 # Example usage and testing
 if __name__ == "__main__":
     """Test the simple clusterer with actual embeddings"""
-    import sys
-    from pathlib import Path
-    
-    # Add project paths
-    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
-    
     from cache_manager import CacheManager
     from cache_config import CacheConfig
     import models
@@ -471,10 +467,14 @@ if __name__ == "__main__":
             var_lab=var_lab,
             embedding_type="description",  # or "description"
             verbose=True
-        )
+            )
         
         clusterer.run_pipeline()
         cluster_results = clusterer.to_cluster_model()
+        
+        for result in cluster_results:
+            print(result)
+            break
         
         # Save to cache
         cache_manager.save_to_cache(cluster_results, filename, 'clusters')
@@ -484,8 +484,8 @@ if __name__ == "__main__":
         cluster_counts = defaultdict(int)
         for response_items in cluster_results:
             for segment_items in response_items.response_segment:
-                if segment_items.mirco_cluster is not None:
-                    cluster_id = list(segment_items.mirco_cluster.keys())[0]
+                if segment_items.micro_cluster is not None:
+                    cluster_id = list(segment_items.micro_cluster.keys())[0]
                     cluster_counts[cluster_id] += 1
     
         print(f"\nFound {len(cluster_counts)} unique clusters")

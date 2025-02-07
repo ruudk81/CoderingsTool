@@ -5,31 +5,39 @@ A text analysis pipeline for processing survey responses from SPSS files. The to
 ## Features
 
 - Load survey data from SPSS (.sav) files
-- Text preprocessing including normalization and spell checking
-- Quality filtering to identify and filter out meaningless responses
-- Segment descriptions generation for response components
-- Text embeddings using OpenAI's embedding models
-- Hierarchical clustering (meta, meso, micro levels)
-- Thematic labeling of clusters
-- CSV export/import at each processing stage
+- Models for structured data in models.py
+- Congfigurations is config.py
+- Prompts in prompts.py
+- Cache manager for data storage and persistence
+- Modular approach:
+  1. Text preprocessing including normalization and spell checking
+  2. Quality filtering to identify and filter out meaningless responses
+  3. Segment responses and generate descriptive codes and code descriptions for each segment
+  4. Embed descriptive codes and code descriptions using OpenAI's embedding models
+  5. Initial, automatic clustering of micro clusters with HDBSCAN based on UMAP reduced dimensions of embeddings
+  6. Merge clusters that cannot semantically be positively differentiated in light of the research question
+  7. Hierarchical labelling - node levels 1, 2 and 3. For meta, macro and micro clusters with labels called themes, topics and keywords
+  8. Visualization of results in dendrogram (for each node), word cloud (for each theme) and an overall summary
+- Orchestration in pipeline.py
+- Streamlit app based on pipeline
 
 ## Installation
 
 1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/CoderingsTool.git
-cd CoderingsTool
-```
+   ```bash
+   git clone https://github.com/yourusername/CoderingsTool.git
+   cd CoderingsTool
+   ```
 
 2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. Set up environment variables:
-```bash
-export OPENAI_API_KEY="your-openai-api-key"
-```
+   ```bash
+   export OPENAI_API_KEY="your-openai-api-key"
+   ```
 
 ## Usage
 
@@ -42,49 +50,31 @@ cd src
 python pipeline.py
 ```
 
-Command-line options:
-- `--force-recalculate`: Force recalculation of all steps
-- `--force-step STEP_NAME`: Force specific step recalculation
-- `--cleanup`: Clean up old cache files
-- `--stats`: Show cache statistics
-
-### Data Processing Steps
-
-1. **Data Import**: Loads survey responses from SPSS files
-2. **Preprocessing**: Normalizes text, performs spell checking, and finalizes responses
-3. **Segmentation**: Describes segments and filters by quality
-4. **Embedding**: Generates embeddings for codes and descriptions
-5. **Clustering**: Creates hierarchical clusters of similar responses
-6. **Labeling**: Assigns thematic labels to clusters
-
 ### Configuration
 
 Edit `src/config.py` to modify:
+
 - OpenAI model settings
 - File size limits
 - Language settings
 - Batch processing parameters
+- etc.
 
 ## Project Structure
 
 ```
 CoderingsTool/
-├── data/                    # Input data files
+├── data/                   # Input data files
 ├── src/
-│   ├── app.py              # Web application (if implemented)
-│   ├── config.py           # Configuration settings
-│   ├── models.py           # Data models
-│   ├── pipeline.py         # Main processing pipeline
-│   ├── prompts.py          # LLM prompts
-│   ├── ui_text.py          # UI text constants
+│   ├── app.py             # Web application (if implemented)
+│   ├── config.py          # Configuration settings
+│   ├── models.py          # Data models
+│   ├── pipeline.py        # Main processing pipeline
+│   ├── prompts.py         # LLM prompts
+│   ├── ui_text.py         # UI text constants
 │   └── modules/
-│       ├── assigning.py    # Assignment logic
-│       ├── clustering.py   # Clustering algorithms
-│       ├── labelling.py    # Labeling functions
-│       ├── preprocessing.py # Preprocessing utilities
-│       ├── visualizing.py  # Visualization tools
-│       └── utils/          # Utility modules
-└── requirements.txt        # Python dependencies
+│       └── utils/         # Utility modules
+└── requirements.txt       # Python dependencies
 ```
 
 ## Requirements
