@@ -14,24 +14,24 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE #,DEFAULT_MODEL
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
 
-DEFAULT_MODEL = "gpt-4.1-mini"
-
 class LangChainPipeline :
-    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str):
+    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, temperature: float = 0.0):
         self.language = language
         self.var_lab = var_lab
         
-        self.language = language
+        # Get seed from config
+        model_config = ModelConfig()
+        
         self.llm = ChatOpenAI(
-            temperature=0,
+            temperature=temperature,
             model=model_name,
             openai_api_key=api_key,
-            model_kwargs={"seed": 42})
+            seed=model_config.seed)
 
         self.parser = JsonOutputParser()
         self.retry_delay = 2
@@ -128,11 +128,16 @@ class SegmentDescriber:
         completion_reserve: int = 1000,  
         max_batch_size: int = 5,
         var_lab : str = "",
-        verbose: bool = False):
+        verbose: bool = False,
+        model_config: ModelConfig = None):
+        
+        # Use provided config or create default
+        self.model_config = model_config or ModelConfig()
         
         self.provider = provider.lower()
         self.openai_api_key = api_key or OPENAI_API_KEY
-        self.openai_model = model or DEFAULT_MODEL
+        # Use model from config for segmentation/description stage
+        self.openai_model = model or self.model_config.get_model_for_stage('segmentation')
         self.max_tokens = max_tokens
         self.completion_reserve = completion_reserve
         self.max_batch_size = max_batch_size
@@ -145,7 +150,8 @@ class SegmentDescriber:
             model_name=self.openai_model,
             api_key=self.openai_api_key,
             language=DEFAULT_LANGUAGE,
-            var_lab = "" ) 
+            var_lab = "",
+            temperature=self.model_config.get_temperature_for_stage('segmentation')) 
             
         self.chain = self.langchain_pipeline.build_chain()
 
@@ -172,7 +178,8 @@ class SegmentDescriber:
         except KeyError:
             # Fall back to a known encoding that's similar to GPT-4 models
             encoding = tiktoken.get_encoding("cl100k_base")  # This is the encoding used by GPT-4
-            print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
+            if not self.verbose_reporter.enabled:
+                print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
         # Calculate token budget
         segmentation_prompt = SEGMENTATION_PROMPT
