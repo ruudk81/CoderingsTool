@@ -218,8 +218,15 @@ class Phase2Merger:
                                 cluster_data: Dict[int, ClusterData],
                                 initial_labels: Dict[int, InitialLabel],
                                 var_lab: str) -> List[List[int]]:
-        """Merge clusters by processing similarity pairs in sorted order"""
-        logger.info(f"Starting pair-based merging with {len(sorted_pairs)} high-similarity pairs...")
+        """Merge clusters by processing similarity pairs in sorted order with batched LLM requests
+        
+        This improved implementation:
+        1. Batches LLM requests for efficiency (fewer API calls)
+        2. Prioritizes the most promising pairs based on embedding similarity
+        3. Updates merge groups dynamically as decisions come in
+        4. Provides detailed progress logging
+        """
+        logger.info(f"Starting optimized pair-based merging with {len(sorted_pairs)} high-similarity pairs...")
         
         # Initialize cluster groups (initially each cluster is in its own group)
         cluster_to_group = {}  # Maps cluster ID to its group index
@@ -233,126 +240,168 @@ class Phase2Merger:
         
         # Add all clusters (including those not in any pair)
         all_clusters.update(cluster_data.keys())
+        logger.info(f"Processing a total of {len(all_clusters)} clusters")
         
         # Start with individual groups
         for i, cid in enumerate(all_clusters):
             merge_groups.append([cid])
             cluster_to_group[cid] = i
         
-        # Process pairs in descending order of similarity
-        llm_calls = 0
+        # Create batches of pairs to evaluate
+        batch_size = min(10, self.config.batch_size)  # Limit batch size for prompt size
+        
+        # Filter pairs that would exceed max group size
+        valid_pairs = []
         for c1, c2, similarity in sorted_pairs:
-            # Get current groups
             g1 = cluster_to_group.get(c1)
             g2 = cluster_to_group.get(c2)
             
             # Skip if both clusters are in the same group
             if g1 == g2:
-                logger.debug(f"Skipping: clusters {c1} and {c2} are already in the same group {g1}")
                 continue
             
             # Skip if merging would exceed max group size
             if len(merge_groups[g1]) + len(merge_groups[g2]) > self.max_merge_group_size:
-                logger.info(f"Skipping: merging groups would exceed max size ({len(merge_groups[g1])} + {len(merge_groups[g2])})")
+                logger.debug(f"Skipping evaluation: merging clusters {c1} & {c2} would exceed max size")
                 continue
             
-            # Check if these should be merged using LLM
-            logger.info(f"Checking clusters {c1} and {c2} (similarity: {similarity:.4f})...")
-            should_merge = await self._check_should_merge(
-                c1, c2, cluster_data, initial_labels, var_lab)
-            llm_calls += 1
+            valid_pairs.append((c1, c2, similarity))
+        
+        logger.info(f"Found {len(valid_pairs)} valid pairs to evaluate (after filtering for size constraints)")
+        
+        # Process pairs in batches
+        llm_calls = 0
+        total_batches = (len(valid_pairs) + batch_size - 1) // batch_size
+        merge_decisions = {}  # Cache decisions to avoid redundant API calls
+        
+        # Process in batches with logging
+        for batch_idx in range(0, len(valid_pairs), batch_size):
+            batch_end = min(batch_idx + batch_size, len(valid_pairs))
+            current_batch = valid_pairs[batch_idx:batch_end]
             
-            if should_merge:
-                # Merge the two groups
-                logger.info(f"Merging groups containing clusters {c1} and {c2}")
+            logger.info(f"Processing batch {batch_idx // batch_size + 1}/{total_batches} "
+                      f"with {len(current_batch)} pairs...")
+            
+            # Extract pairs for the batch
+            batch_pairs = [(c1, c2) for c1, c2, _ in current_batch]
+            
+            # Create batch prompt
+            prompt = self._create_merge_decision_prompt(batch_pairs, cluster_data, initial_labels, var_lab)
+            
+            # Get decisions from LLM
+            try:
+                batch_decisions = await self._get_merge_decisions(prompt)
+                llm_calls += 1
                 
-                # Always keep the smaller group index and merge the larger one into it
-                if g1 > g2:
-                    g1, g2 = g2, g1  # Swap to ensure g1 < g2
+                # Create a mapping from pair to decision
+                if batch_decisions and batch_decisions.decisions:
+                    for decision in batch_decisions.decisions:
+                        pair_key = (decision.cluster_id_1, decision.cluster_id_2)
+                        merge_decisions[pair_key] = decision.should_merge
+                        
+                        # Log the decision
+                        status = "MERGED" if decision.should_merge else "KEPT SEPARATE"
+                        reason = decision.reason[:50] + "..." if len(decision.reason) > 50 else decision.reason
+                        logger.info(f"Decision for clusters {decision.cluster_id_1} & {decision.cluster_id_2}: "
+                                  f"{status} - {reason}")
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                # Continue with next batch
+                continue
+            
+            # Apply merge decisions for this batch
+            for c1, c2, similarity in current_batch:
+                # Get current groups (they might have changed from previous merges)
+                g1 = cluster_to_group.get(c1)
+                g2 = cluster_to_group.get(c2)
                 
-                # Merge group g2 into g1
-                merge_groups[g1].extend(merge_groups[g2])
+                # Skip if already in same group or would exceed size
+                if g1 == g2:
+                    continue
                 
-                # Update group assignments for merged clusters
-                for cid in merge_groups[g2]:
-                    cluster_to_group[cid] = g1
+                if len(merge_groups[g1]) + len(merge_groups[g2]) > self.max_merge_group_size:
+                    continue
                 
-                # Mark group g2 as empty (will be filtered out later)
-                merge_groups[g2] = []
-            else:
-                logger.info(f"Not merging: clusters {c1} and {c2} are meaningfully differentiated")
+                # Get decision (from either order of pairs)
+                should_merge = merge_decisions.get((c1, c2)) or merge_decisions.get((c2, c1), False)
+                
+                if should_merge:
+                    # Merge the two groups
+                    logger.info(f"Applying merge for clusters {c1} & {c2} (similarity: {similarity:.4f})")
+                    
+                    # Always keep the smaller group index and merge the larger one into it
+                    if g1 > g2:
+                        g1, g2 = g2, g1  # Swap to ensure g1 < g2
+                    
+                    # Merge group g2 into g1
+                    merge_groups[g1].extend(merge_groups[g2])
+                    
+                    # Update group assignments for merged clusters
+                    for cid in merge_groups[g2]:
+                        cluster_to_group[cid] = g1
+                    
+                    # Mark group g2 as empty
+                    merge_groups[g2] = []
         
         # Filter out empty groups
         final_groups = [group for group in merge_groups if group]
         
-        logger.info(f"Merging completed with {llm_calls} LLM calls")
-        logger.info(f"Created {len(final_groups)} merge groups from {len(all_clusters)} clusters")
+        # Calculate statistics
+        total_merged = sum(1 for g in final_groups if len(g) > 1)
+        merge_reduction = (len(all_clusters) - len(final_groups)) / len(all_clusters) * 100 if all_clusters else 0
+        
+        logger.info(f"Merging completed with {llm_calls} LLM batch calls")
+        logger.info(f"Created {len(final_groups)} merge groups ({total_merged} merged groups) from {len(all_clusters)} clusters")
+        logger.info(f"Reduction: {merge_reduction:.1f}%")
         
         return final_groups
     
 # Removed: _hierarchical_merging function is no longer needed - replaced by _similarity_guided_merging
     
-    async def _check_should_merge(self, 
-                               cluster_id_1: int, 
-                               cluster_id_2: int, 
-                               cluster_data: Dict[int, ClusterData],
-                               initial_labels: Dict[int, InitialLabel],
-                               var_lab: str) -> bool:
-        """Check if two clusters should be merged based on LLM decision"""
-        # Create the prompt
-        prompt = self._create_merge_decision_prompt(
-            [(cluster_id_1, cluster_id_2)], cluster_data, initial_labels, var_lab)
-        
-        # Get decision from LLM
-        async with self.semaphore:
-            try:
-                decisions = await self._get_merge_decisions(prompt)
-                
-                # Should only have one decision
-                if decisions and decisions.decisions and len(decisions.decisions) > 0:
-                    decision = decisions.decisions[0]
-                    logger.info(f"Merge decision for clusters {cluster_id_1} & {cluster_id_2}: "
-                              f"{decision.should_merge} (Reason: {decision.reason})")
-                    return decision.should_merge
-                
-                # Default to not merging if no clear decision
-                return False
-            except Exception as e:
-                logger.error(f"Error getting merge decision: {e}")
-                # Be conservative in case of errors
-                return False
+    # _check_should_merge method has been removed - functionality is now integrated into _sorted_pairs_merging
+    # with batch processing for better efficiency
     
     def _create_merge_decision_prompt(self,
                                  pairs: List[Tuple[int, int]],
                                  cluster_data: Dict[int, ClusterData],
                                  initial_labels: Dict[int, InitialLabel],
                                  var_lab: str) -> str:
-        """Create prompt for binary merge decisions"""
+        """Create prompt for binary merge decisions with support for multiple pairs
+        
+        This updated version can handle batches of pairs in a single prompt, making
+        LLM API usage more efficient.
+        """
         prompt = SIMILARITY_SCORING_PROMPT.replace("{var_lab}", var_lab)
         prompt = prompt.replace("{language}", self.config.language)
+        
+        # Add instructions for batch decision format
+        if len(pairs) > 1:
+            prompt += "\n\nYou will be analyzing multiple cluster pairs in this request. " \
+                      "For each pair, decide whether they should be merged or kept separate " \
+                      "based on how meaningfully differentiated they are."
         
         # Create cluster pair descriptions
         pair_descriptions = []
         
-        for cluster_id_1, cluster_id_2 in pairs:
+        for idx, (cluster_id_1, cluster_id_2) in enumerate(pairs):
             # Get data for first cluster
             cluster1 = cluster_data[cluster_id_1]
             label1 = initial_labels[cluster_id_1].label
             
             # Get representative items for first cluster (codes and descriptions)
-            codes1 = cluster1.descriptive_codes[:5]  # Use top 5 codes
-            descriptions1 = cluster1.code_descriptions[:5]  # Use top 5 descriptions
+            codes1 = cluster1.descriptive_codes[:3]  # Use top 3 codes to keep prompt shorter for batches
+            descriptions1 = cluster1.code_descriptions[:3]  # Use top 3 descriptions
             
             # Get data for second cluster
             cluster2 = cluster_data[cluster_id_2]
             label2 = initial_labels[cluster_id_2].label
             
             # Get representative items for second cluster (codes and descriptions)
-            codes2 = cluster2.descriptive_codes[:5]  # Use top 5 codes
-            descriptions2 = cluster2.code_descriptions[:5]  # Use top 5 descriptions
+            codes2 = cluster2.descriptive_codes[:3]  # Use top 3 codes
+            descriptions2 = cluster2.code_descriptions[:3]  # Use top 3 descriptions
             
-            # Create pair description
-            description = f"\n\nCOMPARISON: Cluster {cluster_id_1} vs Cluster {cluster_id_2}\n"
+            # Create pair description with a number for batches
+            description = f"\n\nPAIR {idx+1}: Cluster {cluster_id_1} vs Cluster {cluster_id_2}\n"
             description += f"\nCluster {cluster_id_1}:"
             description += f"\n- Label: {label1}"
             description += f"\n- Representative codes:"
@@ -373,7 +422,13 @@ class Phase2Merger:
             
             pair_descriptions.append(description)
         
+        # Join all pair descriptions
         prompt = prompt.replace("{cluster_pairs}", "\n".join(pair_descriptions))
+        
+        # Add reminder about format for batch responses
+        if len(pairs) > 1:
+            prompt += "\n\nRemember: For each pair, include both cluster_id_1 and cluster_id_2 in your response " \
+                      "along with your should_merge decision and reason. Ensure cluster IDs match exactly."
         
         return prompt
     
