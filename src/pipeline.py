@@ -273,8 +273,29 @@ else:
     # Step 5b: Merge similar clusters
     print("\nMerging similar clusters...")
     merger = clusterMerger.ClusterMerger(input_list=initial_clusters, var_lab=var_lab)
-    cluster_results = merger.merge_clusters()
+    cluster_results, merge_mapping = merger.merge_clusters()
     print("\nCluster merging completed successfully")
+    
+    # Save merge mapping data for later use by labeller
+    cache_key = 'cluster_merge_mapping'
+    cache_data = {
+        'merge_mapping': merge_mapping,
+        'cluster_data': merger.cluster_data,
+        'initial_labels': merger.initial_labels
+    }
+    cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
+    print(f"Saved merge mapping to cache with key '{cache_key}'")
+    
+    # Display merge statistics
+    total_initial = len(merger.cluster_data)
+    total_final = len(set(merge_mapping.cluster_to_merged.values()))
+    merged_groups = [g for g in merge_mapping.merge_groups if len(g) > 1]
+    reduction = (total_initial - total_final) / total_initial * 100 if total_initial > 0 else 0
+    
+    print(f"Initial clusters: {total_initial}")
+    print(f"Final clusters: {total_final}")
+    print(f"Merged clusters: {len(merged_groups)}")
+    print(f"Reduction: {reduction:.1f}%")
     
     end_time = time.time()
     elapsed_time = end_time - start_time
