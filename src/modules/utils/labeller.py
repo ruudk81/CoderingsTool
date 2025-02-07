@@ -437,8 +437,8 @@ Clusters to analyze:
                                   var_lab: str) -> MergeRemapResponse:
         """Stage 2: Identify clusters that are semantically too similar
         
-        Sequential approach: Compare each cluster with subsequent clusters,
-        skipping those already merged.
+        Sequential approach: Process multiple primary clusters at once, comparing
+        each with its subsequent clusters, skipping those already merged.
         
         Args:
             labeled_clusters: Initial labels from Stage 1
@@ -453,28 +453,39 @@ Clusters to analyze:
         merge_groups = defaultdict(list)  # Maps primary cluster to list of merged clusters
         similarity_results = []
         
-        # Count total comparisons for progress bar
-        total_comparisons = sum(len(cluster_ids) - i - 1 for i in range(len(cluster_ids)))
+        # Process clusters in batches
+        primary_batch_size = 10  # Process 10 primary clusters at once
+        total_processed = 0
         
-        with tqdm(total=total_comparisons, desc="Analyzing cluster similarities") as pbar:
-            for i, primary_cluster in enumerate(cluster_ids):
-                # Skip if this cluster has already been merged into another
-                if primary_cluster in merged_into:
-                    # Still update progress bar for skipped comparisons
-                    pbar.update(len(cluster_ids) - i - 1)
-                    continue
+        with tqdm(total=len(cluster_ids), desc="Processing clusters") as pbar:
+            for batch_start in range(0, len(cluster_ids), primary_batch_size):
+                batch_end = min(batch_start + primary_batch_size, len(cluster_ids))
+                primary_batch = cluster_ids[batch_start:batch_end]
                 
-                # Compare with all subsequent clusters
-                pairs_to_analyze = []
-                for secondary_cluster in cluster_ids[i + 1:]:
-                    # Skip if secondary cluster already merged
-                    if secondary_cluster not in merged_into:
-                        pairs_to_analyze.append((primary_cluster, secondary_cluster))
+                # Collect all pairs to analyze for this batch of primary clusters
+                all_pairs = []
+                for i, primary_cluster in enumerate(primary_batch):
+                    # Skip if this cluster has already been merged into another
+                    if primary_cluster in merged_into:
+                        continue
+                    
+                    # Get the original index in the full cluster list
+                    original_idx = batch_start + i
+                    
+                    # Compare with all subsequent clusters
+                    for secondary_cluster in cluster_ids[original_idx + 1:]:
+                        # Skip if secondary cluster already merged
+                        if secondary_cluster not in merged_into:
+                            all_pairs.append((primary_cluster, secondary_cluster))
                 
-                # Analyze in batches
-                batch_size = 5
-                for batch_start in range(0, len(pairs_to_analyze), batch_size):
-                    batch_pairs = pairs_to_analyze[batch_start:batch_start + batch_size]
+                # Analyze all pairs in sub-batches
+                comparison_batch_size = 20  # Analyze 20 pairs at once
+                for pair_batch_start in range(0, len(all_pairs), comparison_batch_size):
+                    pair_batch_end = min(pair_batch_start + comparison_batch_size, len(all_pairs))
+                    batch_pairs = all_pairs[pair_batch_start:pair_batch_end]
+                    
+                    if not batch_pairs:
+                        continue
                     
                     # Create batch prompt
                     prompt = self._create_similarity_analysis_prompt(
@@ -495,13 +506,9 @@ Clusters to analyze:
                             # Merge secondary into primary
                             merged_into[result.cluster_2_id] = result.cluster_1_id
                             merge_groups[result.cluster_1_id].append(result.cluster_2_id)
-                    
-                    pbar.update(len(batch_pairs))
                 
-                # Update progress for comparisons we skipped
-                skipped = len(cluster_ids) - i - 1 - len(pairs_to_analyze)
-                if skipped > 0:
-                    pbar.update(skipped)
+                # Update progress for this batch of primary clusters
+                pbar.update(len(primary_batch))
         
         # Convert merge_groups to the expected format
         final_merge_groups = []
