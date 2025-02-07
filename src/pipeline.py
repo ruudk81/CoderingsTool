@@ -253,53 +253,7 @@ else:
     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
-# Display final summary of the hierarchical structure
-print("\n" + "=" * 80)
-print("FINAL HIERARCHICAL STRUCTURE")
-print("=" * 80)
 
-# Count and display hierarchy statistics
-theme_counts = {}
-topic_counts = {}
-keyword_counts = {}
-
-for result in labeled_results:
-    if result.response_segment:
-        for segment in result.response_segment:
-            if segment.Theme:
-                for theme_id, theme_label in segment.Theme.items():
-                    theme_counts[theme_id] = theme_counts.get(theme_id, 0) + 1
-            if segment.Topic:
-                for topic_id, topic_label in segment.Topic.items():
-                    topic_counts[topic_id] = topic_counts.get(topic_id, 0) + 1
-            if segment.Keyword:
-                for keyword_id, keyword_label in segment.Keyword.items():
-                    keyword_counts[keyword_id] = keyword_counts.get(keyword_id, 0) + 1
-
-print("\n📊 Hierarchy Summary:")
-print(f"   - {len(theme_counts)} Themes")
-print(f"   - {len(topic_counts)} Topics")
-print(f"   - {len(keyword_counts)} Keywords (micro-clusters)")
-print(f"   - {len(labeled_results)} Total responses labeled")
-
-# Show top themes by frequency
-if theme_counts:
-    print("\n🎯 Top Themes (by segment count):")
-    sorted_themes = sorted(theme_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-    for theme_id, count in sorted_themes:
-        # Find the theme label from the first occurrence
-        theme_label = None
-        for result in labeled_results:
-            if result.response_segment:
-                for segment in result.response_segment:
-                    if segment.Theme and theme_id in segment.Theme:
-                        theme_label = segment.Theme[theme_id]
-                        break
-                if theme_label:
-                    break
-        print(f"   {theme_id}. {theme_label} ({count} segments)")
-
-print("\n" + "=" * 80)
 
 
 
