@@ -9,7 +9,6 @@ from config import LabellerConfig
 import models
 from utils.verboseReporter import VerboseReporter
 
-
 # Models for structured data
 class CodebookEntry(BaseModel):
     """Single entry in the hierarchical codebook"""
@@ -35,14 +34,14 @@ class ClusterLabel(BaseModel):
     """Initial cluster label from Phase 1"""
     cluster_id: int
     label: str = Field(description="Concise label (max 4 words)")
-    description: str = Field(description="Detailed description of cluster theme")
+    #description: str = Field(description="Detailed description of cluster theme")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
 
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
     label: str = Field(description="Concise thematic label (max 4 words)")
-    description: str = Field(description="Clear explanation of cluster theme")
+    #description: str = Field(description="Clear explanation of cluster theme")
     
     
 class DiscoveryResponse(BaseModel):
@@ -51,21 +50,29 @@ class DiscoveryResponse(BaseModel):
 
 
 class ThemeJudgmentResponse(BaseModel):
-    """Response from Phase 3 theme judger"""
-    is_logical: bool = Field(description="Whether the structure is meaningful and logical")
-    feedback: Optional[str] = Field(description="Instructions for improvement if not logical")
-    specific_issues: Optional[List[str]] = Field(description="Specific structural issues identified")
+    """Response from Phase 3 theme judger - updated structure"""
+    needs_revision: bool = Field(description="Whether the structure needs revision")
+    summary: str = Field(description="One sentence assessment")
+    issues: List[str] = Field(default_factory=list, description="List of structural issues found")
+    actions: List[Dict[str, str]] = Field(default_factory=list, description="List of actions with type and details")
+
 
 class ThemeReviewResponse(BaseModel):
     """Response from Phase 4 theme review"""
     themes: List[Dict[str, Any]] = Field(description="Improved theme structure")
 
 
+class RefinementEntry(BaseModel):
+    """Single refinement entry"""
+    label: str
+    description: str
+
+
 class LabelRefinementResponse(BaseModel):
-    """Response from Phase 4 label refinement"""
-    refined_themes: Dict[str, str] = Field(description="Refined theme labels by ID")
-    refined_topics: Dict[str, str] = Field(description="Refined topic labels by ID")
-    refined_codes : Dict[str, str] = Field(description="Refined code labels by ID")
+    """Response from Phase 5 label refinement"""
+    refined_themes: Dict[str, RefinementEntry] = Field(description="Refined theme labels by ID")
+    refined_topics: Dict[str, RefinementEntry] = Field(description="Refined topic labels by ID")
+    refined_codes: Dict[str, RefinementEntry] = Field(description="Refined code labels by ID")
     
 
 class AssignmentResponse(BaseModel):
@@ -213,15 +220,29 @@ class ThematicLabeller:
             judgment = await self._phase3_theme_judger(self.codebook)
             self.verbose_reporter.step_complete("Codebook evaluation completed")
             
-            if judgment.is_logical:
+            if not judgment.needs_revision:   
                 self.verbose_reporter.stat_line("✅ Codebook structure approved!")
+                self.verbose_reporter.stat_line(f"Summary: {judgment.summary}")
                 break
             else:
                 self.verbose_reporter.stat_line("⚠️ Structure needs improvement")
-                if judgment.specific_issues:
+                self.verbose_reporter.stat_line(f"Summary: {judgment.summary}")
+                
+                if judgment.issues:
                     self.verbose_reporter.stat_line("Issues identified:")
-                    for issue in judgment.specific_issues: #[:3]
+                    for issue in judgment.issues:
                         self.verbose_reporter.stat_line(f"- {issue}", bullet="  ")
+                
+                if judgment.actions:
+                    actions_text = []
+                    for action in judgment.actions:
+                        action_type = action.get('type', 'UNKNOWN')
+                        details = action.get('details', 'No details')
+                        actions_text.append(f"- {action_type}: {details}")
+                    actions_text = "\n".join(actions_text) if actions_text else "No specific actions provided"
+                    self.verbose_reporter.stat_line("Required actions:")
+                    for action in judgment.actions: 
+                        self.verbose_reporter.stat_line(actions_text, bullet="  ")
                 
                 # Phase 4: Review and improve structure
                 self.verbose_reporter.step_start("Phase 4: Theme Review", emoji="🔄")
@@ -230,9 +251,9 @@ class ThematicLabeller:
                 
                 review_attempt += 1
         
-        # Final check if we exhausted attempts without approval
-        if review_attempt >= max_review_attempts and not judgment.is_logical:
+        if review_attempt >= max_review_attempts and judgment.needs_revision:   
             self.verbose_reporter.stat_line("⚠️ Maximum review attempts reached, proceeding with current structure")
+     
          
         # =============================================================================
         # Phase 5: Label Refinement  
@@ -312,13 +333,13 @@ class ThematicLabeller:
                     labeled_clusters.append(ClusterLabel(
                         cluster_id=cluster_id,
                         label="UNLABELED",
-                        description="Failed to generate label",
+                        #description="Failed to generate label",
                         representatives=representatives))
                 else:
                     labeled_clusters.append(ClusterLabel(
                         cluster_id=cluster_id,
                         label=result.label,
-                        description=result.description,
+                        #description=result.description,
                         representatives=representatives))
         
         return labeled_clusters
@@ -329,24 +350,16 @@ class ThematicLabeller:
         
         # Format clusters for prompt
         cluster_summaries = []
+        idx = 1
         for cluster in sorted(labeled_clusters, key=lambda x: x.cluster_id):
-            summary = f"Cluster {cluster.cluster_id}: {cluster.label} - {cluster.description}\n"
-            #summary = f"- Cluster {cluster.cluster_id}: {cluster.label}\n"
+            summary = f"{idx}) {cluster.label}\n"
             cluster_summaries.append(summary)
-        
-        all_cluster_ids = ", ".join(str(c.cluster_id) for c in labeled_clusters)
-        
-        # Add improvement instructions if this is a retry
-        improvement_text = ""
-        if improvement_instructions:
-            improvement_text = f"\n\nIMPORTANT - Previous attempt feedback:\n{improvement_instructions}\n\nPlease address these issues in your new hierarchy."
-        
+            idx =+ 1
+             
         prompt = PHASE2_DISCOVERY_PROMPT.format(
             survey_question=self.survey_question,
             language=self.config.language,
             cluster_summaries="\n".join(cluster_summaries),
-            all_cluster_ids=all_cluster_ids,
-            improvement_instructions=improvement_text
             )
         
         result = await self._invoke_with_retries(prompt, DiscoveryResponse)
@@ -358,27 +371,8 @@ class ThematicLabeller:
     async def _phase3_theme_judger(self, codebook: Codebook) -> ThemeJudgmentResponse:
         """Phase 3: Judge the quality of the theme structure"""
         from prompts import PHASE3_THEME_JUDGER_PROMPT
-        
-        # Format codebook for evaluation
-        lines = []
-        for theme in codebook.themes:
-            lines.append(f"\nTHEME {theme.id}: {theme.label}")
-            if theme.description:
-                lines.append(f"  Description: {theme.description}")
-            
-            related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
-            for topic in related_topics:
-                lines.append(f"  TOPIC {topic.id}: {topic.label}")
-                if topic.description:
-                    lines.append(f"    Description: {topic.description}")
-                
-                related_codes  = [s for s in codebook.codes if s.parent_id == topic.id]
-                for code in related_codes :
-                    lines.append(f"    code {code.id}: {code.label}")
-                    if code.description:
-                        lines.append(f"    Description: {code.description}")
-        
-        codebook_text = "\n".join(lines)
+       
+        codebook_text = self.format_codebook_prompt(codebook)
         
         prompt = PHASE3_THEME_JUDGER_PROMPT.format(
             survey_question=self.survey_question,
@@ -391,33 +385,49 @@ class ThematicLabeller:
             
         except Exception as e:
             print(f"    ❌ Theme judgment failed: {str(e)}, assuming structure is acceptable")
-            return ThemeJudgmentResponse(is_logical=True)
+            return ThemeJudgmentResponse(
+                needs_revision=False,
+                summary="Judgment failed, proceeding with current structure",
+                issues=[],
+                actions=[]
+            )
     
-    async def _phase4_theme_review(self, current_codebook: Codebook, judgment: ThemeJudgmentResponse) -> Codebook:
+    async def _phase4_theme_review(self, codebook: Codebook, judgment: ThemeJudgmentResponse) -> Codebook:
         """Phase 4: Theme Review - Improve codebook based on feedback"""
         from prompts import PHASE4_THEME_REVIEW_PROMPT
        
-        codebook_text = self._format_codebook_for_review(current_codebook)
-        issues_text = "\n".join([f"- {issue}" for issue in (judgment.specific_issues or [])])
+        codebook_text = self.format_codebook_prompt(codebook)
         
+        issues_text = "\n".join([f"- {issue}" for issue in judgment.issues])
+        #actions_text = "\n".join([f"- {action}" for action in judgment.actions])
+        
+        actions_text = []
+        for action in judgment.actions:
+            action_type = action.get('type', 'UNKNOWN')
+            details = action.get('details', 'No details')
+            actions_text.append(f"- {action_type}: {details}")
+        actions_text = "\n".join(actions_text) if actions_text else "No specific actions provided"
+                
+             
         prompt = PHASE4_THEME_REVIEW_PROMPT.format(
             survey_question=self.survey_question,
             current_codebook=codebook_text,
-            improvement_feedback=judgment.feedback,
-            specific_issues=issues_text,
+            summary = judgment.summary,
+            issues=issues_text,
+            actions =actions_text,
             language=self.config.language
-            )
+        )
         
         result = await self._invoke_with_retries(prompt, ThemeReviewResponse)
         improved_codebook = self._parse_codebook(result.model_dump())
-  
+      
         return improved_codebook
     
     async def _phase5_label_refinement(self, codebook: Codebook) -> None:
         """Phase 5: Refine all labels for clarity and consistency"""
         from prompts import PHASE5_LABEL_REFINEMENT_PROMPT
         
-        codebook_text = self._format_codebook(codebook)
+        codebook_text = self.format_codebook_prompt(codebook)
         
         prompt = PHASE5_LABEL_REFINEMENT_PROMPT.format(
             survey_question=self.survey_question,
@@ -433,42 +443,90 @@ class ThematicLabeller:
             # Create lookups
             theme_lookup = {t.id: t for t in codebook.themes}
             topic_lookup = {t.id: t for t in codebook.topics}
-            code_lookup = {s.id: s for s in codebook.codes}
+            code_lookup = {c.id: c for c in codebook.codes}
             
             # Apply theme refinements
-            for theme_id, refined_label in result.refined_themes.items():
-                if theme_id in theme_lookup and theme_lookup[theme_id].label != refined_label:
-                    old_label = theme_lookup[theme_id].label
-                    theme_lookup[theme_id].label = refined_label
-                    refinement_count += 1
-                    print(f"      🏷️  Theme {theme_id}: '{old_label}' → '{refined_label}'")
+            for theme_id, refinement in result.refined_themes.items():
+                if theme_id in theme_lookup:
+                    theme = theme_lookup[theme_id]
+                    old_label = theme.label
+                    old_description = theme.description
+                    
+                    # Update if either label or description changed
+                    if theme.label != refinement.label or theme.description != refinement.description:
+                        theme.label = refinement.label
+                        theme.description = refinement.description
+                        refinement_count += 1
+                        
+                        if old_label != refinement.label:
+                            self.verbose_reporter.stat_line(
+                                f"🏷️  Theme {theme_id}: '{old_label}' → '{refinement.label}'", 
+                                bullet="      "
+                            )
+                        if old_description != refinement.description:
+                            self.verbose_reporter.stat_line(
+                                f"📝  Theme {theme_id} description updated", 
+                                bullet="      "
+                            )
             
             # Apply topic refinements
-            for topic_id, refined_label in result.refined_topics.items():
-                if topic_id in topic_lookup and topic_lookup[topic_id].label != refined_label:
-                    old_label = topic_lookup[topic_id].label
-                    topic_lookup[topic_id].label = refined_label
-                    refinement_count += 1
-                    print(f"      🏷️  Topic {topic_id}: '{old_label}' → '{refined_label}'")
+            for topic_id, refinement in result.refined_topics.items():
+                if topic_id in topic_lookup:
+                    topic = topic_lookup[topic_id]
+                    old_label = topic.label
+                    old_description = topic.description
+                    
+                    if topic.label != refinement.label or topic.description != refinement.description:
+                        topic.label = refinement.label
+                        topic.description = refinement.description
+                        refinement_count += 1
+                        
+                        if old_label != refinement.label:
+                            self.verbose_reporter.stat_line(
+                                f"🏷️  Topic {topic_id}: '{old_label}' → '{refinement.label}'", 
+                                bullet="      "
+                            )
+                        if old_description != refinement.description:
+                            self.verbose_reporter.stat_line(
+                                f"📝  Topic {topic_id} description updated", 
+                                bullet="      "
+                            )
             
             # Apply code refinements
-            for code_id, refined_label in result.refined_codes .items():
-                if code_id in code_lookup and code_lookup[code_id].label != refined_label:
-                    old_label = code_lookup[code_id].label
-                    code_lookup[code_id].label = refined_label
-                    refinement_count += 1
-                    print(f"      🏷️  code {code_id}: '{old_label}' → '{refined_label}'")
+            for code_id, refinement in result.refined_codes.items():
+                if code_id in code_lookup:
+                    code = code_lookup[code_id]
+                    old_label = code.label
+                    old_description = code.description
+                    
+                    if code.label != refinement.label or code.description != refinement.description:
+                        code.label = refinement.label
+                        code.description = refinement.description
+                        refinement_count += 1
+                        
+                        if old_label != refinement.label:
+                            self.verbose_reporter.stat_line(
+                                f"🏷️  Code {code_id}: '{old_label}' → '{refinement.label}'", 
+                                bullet="      "
+                            )
+                        if old_description != refinement.description:
+                            self.verbose_reporter.stat_line(
+                                f"📝  Code {code_id} description updated", 
+                                bullet="      "
+                            )
             
-            print(f"    ✨ Applied {refinement_count} label refinements")
+            self.verbose_reporter.stat_line(f"✨ Applied {refinement_count} label/description refinements")
             
         except Exception as e:
-            print(f"    ⚠️ Label refinement failed: {str(e)}, keeping original labels")
-    
+            self.verbose_reporter.stat_line(f"⚠️ Label refinement failed: {str(e)}, keeping original labels")
+        
+        
     async def _phase6_assignment(self, labeled_clusters: List[ClusterLabel], codebook: Codebook) -> List[ThemeAssignment]:
         """Phase 6: Assignment - Assign clusters to the refined hierarchy"""
         assignments = []
         from prompts import PHASE6_ASSIGNMENT_PROMPT
-        codebook_text = self._format_codebook(codebook)
+       
+        codebook_text = self.format_codebook_prompt(codebook)
         
         # Process each cluster
         tasks = []
@@ -486,7 +544,6 @@ class ThematicLabeller:
                 survey_question=self.survey_question,
                 cluster_id=cluster.cluster_id,
                 cluster_label=cluster.label,
-                cluster_description=cluster.description,
                 cluster_representatives=representatives,
                 codebook=codebook_text,
                 language=self.config.language)
@@ -620,41 +677,39 @@ class ThematicLabeller:
             themes=themes,
             topics=topics,
             codes=codes)
-  
     
-    def _format_codebook(self, codebook: Codebook) -> str:
-        """Format codebook in compact hierarchy"""
-        lines = []
+    def format_codebook_prompt(self, codebook: Codebook) -> str:
+        """Format Pydantic codebook for readable prompt"""
+        formatted = []
         
+        # Group topics and codes by parent
+        topics_by_theme = {}
+        codes_by_topic = {}
+        
+        for topic in codebook.topics:
+            if topic.parent_id not in topics_by_theme:
+                topics_by_theme[topic.parent_id] = []
+            topics_by_theme[topic.parent_id].append(topic)
+        
+        for code in codebook.codes:
+            if code.parent_id not in codes_by_topic:
+                codes_by_topic[code.parent_id] = []
+            codes_by_topic[code.parent_id].append(code)
+        
+        # Build formatted string
         for theme in codebook.themes:
-            lines.append(f"\n{theme.id}. {theme.label.upper()} - {theme.description}")
+            formatted.append(f"\nTHEME {theme.id}: {theme.label}")
+            formatted.append(f"Description: {theme.description}")
             
-            related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
-            for topic in related_topics:
-                lines.append(f"\n   {topic.id} {topic.label} - {topic.description}")
+            for topic in topics_by_theme.get(theme.id, []):
+                formatted.append(f"\n  TOPIC {topic.id}: {topic.label}")
+                formatted.append(f"  Description: {topic.description}")
                 
-                related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
-                for code in related_codes:
-                    lines.append(f"      {code.id} {code.label} - {code.description}")
-                        
-        return "\n".join(lines)
-    
-    def _format_codebook_for_review(self, codebook: Codebook) -> str:
-        """Format codebook in compact hierarchy for review"""
-        lines = []
+                for code in codes_by_topic.get(topic.id, []):
+                    formatted.append(f"    CODE {code.id}: {code.label}")
+                    formatted.append(f"    Description: {code.description}")
         
-        for theme in codebook.themes:
-            lines.append(f"\n{theme.id}. {theme.label.upper()} - {theme.description}")
-            
-            related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
-            for topic in related_topics:
-                lines.append(f"\n   {topic.id} {topic.label} - {topic.description}")
-                
-                related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
-                for code in related_codes:
-                    lines.append(f"      {code.id} {code.label} - {code.description}")
-        
-        return "\n".join(lines)
+        return "\n".join(formatted)
     
     def _update_codebook_with_direct_assignments(self, codebook: Codebook, assignments: List[ThemeAssignment]):
         """Update codebook with direct cluster assignments"""
@@ -701,7 +756,6 @@ class ThematicLabeller:
         lines.append("Cluster ID | Label | Description")
         lines.append("-" * 80)
         
-        # self.labeled_clusters should exist from Phase 2
         if hasattr(self, 'labeled_clusters') and self.labeled_clusters:
             for cluster in sorted(self.labeled_clusters, key=lambda x: x.cluster_id):
                 # Truncate long descriptions to fit nicely
@@ -835,8 +889,7 @@ class ThematicLabeller:
                print(f"       ... and {len(codes_removed) - 5} more")
     
      
-    def _create_final_labels(self, labeled_clusters: List[ClusterLabel], 
-                            assignments: List[ThemeAssignment]) -> Dict[int, Dict]:
+    def _create_final_labels(self, labeled_clusters: List[ClusterLabel], assignments: List[ThemeAssignment]) -> Dict[int, Dict]:
         """Create final labels dictionary from assignments"""
         final_labels = {}
         
@@ -863,7 +916,7 @@ class ThematicLabeller:
                 # Use direct assignments
                 final_labels[cluster_id] = {
                     'label': cluster.label,
-                    'description': cluster.description,
+                    #'description': cluster.description,
                     'theme': (assignment.theme_id, assignment.confidence),
                     'topic': (assignment.topic_id, assignment.confidence),
                     'code': (assignment.code_id, assignment.confidence)
@@ -996,7 +1049,7 @@ class ThematicLabeller:
                     related_codes = [c for c in codebook.codes if c.parent_id == topic.id]   
                     if related_codes:  # Changed
                         for code in sorted(related_codes, key=lambda x: x.numeric_id):  
-                            self.verbose_reporter.stat_line(f"\nCODE {code.id}: {code.label}", bullet="        🔸" )  
+                            self.verbose_reporter.stat_line(f"🔸 CODE {code.id}: {code.label}", bullet="       " )  
                             if code.description:
                                 self.verbose_reporter.stat_line(f"Description: {code.description}", bullet="         " )  
                                 
