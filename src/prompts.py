@@ -749,82 +749,55 @@ Language: {language}
 """
 
 PHASE4_REFINEMENT_PROMPT = """
-You are a {language} expert conducting AGGRESSIVE quality review of a hierarchical codebook for survey analysis.
+You are a {language} expert reviewing a hierarchical codebook for survey analysis quality.
 
 Survey Question: {survey_question}
 
 Current hierarchy with cluster assignments:
 {hierarchy_with_assignments}
 
-🚨 CRITICAL REQUIREMENTS - EVERY LABEL MUST PASS ALL CRITERIA:
+Your task: Review the current labels and suggest improvements where needed. Focus on:
 
-1. **SINGLE CONCEPT ONLY**: Each label must express ONE idea/concept ONLY
-   - ❌ FORBIDDEN: "Gezondheid Voedingswaarde" (2 concepts mashed together)
-   - ✅ CORRECT: "Gezondheid" OR "Voedingswaarde" (choose the primary concept)
-   - ❌ FORBIDDEN: Any labels with "and", "en", "&", or multiple concepts
-   - ❌ FORBIDDEN: Compound labels like "Prijs Betaalbaarheid" → Choose "Prijs" OR "Betaalbaarheid"
+1. **Clarity**: Are labels clear and descriptive?
+2. **Consistency**: Do similar concepts use consistent terminology?
+3. **Appropriateness**: Do labels accurately reflect the cluster content?
+4. **Hierarchy Logic**: Do child labels properly relate to their parents?
 
-2. **MUTUALLY EXCLUSIVE**: Labels within each level must be completely distinct
-   - ❌ FORBIDDEN: Duplicate subjects like "Verse en Natuurlijke Ingrediënten" appearing twice
-   - ✅ REQUIRED: Each label covers different aspect/cluster content
+Quality Guidelines:
+- Labels should be concise (ideally 1-3 words)
+- Each label should represent a single, coherent concept
+- Avoid duplicate or near-identical labels at the same level
+- Ensure hierarchical relationships make logical sense
+- Labels should be specific enough to be meaningful
 
-3. **MAXIMUM 3 WORDS**: Labels must be concise and specific
-   - ❌ FORBIDDEN: "Ingrediënten en Samenstelling" (4+ words, compound)
-   - ✅ CORRECT: "Ingrediënten" (1 word, clear)
-
-4. **HIERARCHICAL LOGIC**: Child labels must be proper subcategories of parents
-   - Topics must be logical subdivisions of their theme
-   - Subjects must be specific instances under their topic
-
-MANDATORY FIXES REQUIRED:
-- Fix ALL compound labels (those containing multiple concepts)
-- Eliminate ALL duplicate subjects/topics  
-- Ensure each cluster maps to exactly ONE unique path through the hierarchy
-- Replace vague labels with specific, actionable ones
-
-Your task: COMPLETELY REWRITE the labels to meet these strict criteria. Be ruthless - reject any label that violates the rules.
+Only suggest changes where there are clear quality issues. If a label is adequate, leave it unchanged.
 
 Output format (JSON):
 {{
   "quality_issues": [
     {{
-      "id": "1",
-      "current_label": "Gezondheid Voedingswaarde", 
-      "issue": "Compound label combining two concepts - violates single concept rule",
-      "refined_label": "Gezondheid"
-    }},
-    {{
-      "id": "2",
-      "current_label": "Prijs Betaalbaarheid",
-      "issue": "Compound label - choose primary concept", 
-      "refined_label": "Prijs"
+      "id": "theme_1",
+      "current_label": "Current Label", 
+      "issue": "Brief explanation of the quality issue",
+      "refined_label": "Improved Label"
     }}
   ],
   "refined_labels": {{
     "themes": {{
-      "1": "Gezondheid",
-      "2": "Prijs", 
-      "3": "Portiegrootte",
-      "4": "Verpakking",
-      "5": "Smaak",
-      "6": "Bereiding",
-      "7": "Transparantie", 
-      "8": "Presentatie"
+      "1": "Theme Label",
+      "2": "Another Theme"
     }},
     "topics": {{
-      "1.1": "Ingrediënten",
-      "3.1": "Dieetopties",
-      "5.1": "Kruiden"
+      "1.1": "Topic Label",
+      "2.1": "Another Topic"
     }},
     "subjects": {{
-      "22": "Verse Ingrediënten",
-      "33": "Natuurlijke Ingrediënten", 
-      "23": "Plantaardige Opties",
-      "31": "Vlees Opties"
+      "22": "Subject Label",
+      "33": "Another Subject"
     }}
   }}
 }}
 
 Language: {language}
-CRITICAL: Every label in refined_labels must be a single, clear concept. NO exceptions.
+Note: Only include labels that need refinement in the refined_labels section.
 """
