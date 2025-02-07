@@ -774,6 +774,7 @@ if __name__ == "__main__":
     import data_io
     import csvHandler
     from clustering_config import ClusteringConfig
+    import os
     
     csv_handler = csvHandler.CsvHandler()
     data_loader = data_io.DataLoader()
@@ -782,7 +783,36 @@ if __name__ == "__main__":
     var_name = "Q20"
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
    
-    input_list = csv_handler.load_from_csv(filename, 'embeddings', models.EmbeddingsModel)
+    # Check if embeddings file exists
+    embeddings_path = os.path.join('data', f"{os.path.splitext(filename)[0]}_embeddings.csv")
+    if not os.path.exists(embeddings_path):
+        print(f"Embeddings file not found: {embeddings_path}")
+        print("Please run the full pipeline first to generate embeddings:")
+        print("  python pipeline.py")
+        print("\nOr create test data using the code below.")
+        
+        # Create minimal test data for demonstration
+        print("\nCreating test data for demonstration...")
+        test_embeddings = []
+        for i in range(50):
+            segment = models.EmbeddingSubmodel(
+                segment_id=i,
+                segment_response=f"Test response {i}",
+                descriptive_code=f"CODE_{i}",
+                code_description=f"Description for code {i}",
+                code_embedding=np.random.rand(1536).tolist(),
+                description_embedding=np.random.rand(1536).tolist(),
+                combined_embedding=np.random.rand(1536).tolist()
+            )
+            response = models.EmbeddingsModel(
+                respondent_id=f"R{i:03d}",
+                response=f"Full response {i}",
+                response_segment=[segment]
+            )
+            test_embeddings.append(response)
+        input_list = test_embeddings
+    else:
+        input_list = csv_handler.load_from_csv(filename, 'embeddings', models.EmbeddingsModel)
 
     # Create configuration (uses defaults: description embeddings, Dutch language)
     config = ClusteringConfig()
