@@ -198,6 +198,7 @@ class ThematicLabeller:
     
         self.verbose_reporter.step_start("Phase 2: Theme Discovery", emoji="🔍")
         self.codebook = await self._phase2_discovery(labeled_clusters)
+        self.initial_codebook = self.codebook  # Store initial codebook for debugging
         self.verbose_reporter.step_complete("Codebook structure created")
             
         # =============================================================================
