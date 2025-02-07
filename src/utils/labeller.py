@@ -868,12 +868,13 @@ class Labeller:
                                          cluster_data: Dict[int, ClusterData],
                                          initial_labels: Dict[int, InitialLabel],
                                          var_lab: str) -> HierarchicalStructure:
-        """Refine hierarchy by splitting oversized categories"""
+        """Refine hierarchy by splitting oversized categories and redistributing 'Other' topics"""
         logger.info("Refining oversized categories...")
         
         # Find oversized themes
         total_segments = sum(cluster.size for cluster in cluster_data.values())
         oversized_themes = []
+        other_theme = None
         
         for theme in hierarchy.themes:
             theme_size = sum(cluster_data[cid].size for cid in theme.cluster_ids if cid in cluster_data)
@@ -881,15 +882,26 @@ class Labeller:
             
             # Check if it's oversized or a catch-all
             is_catchall = any(word in theme.label.lower() for word in ["overige", "andere", "other", "rest"])
-            if (is_catchall and percentage > 0.10) or (percentage > 0.20):
+            if is_catchall:
+                other_theme = theme
+                if percentage > 0.10:
+                    oversized_themes.append((theme, percentage))
+                    logger.info(f"Found oversized catch-all: '{theme.label}' ({percentage:.1%})")
+            elif percentage > 0.20:
                 oversized_themes.append((theme, percentage))
                 logger.info(f"Found oversized theme: '{theme.label}' ({percentage:.1%})")
         
-        if not oversized_themes:
-            return hierarchy
+        # First, try to redistribute "Other" category
+        if other_theme and other_theme.cluster_ids:
+            hierarchy = await self._redistribute_other_category(
+                hierarchy, other_theme, cluster_data, initial_labels, var_lab
+            )
         
-        # For each oversized theme, try to split it
+        # Then handle remaining oversized themes
         for theme, percentage in oversized_themes:
+            if theme == other_theme:
+                continue  # Already handled
+                
             if len(theme.children) == 1:
                 # Single topic theme - try to split the topic into multiple topics
                 logger.info(f"Splitting single-topic theme: {theme.label}")
@@ -921,15 +933,127 @@ class Labeller:
                     for i, topic in enumerate(theme.children):
                         topic.node_id = f"{theme.node_id}.{i + 1}"
         
+        # Rebuild all mappings
+        hierarchy = self._rebuild_hierarchy_mappings(hierarchy, cluster_data, initial_labels)
+        
+        return hierarchy
+    
+    async def _redistribute_other_category(self,
+                                         hierarchy: HierarchicalStructure,
+                                         other_theme: HierarchyNode,
+                                         cluster_data: Dict[int, ClusterData],
+                                         initial_labels: Dict[int, InitialLabel],
+                                         var_lab: str) -> HierarchicalStructure:
+        """Redistribute clusters from 'Other' category to appropriate themes"""
+        logger.info("Redistributing 'Other' category clusters...")
+        
+        # Get clusters in the "Other" theme
+        other_clusters = other_theme.cluster_ids
+        if not other_clusters:
+            return hierarchy
+        
+        # Calculate semantic similarity between "Other" clusters and existing themes
+        redistributed = []
+        remaining = []
+        
+        for cluster_id in other_clusters:
+            if cluster_id not in cluster_data:
+                continue
+                
+            cluster = cluster_data[cluster_id]
+            best_theme = None
+            best_similarity = 0.0
+            
+            # Check similarity with each non-"Other" theme
+            for theme in hierarchy.themes:
+                if theme == other_theme:
+                    continue
+                    
+                # Calculate average similarity to theme's clusters
+                theme_embeddings = []
+                for tid in theme.cluster_ids:
+                    if tid in cluster_data:
+                        theme_embeddings.append(cluster_data[tid].centroid)
+                
+                if theme_embeddings:
+                    theme_centroid = np.mean(theme_embeddings, axis=0)
+                    similarity = cosine_similarity([cluster.centroid], [theme_centroid])[0][0]
+                    
+                    if similarity > best_similarity and similarity > 0.7:  # Threshold for redistribution
+                        best_similarity = similarity
+                        best_theme = theme
+            
+            if best_theme:
+                redistributed.append((cluster_id, best_theme, best_similarity))
+            else:
+                remaining.append(cluster_id)
+        
+        # Apply redistributions
+        for cluster_id, theme, similarity in redistributed:
+            logger.info(f"Redistributing cluster {cluster_id} to '{theme.label}' (similarity: {similarity:.3f})")
+            other_theme.cluster_ids.remove(cluster_id)
+            theme.cluster_ids.append(cluster_id)
+            
+            # Find appropriate topic within theme
+            topic_assigned = False
+            for topic in theme.children:
+                # Check if this cluster fits with the topic
+                if len(topic.cluster_ids) < 10:  # Don't make topics too large
+                    topic.cluster_ids.append(cluster_id)
+                    topic_assigned = True
+                    break
+            
+            if not topic_assigned and theme.children:
+                # Add to smallest topic
+                smallest_topic = min(theme.children, key=lambda t: len(t.cluster_ids))
+                smallest_topic.cluster_ids.append(cluster_id)
+        
+        # Handle remaining clusters
+        if remaining:
+            logger.info(f"{len(remaining)} clusters remain in 'Other' category")
+            
+            # If still too many, try to create new themes from them
+            if len(remaining) > 0.05 * sum(cluster.size for cluster in cluster_data.values()):
+                remaining_cluster_data = {cid: cluster_data[cid] for cid in remaining if cid in cluster_data}
+                remaining_labels = {cid: initial_labels[cid] for cid in remaining if cid in initial_labels}
+                
+                # Create new themes from remaining
+                phase2 = self.Phase2Organizer(self.config, self.client)
+                new_topics = await phase2._create_topics_from_clusters(remaining_cluster_data, remaining_labels, var_lab)
+                
+                # Group into themes
+                if len(new_topics) > 3:
+                    new_themes = await phase2._create_themes_from_topics(new_topics, var_lab)
+                    
+                    # Add new themes to hierarchy
+                    max_theme_id = max(int(t.node_id) for t in hierarchy.themes)
+                    for i, new_theme in enumerate(new_themes):
+                        new_theme.node_id = str(max_theme_id + i + 1)
+                        hierarchy.themes.append(new_theme)
+                    
+                    # Remove the empty "Other" theme
+                    hierarchy.themes.remove(other_theme)
+                else:
+                    # Keep as reduced "Other" theme
+                    other_theme.cluster_ids = remaining
+        
+        return hierarchy
+    
+    def _rebuild_hierarchy_mappings(self,
+                                   hierarchy: HierarchicalStructure,
+                                   cluster_data: Dict[int, ClusterData],
+                                   initial_labels: Dict[int, InitialLabel]) -> HierarchicalStructure:
+        """Rebuild all hierarchy mappings after changes"""
         # Create Phase2Organizer instance for code creation
         phase2_instance = self.Phase2Organizer(self.config, self.client)
         
-        # Rebuild mappings
+        # Clear existing mappings
         hierarchy.cluster_to_path.clear()
         hierarchy.cluster_to_topic.clear()
         hierarchy.cluster_to_theme.clear()
         hierarchy.topic_to_theme.clear()
         
+        # Rebuild mappings
         for theme in hierarchy.themes:
             for topic in theme.children:
                 hierarchy.topic_to_theme[topic.label] = theme.label
@@ -944,6 +1068,90 @@ class Labeller:
                         hierarchy.cluster_to_path[cluster_id] = code.node_id
                         hierarchy.cluster_to_topic[cluster_id] = topic.label
                         hierarchy.cluster_to_theme[cluster_id] = theme.label
+        
+        return hierarchy
+    
+    def _merge_small_themes(self,
+                           hierarchy: HierarchicalStructure,
+                           cluster_data: Dict[int, ClusterData],
+                           min_theme_size: float = 0.03) -> HierarchicalStructure:
+        """Merge small themes into semantically similar larger themes"""
+        total_segments = sum(cluster.size for cluster in cluster_data.values())
+        
+        # Identify small themes
+        small_themes = []
+        regular_themes = []
+        
+        for theme in hierarchy.themes:
+            theme_size = sum(cluster_data[cid].size for cid in theme.cluster_ids if cid in cluster_data)
+            percentage = theme_size / total_segments
+            
+            if percentage < min_theme_size and len(theme.children) <= 2:
+                small_themes.append((theme, percentage))
+                logger.info(f"Found small theme: '{theme.label}' ({percentage:.1%})")
+            else:
+                regular_themes.append(theme)
+        
+        if not small_themes:
+            return hierarchy
+        
+        # Try to merge small themes into larger ones
+        merged_themes = []
+        for small_theme, size in small_themes:
+            # Calculate theme centroid
+            theme_embeddings = []
+            for cid in small_theme.cluster_ids:
+                if cid in cluster_data:
+                    theme_embeddings.append(cluster_data[cid].centroid)
+            
+            if not theme_embeddings:
+                continue
+                
+            small_theme_centroid = np.mean(theme_embeddings, axis=0)
+            
+            # Find best matching larger theme
+            best_match = None
+            best_similarity = 0.0
+            
+            for regular_theme in regular_themes:
+                # Skip "Other" themes
+                if any(word in regular_theme.label.lower() for word in ["overige", "andere", "other"]):
+                    continue
+                    
+                # Calculate regular theme centroid
+                regular_embeddings = []
+                for cid in regular_theme.cluster_ids:
+                    if cid in cluster_data:
+                        regular_embeddings.append(cluster_data[cid].centroid)
+                
+                if regular_embeddings:
+                    regular_centroid = np.mean(regular_embeddings, axis=0)
+                    similarity = cosine_similarity([small_theme_centroid], [regular_centroid])[0][0]
+                    
+                    if similarity > best_similarity and similarity > 0.65:
+                        best_similarity = similarity
+                        best_match = regular_theme
+            
+            if best_match:
+                logger.info(f"Merging '{small_theme.label}' into '{best_match.label}' (similarity: {best_similarity:.3f})")
+                
+                # Merge topics and clusters
+                for topic in small_theme.children:
+                    # Update topic node_id
+                    topic.node_id = f"{best_match.node_id}.{len(best_match.children) + 1}"
+                    best_match.children.append(topic)
+                    best_match.cluster_ids.extend(topic.cluster_ids)
+                
+                merged_themes.append(small_theme)
+        
+        # Remove merged themes from hierarchy
+        for theme in merged_themes:
+            if theme in hierarchy.themes:
+                hierarchy.themes.remove(theme)
+        
+        # Rebuild mappings if any merges occurred
+        if merged_themes:
+            hierarchy = self._rebuild_hierarchy_mappings(hierarchy, cluster_data, {})
         
         return hierarchy
     
@@ -998,6 +1206,9 @@ class Labeller:
                     # Try to refine the hierarchy
                     logger.info("Attempting to refine hierarchy...")
                     hierarchy = await self._refine_oversized_categories(hierarchy, cluster_data, initial_labels, var_lab)
+                    
+                    # Also check for small themes that should be merged
+                    hierarchy = self._merge_small_themes(hierarchy, cluster_data)
                 else:
                     logger.warning("Max iterations reached, proceeding with current hierarchy")
         
