@@ -29,7 +29,7 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 
@@ -76,7 +76,6 @@ else:
     elapsed_time     = end_time - start_time
     cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
-
 
 
 # === STEP 2 ========================================================================================================
@@ -218,10 +217,8 @@ else:
     cache_manager.save_to_cache(cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
-
-
 # === STEP 6 ========================================================================================================
-"""get labels - Hierarchical labeling with Theme → Topic → Keyword structure"""
+"""get labels"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
 
@@ -231,7 +228,6 @@ force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    # Count themes, topics, and keywords for summary
     themes = set()
     topics = set()
     keywords = set()
@@ -244,34 +240,16 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
                     topics.update(segment.Topic.keys())
                 if segment.Keyword:
                     keywords.update(segment.Keyword.keys())
-    
-    verbose_reporter.summary("HIERARCHICAL LABELS FROM CACHE", {
-        "Input": f"{len(cluster_results)} clustered responses",
-        "Output": f"{len(labeled_results)} labeled responses",
-        "Hierarchy": f"{len(themes)} themes, {len(topics)} topics, {len(keywords)} keywords"
-    })
+    verbose_reporter.summary("HIERARCHICAL LABELS FROM CACHE", {"Input": f"{len(cluster_results)} clustered responses",  "Output": f"{len(labeled_results)} labeled responses","Hierarchy": f"{len(themes)} themes, {len(topics)} topics, {len(keywords)} keywords"})
 else:
     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     
     start_time = time.time()
-    
-    # Initialize the thematic labeller with configuration
-    thematic_labeller = ThematicLabeller(
-        config=DEFAULT_LABELLER_CONFIG,
-        cache_manager=cache_manager,
-        filename=filename
-    )
-    
-    # Run the hierarchical labeling process
-    labeled_results = thematic_labeller.process_hierarchy(
-        cluster_models=cluster_results,
-        survey_question=var_lab
-    )
-    
+    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG,)
+    labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Save to cache
     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
     print(f"\n'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
@@ -298,7 +276,7 @@ for result in labeled_results:
                 for keyword_id, keyword_label in segment.Keyword.items():
                     keyword_counts[keyword_id] = keyword_counts.get(keyword_id, 0) + 1
 
-print(f"\n📊 Hierarchy Summary:")
+print("\n📊 Hierarchy Summary:")
 print(f"   - {len(theme_counts)} Themes")
 print(f"   - {len(topic_counts)} Topics")
 print(f"   - {len(keyword_counts)} Keywords (micro-clusters)")

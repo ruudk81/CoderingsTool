@@ -3,18 +3,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
-# =============================================================================
-# BASIC CONFIGURATION
-# =============================================================================
-
 # File handling (only keep what's used)
 ALLOWED_EXTENSIONS = ['.sav']
 
-# LLM settings (core settings)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEFAULT_MODEL = "gpt-4o-mini"
+# =============================================================================
+# HUNSPELL CONFIGURATION
+# =============================================================================
 
-# Hunspell path detection
+
 current_dir = os.getcwd()
 if os.path.basename(current_dir) == 'utils':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'hunspell'))
@@ -25,7 +21,6 @@ elif os.path.basename(current_dir) == 'src':
 elif os.path.basename(current_dir) == 'Coderingstool':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
 
-# Hunspell settings (only keep what's used)
 HUNSPELL_PATH = os.path.join(hunspell_dir, "hunspell.exe")
 DUTCH_DICT_PATH = os.path.join(hunspell_dir, "dict", "nl_NL")
 ENGLISH_DICT_PATH = os.path.join(hunspell_dir, "dict", "en_GB")
@@ -34,6 +29,10 @@ DEFAULT_LANGUAGE = "Dutch"
 # =============================================================================
 # MODEL CONFIGURATION
 # =============================================================================
+
+# LLM settings (core settings)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DEFAULT_MODEL = "gpt-4o-mini"
 
 @dataclass
 class ModelConfig:
@@ -46,7 +45,7 @@ class ModelConfig:
     description_model: str = "gpt-4o-mini"           # Fast model for description generation
     embedding_model: str = "text-embedding-3-large"  # Embedding model
     cluster_merge_model: str = "gpt-4o-mini"         # Fast model for cluster merging
-    labelling_model: str = "gpt-4o"                  # High-quality model for final labelling
+    labelling_model: str = "gpt-4o-mini"             # High-quality model for final labelling
     
     # Global parameters
     seed: int = 42
@@ -165,34 +164,9 @@ class CacheConfig:
         cache_filename = self.get_cache_filename(original_filename, step_name)
         return self.cache_dir / cache_filename
 
-
-
-@dataclass
-class LabellerConfig:
-    """Configuration for hierarchical labelling"""
-    # Model settings
-    model: str = "gpt-4o"  # Primary model for labelling - upgraded for better quality
-    temperature: float = 0.1  # Lower for more consistent output
-    max_tokens: int = 8000  # Increased for gpt-4o's higher capacity
-    seed: int = 42  # For reproducibility
-    api_key: Optional[str] = None  # Will use env var if not provided
-    
-    # Language and localization
-    language: str = DEFAULT_LANGUAGE
-    
-    # Processing parameters
-    top_k_representatives: int = 3  # Representative examples per cluster
-    map_reduce_threshold: int = 30  # Use MapReduce if more clusters
-    batch_size: int = 10  # Clusters per batch in MapReduce
-    assignment_threshold: float = 0.3  # Minimum probability for assignment (lowered for better coverage)
-    
-    # LLM refinement option
-    use_llm_refinement: bool = True  # Enable Phase 4 LLM refinement by default
-    
-    # Retry and concurrency settings
-    max_retries: int = 3
-    concurrent_requests: int = 10  # Increased for better performance
-    retry_delay: int = 2  # Seconds between retries
+# =============================================================================
+# PREPROCESS CONFIGURATION
+# =============================================================================
 
 @dataclass
 class SpellCheckConfig:
@@ -213,6 +187,9 @@ class SpellCheckConfig:
     spell_check_threshold: float = 0.7  # Confidence threshold for corrections
     max_concurrent_requests: int = 5  # For API rate limiting
 
+# =============================================================================
+# SEGMENT CONFIGURATION
+# =============================================================================
 
 @dataclass
 class QualityFilterConfig:
@@ -245,6 +222,9 @@ class SegmentationConfig:
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 5  # For API rate limiting
 
+# =============================================================================
+# EMBEDDING CONFIGURATION
+# =============================================================================
 
 @dataclass
 class EmbeddingConfig:
@@ -331,16 +311,45 @@ class ClusteringConfig:
 
 
 # =============================================================================
+# LABELLING CONFIGURATION
+# =============================================================================
+
+@dataclass
+class LabellerConfig:
+    """Configuration for hierarchical labelling"""
+    # Model settings
+    model: str = "gpt-4o-mini" #"gpt-4o"  # Primary model for labelling - upgraded for better quality
+    temperature: float = 0.0  # Lower for more consistent output
+    max_tokens: int = 16000  # Increased for gpt-4o's higher capacity
+    seed: int = 42  # For reproducibility
+    api_key: Optional[str] = None  # Will use env var if not provided
+    
+    # Language and localization
+    language: str = DEFAULT_LANGUAGE
+    
+    # Processing parameters
+    top_k_representatives: int = 3  # Representative examples per cluster
+    map_reduce_threshold: int = 100  # Use MapReduce if more clusters
+    batch_size: int = 10  # Clusters per batch in MapReduce
+    assignment_threshold: float = 0.5  # Minimum probability for assignment (lowered for better coverage)
+    
+    # LLM refinement option
+    #use_llm_refinement: bool = True  # Enable Phase 4 LLM refinement by default
+    
+    # Retry and concurrency settings
+    max_retries: int = 3
+    concurrent_requests: int = 10  # Increased for better performance
+    retry_delay: int = 2  # Seconds between retries
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
-# Global configuration instances
-DEFAULT_LABELLER_CONFIG = LabellerConfig()
-
-# Pipeline step configurations
 DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
+DEFAULT_LABELLER_CONFIG = LabellerConfig()
+
 

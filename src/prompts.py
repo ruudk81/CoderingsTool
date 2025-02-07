@@ -158,7 +158,7 @@ Each segment is a standalone sentence or clause extracted from a full response.
   - If the segment is a suggestion: use an imperative tone (e.g., "Maak...", "Laat...")
   - If the segment expresses a wish or opinion: use first-person (e.g., "Ik wil...", "Ik vind...")
 - NEVER rephrase the segment as a third-person summary (e.g., "Wil dat de inhoud...") — that does not sound like a response
-- Do NOT add interpretations beyond what's in the original segment
+- CRITICAL: Do NOT add interpretations beyond what's in the original segment
 - Language: {language}
 
 # Special Cases
@@ -222,374 +222,178 @@ Return a JSON object with a single key "decisions", containing an array of objec
 - "reason": Brief explanation of your decision (1-2 sentences maximum)
 """
 
+PHASE1_DESCRIPTIVE_CODING_PROMPT = """
+You are a {language} expert performing **descriptive coding** of short survey-response segments.
 
+TASK
+1. Give **one label** (Title Case noun phrase, ≤ 6 words).
+2. Give **one description** (1 sentence) that restates the segment’s idea in plain words.
 
-BATCH_SUMMARY_PROMPT = """
-I want you to act as a qualitative researcher conducting thematic analysis on grouped user input called micro-clusters. 
-You are given a batch of micro-clusters.
-Each batch contains several responses that reflect a shared concern or idea, in response to a research question.
+RULES
+• Describe only what is explicitly said.  
+• No interpretation, sentiment, or judgment.  
+• Do not combine multiple ideas.
 
-**CRITICAL REQUIREMENT**: You MUST include EVERY micro-cluster ID from the input in your output. No micro-cluster can be left out.
+INPUT
+Question    : {survey_question}
+Segment ID  : {cluster_id}
+Segment text:
+{representatives}
 
-Your tasks:
-1. Organize ALL micro-clusters into a three-level hierarchical structure:
-    - Level 1: Broad theme (e.g. "Gebouwvoorzieningen")
-    - Level 2: Specific sub-theme, labeled numerically (e.g., 2.1 "WIFI verbeteren" under 2 "Gebouwvoorzieningen")
-    - Level 3: References to the original micro-cluster IDs (e.g., Micro-cluster 18)
-2. Adhere to the following rules:
-    - Themes and sub-themes must be **mutually exclusive** and make sense in light of the research question
-    - Each theme and sub-theme must represent EXACTLY ONE overarching idea
-    - The labels of themes and sub-themes MUST reflect this overarching idea and MUST NOT consist of compound sub-ideas (e.g. sub-idea 1 AND sub-idea 2)
-    - Each label must be max 4 words, clear and descriptive
-3. Base your analysis only on what is explicitly stated in the micro-clusters — no outside assumptions.
-
-Instructions:
-- Do not assign unique clusters or sub-themes unnecessarily to a group. A theme may contain only one sub-theme if that best reflects the data. 
-- Avoid duplication: assign micro-clusters to only one sub-theme unless strong conceptual overlap justifies multiple placement.    
-- Output a structured Python dictionary that shows which micro-clusters belong under which sub-theme and overarching theme.
-
-**Output format (STRICT JSON - NO COMMENTS ALLOWED):**
+Output format (JSON):
 {{
-  "batch_id": "{batch_id}",
-  "hierarchy": {{
-    "1": {{
-      "label": "[Theme Name]",
-      "subthemes": {{
-        "1.1": {{
-          "label": "[Sub-theme Name]",
-          "micro_clusters": [0, 1]
-        }}
-      }}
-    }},
-    "2": {{
-      "label": "[Another Theme]",
-      "subthemes": {{
-        "2.1": {{
-          "label": "[Sub-theme Name]",
-          "micro_clusters": [2]
-        }}
-      }}
-    }}
-  }}
+  "label": "Descriptive label",
+  "description": "Short explanation of what the label refers to, based on the segment and the survey question"
 }}
 
-IMPORTANT: Return ONLY valid JSON. No comments (//), no text outside the JSON structure, no checkboxes.
-
-Variable label/context: {var_lab}
 Language: {language}
-Batch ID: {batch_id}
-
-Micro-cluster batch:
-{batch_clusters}
 """
 
-REDUCE_SUMMARY_PROMPT = """
-You are a qualitative researcher merging thematic codeboods from multiple batches into one unified codebook.
+PHASE2_DISCOVERY_PROMPT = """
+You are a {language} thematic-analysis expert.
+Your task is to build a three-level code hierarchy (Theme → Topic → Code) that organises all response segments supplied below.
 
-Each partical codebook contains a hierarchy with Level 1, Level 2 and lever 3 codes.
-    - Level 1: Meta-clusters or "themes" (e.g. "Gebouwvoorzieningen")
-    - Level 2: Macro-clusters or "sub-themes", labeled numerically (e.g., 2.1 "WIFI verbeteren" under 2 "Gebouwvoorzieningen")
-    - Level 3: Micro-clusters pr "topics" (e.g., Micro-cluster 18)
+GOALS:
+- A codebook with a logical structure where each theme and topic represents ONE unified concept
+- Not a codebook that combines unrelated concepts into mixed categories
 
-Your task is to synthesize these into a single unified codebook while preserving ALL cluster IDs.
+DESIGN PRINCIPLES:
+- Level 3 **Codes** = Concrete categories within Topics; each code groups similar response segments
+- Level 2 **Topics** = Specific sub-dimensions within Themes  
+- Level 1 **Themes** = Broad, Overarching Dimensions (each about ONE major aspect)
 
-**Instructions:**
-1. Organize the meta-clusters ("themes"), macro-clusters ("sub-themes") and ALL micro-clusters ("topics") into the 3-level hierarchy.
-2. Collate the partial codebooks by adhering to these rules:
-    - Merged themes and sub-themes where their meanings clearly overlap in the partial codebooks
-    - Final themes should represent mutually exclusive ideas or concerns in light of the research question
-    - Labels of final themes and finale subthemes should not compound sub-ideas or sub-concerns. Instead, the label should reflect exactly ONE idea, concern or concept
-3. Return the unified codebook by following these additional rules:
-    - Every meta-cluster or theme (Level 1), macro-cluster or sub-theme (Level 2), and micro-cluster or subject (Level 3) must have an ID
-    - Complex themes can be divided into multiple sub-themes, each with assigned micro-clusters
-    - Simple themes must still use a single sub-theme and a single subject
-4. **CRITICAL REQUIREMENT**: You MUST include EVERY micro-cluster ID from the input in your output. No micro-cluster can be left out.
-5. Output MUST be valid JSON format — no explanatory text or comments.
+APPROACH:
+- First, merge segments that express the same idea into codes
+- Second, identify Codes, then group into Topics, then group into Themes
 
+INPUT:
+Survey question: {survey_question}  
+Response segments:  
+{cluster_summaries}
 
-**Output format (STRICT JSON - NO COMMENTS ALLOWED):**
-{{
-  "unified_hierarchy": {{
-    "1": {{
-      "label": "Unified Theme Name",
-      "subthemes": {{
-        "1.1": {{
-          "label": "Subtheme Name",
-          "micro_clusters": [0, 1, 9]
-        }},
-        "1.2": {{
-           "label": "Another Subtheme",
-           "micro_clusters": [2, 15]
-        }}
-      }}
-    }},
-    "2": {{
-      "label": "Another Theme",
-      "subthemes": {{
-        "2.1": {{
-          "label": "Subtheme Name",
-          "micro_clusters": [3, 4, 10]
-        }}
-      }}
-    }}
-  }}
-}}
-
-IMPORTANT: Return ONLY valid JSON. No comments, no checkboxes, no text outside the JSON block.
-
-Variable label/context: {var_lab}
-Language: {language}
-
-Input hierarchies to merge:
-{summaries}
-"""
-
-HIERARCHICAL_LABELING_PROMPT = """
-You are finalizing a hierarchical codebook for thematic analysis based on qualitative data.
-
-You are given:
-- A consolidated hierarchical structure from previous analysis
-- The micro-clusters contain responses to a research question
-
-Your task is to create a clean, logically sound, and complete hierarchical codebook.
-
-**Instructions:**
-1. Critically review the themes and subthemes and evaluate if these objectives are met:
-    - Themes should represent mutually exclusive ideas or concerns in light of the research question
-    - Labels of themes and subthemes should not compound sub-ideas or sub-concerns. Instead, the label should reflect exactly ONE idea, concern or concept
-    - Check specifically for words like "and", "en", "&" in theme labels - these often indicate compound themes that must be split
-2. If objectives are not met, you MUST:
-    - Split themes that compound sub-themes that don't logically form a theme (e.g., "House and speed" → "House" + "Speed")
-    - Redistribute subthemes appropriately to the new split themes
-    - OR re-label themes or sub-themes to reflect a single concept
-3. Return the codebook by following these additional rules:
-    - Every theme (Level 1), sub-theme (Level 2), and micro-cluster (Level 3) must have an ID
-    - Complex themes can be divided into multiple sub-themes, each with assigned micro-clusters
-    - Simple themes must still use a single sub-theme — do not assign clusters directly to themes
-    - Avoid duplication: assign micro-clusters to only one sub-theme unless strong conceptual overlap justifies multiple placement
-4. Ensure full inclusion and consistency:
-    - Every micro-cluster ID from the reference list must appear in your output
-    - There must be no missing or duplicated micro-cluster IDs
-5. Output MUST be valid JSON format — no explanatory text or comments.
-
-**Output format (STRICT JSON - NO COMMENTS):**
+Output format (JSON):
 {{
   "themes": [
     {{
       "id": "1",
-      "label": "a label for a final Theme",
-      "description": "Brief description of this theme",
-      "subthemes": [
+      "label": "Theme label (ONE concept)",
+      "description": "What unifies this group",
+      "topics": [
         {{
-          "id": "1.1",
-          "label": "a label for a refined Subtheme",
-          "description": "Brief description of this subtheme",
-          "micro_clusters": [2, 4]
-        }},
-        {{
-          "id": "1.2",
-          "label": "a label for another Subtheme",
-          "description": "Brief description",
-          "micro_clusters": [7, 12]
-        }}
-      ]
-    }},
-    {{
-      "id": "2",
-      "label": "a label for another theme",
-      "description": "Brief description of this theme",
-      "subthemes": [
-        {{
-          "id": "2.1",
-          "label": "a label for a standalone Subtheme",
-          "description": "Brief description of this theme/subtheme",
-          "micro_clusters": [8]
+          "id": "1.1", 
+          "label": "Topic label (ONE aspect)",
+          "description": "What specific aspect this represents",
+          "codes": [
+            {{
+              "id": "1.1.1",
+              "label": "Code label",
+              "description": "What type of response this captures",
+              "clusters": [list of cluster IDs assigned to this code]
+            }}
+          ]
         }}
       ]
     }}
   ]
 }}
 
-IMPORTANT: Return ONLY valid JSON. No comments, no text outside the JSON, no checkboxes.
-
-Variable label/context: {var_lab}
-Language: {language}
-
-Consolidated hierarchy:
-{final_summary}
-
-**CRITICAL CHECK - The following micro-cluster IDs MUST ALL appear in your output:**
-{all_cluster_ids}
-
-If any clusters from the above list are missing from the consolidated hierarchy, you MUST:
-1. Create an appropriate theme/subtheme for them
-2. OR add them to the most relevant existing theme/subtheme
-3. Never exclude any cluster - if unsure, create an "Other concerns" theme
-"""
-
-
-INITIAL_LABEL_PROMPT = """
-You are a {language} expert in labeling micro-clusters of survey responses to this research question:
-"{var_lab}"
-
-Each cluster contains representative response segments that express a distinct idea or perspective related to the research question.
-
-TASK:
-- Assign a precise and unique label to each cluster, and identify the core concepts that justify the label.
-
-LABELING RULES:
-- Focus on the underlying meaning, not surface wording
-- Labels should be specific, non-generic, and clearly differentiated
-- Use 2–6 words for each label
-- Avoid vague terms like "miscellaneous" or "general concerns"
-- Mark clusters as "off-topic" if they do not contribute meaningfully to answering the research question
-
-OUTPUT FORMAT:
-Return a JSON object with the following structure:
-
-{
-"labels": [
-{
-"cluster_id": "38",
-"label": "Portie grootte vergroten",
-"keywords": ["portie", "groter", "meer", "hoeveelheid"],
-"confidence": 0.94
-},
-{
-"cluster_id": "12", 
-"label": "Verse ingrediënten gebruiken",
-"keywords": ["vers", "ingrediënten", "kwaliteit", "natuurlijk"],
-"confidence": 0.89
-}
-]
-}
-
-Language: {language}
-
-Input clusters:
-{clusters}
-"""
-
-
-PHASE1_FAMILIARIZATION_PROMPT = """
-You are a {language} expert analyzing survey response clusters for thematic content.
-
-Survey Question: {survey_question}
-
-Cluster Information:
-- Cluster ID: {cluster_id}
-- Number of responses: {cluster_size}
-
-Most representative response descriptions (ordered by similarity to cluster center):
-{representatives}
-
-Your task:
-1. Analyze the representative responses to understand the core theme
-2. Create a concise thematic label (maximum 4 words) that captures the central idea
-3. Write a clear, specific description explaining what this cluster represents
-4. **SINGLE IDEA RULE**: The label must express EXACTLY ONE concept, concern, or issue
-5. **FORBIDDEN**: Never use "and", "en", "&", "or", "of", "/" (these indicate compound concepts)
-6. Base your analysis ONLY on what respondents are saying, not interpretations
-
-Labeling guidelines:
-- Use concrete, specific language (avoid generic terms like "various issues")
-- Focus on the most prominent shared characteristic across responses
-- If responses seem unrelated to the survey question, note this in the description
-
-Output format (JSON):
-{{
-  "label": "Concise thematic label",
-  "description": "Clear explanation of what responses in this cluster are expressing, including why they belong together"
-}}
+{improvement_instructions}
 
 Language: All output must be in {language}
 """
 
-PHASE2_DISCOVERY_SINGLE_PROMPT = """
-You are a {language} qualitative researcher creating a hierarchical codebook from survey response clusters.
+PHASE3_THEME_JUDGER_PROMPT = """
+Review this codebook for: "{survey_question}"
 
-Survey Question: {survey_question}
+{codebook}
 
-Total clusters to organize: {all_cluster_ids}
+First, analyze whether the themes, topics, and codes are organized in accordance with the STRUCTURAL DESIGN 
 
-Cluster summaries:
-{cluster_summaries}
+STRUCTURAL DESIGN:
+- Themes (Level 1):
+    - Represent the highest level of abstraction capturing broad, overarching dimension
+    - Each theme should unify several related topics under a common, broad conceptual umbrella
+- Topics (Level 2): 
+    - Topics refine Themes by grouping related codes that share a specific characteristic
+    - Topics bridge the gap between broad themes and granular codes
+- Codes (Level 3): 
+    - Each code captures a distinct, clearly defined type of response
+    - Codes provide granular detail in Topics to understand nuances within each topic
 
-Your task: Create a STRICT 3-level hierarchical codebook that organizes ALL clusters into meaningful themes.
 
-STRICT Hierarchy Rules:
-- Level 1 (Themes): Broad conceptual categories - NO direct clusters allowed
-- Level 2 (Topics): Specific aspects within themes - NO direct clusters allowed  
-- Level 3 (Subjects): Granular groupings that contain the actual cluster IDs
+Second, evaluate if this codebook follows the MECE principle (Mutually Exclusive, Collectively Exhaustive):
+- Mutually Exclusive: Each theme/topic/code represents ONE distinct concept with no overlap
+- Collectively Exhaustive: All responses are covered
 
-CRITICAL REQUIREMENTS:
-1. EVERY cluster ID from {all_cluster_ids} MUST appear exactly ONCE at the SUBJECT level only
-2. STRICT hierarchy enforcement:
-   - Every Theme MUST have at least one Topic
-   - Every Topic MUST have at least one Subject
-   - ONLY Subjects can contain micro_clusters (in the "micro_clusters" field)
-   - For simple themes, create a general topic/subject (e.g., "General Concerns")
-3. **SINGLE IDEA RULE**: Each label must express EXACTLY ONE idea/concept/pattern
-4. **FORBIDDEN WORDS**: Never use "and", "en", "&", "or", "of", "/" (these indicate compound concepts)
-5. **MUTUALLY EXCLUSIVE**: Categories cannot overlap - each cluster fits in only one place
-6. **LABEL TEST**: Ask "Is this about exactly one thing?" - if no, split it
-7. Create an "Other" theme with appropriate topic/subject structure for outliers
-8. **MANDATORY**: You MUST distribute ALL {all_cluster_ids} clusters across subjects' micro_clusters arrays
+Check specifically:
+1. Does each category represent a SINGLE, DISTINCT dimension?
+2. Could any item logically belong in multiple categories? (If yes = problem)
+3. Are there unrelated concepts combined in one category? (If yes = problem)
 
-GOOD EXAMPLES:
-✓ Theme: "Gezondheid" (Health) - single concept
-✓ Topic: "Zoutreductie" (Salt Reduction) - single aspect  
-✓ Subject: "Minder Zout" (Less Salt) - specific action
+TIP: If a name contains "and" or "en", it likely combines TWO concepts that should be separate.
+Example: "Price and Accessibility" mixing economic and physical dimensions = NOT MECE
 
-BAD EXAMPLES:  
-✗ Theme: "Gezondheid en Voeding" (Health and Nutrition) - TWO concepts
-✗ Topic: "Zout en Suiker" (Salt and Sugar) - TWO substances
-✗ Subject: "Minder Conservering en Additieven" - TWO types
+Return YES if all categories are properly unified and the structure is logical.
+Return NO if any category mixes unrelated concepts.
 
-Output format (JSON - NO COMMENTS):
+If NO, provide specific, actionable instructions for restructuring/remapping:
+- Which themes should be split or merged?
+- Which topics should be moved to different themes?
+- What new themes or topics are needed?
+
+Reference the SPECIFIC IDs and labels from the codebook above.
+For example: "Theme 1 [label] overlaps with Theme 2 [label]" NOT "Theme A overlaps with Theme B"
+
+Output format (JSON):
+If logical (YES):
+{{
+  "is_logical": true,
+  "feedback": null,
+  "specific_issues": null
+}}
+
+If not logical (NO):
+{{
+  "is_logical": false,
+  "feedback": "Detailed instructions for improvement",
+  "specific_issues": ["Issue 1", "Issue 2", "Issue 3"]
+}}
+
+Output language English.
+"""
+
+PHASE4_THEME_REVIEW_PROMPT = """
+You are a {language} researcher correcting the codebook according to the instructions below.
+
+Codebook to revise:
+{current_codebook}
+
+Instructions for revision:
+{improvement_feedback}
+ 
+TASKS:
+Create a revised codebook based on the instructions given
+Move topics and codes and/or create new themes or topics, if need be.
+Rerurn a COMPLETE new codebook structure with all themes, topics, and codes.
+
+Output format (JSON):
 {{
   "themes": [
     {{
       "id": "1",
-      "label": "Clear Theme Name",
-      "description": "What this theme encompasses",
+      "label": "Improved Theme Label",
+      "description": "Clear description of what this theme covers",
       "topics": [
         {{
           "id": "1.1",
-          "label": "Specific Topic",
-          "description": "What this topic covers",
-          "subjects": [
+          "label": "Relocated or Improved Topic",
+          "description": "What specific aspect this represents",
+          "codes": [
             {{
               "id": "1.1.1",
-              "label": "Subject Name",
-              "description": "Specific aspect",
-              "micro_clusters": [3, 7, 12]
-            }},
-            {{
-              "id": "1.1.2",
-              "label": "Another Subject",
-              "description": "Another aspect",
-              "micro_clusters": [5, 8]
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "id": "2",
-      "label": "Simple Theme",
-      "description": "Description",
-      "topics": [
-        {{
-          "id": "2.1",
-          "label": "General Aspects",
-          "description": "Overall topic",
-          "subjects": [
-            {{
-              "id": "2.1.1",
-              "label": "Main Concerns",
-              "description": "Primary subject",
-              "micro_clusters": [15, 19, 23]
+              "label": "Code Label",
+              "description": "Specific response type",
+              "cluster_ids": [1, 2, 3]
             }}
           ]
         }}
@@ -599,261 +403,87 @@ Output format (JSON - NO COMMENTS):
 }}
 
 Language: {language}
+IMPORTANT: This is your chance to fix the structure. Make substantial improvements based on the feedback.
 
-VERIFICATION CHECKLIST - Before submitting your response:
-✓ Every cluster ID from {all_cluster_ids} is assigned to exactly one subject's micro_clusters array
-✓ Every theme has at least one topic
-✓ Every topic has at least one subject  
-✓ No themes or topics have micro_clusters (only subjects do)
-✓ All subjects have non-empty micro_clusters arrays
-✓ NO labels contain "and", "en", "&", "or", "of", "/" (forbidden compound words)
-✓ Each label represents EXACTLY ONE concept (single-idea test passed)
-✓ Categories are mutually exclusive (no overlap between themes/topics/subjects)
-
-Remember: All clusters from {all_cluster_ids} must appear in your output!
 """
 
-PHASE2_DISCOVERY_MAP_PROMPT = """
-You are a {language} qualitative researcher analyzing a batch of survey response clusters.
-This is the MAP phase of a MapReduce operation for large-scale thematic analysis.
+PHASE5_LABEL_REFINEMENT_PROMPT = """
+You are a {language} editor refining labels in a codebook.
 
-Survey Question: {survey_question}
-Batch ID: {batch_id}
+GUIDELINES
+• Title Case noun phrase, ≤ 4 words.  
+• No duplicates anywhere in the tree.  
+• Avoid vague labels (“Various”, “Other”).  
+• **Forbidden**: compound labels that list multiple concepts (no “and”).  
+• Themes = broad; Topics = sub-dimensions; Codes = concrete.
 
-Cluster summaries from this batch:
-{batch_clusters}
+INPUT – Current Codebook
+{codebook}
 
-Your task: Create a partial STRICT hierarchy for ONLY the clusters in this batch.
+Output only labels that change:
 
-STRICT Hierarchy Rules (MUST FOLLOW):
-1. Themes contain Topics (NOT clusters)
-2. Topics contain Subjects (NOT clusters)
-3. ONLY Subjects contain clusters (as "direct_clusters")
-4. Use temporary IDs (temp_1, temp_1.1, temp_1.1.1) - will be renumbered later
-5. **SINGLE IDEA RULE**: Each label represents EXACTLY ONE concept
-6. **FORBIDDEN WORDS**: Never use "and", "en", "&", "or", "of", "/" in labels
-7. **MUTUALLY EXCLUSIVE**: No overlap between categories at same level
-8. For simple themes, still create Topic and Subject levels
-
-IMPORTANT: Every cluster ID from this batch MUST appear ONCE in a subject's direct_clusters.
-
-Output format (JSON - NO COMMENTS):
+Output format (JSON):
 {{
-  "themes": [
-    {{
-      "id": "temp_1",
-      "label": "Emergent Theme",
-      "description": "What unifies these topics"
-    }},
-    {{
-      "id": "temp_2",
-      "label": "Another Theme",
-      "description": "Description"
-    }}
-  ],
-  "topics": [
-    {{
-      "id": "temp_1.1",
-      "label": "Specific Topic",
-      "description": "What this covers",
-      "parent_id": "temp_1"
-    }},
-    {{
-      "id": "temp_2.1",
-      "label": "General Topic",
-      "description": "Overall aspects",
-      "parent_id": "temp_2"
-    }}
-  ],
-  "subjects": [
-    {{
-      "id": "temp_1.1.1",
-      "label": "Subject Name",
-      "description": "Specific aspect",
-      "parent_id": "temp_1.1",
-      "direct_clusters": [1, 2]
-    }},
-    {{
-      "id": "temp_2.1.1",
-      "label": "Main Concerns",
-      "description": "Primary aspects",
-      "parent_id": "temp_2.1",
-      "direct_clusters": [3, 4, 5]
-    }}
-  ]
+  "refined_themes": {{
+    "1": "Refined Theme Label",
+    "2": "Another Refined Theme"
+  }},
+  "refined_topics": {{
+    "1.1": "Refined Topic Label",
+    "1.2": "Another Refined Topic"
+  }},
+  "refined_codes": {{
+    "1.1.1": "Refined Code Label",
+    "1.1.2": "Another Refined Code"
+  }}
 }}
 
 Language: {language}
-Remember: Include ALL clusters from this batch in your hierarchy.
 """
 
-PHASE2_DISCOVERY_REDUCE_PROMPT = """
-You are a {language} qualitative researcher completing the REDUCE phase of thematic analysis.
-Your task: Merge multiple partial hierarchies into one unified, coherent codebook.
+PHASE6_ASSIGNMENT_PROMPT = """
+You are a {language} coder assigning a cluster to the existing codebook.
 
-Survey Question: {survey_question}
+INSTRUCTIONS
+1. Choose exactly ONE path (Theme → Topic → Code).  
+2. Provide a confidence score 0–1.  
+3. If confidence < 0.60, assign to Theme 99 → Topic 99.1 → Code 99.1.1 (“Other”).  
+4. Add a one-sentence note explaining your choice.
 
-Partial hierarchies from different batches:
-{hierarchies}
-
-Merging Guidelines:
-1. **Identify Semantic Overlap**: Find themes/topics that represent the same concept across batches
-2. **Merge Intelligently**: 
-   - Combine similar themes into unified themes
-   - Preserve nuanced differences as separate topics within themes
-   - Don't force unrelated concepts together
-3. **Preserve ALL Data**: Every cluster ID from every batch MUST appear in the final output
-4. **Create Coherent Structure**:
-   - Renumber everything consistently (1, 1.1, 1.1.1, 2, 2.1, etc.)
-   - Ensure the final hierarchy makes sense as a whole
-   - Add an "Other" theme if needed for outliers
-5. **Quality Checks**:
-   - No duplicate cluster IDs
-   - No missing cluster IDs
-   - Clear parent-child relationships
-
-Merging Strategy:
-- If themes are clearly the same concept → merge them
-- If themes are related but distinct → make them topics under a broader theme
-- If themes are unrelated → keep them as separate themes
-
-Output format (JSON - NO COMMENTS):
-{{
-  "themes": [
-    {{
-      "id": "1",
-      "label": "Unified Theme",
-      "description": "Merged description",
-      "direct_clusters": [1, 2, 15]
-    }}
-  ],
-  "topics": [
-    {{
-      "id": "1.1",
-      "label": "Merged Topic",
-      "description": "Combined description",
-      "parent_id": "1",
-      "direct_clusters": [3, 18]
-    }}
-  ],
-  "subjects": [
-    {{
-      "id": "1.1.1",
-      "label": "Specific Subject",
-      "description": "Description",
-      "parent_id": "1.1",
-      "direct_clusters": [4, 5, 22]
-    }}
-  ]
-}}
-
-Language: {language}
-CRITICAL: Verify all cluster IDs from input appear exactly once in output!
-"""
-
-PHASE3_ASSIGNMENT_PROMPT = """
-You are a {language} expert assigning survey response clusters to a hierarchical codebook.
-
+INPUT
 Survey Question: {survey_question}
 
 Cluster to assign:
-- ID: {cluster_id}
-- Label: {cluster_label}
-- Description: {cluster_description}
-- Representative responses:
-{representatives}
+- ID          : {cluster_id}
+- Label       : {cluster_label}
+- Description : {cluster_description}
+- Examples    :
+{cluster_representatives}
 
-Hierarchical Codebook:
+Codebook
 {codebook}
 
-Your task: Assign probability scores (0.0 to 1.0) indicating how well this cluster fits each level of the hierarchy.
-
-Assignment Rules:
-1. Probabilities at each level should sum to approximately 1.0
-2. Maintain hierarchical consistency:
-   - If a cluster strongly fits subject 1.1.1, it should also score high for topic 1.1 and theme 1
-   - Don't assign high probability to a topic if its parent theme has low probability
-3. Consider semantic meaning, not just keyword matching
-4. If the cluster doesn't fit well anywhere, assign high probability to "other"
-5. Be decisive - avoid spreading probabilities too thinly
-
-Decision criteria:
-- Does the cluster's core concept align with the theme/topic/subject?
-- Do the representative responses support this placement?
-- Is this the BEST fit compared to other options?
-
 Output format (JSON):
 {{
-  "theme_assignments": {{
-    "1": 0.8,
-    "2": 0.1,
-    "other": 0.1
+  "primary_assignment": {{
+    "theme_id": "1",
+    "topic_id": "1.2",
+    "code_id": "1.2.3"
   }},
-  "topic_assignments": {{
-    "1.1": 0.7,
-    "1.2": 0.2,
-    "other": 0.1
-  }},
-  "subject_assignments": {{
-    "1.1.1": 0.9,
-    "other": 0.1
-  }}
-}}
-
-Note: Only include IDs that exist in the codebook. Include "other" if confidence is low.
-Language: {language}
-"""
-
-PHASE4_REFINEMENT_PROMPT = """
-You are a {language} expert reviewing a hierarchical codebook for survey analysis quality.
-
-Survey Question: {survey_question}
-
-Current hierarchy with cluster assignments:
-{hierarchy_with_assignments}
-
-Your task: Review the current labels and suggest improvements where needed. Focus on:
-
-1. **Clarity**: Are labels clear and descriptive?
-2. **Consistency**: Do similar concepts use consistent terminology?
-3. **Appropriateness**: Do labels accurately reflect the cluster content?
-4. **Hierarchy Logic**: Do child labels properly relate to their parents?
-
-Quality Guidelines:
-- Labels should be concise (ideally 1-3 words)
-- Each label should represent a single, coherent concept
-- Avoid duplicate or near-identical labels at the same level
-- Ensure hierarchical relationships make logical sense
-- Labels should be specific enough to be meaningful
-
-Only suggest changes where there are clear quality issues. If a label is adequate, leave it unchanged.
-
-Output format (JSON):
-{{
-  "quality_issues": [
+  "confidence": 0.95,
+  "alternatives": [
     {{
-      "id": "theme_1",
-      "current_label": "Current Label", 
-      "issue": "Brief explanation of the quality issue",
-      "refined_label": "Improved Label"
+      "theme_id": "2",
+      "topic_id": "2.1",
+      "code_id": "2.1.1",
+      "confidence": 0.6
     }}
-  ],
-  "refined_labels": {{
-    "themes": {{
-      "1": "Theme Label",
-      "2": "Another Theme"
-    }},
-    "topics": {{
-      "1.1": "Topic Label",
-      "2.1": "Another Topic"
-    }},
-    "subjects": {{
-      "22": "Subject Label",
-      "33": "Another Subject"
-    }}
-  }}
+  ]
 }}
 
+Note: Ensure all IDs exist in the provided codebook structure.
 Language: {language}
-Note: Only include labels that need refinement in the refined_labels section.
 """
+
+
+
