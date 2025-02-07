@@ -314,22 +314,13 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
+    
+    # Initialize the new labeller with config
     labeller_config = labeller.LabellerConfig()
-    label_generator = labeller.Labeller(
-        input_list=cluster_results,
-        var_lab=var_lab,
-        config=labeller_config,
-        verbose=True
-    )
+    label_generator = labeller.Labeller(config=labeller_config)
     
-    # Generate labels
-    label_generator.generate_labels()
-    
-    # Convert to label models
-    labeled_results = label_generator.to_label_model()
-    
-    # Generate summaries
-    labeled_results = label_generator.generate_summary(labeled_results)
+    # Run the new 4-stage pipeline
+    labeled_results = label_generator.run_pipeline(cluster_results, var_lab)
     
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -340,27 +331,45 @@ else:
 # debug print
 print("\nLabel Summary:")
 theme_counts = defaultdict(int)
+topic_counts = defaultdict(int)
+
 for result in labeled_results:
     for segment in result.response_segment or []:
+        # Check for Theme (meta-level)
         if hasattr(segment, 'Theme') and segment.Theme:
             theme_id = list(segment.Theme.keys())[0]
             theme_counts[theme_id] += 1
+        
+        # Check for Topic (micro-level) 
+        if hasattr(segment, 'Topic') and segment.Topic:
+            topic_id = list(segment.Topic.keys())[0]
+            topic_counts[topic_id] += 1
 
 print(f"Found {len(theme_counts)} themes in results")
-for theme_id, count in sorted(theme_counts.items()):
+for theme_id, count in sorted(theme_counts.items())[:10]:  # Show first 10
     print(f"Theme {theme_id}: {count} items")
-    # Show a few examples
-    examples = []
-    for result in labeled_results[:50]:  # Sample first 50 results
+    # Show theme label
+    for result in labeled_results:
         for segment in result.response_segment or []:
             if hasattr(segment, 'Theme') and segment.Theme and theme_id in segment.Theme:
-                examples.append(segment.Theme[theme_id])
-                if len(examples) >= 3:
-                    break
-        if len(examples) >= 3:
-            break
-    
-    for example in examples[:3]:
-        print(f"  - {example}")
+                print(f"  Label: {segment.Theme[theme_id]}")
+                break
+        else:
+            continue
+        break
+
+print(f"\nFound {len(topic_counts)} topics in results")
+# Show sample of topics
+for topic_id, count in sorted(topic_counts.items())[:5]:  # Show first 5
+    print(f"Topic {topic_id}: {count} items")
+    # Show topic label
+    for result in labeled_results:
+        for segment in result.response_segment or []:
+            if hasattr(segment, 'Topic') and segment.Topic and topic_id in segment.Topic:
+                print(f"  Label: {segment.Topic[topic_id]}")
+                break
+        else:
+            continue
+        break
 
 
