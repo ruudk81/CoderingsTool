@@ -221,40 +221,107 @@ else:
 
 
 # === STEP 6 ========================================================================================================
-"""get labels"""
-from utils import labeller
+"""get labels - Hierarchical labeling with Theme → Topic → Keyword structure"""
+from utils.thematicLabeller import ThematicLabeller
+from config import DEFAULT_LABELLER_CONFIG
 
 step_name = "labels"
+verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
+    # Count themes, topics, and keywords for summary
+    themes = set()
+    topics = set()
+    keywords = set()
+    for result in labeled_results:
+        if result.response_segment:
+            for segment in result.response_segment:
+                if segment.Theme:
+                    themes.update(segment.Theme.keys())
+                if segment.Topic:
+                    topics.update(segment.Topic.keys())
+                if segment.Keyword:
+                    keywords.update(segment.Keyword.keys())
+    
+    verbose_reporter.summary("HIERARCHICAL LABELS FROM CACHE", {
+        "Input": f"{len(cluster_results)} clustered responses",
+        "Output": f"{len(labeled_results)} labeled responses",
+        "Hierarchy": f"{len(themes)} themes, {len(topics)} topics, {len(keywords)} keywords"
+    })
 else:
+    verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
+    
     start_time = time.time()
-    labeller_config = labeller.LabellerConfig()
-    label_generator = labeller.Labeller(config=labeller_config)
-    labeled_results = label_generator.run_pipeline(cluster_results, var_lab)
+    
+    # Initialize the thematic labeller with configuration
+    thematic_labeller = ThematicLabeller(
+        config=DEFAULT_LABELLER_CONFIG,
+        cache_manager=cache_manager,
+        filename=filename
+    )
+    
+    # Run the hierarchical labeling process
+    labeled_results = thematic_labeller.process_hierarchy(
+        cluster_models=cluster_results,
+        survey_question=var_lab
+    )
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
+    # Save to cache
     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-    print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
+    print(f"\n'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
-# Count unique clusters for display
-unique_clusters = set()
-if cluster_results:
-    for result in cluster_results:
+# Display final summary of the hierarchical structure
+print("\n" + "=" * 80)
+print("FINAL HIERARCHICAL STRUCTURE")
+print("=" * 80)
+
+# Count and display hierarchy statistics
+theme_counts = {}
+topic_counts = {}
+keyword_counts = {}
+
+for result in labeled_results:
+    if result.response_segment:
         for segment in result.response_segment:
-            if segment.micro_cluster:
-                cluster_id = list(segment.micro_cluster.keys())[0]
-                unique_clusters.add(cluster_id)
+            if segment.Theme:
+                for theme_id, theme_label in segment.Theme.items():
+                    theme_counts[theme_id] = theme_counts.get(theme_id, 0) + 1
+            if segment.Topic:
+                for topic_id, topic_label in segment.Topic.items():
+                    topic_counts[topic_id] = topic_counts.get(topic_id, 0) + 1
+            if segment.Keyword:
+                for keyword_id, keyword_label in segment.Keyword.items():
+                    keyword_counts[keyword_id] = keyword_counts.get(keyword_id, 0) + 1
 
-# Load cached theme summaries if available for better display
-cached_theme_summaries = cache_manager.load_from_cache(filename, "theme_summaries", labeller.ThemeSummary)
+print(f"\n📊 Hierarchy Summary:")
+print(f"   - {len(theme_counts)} Themes")
+print(f"   - {len(topic_counts)} Topics")
+print(f"   - {len(keyword_counts)} Keywords (micro-clusters)")
+print(f"   - {len(labeled_results)} Total responses labeled")
 
-# Display results using the labeller's display function
-labeller.Labeller.display_hierarchical_results(labeled_results, cached_theme_summaries, len(unique_clusters))
+# Show top themes by frequency
+if theme_counts:
+    print("\n🎯 Top Themes (by segment count):")
+    sorted_themes = sorted(theme_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    for theme_id, count in sorted_themes:
+        # Find the theme label from the first occurrence
+        theme_label = None
+        for result in labeled_results:
+            if result.response_segment:
+                for segment in result.response_segment:
+                    if segment.Theme and theme_id in segment.Theme:
+                        theme_label = segment.Theme[theme_id]
+                        break
+                if theme_label:
+                    break
+        print(f"   {theme_id}. {theme_label} ({count} segments)")
+
+print("\n" + "=" * 80)
 
 
 
