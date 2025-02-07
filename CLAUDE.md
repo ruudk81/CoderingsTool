@@ -339,22 +339,76 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 8. **Description embeddings by default** - Changed default from "code" to "description"
 
 #### Labeling System Improvements (TODO)
-1. **Update labeller to handle clustering hierarchy**
-   - Take micro-clusters from simplified clusterer
-   - Use LLM to label each cluster
-   - Use LLM to identify semantically similar clusters
-   - Create merge/remap dictionary
-   - Apply merging to create meta-clusters
 
-2. **Smart semantic merging**
-   - LLM analyzes cluster labels and content
-   - Identifies clusters that should be merged
-   - Returns mapping dictionary
-   - Preserves cluster IDs for traceability
+**Overview**: Transform labeller into a 4-stage LLM-based system that creates a hierarchical structure with semantically distinct clusters.
 
-3. **Domain-aware labeling**
-   - Already uses var_lab for context ✓
-   - Prompts adapt to survey question ✓
+**TODO 1: Update Data Models**
+- Create `InitialLabelResponse` for stage 1 cluster labeling
+- Create `MergeAnalysisResponse` for semantic similarity analysis
+- Create `MergeRemapResponse` with merge groups and remap dictionary
+- Create `HierarchyResponse` for 3-level structure (1/1.1/1.1.1)
+- Create `RefinedLabelResponse` for mutually exclusive labels
+
+**TODO 2: Implement Stage 1 - Initial Cluster Labeling**
+- Extract descriptive codes and descriptions from each cluster
+- Label each micro-cluster through the lens of var_lab
+- Generate keywords and theme summary for each cluster
+- Store confidence scores for each label
+
+**TODO 3: Implement Stage 2 - Semantic Merging**
+- Analyze semantic similarity between all cluster pairs
+- Use LLM to determine which clusters should merge
+- Create merge groups and remap dictionary
+- Apply merging to consolidate similar clusters
+- Output: `Dict[int, int]` mapping old IDs to new IDs
+
+**TODO 4: Implement Stage 3 - Hierarchical Structure Creation**
+- Organize merged clusters into 3-level hierarchy
+- Create meta-level categories (e.g., "1", "2", "3")
+- Create meso-level subcategories (e.g., "1.1", "1.2")
+- Assign micro-level identifiers (e.g., "1.1.1", "1.1.2")
+- Use LLM to ensure logical grouping through var_lab lens
+
+**TODO 5: Implement Stage 4 - Label Refinement**
+- Ensure labels are mutually exclusive within each level
+- Optimize labels for clarity and distinctiveness
+- Maintain alignment with var_lab context
+- Refine labels to maximize differentiation
+
+**TODO 6: Update Main run_pipeline Method**
+- Execute 4-stage pipeline sequentially
+- Stage 1: Initial labeling of micro-clusters
+- Stage 2: Semantic merging with remap dictionary
+- Stage 3: Create 3-level hierarchy
+- Stage 4: Refine labels for mutual exclusivity
+- Convert results to LabelModel format
+
+**TODO 7: Create Specialized Prompts**
+- Initial cluster labeling prompt (var_lab context)
+- Semantic similarity analysis prompt
+- Hierarchy creation prompt
+- Label refinement prompt
+- All prompts must emphasize var_lab perspective
+
+**TODO 8: Add Helper Methods**
+- `extract_cluster_content()` - Get codes/descriptions from clusters
+- `calculate_semantic_distance()` - Measure cluster similarity
+- `format_hierarchy_path()` - Create "1/1.1/1.1.1" format
+- `apply_remap_dictionary()` - Apply merge transformations
+
+**TODO 9: Error Handling and Validation**
+- Validate each stage's output format
+- Handle edge cases (empty clusters, single items)
+- Add comprehensive logging
+- Implement retry mechanisms for LLM calls
+- Add fallback strategies
+
+**TODO 10: Testing and Integration**
+- Create unit tests for each stage
+- Update pipeline.py integration
+- Ensure cache compatibility
+- Add quality metrics for labels
+- Test with various cluster sizes
 
 #### Key Changes Made
 1. **Clusterer renamed** - `simple_clusterer.py` → `clusterer.py`
