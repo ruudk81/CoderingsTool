@@ -441,22 +441,53 @@ if __name__ == "__main__":
     if cluster_results and phase1_labels:
         print(f"Loaded {len(cluster_results)} cluster results from cache")
         print(f"Loaded {len(phase1_labels)} phase 1 labels from cache")
+        print(f"Type of phase1_labels: {type(phase1_labels)}")
         
-        # Extract cluster data from the results
-        from labeller import Labeller
-        temp_labeller = Labeller()
-        cluster_data = temp_labeller.extract_cluster_data(cluster_results)
-        print(f"Extracted data for {len(cluster_data)} clusters")
+        # Print first item to debug
+        first_key = list(phase1_labels.keys())[0]
+        print(f"First key: {first_key}, type: {type(first_key)}")
+        print(f"First value type: {type(phase1_labels[first_key])}")
+        if hasattr(phase1_labels[first_key], '__dict__'):
+            print(f"First value attributes: {phase1_labels[first_key].__dict__}")
         
-        # Convert labels to InitialLabel objects if needed
-        initial_labels = {}
-        for cluster_id, label_data in phase1_labels.items():
-            if isinstance(label_data, InitialLabel):
-                # Already an InitialLabel object
-                initial_labels[cluster_id] = label_data
-            else:
-                # Convert from dict
-                initial_labels[cluster_id] = InitialLabel(**label_data)
+        try:
+            # Extract cluster data from the results
+            from labeller import Labeller
+            temp_labeller = Labeller()
+            cluster_data = temp_labeller.extract_cluster_data(cluster_results)
+            print(f"Extracted data for {len(cluster_data)} clusters")
+        except Exception as e:
+            print(f"Error extracting cluster data: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        try:
+            # Convert labels to InitialLabel objects if needed
+            initial_labels = {}
+            for cluster_id, label_data in phase1_labels.items():
+                try:
+                    # Check if it's already an InitialLabel instance
+                    if hasattr(label_data, 'label') and hasattr(label_data, 'keywords') and hasattr(label_data, 'confidence'):
+                        # Already an InitialLabel object
+                        initial_labels[cluster_id] = label_data
+                    elif isinstance(label_data, dict):
+                        # Convert from dict
+                        initial_labels[cluster_id] = InitialLabel(**label_data)
+                    else:
+                        print(f"Unexpected type for label_data: {type(label_data)}")
+                        # Try to use it directly
+                        initial_labels[cluster_id] = label_data
+                except Exception as e:
+                    print(f"Error processing cluster {cluster_id}: {e}")
+                    print(f"Type of label_data: {type(label_data)}")
+                    print(f"Content: {label_data}")
+                    raise
+        except Exception as e:
+            print(f"Error converting labels: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Get variable label
         data_loader = data_io.DataLoader()
