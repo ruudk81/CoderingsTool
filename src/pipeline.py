@@ -6,6 +6,7 @@ import os
 import time
 import random
 import argparse
+import logging
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -38,6 +39,8 @@ var_name             = "Q20"
 data_loader          = data_io.DataLoader()
 var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
 
+# We'll configure logging after parsing args
+
 # === COMMAND LINE ARGUMENTS ========================================================================================
 parser = argparse.ArgumentParser(description='CoderingsTool Pipeline')
 parser.add_argument('--force-recalculate', action='store_true', help='Force recalculation of all steps')
@@ -45,6 +48,11 @@ parser.add_argument('--force-step', type=str, help='Force recalculation of speci
 parser.add_argument('--cleanup', action='store_true', help='Clean up old cache files')
 parser.add_argument('--stats', action='store_true', help='Show cache statistics')
 parser.add_argument('--show-metrics', action='store_true', help='Show clustering quality metrics')
+
+# General pipeline arguments
+parser.add_argument('--verbose', 
+                   action='store_true',
+                   help='Enable verbose logging for debugging')
 
 # Clustering specific arguments
 parser.add_argument('--embedding-type', 
@@ -65,6 +73,13 @@ parser.add_argument('--max-noise-ratio',
                    help='Maximum noise ratio before micro-clustering (default: 0.5)')
 
 args = parser.parse_args()
+
+# Configure logging based on verbose flag
+log_format = '%(levelname)s: %(message)s'
+log_level = logging.DEBUG if args.verbose else logging.INFO
+logging.basicConfig(level=log_level, format=log_format)
+if args.verbose:
+    print(f"Verbose logging enabled")
 
 # Handle cache operations
 if args.cleanup:
@@ -272,7 +287,13 @@ else:
     
     # Step 5b: Merge similar clusters
     print("\nMerging similar clusters...")
-    merger = clusterMerger.ClusterMerger(input_list=initial_clusters, var_lab=var_lab)
+    # Create merger config with verbose flag from command line args
+    merger_config = clusterMerger.MergerConfig(verbose=args.verbose)
+    merger = clusterMerger.ClusterMerger(
+        input_list=initial_clusters, 
+        var_lab=var_lab,
+        config=merger_config
+    )
     cluster_results, merge_mapping = merger.merge_clusters()
     print("\nCluster merging completed successfully")
     
