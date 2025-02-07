@@ -2,6 +2,7 @@ import re
 from typing import List, Union, Optional 
 from pydantic import BaseModel, Field, field_validator
 import models
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 
 class NormalizerConfig(BaseModel):
@@ -16,8 +17,9 @@ class NormalizerConfig(BaseModel):
         return v
 
 class TextNormalizer:
-    def __init__(self, config: Optional[NormalizerConfig] = None):
+    def __init__(self, config: Optional[NormalizerConfig] = None, verbose: bool = False):
         self.config = config if config is not None else NormalizerConfig()
+        self.verbose_reporter = VerboseReporter(verbose)
     
     #TODO: language recognition
     
@@ -62,7 +64,51 @@ class TextNormalizer:
         return models.PreprocessModel(respondent_id= data.respondent_id, response = normalized_text)
  
     def normalize_responses(self, data: List[models.PreprocessModel]) -> List[models.PreprocessModel]:
-        return [self.normalize_with_tracking(item) for item in data]
+        stats = ProcessingStats()
+        stats.start_timing()
+        stats.input_count = len(data)
+        
+        self.verbose_reporter.step_start("Text Normalization")
+        
+        # Track changes
+        symbol_changes = 0
+        case_changes = 0
+        whitespace_changes = 0
+        invalid_filtered = 0
+        
+        results = []
+        for item in data:
+            original = item.response
+            normalized = self.normalize_with_tracking(item)
+            results.append(normalized)
+            
+            # Track what changed
+            if original != original.lower():
+                case_changes += 1
+            if any(symbol in original for symbol in self.config.custom_symbols):
+                symbol_changes += 1
+            if re.search(r'\s{2,}', original or ''):
+                whitespace_changes += 1
+            if normalized.response == self.config.na_placeholder:
+                invalid_filtered += 1
+        
+        stats.output_count = len(results) - invalid_filtered
+        stats.end_timing()
+        
+        # Report statistics
+        self.verbose_reporter.stat_line(f"Started with {stats.input_count} responses")
+        if symbol_changes > 0:
+            self.verbose_reporter.stat_line(f"Symbol removal: {symbol_changes} responses updated")
+        if case_changes > 0:
+            self.verbose_reporter.stat_line(f"Case normalization: {case_changes} responses updated")
+        if whitespace_changes > 0:
+            self.verbose_reporter.stat_line(f"Whitespace cleanup: {whitespace_changes} responses updated")
+        if invalid_filtered > 0:
+            self.verbose_reporter.stat_line(f"Invalid responses filtered: {invalid_filtered} responses")
+        
+        self.verbose_reporter.step_complete(f"Completed with {stats.output_count} valid responses")
+        
+        return results
     
 # Example / test section
 if __name__ == "__main__":

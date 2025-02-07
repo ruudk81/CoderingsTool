@@ -1,8 +1,12 @@
 import re
 from typing import List, Union
 import models
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class TextFinalizer:
+    
+    def __init__(self, verbose: bool = False):
+        self.verbose_reporter = VerboseReporter(verbose)
 
     @staticmethod
     def capitalize_first_letter(text: str) -> str:
@@ -50,7 +54,46 @@ class TextFinalizer:
         return models.PreprocessModel(respondent_id=data.respondent_id, response =finalized_text)
  
     def finalize_responses(self, data: List[models.PreprocessModel]) -> List[models.PreprocessModel]:
-        return [self.finalize_with_tracking(item) for item in data]
+        stats = ProcessingStats()
+        stats.start_timing()
+        stats.input_count = len(data)
+        
+        self.verbose_reporter.step_start("Text Finalization")
+        
+        # Track changes
+        capitalization_fixes = 0
+        punctuation_additions = 0
+        format_cleanup = 0
+        
+        results = []
+        for item in data:
+            original = item.response
+            finalized = self.finalize_with_tracking(item)
+            results.append(finalized)
+            
+            # Track what changed
+            if original and len(original) > 0:
+                if original[0] != original[0].upper():
+                    capitalization_fixes += 1
+                if not original.endswith(('.', '!', '?')):
+                    punctuation_additions += 1
+                if re.search(r'\.{2,}|\?{2,}|!{2,}|\s{2,}', original):
+                    format_cleanup += 1
+        
+        stats.output_count = len(results)
+        stats.end_timing()
+        
+        # Report statistics
+        if capitalization_fixes > 0:
+            self.verbose_reporter.stat_line(f"Capitalization fixes: {capitalization_fixes} responses")
+        if punctuation_additions > 0:
+            self.verbose_reporter.stat_line(f"Punctuation additions: {punctuation_additions} responses")
+        if format_cleanup > 0:
+            self.verbose_reporter.stat_line(f"Format cleanup: {format_cleanup} responses")
+        
+        self.verbose_reporter.step_complete("Finalization completed")
+        
+        return results
 
 # Example / test section
 if __name__ == "__main__":

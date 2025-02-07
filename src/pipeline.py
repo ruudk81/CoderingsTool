@@ -84,6 +84,7 @@ else:
 # === STEP 2 ========================================================================================================
 """preprocess data"""
 from utils import textNormalizer, spellChecker, textFinalizer
+from utils.verbose_reporter import VerboseReporter
 
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
@@ -92,9 +93,14 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
     print(f"Loaded {len(preprocessed_text)} items from cache for step: {step_name}")
 else: 
-    text_normalizer       = textNormalizer.TextNormalizer()
-    spell_checker         = spellChecker.SpellChecker()
-    text_finalizer        = textFinalizer.TextFinalizer()
+    # Initialize verbose reporter for preprocessing phase
+    verbose_reporter = VerboseReporter(VERBOSE)
+    verbose_reporter.section_header("PREPROCESSING PHASE")
+    
+    # Initialize components with verbose flag
+    text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
+    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE)
+    text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
     
     start_time            = time.time()
     preprocess_text       = [item.to_model(models.PreprocessModel) for item in raw_text_list]
@@ -105,8 +111,19 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
+    # Show preprocessing summary
+    if VERBOSE:
+        verbose_reporter.summary("PREPROCESSING SUMMARY", {
+            f"Input: {len(raw_text_list)} responses → Output: {len(preprocessed_text)} responses": "",
+            f"Total processing time: {elapsed_time:.1f} seconds": "",
+            f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""
+        })
+    
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
-    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    
+    # Print traditional output for non-verbose mode
+    if not VERBOSE:
+        print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug print
 # idx = 1 
