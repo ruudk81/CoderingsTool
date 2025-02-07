@@ -1,6 +1,5 @@
 # data
 import numpy as np
-import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from typing import List, Any, Optional, Dict
 import numpy.typing as npt
@@ -8,14 +7,11 @@ from collections import defaultdict, Counter
 
 # cluster
 from umap import UMAP
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import normalize
 import hdbscan
 
 # semantics
 import spacy 
-from sklearn.feature_extraction.text import CountVectorizer 
-from scipy.sparse import csr_matrix
+from sklearn.feature_extraction.text import CountVectorizer
 
 # config
 import models
@@ -62,7 +58,7 @@ class ClusterGenerator:
         dim_reduction_model=None,
         cluster_model=None,
         vectorizer_model=None,
-        embedding_type: str = "code",  # Can be "code" OR "description" 
+        embedding_type: str = "description",  # Can be "code" OR "description" 
         verbose: bool = True):
         
         self.var_lab = var_lab if var_lab else ""
@@ -97,7 +93,7 @@ class ClusterGenerator:
                 #min_cluster_size=10,  # Uncomment and set if needed
                 metric="euclidean",
                 cluster_selection_method="eom",
-                prediction_data=True,
+                prediction_data=False,
                 approx_min_span_tree=False,
                 gen_min_span_tree=True)  
             if self.verbose:
@@ -473,7 +469,7 @@ if __name__ == "__main__":
         clusterer = ClusterGenerator(
             input_list=input_list,
             var_lab=var_lab,
-            embedding_type="code",  # or "description"
+            embedding_type="description",  # or "description"
             verbose=True
         )
         
