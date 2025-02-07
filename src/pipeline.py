@@ -143,34 +143,51 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
     print(f"Loaded {len(encoded_text)} items from cache for step: {step_name}")
 else: 
+    # Initialize verbose reporter for segmentation phase
+    if VERBOSE:
+        verbose_reporter = VerboseReporter(VERBOSE)
+        verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE", emoji="📊")
+    
     start_time            = time.time()
     config                = qualityFilter.GraderConfig()
-    grader                = qualityFilter.Grader(preprocessed_text, var_lab, config)
+    grader                = qualityFilter.Grader(preprocessed_text, var_lab, config, verbose=VERBOSE)
     graded_text           = grader.grade()
     grading_summary       = grader.summary()
     filtered_text         = grader.filter()
-    encoder               = segmentDescriber.SegmentDescriber()
+    encoder               = segmentDescriber.SegmentDescriber(verbose=VERBOSE)
     encoded_text          = encoder.generate_codes(filtered_text, var_lab)
     end_time              = time.time()
     elapsed_time          = end_time - start_time
   
-    cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
-    print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
-
-    print("\nSummary:")
-    for key, value in grading_summary.items(): 
-        print(f"{key}: {value}")
-        
-    print("\nMeaningless responses")
-    random_graded_text = random.sample(graded_text, min(20, len(graded_text)))
-    for text in random_graded_text:
-        if text.quality_filter:
-            print(text.response)
+    # Show segmentation summary
+    if VERBOSE:
+        verbose_reporter.summary("SEGMENTATION SUMMARY", {
+            f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
+            f"Total processing time: {elapsed_time:.1f} seconds": "",
+            f"Filtering rate: {grading_summary['meaningless_percentage']:.1f}%": ""
+        })
     
-#debug print
-random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
-for result in random_encoded_text:
-    print(f"\nRespondent ID: {result.respondent_id}")
+    cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
+    
+    # Print traditional output for non-verbose mode
+    if not VERBOSE:
+        print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
+
+        print("\nSummary:")
+        for key, value in grading_summary.items(): 
+            print(f"{key}: {value}")
+            
+        print("\nMeaningless responses")
+        random_graded_text = random.sample(graded_text, min(20, len(graded_text)))
+        for text in random_graded_text:
+            if text.quality_filter:
+                print(text.response)
+    
+#debug print - only show when not in verbose mode
+if not VERBOSE:
+    random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
+    for result in random_encoded_text:
+        print(f"\nRespondent ID: {result.respondent_id}")
     print(f"Response: {result.response}")
     print("Descriptive Codes:")
     codes = result.response_segment or []

@@ -9,6 +9,7 @@ from openai import OpenAI
 from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE
 from prompts import GRADER_INSTRUCTIONS
 import models
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 # Patch OpenAI client with instructor for structured output
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY)) 
@@ -26,14 +27,17 @@ class Grader:
         self, 
         responses: List[models.DescriptiveModel], 
         var_lab: str,
-        config: Optional[GraderConfig] = None):
+        config: Optional[GraderConfig] = None,
+        verbose: bool = False):
         
         self.responses = responses
         self.question = var_lab
         self.config = config or GraderConfig()
         self.client = client
         self.grader_instructions = GRADER_INSTRUCTIONS 
-        self._results: List[models.DescriptiveModel] = [] 
+        self._results: List[models.DescriptiveModel] = []
+        self.verbose_reporter = VerboseReporter(verbose)
+        self._stats = ProcessingStats() 
 
     def _batch(self) -> List[List[tuple]]:
         indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses)]
@@ -88,24 +92,71 @@ class Grader:
 
     async def _process_all_batches(self):
         batches = self._batch()
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
+        
         tasks = [self._grade_batch(batch) for batch in batches]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         total_failures = 0
         for i, batch_result in enumerate(batch_results):
             if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
+                if not self.verbose_reporter.enabled:
+                    print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
                 total_failures += 1
                 continue
 
             self._results.extend(batch_result)
              
-        if total_failures > 0:
+        if total_failures > 0 and not self.verbose_reporter.enabled:
             print(f"{total_failures} out of {len(batches)} batches failed completely after all retries")
 
     def grade(self) -> List[models.DescriptiveModel]:
+        self._stats.start_timing()
+        self._stats.input_count = len(self.responses)
+        
+        self.verbose_reporter.step_start("Quality Assessment")
+        
         nest_asyncio.apply()
         asyncio.run(self._process_all_batches())
+        
+        # Calculate quality statistics
+        quality_counts = {"high": 0, "medium": 0, "low": 0}
+        filtered_examples = []
+        
+        for result in self._results:
+            if hasattr(result, 'quality_score'):
+                if result.quality_score >= 0.7:
+                    quality_counts["high"] += 1
+                elif result.quality_score >= 0.4:
+                    quality_counts["medium"] += 1
+                else:
+                    quality_counts["low"] += 1
+            
+            if result.quality_filter and len(filtered_examples) < 5:
+                filtered_examples.append(f'"{result.response}" (quality filter: meaningless)')
+        
+        self._stats.output_count = len([r for r in self._results if not r.quality_filter])
+        self._stats.end_timing()
+        
+        # Report statistics
+        total = len(self._results)
+        filtered_count = sum(1 for r in self._results if r.quality_filter)
+        
+        if quality_counts["high"] > 0:
+            self.verbose_reporter.stat_line(f"High quality: {quality_counts['high']} responses ({quality_counts['high']/total*100:.1f}%)")
+        if quality_counts["medium"] > 0:
+            self.verbose_reporter.stat_line(f"Medium quality: {quality_counts['medium']} responses ({quality_counts['medium']/total*100:.1f}%)")
+        if quality_counts["low"] > 0:
+            self.verbose_reporter.stat_line(f"Low quality: {quality_counts['low']} responses ({quality_counts['low']/total*100:.1f}%)")
+        
+        self.verbose_reporter.stat_line(f"Filtered out: {filtered_count} responses")
+        
+        # Show filtered examples
+        if filtered_examples:
+            self.verbose_reporter.sample_list("Sample filtered responses", filtered_examples)
+        
+        self.verbose_reporter.step_complete("Quality filtering completed")
+        
         return self._results
 
     def filter(self) -> List[models.DescriptiveModel]:
