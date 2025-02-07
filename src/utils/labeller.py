@@ -837,7 +837,7 @@ class Labeller:
             percentage = theme_size / total_segments
             
             # Check for oversized "other" categories
-            if any(word in theme.label.lower() for word in ["overige", "andere", "other", "rest"]):
+            if any(word in theme.label.lower() for word in ["overige", "andere", "other", "rest", "miscellaneous", "additional"]):
                 if percentage > max_other_percentage:
                     issues.append(f"Oversized catch-all '{theme.label}': {percentage:.1%} (max {max_other_percentage:.0%})")
             
@@ -893,6 +893,17 @@ class Labeller:
         
         # First, try to redistribute "Other" category
         if other_theme and other_theme.cluster_ids:
+            logger.info(f"Analyzing 'Other' category with {len(other_theme.cluster_ids)} clusters")
+            
+            # Analyze what's in the "Other" category
+            other_labels = []
+            for cid in other_theme.cluster_ids[:10]:  # Sample first 10
+                if cid in initial_labels:
+                    other_labels.append(f"  - Cluster {cid}: {initial_labels[cid].label}")
+            logger.info("Sample clusters in 'Other' category:")
+            for label in other_labels:
+                logger.info(label)
+            
             hierarchy = await self._redistribute_other_category(
                 hierarchy, other_theme, cluster_data, initial_labels, var_lab
             )
@@ -979,7 +990,7 @@ class Labeller:
                     theme_centroid = np.mean(theme_embeddings, axis=0)
                     similarity = cosine_similarity([cluster.centroid], [theme_centroid])[0][0]
                     
-                    if similarity > best_similarity and similarity > 0.7:  # Threshold for redistribution
+                    if similarity > best_similarity and similarity > 0.6:  # Lower threshold for redistribution
                         best_similarity = similarity
                         best_theme = theme
             
@@ -1010,32 +1021,61 @@ class Labeller:
         
         # Handle remaining clusters
         if remaining:
-            logger.info(f"{len(remaining)} clusters remain in 'Other' category")
+            logger.info(f"{len(remaining)} clusters remain in 'Other' category after redistribution")
             
-            # If still too many, try to create new themes from them
-            if len(remaining) > 0.05 * sum(cluster.size for cluster in cluster_data.values()):
+            # Calculate actual size of remaining clusters
+            remaining_size = sum(cluster_data[cid].size for cid in remaining if cid in cluster_data)
+            total_size = sum(cluster.size for cluster in cluster_data.values())
+            remaining_percentage = remaining_size / total_size
+            
+            logger.info(f"Remaining clusters represent {remaining_percentage:.1%} of total segments")
+            
+            # If still too many (>5%), create new themes from them
+            if remaining_percentage > 0.05:
                 remaining_cluster_data = {cid: cluster_data[cid] for cid in remaining if cid in cluster_data}
                 remaining_labels = {cid: initial_labels[cid] for cid in remaining if cid in initial_labels}
                 
-                # Create new themes from remaining
-                phase2 = self.Phase2Organizer(self.config, self.client)
-                new_topics = await phase2._create_topics_from_clusters(remaining_cluster_data, remaining_labels, var_lab)
+                # Analyze what's left
+                logger.info("Creating new themes from remaining clusters...")
+                logger.info("Sample remaining clusters:")
+                for i, (cid, label) in enumerate(list(remaining_labels.items())[:5]):
+                    logger.info(f"  - Cluster {cid}: {label.label}")
                 
-                # Group into themes
-                if len(new_topics) > 3:
-                    new_themes = await phase2._create_themes_from_topics(new_topics, var_lab)
+                # Create new topics with guidance
+                phase2 = self.Phase2Organizer(self.config, self.client)
+                guidance = f"""
+                These clusters could not be assigned to existing themes.
+                Create 3-6 specific, meaningful topics from these clusters.
+                Avoid creating generic catch-all topics.
+                Focus on finding common patterns or themes.
+                """
+                
+                new_topics = await phase2._create_topics_from_clusters_with_guidance(
+                    remaining_cluster_data, remaining_labels, var_lab, guidance
+                )
+                
+                # Always create new themes from these topics
+                if len(new_topics) >= 2:
+                    # Group into 1-2 new themes
+                    new_themes = await phase2._create_themes_from_topics(new_topics[:6], var_lab)
                     
                     # Add new themes to hierarchy
                     max_theme_id = max(int(t.node_id) for t in hierarchy.themes)
                     for i, new_theme in enumerate(new_themes):
+                        if any(word in new_theme.label.lower() for word in ["overige", "andere", "other"]):
+                            # Rename generic theme names
+                            new_theme.label = f"Additional aspects {i+1}"
                         new_theme.node_id = str(max_theme_id + i + 1)
                         hierarchy.themes.append(new_theme)
                     
-                    # Remove the empty "Other" theme
-                    hierarchy.themes.remove(other_theme)
+                    # Remove the original "Other" theme
+                    if other_theme in hierarchy.themes:
+                        hierarchy.themes.remove(other_theme)
                 else:
-                    # Keep as reduced "Other" theme
+                    # Keep as reduced "Other" theme but rename it
                     other_theme.cluster_ids = remaining
+                    if remaining_percentage < 0.10:
+                        other_theme.label = "Miscellaneous aspects"
         
         return hierarchy
     
