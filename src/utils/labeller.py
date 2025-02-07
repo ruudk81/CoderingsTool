@@ -151,9 +151,12 @@ class Labeller:
                                   var_lab: str) -> Dict[int, InitialLabel]:
         """Phase 1: Generate initial labels for each cluster"""
         try:
-            from labeller_phase1_labeller import Phase1Labeller
+            from utils.labeller_phase1_labeller import Phase1Labeller
         except ImportError:
-            from .labeller_phase1_labeller import Phase1Labeller
+            try:
+                from labeller_phase1_labeller import Phase1Labeller
+            except ImportError:
+                from .labeller_phase1_labeller import Phase1Labeller
         
         phase1 = Phase1Labeller(self.config, self.client)
         return await phase1.label_clusters(cluster_data, var_lab)
@@ -164,9 +167,12 @@ class Labeller:
                                     var_lab: str) -> HierarchicalStructure:
         """Phase 2: Create 3-level hierarchical structure"""
         try:
-            from labeller_phase2_organizer import Phase2Organizer
+            from utils.labeller_phase2_organizer import Phase2Organizer
         except ImportError:
-            from .labeller_phase2_organizer import Phase2Organizer
+            try:
+                from labeller_phase2_organizer import Phase2Organizer
+            except ImportError:
+                from .labeller_phase2_organizer import Phase2Organizer
         
         phase2 = Phase2Organizer(self.config, self.client)
         return await phase2.create_hierarchy(cluster_data, initial_labels, var_lab)
@@ -177,9 +183,12 @@ class Labeller:
                                    var_lab: str) -> List[ThemeSummary]:
         """Phase 3: Generate summaries for each theme"""
         try:
-            from labeller_phase3_summarizer import Phase3Summarizer
+            from utils.labeller_phase3_summarizer import Phase3Summarizer
         except ImportError:
-            from .labeller_phase3_summarizer import Phase3Summarizer
+            try:
+                from labeller_phase3_summarizer import Phase3Summarizer
+            except ImportError:
+                from .labeller_phase3_summarizer import Phase3Summarizer
         
         phase3 = Phase3Summarizer(self.config, self.client)
         return await phase3.generate_summaries(hierarchy, var_lab)
