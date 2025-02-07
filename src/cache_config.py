@@ -6,12 +6,20 @@ from typing import Dict, Optional
 import os
 
 
+def get_default_cache_dir():
+    """Get the default cache directory relative to project root"""
+    # Get the directory where this file is located (src)
+    src_dir = Path(__file__).parent
+    # Go up one level to project root, then into data/cache
+    return src_dir.parent / "data" / "cache"
+
+
 @dataclass
 class CacheConfig:
     """Configuration for cache management system"""
     
-    # Base cache directory
-    cache_dir: Path = field(default_factory=lambda: Path("data/cache"))
+    # Base cache directory - absolute path to project_root/data/cache
+    cache_dir: Path = field(default_factory=get_default_cache_dir)
     
     # SQLite database name
     db_name: str = "cache.db"
