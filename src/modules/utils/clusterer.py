@@ -23,6 +23,13 @@ import warnings  # hard coded warning in umap about hidden stat
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
 from config import DEFAULT_LANGUAGE
 
+# clustering improvements
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+from clustering_config import ClusteringConfig
+from cluster_quality import ClusterQualityMetrics
+
 
 # Structured formats 
 class ResultMapper(BaseModel):
@@ -55,6 +62,7 @@ class ClusterGenerator:
         cluster_model=None,
         vectorizer_model=None,
         embedding_type: str = "code",  # Can be "code" OR "description" 
+        config: ClusteringConfig = None,  # NEW: optional config
         verbose: bool = True):
         
         self.var_lab = var_lab if var_lab else ""
@@ -63,37 +71,40 @@ class ClusterGenerator:
         self.verbose = verbose
         # Store the original input list to preserve response data
         self.original_input_list = input_list if input_list else []
+        
+        # Store config and quality metrics
+        self.config = config or ClusteringConfig()
+        self.quality_metrics = ClusterQualityMetrics(verbose=verbose)
+        self.clustering_attempts = []  # Track attempts for reporting
+        
+        # Override embedding_type from config if provided
+        if config and config.embedding_type:
+            self.embedding_type = config.embedding_type
        
         if input_list:
             self.populate_from_input_list(input_list)
         
         # Initialize dimensionality reduction model
         if dim_reduction_model is None:
-            self.dim_reduction_model = UMAP(
-                n_neighbors=5,            
-                n_components=10,          
-                min_dist=0.0,            
-                metric="cosine",
-                random_state=42,
-                n_jobs=1,
-                low_memory=True,         
-                transform_seed=42)
+            # Use config for parameters if available
+            data_size = len(self.output_list) if self.output_list else 1000
+            reducer_params = self.config.get_reducer_params(data_size)
+            self.dim_reduction_model = UMAP(**reducer_params)
             if self.verbose:
                 print("Using default dimensionality reduction: UMAP")
+                print(f"Parameters: {reducer_params}")
         else:
             self.dim_reduction_model = dim_reduction_model
             
         # Initialize clustering model
         if cluster_model is None:
-            self.cluster_model = hdbscan.HDBSCAN(
-                #min_cluster_size=10,  # Uncomment and set if needed
-                metric="euclidean",
-                cluster_selection_method="eom",
-                prediction_data=True,
-                approx_min_span_tree=False,
-                gen_min_span_tree=True)  
+            # Use config for parameters
+            data_size = len(self.output_list) if self.output_list else 1000
+            cluster_params = self.config.get_auto_params(data_size)
+            self.cluster_model = hdbscan.HDBSCAN(**cluster_params)
             if self.verbose:
                 print("Using default clustering: HDBSCAN")
+                print(f"Parameters: {cluster_params}")
         else:
             self.cluster_model = cluster_model
         
@@ -181,11 +192,49 @@ class ClusterGenerator:
         # Performs initial clustering on reduced embeddings and adds cluster labels to output_list.
         if self.verbose:
             print("Clustering reduced embeddings...")
+        
+        max_attempts = 3
+        current_attempt = 1
 
         # Cluster code embeddings if needed
         if self.embedding_type == "code":
             reduced_code_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
-            initial_code_clusters = self.cluster_model.fit_predict(reduced_code_embeddings)
+            
+            while current_attempt <= max_attempts:
+                if self.verbose and current_attempt > 1:
+                    print(f"\nAttempt {current_attempt}/{max_attempts}...")
+                
+                initial_code_clusters = self.cluster_model.fit_predict(reduced_code_embeddings)
+                
+                # Calculate quality metrics
+                metrics = self.calculate_clustering_quality(reduced_code_embeddings, initial_code_clusters)
+                
+                if self.verbose:
+                    print(f"Quality score: {metrics['quality_score']:.3f}")
+                
+                # Check if quality is acceptable
+                if metrics['quality_score'] >= self.config.min_quality_score:
+                    break
+                
+                # Try with adjusted parameters if quality is low
+                if current_attempt < max_attempts:
+                    current_min_cluster_size = self.cluster_model.min_cluster_size
+                    new_min_cluster_size = max(2, current_min_cluster_size - 2)
+                    if self.verbose:
+                        print(f"Adjusting min_cluster_size from {current_min_cluster_size} to {new_min_cluster_size}")
+                    
+                    # Create new clusterer with adjusted parameters
+                    cluster_params = self.config.get_auto_params(len(self.output_list))
+                    cluster_params['min_cluster_size'] = new_min_cluster_size
+                    self.cluster_model = hdbscan.HDBSCAN(**cluster_params)
+                
+                current_attempt += 1
+            
+            # Check if we need micro-clusters for outliers
+            if metrics['noise_ratio'] > 0.09:
+                initial_code_clusters = self._create_micro_clusters(reduced_code_embeddings, initial_code_clusters)
+                # Recalculate metrics after micro-clustering
+                metrics = self.calculate_clustering_quality(reduced_code_embeddings, initial_code_clusters)
             
             # Add cluster labels to output list
             for i, item in enumerate(self.output_list):
@@ -203,7 +252,43 @@ class ClusterGenerator:
         # Cluster description embeddings if needed
         if self.embedding_type == "description":
             reduced_description_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
-            initial_description_clusters = self.cluster_model.fit_predict(reduced_description_embeddings)
+            current_attempt = 1  # Reset for description clustering
+            
+            while current_attempt <= max_attempts:
+                if self.verbose and current_attempt > 1:
+                    print(f"\nAttempt {current_attempt}/{max_attempts}...")
+                
+                initial_description_clusters = self.cluster_model.fit_predict(reduced_description_embeddings)
+                
+                # Calculate quality metrics
+                metrics = self.calculate_clustering_quality(reduced_description_embeddings, initial_description_clusters)
+                
+                if self.verbose:
+                    print(f"Quality score: {metrics['quality_score']:.3f}")
+                
+                # Check if quality is acceptable
+                if metrics['quality_score'] >= self.config.min_quality_score:
+                    break
+                
+                # Try with adjusted parameters if quality is low
+                if current_attempt < max_attempts:
+                    current_min_cluster_size = self.cluster_model.min_cluster_size
+                    new_min_cluster_size = max(2, current_min_cluster_size - 2)
+                    if self.verbose:
+                        print(f"Adjusting min_cluster_size from {current_min_cluster_size} to {new_min_cluster_size}")
+                    
+                    # Create new clusterer with adjusted parameters
+                    cluster_params = self.config.get_auto_params(len(self.output_list))
+                    cluster_params['min_cluster_size'] = new_min_cluster_size
+                    self.cluster_model = hdbscan.HDBSCAN(**cluster_params)
+                
+                current_attempt += 1
+            
+            # Check if we need micro-clusters for outliers
+            if metrics['noise_ratio'] > 0.09:
+                initial_description_clusters = self._create_micro_clusters(reduced_description_embeddings, initial_description_clusters)
+                # Recalculate metrics after micro-clustering
+                metrics = self.calculate_clustering_quality(reduced_description_embeddings, initial_description_clusters)
             
             # Add cluster labels to output list
             for i, item in enumerate(self.output_list):
@@ -552,6 +637,54 @@ class ClusterGenerator:
                 print(f"- Description items clustered: {descriptions_with_clusters}")
             print(f"- Meta-clusters created: {meta_clusters}")
             #print("=" * 80)
+    
+    def calculate_clustering_quality(self, embeddings: np.ndarray, labels: np.ndarray) -> Dict:
+        """Calculate quality metrics for the clustering results"""
+        metrics = self.quality_metrics.calculate_all_metrics(
+            embeddings, 
+            labels,
+            min_quality_threshold=self.config.min_quality_score
+        )
+        self.clustering_attempts.append(metrics)
+        return metrics
+    
+    def _create_micro_clusters(self, embeddings: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        """Create micro-clusters from outliers if noise ratio is too high"""
+        noise_mask = labels == -1
+        noise_count = np.sum(noise_mask)
+        
+        if noise_count == 0:
+            return labels
+            
+        if self.verbose:
+            print(f"\nCreating micro-clusters from {noise_count} outliers...")
+        
+        # Get outlier embeddings
+        outlier_embeddings = embeddings[noise_mask]
+        
+        # Use smaller min_cluster_size for outliers
+        micro_clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=2,
+            min_samples=1,
+            metric='euclidean'
+        )
+        
+        micro_labels = micro_clusterer.fit_predict(outlier_embeddings)
+        
+        # Assign new cluster IDs (continuing from existing max cluster ID)
+        max_cluster_id = np.max(labels[labels != -1]) if np.any(labels != -1) else -1
+        new_labels = labels.copy()
+        
+        outlier_indices = np.where(noise_mask)[0]
+        for i, micro_label in enumerate(micro_labels):
+            if micro_label != -1:
+                new_labels[outlier_indices[i]] = max_cluster_id + 1 + micro_label
+        
+        new_noise_count = np.sum(new_labels == -1)
+        if self.verbose:
+            print(f"Reduced outliers from {noise_count} to {new_noise_count}")
+            
+        return new_labels
             
     def to_cluster_model(self) -> List[models.ClusterModel]:
        
@@ -626,10 +759,11 @@ class ClusterGenerator:
         
         return result_models    
 
-# Example usage
+# Example usage and testing
 if __name__ == "__main__":
     import data_io
     import csvHandler
+    from clustering_config import ClusteringConfig
     
     csv_handler = csvHandler.CsvHandler()
     data_loader = data_io.DataLoader()
@@ -640,17 +774,29 @@ if __name__ == "__main__":
    
     input_list = csv_handler.load_from_csv(filename, 'embeddings', models.EmbeddingsModel)
 
+    # Create configuration (uses defaults: description embeddings, Dutch language)
+    config = ClusteringConfig()
+    
+    # Or customize:
+    # config = ClusteringConfig(embedding_type="code", language="en")
+    
     clusterer = ClusterGenerator(
         input_list=input_list,
         var_lab=var_lab,
-        embedding_type="code",  # code or description
+        config=config,  # Pass the config object
         verbose=True)
     
     clusterer.run_pipeline()
     cluster_results = clusterer.to_cluster_model()
     csv_handler.save_to_csv(cluster_results, filename, 'clusters')
     
-    # debug print
+    # Print quality metrics
+    if clusterer.quality_metrics:
+        print("\nClustering Quality Metrics:")
+        for key, value in clusterer.quality_metrics.items():
+            print(f"  {key}: {value:.3f}")
+    
+    # Print cluster summary
     meta_cluster_counts = defaultdict(int)
     meta_cluster_codes = defaultdict(list)
     meta_cluster_descriptions = defaultdict(list)
@@ -663,7 +809,8 @@ if __name__ == "__main__":
                 meta_cluster_codes[meta_id].append(segment_items.descriptive_code)
                 meta_cluster_descriptions[meta_id].append(segment_items.code_description)
 
-    print(f"Found {len(meta_cluster_counts)} meta-clusters in results")
+    print(f"\nFound {len(meta_cluster_counts)} meta-clusters in results")
+    print(f"Clustering parameters used: min_samples={clusterer.min_samples}, min_cluster_size={clusterer.min_cluster_size}")
     for meta_id, count in sorted(meta_cluster_counts.items()):
         print(f"\n📚 Meta-cluster {meta_id}: {count} items")
       
@@ -676,3 +823,79 @@ if __name__ == "__main__":
         sample_size = min(5, len(meta_cluster_descriptions[meta_id]))
         for i in range(sample_size):
             print(f"  - {meta_cluster_descriptions[meta_id][i]}")
+
+
+# Test section
+if __name__ == "__main__":
+    """Test the clusterer with actual embeddings"""
+    import sys
+    from pathlib import Path
+    
+    # Add project paths
+    project_root = Path(__file__).parents[2]
+    sys.path.append(str(project_root))
+    
+    from cache_manager import CacheManager
+    from cache_config import CacheConfig
+    from clustering_config import ClusteringConfig
+    import models
+    
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
+    
+    # Load embeddings from cache
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    embedded_data = cache_manager.load_from_cache(filename, "embeddings", models.EmbeddingsModel)
+    
+    if embedded_data:
+        print(f"Loaded {len(embedded_data)} items from cache")
+        
+        # Test 1: Default clustering with description embeddings
+        print("\n=== Test 1: Default clustering (description embeddings) ===")
+        clusterer = ClusterGenerator(
+            input_list=embedded_data,
+            var_lab="Test variable",
+            embedding_type="description",
+            config=ClusteringConfig(),
+            verbose=True
+        )
+        
+        clusterer.run_pipeline()
+        
+        # Check quality metrics
+        if clusterer.clustering_attempts:
+            print("\nQuality metrics from attempts:")
+            for i, metrics in enumerate(clusterer.clustering_attempts):
+                print(f"Attempt {i+1}: Quality score = {metrics['quality_score']:.3f}")
+        
+        # Test 2: Code embeddings
+        print("\n=== Test 2: Code embeddings ===")
+        clusterer_code = ClusterGenerator(
+            input_list=embedded_data,
+            var_lab="Test variable",
+            embedding_type="code",
+            config=ClusteringConfig(embedding_type="code"),
+            verbose=True
+        )
+        
+        clusterer_code.run_pipeline()
+        
+        # Test 3: Strict quality requirements
+        print("\n=== Test 3: Strict quality requirements ===")
+        strict_config = ClusteringConfig(
+            min_quality_score=0.7,
+            max_noise_ratio=0.05
+        )
+        
+        clusterer_strict = ClusterGenerator(
+            input_list=embedded_data,
+            var_lab="Test variable",
+            config=strict_config,
+            verbose=True
+        )
+        
+        clusterer_strict.run_pipeline()
+        
+    else:
+        print("No cached embeddings found. Please run the pipeline first.")
