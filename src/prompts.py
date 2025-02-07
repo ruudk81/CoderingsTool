@@ -179,137 +179,7 @@ Return a valid JSON array with these fields for each segment:
 Ensure all output is written in {language}, unless the code is "NA".
 """
 
-CLUSTER_LABELING_PROMPT = """
-You are a {language} expert in thematic analysis of survey responses.
-
-# Survey Question Context
-These responses were given to: "{var_lab}"
-
-# Task Overview
-Create a descriptive label for a {cluster_type} cluster containing {n_items} similar responses.
-
-# Cluster Type Definition
-This is a {cluster_type} cluster, which represents {cluster_type_description}.
-
-# Cluster Content
-## Representative responses:
-{responses}
-
-## Associated descriptive codes:
-{codes}
-
-## Code descriptions:
-{descriptions}
-
-# Label Requirements
-1. Length: 2-5 words maximum
-2. Language: {language}
-3. Format: Natural {language} phrase (not ALL_CAPS)
-4. Content: Use ADJECTIVES and NOUNS that capture the CENTRAL MEANING
-5. Specificity: 
-   - theme: Broad enough to encompass multiple topics
-   - topic: Specific enough to distinguish from other topics
-   - code: Detailed enough to capture specific issues
-
-# Instructions
-Based on the survey question context, create labels that:
-- Directly relate to what's being asked in the survey
-- Use domain-appropriate terminology based on the question topic
-- Capture the essence of the clustered responses
-
-# Output Format
-You must return a JSON object with exactly these fields:
-- "label": A concise, descriptive label in {language}
-- "confidence": Your confidence score (0.0 to 1.0)
-- "reasoning": Brief explanation in {language} of why this label fits
-"""
-
-RESPONSE_SUMMARY_PROMPT = """
-You are a {language} expert summarizing survey responses.
-
-# Survey Question
-"{var_lab}"
-
-# Original Response
-{original_response}
-
-# Assigned Labels
-Themes: {themes}
-Topics: {topics}
-Codes: {codes}
-
-# Task
-Create a 1-2 sentence summary in {language} that:
-1. Captures the main points from the original response
-2. Uses the assigned labels as context
-3. Sounds natural as a summary of survey feedback
-4. Maintains the respondent's perspective
-5. Relates directly to the survey question
-
-# Output
-Write a concise summary that helps understand what the respondent is saying about the topic asked in the survey question.
-"""
-
-THEME_SUMMARY_PROMPT = """
-You are a {language} expert creating a summary for a theme in survey response analysis.
-
-# Theme
-{theme_label}
-
-# Survey Question
-"{var_lab}"
-
-# Most Representative Codes and Examples
-{representative_items}
-
-# Task
-Based on these representative examples and the survey question context, create a comprehensive summary that:
-1. Captures the main concerns or topics within this theme
-2. Explains how the different codes relate to each other
-3. Provides insight into what respondents are saying overall about this theme
-4. Relates directly to what was asked in the survey question
-
-# Requirements
-- Write in {language}
-- Be specific about respondent views and concerns
-- Use 2-3 sentences maximum
-- Focus on the common patterns across the examples
-- Ensure the summary makes sense in the context of the survey question
-
-# Output
-Write a clear, insightful summary that helps understand what this theme represents in relation to the survey question.
-"""
-
-# New Labeller prompts for hierarchical labeling system
-
-INITIAL_LABEL_PROMPT = """
-You are analyzing survey responses to the question: "{var_lab}"
-
-Please label the following clusters based on their content. Each cluster shows the MOST REPRESENTATIVE items,
-selected using cosine similarity to the cluster centroid. These are the items that best capture the essence
-of each cluster.
-
-For each cluster, provide:
-1. A concise, descriptive label that captures the main theme
-2. 3-5 keywords that represent the cluster
-3. A confidence score (0.0-1.0)
-
-Focus on creating labels that directly answer or relate to the survey question. Base your labels primarily
-on the representative items shown, as they are the most characteristic of each cluster.
-
-Language: {language}
-
-{clusters}
-
-REQUIRED OUTPUT FORMAT:
-Return a JSON object with a single key "labels", containing an array of objects with these fields:
-- "cluster_id": The cluster ID
-- "label": A concise descriptive label
-- "keywords": An array of 3-5 keywords
-- "confidence": A confidence score between 0.0 and 1.0
-"""
-
-SIMILARITY_SCORING_PROMPT = """
+MERGE_PROMPT = """
 RESEARCH QUESTION: "{var_lab}"
 
 You are evaluating whether clusters of survey responses represent meaningfully different answers to the research question above.
@@ -342,12 +212,6 @@ Language: {language}
 - Be conservative - when in doubt, keep clusters separate
 - Consider semantic meaning, not just surface-level wording
 
-## Examples of clusters that should NOT be merged:
-- "Use less salt" vs. "Use less sugar" (different ingredients despite similar theme)
-- "More vegetarian options" vs. "More vegan options" (distinct dietary preferences)
-- "Better quality meat" vs. "More meat in portions" (quality vs. quantity distinction)
-- "Like the packaging" vs. "Like the taste" (different aspects being praised)
-
 {cluster_pairs}
 
 REQUIRED OUTPUT FORMAT:
@@ -357,6 +221,34 @@ Return a JSON object with a single key "decisions", containing an array of objec
 - "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
 - "reason": Brief explanation of your decision (1-2 sentences maximum)
 """
+
+INITIAL_LABEL_PROMPT = """
+You are analyzing survey responses to the question: "{var_lab}"
+
+Please label the following clusters based on their content. Each cluster shows the MOST REPRESENTATIVE items,
+selected using cosine similarity to the cluster centroid. These are the items that best capture the essence
+of each cluster.
+
+For each cluster, provide:
+1. A concise, descriptive label that captures the main theme
+2. 3-5 keywords that represent the cluster
+3. A confidence score (0.0-1.0)
+
+Focus on creating labels that directly answer or relate to the survey question. Base your labels primarily
+on the representative items shown, as they are the most characteristic of each cluster.
+
+Language: {language}
+
+{clusters}
+
+REQUIRED OUTPUT FORMAT:
+Return a JSON object with a single key "labels", containing an array of objects with these fields:
+- "cluster_id": The cluster ID
+- "label": A concise descriptive label
+- "keywords": An array of 3-5 keywords
+- "confidence": A confidence score between 0.0 and 1.0
+"""
+
 
 HIERARCHY_CREATION_PROMPT = """
 You are organizing survey response clusters for the question: "{var_lab}"

@@ -2,11 +2,11 @@
 
 # ===  MODULES ========================================================================================================
 import sys
-import os
+#import os
 import time
 import random
 import argparse
-import logging
+#import logging
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -52,6 +52,7 @@ parser.add_argument('--show-metrics', action='store_true', help='Show clustering
 # General pipeline arguments
 parser.add_argument('--verbose', 
                    action='store_true',
+                   default=True,  # Set to True by default for Spyder 
                    help='Enable verbose logging for debugging')
 
 # Clustering specific arguments
@@ -74,46 +75,6 @@ parser.add_argument('--max-noise-ratio',
 
 args = parser.parse_args()
 
-# Configure logging based on verbose flag
-log_format = '%(levelname)s: %(message)s'
-log_level = logging.DEBUG if args.verbose else logging.INFO
-logging.basicConfig(level=log_level, format=log_format)
-if args.verbose:
-    print(f"Verbose logging enabled")
-
-# Handle cache operations
-if args.cleanup:
-    cache_manager.cleanup_old_cache()
-    print("Cache cleanup completed")
-    exit(0)
-
-if args.stats:
-    stats = cache_manager.get_statistics()
-    print("\nCache Statistics:")
-    print(f"Total entries: {stats['total_entries']}")
-    print(f"Total size: {stats['total_size_bytes'] / (1024**3):.2f} GB")
-    print("\nBy step:")
-    for step, info in stats['by_step'].items():
-        print(f"  {step}: {info['count']} files, {info['size'] / (1024**2):.2f} MB")
-    exit(0)
-
-if args.show_metrics:
-    metrics = cache_manager.get_clustering_metrics(filename, limit=5)
-    print(f"\nClustering Metrics for {filename}:")
-    for i, metric in enumerate(metrics):
-        print(f"\n--- Run {i+1} ({metric['timestamp']}) ---")
-        print(f"Embedding type: {metric['embedding_type']}")
-        print(f"Language: {metric['language']}")
-        print(f"Overall quality: {metric['overall_quality']:.3f}")
-        print(f"Silhouette score: {metric['silhouette_score']:.3f}")
-        print(f"Noise ratio: {metric['noise_ratio']:.3f}")
-        print(f"Coverage: {metric['coverage']:.3f}")
-        print(f"Clusters: {metric['num_clusters']}")
-        print(f"Meta-clusters: {metric.get('num_meta_clusters', 'N/A')}")
-        print(f"Attempts: {metric['attempts']}")
-        if metric['parameters']:
-            print(f"Parameters: {metric['parameters']}")
-    exit(0)
 
 # === STEP 1 ========================================================================================================
 """get data"""
@@ -257,7 +218,7 @@ for result in embedded_text[:1]:
 
 # === STEP 5 ========================================================================================================
 "get clusters"
-from modules.utils import clusterer, clusterMerger
+from modules.utils import clusterer, clusterMerger2
 
 step_name = "clusters"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -276,24 +237,26 @@ else:
         input_list=embedded_text, 
         var_lab=var_lab, 
         embedding_type=args.embedding_type,
-        verbose=True
-    )
+        verbose=True )
     
     cluster_gen.run_pipeline()
     initial_clusters = cluster_gen.to_cluster_model()
     
+    for result in initial_clusters:
+        print(result)
+        break
+
     # Quality metrics are already displayed by the simplified clusterer
     print("\nInitial clustering completed successfully")
     
     # Step 5b: Merge similar clusters
     print("\nMerging similar clusters...")
     # Create merger config with verbose flag from command line args
-    merger_config = clusterMerger.MergerConfig(verbose=args.verbose)
-    merger = clusterMerger.ClusterMerger(
+    
+    from modules.utils import clusterer, clusterMerger3
+    merger = clusterMerger3.ClusterMerger(
         input_list=initial_clusters, 
-        var_lab=var_lab,
-        config=merger_config
-    )
+        var_lab=var_lab)
     cluster_results, merge_mapping = merger.merge_clusters()
     print("\nCluster merging completed successfully")
     
@@ -341,7 +304,7 @@ for response_items in cluster_results:
             micro_cluster_descriptions[micro_id].append(segment_items.code_description)
 
 print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
-for micro_id, count in sorted(micro_cluster_counts.items())[:10]:  # Show first 10 clusters
+for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
     print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
     
     sample_size = min(3, len(micro_cluster_codes[micro_id]))
