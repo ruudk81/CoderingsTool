@@ -771,116 +771,12 @@ class ClusterGenerator:
 
 # Example usage and testing
 if __name__ == "__main__":
-    import data_io
-    from cache_manager import CacheManager
-    from clustering_config import ClusteringConfig
-    import os
-    
-    data_loader = data_io.DataLoader()
-    cache_manager = CacheManager()
-    
-    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    var_name = "Q20"
-    var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
-   
-    # Try to load from cache first
-    try:
-        input_list = cache_manager.load_step_data(filename, 'embeddings', models.EmbeddingsModel)
-        if input_list:
-            print(f"Loaded {len(input_list)} embeddings from cache")
-        else:
-            raise ValueError("No embeddings in cache")
-    except Exception as e:
-        print(f"Could not load embeddings from cache: {e}")
-        
-        # Create minimal test data for demonstration
-        print("\nCreating test data for demonstration...")
-        test_embeddings = []
-        for i in range(50):
-            segment = models.EmbeddingSubmodel(
-                segment_id=i,
-                segment_response=f"Test response {i}",
-                descriptive_code=f"CODE_{i}",
-                code_description=f"Description for code {i}",
-                code_embedding=np.random.rand(1536).tolist(),
-                description_embedding=np.random.rand(1536).tolist(),
-                combined_embedding=np.random.rand(1536).tolist()
-            )
-            response = models.EmbeddingsModel(
-                respondent_id=f"R{i:03d}",
-                response=f"Full response {i}",
-                response_segment=[segment]
-            )
-            test_embeddings.append(response)
-        input_list = test_embeddings
-
-    # Create configuration (uses defaults: description embeddings, Dutch language)
-    config = ClusteringConfig()
-    
-    # Or customize:
-    # config = ClusteringConfig(embedding_type="code", language="en")
-    
-    clusterer = ClusterGenerator(
-        input_list=input_list,
-        var_lab=var_lab,
-        config=config,  # Pass the config object
-        verbose=True)
-    
-    clusterer.run_pipeline()
-    cluster_results = clusterer.to_cluster_model()
-    csv_handler.save_to_csv(cluster_results, filename, 'clusters')
-    
-    # Print quality metrics
-    if clusterer.clustering_attempts:
-        print("\nClustering Quality Metrics:")
-        final_metrics = clusterer.clustering_attempts[-1]  # Get last attempt (final result)
-        for key, value in final_metrics.items():
-            print(f"  {key}: {value:.3f}")
-    
-    # Print cluster summary
-    meta_cluster_counts = defaultdict(int)
-    meta_cluster_codes = defaultdict(list)
-    meta_cluster_descriptions = defaultdict(list)
-    
-    for response_items in cluster_results:
-        for segment_items in response_items.response_segment:
-            if segment_items.meta_cluster is not None:
-                meta_id = list(segment_items.meta_cluster.keys())[0]  # Get the meta-cluster ID
-                meta_cluster_counts[meta_id] += 1
-                meta_cluster_codes[meta_id].append(segment_items.descriptive_code)
-                meta_cluster_descriptions[meta_id].append(segment_items.code_description)
-
-    print(f"\nFound {len(meta_cluster_counts)} meta-clusters in results")
-    print(f"Clustering parameters used: min_samples={clusterer.min_samples}, min_cluster_size={clusterer.min_cluster_size}")
-    
-    # Show retry attempts if any
-    if len(clusterer.clustering_attempts) > 1:
-        print(f"\nClustering attempts: {len(clusterer.clustering_attempts)}")
-        for i, attempt in enumerate(clusterer.clustering_attempts):
-            print(f"  Attempt {i+1}: quality={attempt.get('overall_quality', 0):.3f}")
-    for meta_id, count in sorted(meta_cluster_counts.items()):
-        print(f"\n📚 Meta-cluster {meta_id}: {count} items")
-      
-            
-        sample_size = min(5, len(meta_cluster_codes[meta_id]))
-        for i in range(sample_size):
-            print(f"  - {meta_cluster_codes[meta_id][i]}")    
-        
-        
-        sample_size = min(5, len(meta_cluster_descriptions[meta_id]))
-        for i in range(sample_size):
-            print(f"  - {meta_cluster_descriptions[meta_id][i]}")
-
-
-# Test section
-if __name__ == "__main__":
     """Test the clusterer with actual embeddings"""
     import sys
     from pathlib import Path
     
     # Add project paths
-    project_root = Path(__file__).parents[2]
-    sys.path.append(str(project_root))
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
     
     from cache_manager import CacheManager
     from cache_config import CacheConfig
@@ -891,58 +787,74 @@ if __name__ == "__main__":
     cache_config = CacheConfig()
     cache_manager = CacheManager(cache_config)
     
-    # Load embeddings from cache
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    embedded_data = cache_manager.load_from_cache(filename, "embeddings", models.EmbeddingsModel)
+    var_name = "Q20"
     
-    if embedded_data:
-        print(f"Loaded {len(embedded_data)} items from cache")
+    # Load embeddings from cache
+    input_list = cache_manager.load_from_cache(filename, "embeddings", models.EmbeddingsModel)
+    
+    if input_list:
+        print(f"Loaded {len(input_list)} embeddings from cache")
         
-        # Test 1: Default clustering with description embeddings
-        print("\n=== Test 1: Default clustering (description embeddings) ===")
+        # Get variable label
+        import data_io
+        data_loader = data_io.DataLoader()
+        var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+        
+        # Create configuration (uses defaults: description embeddings, Dutch language)
+        config = ClusteringConfig()
+        
+        print("\n=== Running clustering with default config ===")
         clusterer = ClusterGenerator(
-            input_list=embedded_data,
-            var_lab="Test variable",
-            embedding_type="description",
-            config=ClusteringConfig(),
+            input_list=input_list,
+            var_lab=var_lab,
+            config=config,
             verbose=True
         )
         
         clusterer.run_pipeline()
+        cluster_results = clusterer.to_cluster_model()
         
-        # Check quality metrics
-        if clusterer.clustering_attempts:
-            print("\nQuality metrics from attempts:")
-            for i, metrics in enumerate(clusterer.clustering_attempts):
-                print(f"Attempt {i+1}: Quality score = {metrics['quality_score']:.3f}")
-        
-        # Test 2: Code embeddings
-        print("\n=== Test 2: Code embeddings ===")
-        clusterer_code = ClusterGenerator(
-            input_list=embedded_data,
-            var_lab="Test variable",
-            embedding_type="code",
-            config=ClusteringConfig(embedding_type="code"),
-            verbose=True
-        )
-        
-        clusterer_code.run_pipeline()
-        
-        # Test 3: Strict quality requirements
-        print("\n=== Test 3: Strict quality requirements ===")
-        strict_config = ClusteringConfig(
-            min_quality_score=0.7,
-            max_noise_ratio=0.05
-        )
-        
-        clusterer_strict = ClusterGenerator(
-            input_list=embedded_data,
-            var_lab="Test variable",
-            config=strict_config,
-            verbose=True
-        )
-        
-        clusterer_strict.run_pipeline()
+        # Save to cache instead of CSV
+        cache_manager.save_to_cache(cluster_results, filename, 'clusters')
+        print(f"Saved {len(cluster_results)} cluster results to cache")
         
     else:
         print("No cached embeddings found. Please run the pipeline first.")
+        print("python pipeline.py")
+        
+    # Print quality metrics
+    if input_list and hasattr(clusterer, 'clustering_attempts') and clusterer.clustering_attempts:
+        print("\nClustering Quality Metrics:")
+        final_metrics = clusterer.clustering_attempts[-1]  # Get last attempt (final result)
+        for key, value in final_metrics.items():
+            print(f"  {key}: {value:.3f}")
+        
+        # Print cluster summary
+        meta_cluster_counts = defaultdict(int)
+        meta_cluster_codes = defaultdict(list)
+        meta_cluster_descriptions = defaultdict(list)
+        
+        for response_items in cluster_results:
+            for segment_items in response_items.response_segment:
+                if segment_items.meta_cluster is not None:
+                    meta_id = list(segment_items.meta_cluster.keys())[0]  # Get the meta-cluster ID
+                    meta_cluster_counts[meta_id] += 1
+                    meta_cluster_codes[meta_id].append(segment_items.descriptive_code)
+                    meta_cluster_descriptions[meta_id].append(segment_items.code_description)
+    
+        print(f"\nFound {len(meta_cluster_counts)} meta-clusters in results")
+        print(f"Clustering parameters used: min_samples={clusterer.min_samples}, min_cluster_size={clusterer.min_cluster_size}")
+        
+        # Show retry attempts if any
+        if len(clusterer.clustering_attempts) > 1:
+            print(f"\nClustering attempts: {len(clusterer.clustering_attempts)}")
+            for i, attempt in enumerate(clusterer.clustering_attempts):
+                print(f"  Attempt {i+1}: quality={attempt.get('overall_quality', 0):.3f}")
+                
+        for meta_id, count in sorted(meta_cluster_counts.items()):
+            print(f"\n📚 Meta-cluster {meta_id}: {count} items")
+            # Show sample descriptions for this cluster
+            sample_size = min(5, len(meta_cluster_descriptions[meta_id]))
+            for i in range(sample_size):
+                print(f"  - {meta_cluster_descriptions[meta_id][i][:100]}...")
