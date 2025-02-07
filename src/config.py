@@ -54,7 +54,7 @@ class ModelConfig:
     # Global parameters
     seed: int = 42
     default_temperature: float = 0.0  # Default to deterministic
-    max_tokens: int = 4000
+    max_tokens: int = 16000 # 4o-mini
     
     # Stage-specific temperatures (override default if needed)
     spell_check_temperature: float = 0.0

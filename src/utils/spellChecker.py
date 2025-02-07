@@ -16,6 +16,10 @@ from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
 
+from config import ModelConfig
+config = ModelConfig()
+MAX_TOKENS = config.max_tokens
+
 # Nederlands of Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
 
@@ -320,7 +324,7 @@ class SpellChecker:
     async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
         oov_words = list(best_suggestions_dict.keys())
         
-        max_tokens = 8192  # TODO : is this the model's max token limit?
+        max_tokens = MAX_TOKENS  
         completion_reserve = 1000  # Reserve for completion
         
         corrected_sentences_dict = {}
@@ -493,8 +497,8 @@ class SpellChecker:
                             else:
                                 highlighted_corrected.append(word)
                         
-                        print(f"Original: {' '.join(highlighted_original)}")
-                        print(f"Corrected: {' '.join(highlighted_corrected)}\n")
+                        #print(f"Original: {' '.join(highlighted_original)}")
+                        #print(f"Corrected: {' '.join(highlighted_corrected)}\n")
 
         stats.end_timing()
         stats.output_count = len(updated_responses)
@@ -508,9 +512,7 @@ class SpellChecker:
         
         self.verbose_reporter.step_complete("Spell checking completed")
         
-        # Only print old-style output in non-verbose mode
-        if not self.verbose_reporter.enabled:
-            print(f"Total {corrections_made} responses corrected")
+        #print(f"Total {corrections_made} responses corrected")
 
         processed_responses = [models.PreprocessModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         

@@ -101,8 +101,7 @@ class Grader:
         total_failures = 0
         for i, batch_result in enumerate(batch_results):
             if isinstance(batch_result, Exception):
-                if not self.verbose_reporter.enabled:
-                    print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
+                print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
                 total_failures += 1
                 continue
 
