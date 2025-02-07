@@ -12,20 +12,12 @@ nest_asyncio.apply()
 
 
 # === MODELS ========================================================================================================
-project_paths = [
-    r'C:\Users\rkn\Python_apps\Coderingstool\src',
-    r'C:\Users\rkn\Python_apps\Coderingstool\src\modules',
-    r'C:\Users\rkn\Python_apps\Coderingstool\src\modules\utils']
-
-for path in project_paths:
-    sys.path.insert(0, path)
-    
 import models
 
 # === CONFIG ========================================================================================================
-from modules.utils import data_io
+from utils import data_io
 from cache_manager import CacheManager
-from cache_config import CacheConfig, ProcessingConfig
+from config import CacheConfig, ProcessingConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -98,7 +90,7 @@ else:
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
-from modules.utils import textNormalizer, spellChecker, textFinalizer
+from utils import textNormalizer, spellChecker, textFinalizer
 
 step_name = "preprocessed"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -132,7 +124,7 @@ for response in preprocessed_text[:10]:  # Limit debug output
 
 # === STEP 3 ========================================================================================================
 """describe and segment data"""
-from modules.utils import qualityFilter, segmentDescriber
+from utils import qualityFilter, segmentDescriber
 
 step_name = "segmented_descriptions"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -180,7 +172,7 @@ for result in random_encoded_text:
 
 # === STEP 4 ========================================================================================================
 """get embeddings"""
-from modules.utils import embedder  
+from utils import embedder  
 
 step_name = "embeddings"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -218,7 +210,7 @@ for result in embedded_text[:1]:
 
 # === STEP 5 ========================================================================================================
 "get clusters"
-from modules.utils import clusterer, clusterMerger2
+from utils import clusterer, clusterMerger2
 
 step_name = "clusters"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -253,7 +245,7 @@ else:
     print("\nMerging similar clusters...")
     # Create merger config with verbose flag from command line args
     
-    from modules.utils import clusterer, clusterMerger3
+    from utils import clusterer, clusterMerger3
     merger = clusterMerger3.ClusterMerger(
         input_list=initial_clusters, 
         var_lab=var_lab)
@@ -314,7 +306,7 @@ for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 cl
 
 # === STEP 6 ========================================================================================================
 """get labels"""
-from modules.utils import labeller
+from utils import labeller
 
 step_name = "labels"
 force_recalc = args.force_recalculate or args.force_step == step_name

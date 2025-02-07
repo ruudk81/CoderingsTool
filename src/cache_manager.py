@@ -13,8 +13,8 @@ import tempfile
 import shutil
 import numpy as np
 
-from cache_config import CacheConfig, ProcessingConfig
-from cache_database import CacheDatabase
+from config import CacheConfig, ProcessingConfig
+from config import CacheDatabase
 
 
 logger = logging.getLogger(__name__)
@@ -500,7 +500,7 @@ class CacheManager:
     
     def save_clustering_metrics(self, filename: str, metrics: Dict, config: 'ClusteringConfig'):
         """Save clustering quality metrics to database"""
-        from modules.utils.clustering_config import ClusteringConfig
+        from config import ClusteringConfig
         
         # Get number of attempts from metrics if available
         attempts = len(metrics) if isinstance(metrics, list) else 1

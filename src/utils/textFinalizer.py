@@ -56,7 +56,7 @@ class TextFinalizer:
 if __name__ == "__main__":
     
     import models
-    from modules.utils import csvHandler
+    from utils import csvHandler
     
     filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column    = "DLNMID"

@@ -355,7 +355,7 @@ if __name__ == "__main__":
     import instructor
     from config import OPENAI_API_KEY, DEFAULT_MODEL
     from cache_manager import CacheManager
-    from cache_config import CacheConfig
+    from config import CacheConfig
     import data_io
     
     # Initialize cache manager
