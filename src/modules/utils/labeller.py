@@ -437,6 +437,9 @@ Clusters to analyze:
                                   var_lab: str) -> MergeRemapResponse:
         """Stage 2: Identify clusters that are semantically too similar
         
+        Sequential approach: Compare each cluster with subsequent clusters,
+        skipping those already merged.
+        
         Args:
             labeled_clusters: Initial labels from Stage 1
             cluster_contents: Cluster content information
@@ -445,48 +448,76 @@ Clusters to analyze:
         Returns:
             MergeRemapResponse with merge groups and remap dictionary
         """
-        # Create list of cluster pairs to analyze
-        cluster_ids = list(labeled_clusters.keys())
-        cluster_pairs = []
-        
-        for i in range(len(cluster_ids)):
-            for j in range(i + 1, len(cluster_ids)):
-                cluster_pairs.append((cluster_ids[i], cluster_ids[j]))
-        
-        # Analyze pairs in batches
+        cluster_ids = sorted(list(labeled_clusters.keys()))
+        merged_into = {}  # Maps cluster ID to the cluster it was merged into
+        merge_groups = defaultdict(list)  # Maps primary cluster to list of merged clusters
         similarity_results = []
-        batch_size = 5  # Smaller batch for pair analysis
         
-        with tqdm(total=len(cluster_pairs), desc="Analyzing cluster similarities") as pbar:
-            for i in range(0, len(cluster_pairs), batch_size):
-                batch_pairs = cluster_pairs[i:i + batch_size]
-                
-                # Create batch prompt for similarity analysis
-                prompt = self._create_similarity_analysis_prompt(
-                    batch_pairs,
-                    labeled_clusters,
-                    cluster_contents,
-                    var_lab
-                )
-                
-                # Get similarity analysis from LLM
-                results = self._get_similarity_analysis(prompt, batch_pairs)
-                similarity_results.extend(results)
-                
-                pbar.update(len(batch_pairs))
+        # Count total comparisons for progress bar
+        total_comparisons = sum(len(cluster_ids) - i - 1 for i in range(len(cluster_ids)))
         
-        # Build merge groups based on similarity analysis
-        merge_groups = self._build_merge_groups(similarity_results)
+        with tqdm(total=total_comparisons, desc="Analyzing cluster similarities") as pbar:
+            for i, primary_cluster in enumerate(cluster_ids):
+                # Skip if this cluster has already been merged into another
+                if primary_cluster in merged_into:
+                    # Still update progress bar for skipped comparisons
+                    pbar.update(len(cluster_ids) - i - 1)
+                    continue
+                
+                # Compare with all subsequent clusters
+                pairs_to_analyze = []
+                for secondary_cluster in cluster_ids[i + 1:]:
+                    # Skip if secondary cluster already merged
+                    if secondary_cluster not in merged_into:
+                        pairs_to_analyze.append((primary_cluster, secondary_cluster))
+                
+                # Analyze in batches
+                batch_size = 5
+                for batch_start in range(0, len(pairs_to_analyze), batch_size):
+                    batch_pairs = pairs_to_analyze[batch_start:batch_start + batch_size]
+                    
+                    # Create batch prompt
+                    prompt = self._create_similarity_analysis_prompt(
+                        batch_pairs,
+                        labeled_clusters,
+                        cluster_contents,
+                        var_lab
+                    )
+                    
+                    # Get similarity analysis
+                    results = self._get_similarity_analysis(prompt, batch_pairs)
+                    
+                    # Process results immediately to update merge status
+                    for result in results:
+                        similarity_results.append(result)
+                        
+                        if result.should_merge:
+                            # Merge secondary into primary
+                            merged_into[result.cluster_2_id] = result.cluster_1_id
+                            merge_groups[result.cluster_1_id].append(result.cluster_2_id)
+                    
+                    pbar.update(len(batch_pairs))
+                
+                # Update progress for comparisons we skipped
+                skipped = len(cluster_ids) - i - 1 - len(pairs_to_analyze)
+                if skipped > 0:
+                    pbar.update(skipped)
+        
+        # Convert merge_groups to the expected format
+        final_merge_groups = []
+        for primary, secondaries in merge_groups.items():
+            group = [primary] + secondaries
+            final_merge_groups.append(sorted(group))
         
         # Create remap dictionary
         remap_dict, merge_rationale = self._create_remap_dictionary(
-            merge_groups,
+            final_merge_groups,
             labeled_clusters,
             similarity_results
         )
         
         return MergeRemapResponse(
-            merge_groups=merge_groups,
+            merge_groups=final_merge_groups,
             remap_dict=remap_dict,
             merge_rationale=merge_rationale
         )
@@ -606,45 +637,6 @@ Base your decision on semantic meaning rather than surface-level similarities.""
                 for pair in batch_pairs
             ]
     
-    def _build_merge_groups(self, 
-                          similarity_results: List[MergeAnalysisResponse]) -> List[List[int]]:
-        """Build merge groups from similarity analysis
-        
-        Args:
-            similarity_results: List of similarity analysis results
-            
-        Returns:
-            List of merge groups (lists of cluster IDs that should merge)
-        """
-        # Create graph of clusters to merge
-        merge_graph = defaultdict(set)
-        
-        for result in similarity_results:
-            if result.should_merge:
-                merge_graph[result.cluster_1_id].add(result.cluster_2_id)
-                merge_graph[result.cluster_2_id].add(result.cluster_1_id)
-        
-        # Find connected components (merge groups)
-        merge_groups = []
-        visited = set()
-        
-        for cluster_id in merge_graph:
-            if cluster_id not in visited:
-                # DFS to find all connected clusters
-                group = []
-                stack = [cluster_id]
-                
-                while stack:
-                    current = stack.pop()
-                    if current not in visited:
-                        visited.add(current)
-                        group.append(current)
-                        stack.extend(merge_graph[current] - visited)
-                
-                if len(group) > 1:
-                    merge_groups.append(sorted(group))
-        
-        return merge_groups
     
     def _create_remap_dictionary(self,
                                merge_groups: List[List[int]],
