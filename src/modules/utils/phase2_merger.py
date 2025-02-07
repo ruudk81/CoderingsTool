@@ -56,19 +56,26 @@ class Phase2Merger:
     
     
     async def _get_label_embeddings(self, initial_labels: Dict[int, InitialLabel]) -> Tuple[np.ndarray, List[int]]:
-        """Get embeddings for labels using OpenAI"""
+        """Get embeddings for labels enriched with keywords"""
         
         cluster_ids = list(initial_labels.keys())
-        label_texts = [initial_labels[cid].label for cid in cluster_ids]
         
-        logger.info(f"Getting embeddings for {len(label_texts)} labels...")
+        # Create enriched text: label + keywords
+        enriched_texts = []
+        for cid in cluster_ids:
+            label = initial_labels[cid]
+            # Combine label with top 5 keywords
+            text = f"{label.label}. Keywords: {', '.join(label.keywords[:5])}"
+            enriched_texts.append(text)
+        
+        logger.info(f"Getting embeddings for {len(enriched_texts)} enriched labels...")
         
         # Get embeddings in batches
         embeddings = []
         batch_size = 100  # OpenAI can handle up to 2048
         
-        for i in range(0, len(label_texts), batch_size):
-            batch = label_texts[i:i + batch_size]
+        for i in range(0, len(enriched_texts), batch_size):
+            batch = enriched_texts[i:i + batch_size]
             response = await self.openai_client.embeddings.create(
                 model="text-embedding-3-small",
                 input=batch
@@ -367,11 +374,13 @@ if __name__ == "__main__":
                 print(f"\nTop 20 Label similarity scores (threshold={config.similarity_threshold}):")
                 for i, score_info in enumerate(label_merge_scores[:20]):
                     status = "MERGED" if score_info['merged'] else "not merged"
-                    label1 = initial_labels[score_info['cluster1']].label
-                    label2 = initial_labels[score_info['cluster2']].label
-                    print(f"  {i+1}. Clusters {score_info['cluster1']} & {score_info['cluster2']}: {score_info['score']:.4f} ({status})")
-                    print(f"     Label 1: {label1}")
-                    print(f"     Label 2: {label2}")
+                    cid1 = score_info['cluster1']
+                    cid2 = score_info['cluster2']
+                    label1_obj = initial_labels[cid1]
+                    label2_obj = initial_labels[cid2]
+                    print(f"  {i+1}. Clusters {cid1} & {cid2}: {score_info['score']:.4f} ({status})")
+                    print(f"     Label 1: {label1_obj.label} | Keywords: {', '.join(label1_obj.keywords[:5])}")
+                    print(f"     Label 2: {label2_obj.label} | Keywords: {', '.join(label2_obj.keywords[:5])}")
                 
                 # Create histogram of label merge scores
                 label_scores_only = [s['score'] for s in label_merge_scores]
