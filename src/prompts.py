@@ -223,118 +223,146 @@ Return a JSON object with a single key "decisions", containing an array of objec
 """
 
 INITIAL_LABEL_PROMPT = """
-You are analyzing survey responses to the research question: "{var_lab}"
+You are a {language} expert in labeling micro-clusters of survey responses to this research question:
+"{var_lab}"
 
-Your task is to create precise labels for micro-clusters that will be used to build a hierarchical thematic structure.
+Each cluster contains representative response segments that express a distinct idea or perspective related to the research question.
 
-## Context
-Each cluster contains the MOST REPRESENTATIVE responses that share similar meanings in relation to the research question. These labels will later be grouped into broader topics and themes.
+TASK:
+- Assign a precise and unique label to each cluster, and identify the core concepts that justify the label.
 
-## Labeling Criteria
-For each cluster, create a label that:
-1. **Explains what this cluster contributes** to answering the research question
-2. **Is specific and distinctive** - clearly separates this cluster from others
-3. **Uses clear, descriptive language** that supports grouping into broader categories
-4. **Focuses on the underlying meaning** rather than repeating exact words used
+LABELING RULES:
+- Focus on the underlying meaning, not surface wording
+- Labels should be specific, non-generic, and clearly differentiated
+- Use 2–6 words for each label
+- Avoid vague terms like "miscellaneous" or "general concerns"
+- Mark clusters as "off-topic" if they do not contribute meaningfully to answering the research question
 
-## Label Requirements
-- **Length**: 2-6 words maximum
-- **Clarity**: Understandable without additional explanation
-- **Relevance**: Directly addresses an aspect of the research question
-- **Distinctiveness**: Clearly different from other cluster labels
-- **Groupability**: Easy to categorize into broader topics later
+OUTPUT FORMAT:
+Return a JSON object with the following structure:
 
-## Examples of Good vs Poor Labels
-**Good**: "Price concerns", "Service quality issues", "Delivery speed expectations"
-**Poor**: "Various complaints", "Mixed feedback", "General responses"
+{
+"labels": [
+{
+"cluster_id": "38",
+"label": "Portie grootte vergroten",
+"keywords": ["portie", "groter", "meer", "hoeveelheid"],
+"confidence": 0.94
+},
+{
+"cluster_id": "12", 
+"label": "Verse ingrediënten gebruiken",
+"keywords": ["vers", "ingrediënten", "kwaliteit", "natuurlijk"],
+"confidence": 0.89
+}
+]
+}
 
 Language: {language}
 
+Input clusters:
 {clusters}
-
-REQUIRED OUTPUT FORMAT:
-Return a JSON object with a single key "labels", containing an array of objects with these fields:
-- "cluster_id": The cluster ID
-- "label": A precise descriptive label (2-6 words)
-- "keywords": An array of 3-5 specific keywords that support the label
-- "confidence": A confidence score between 0.0 and 1.0
 """
 
 
-HIERARCHY_CREATION_PROMPT = """
-You are building a hierarchical thematic structure for survey responses to: "{var_lab}"
+TOPIC_CREATION_PROMPT = """
+You are a {language} expert in organizing micro-cluster labels into **TOPICS** (Level 2 nodes).
+Each topic contains 1 or more micro-clusters that represent ideas that express different ideas, issues or concerns in light of this research question:
+"{var_lab}"
 
-Your task is to group cluster labels into {level}-level categories that form a logical hierarchy.
+TASK:
+Group the provided cluster labels into topic categories that:
+- Are mutually exclusive
+- Represent a clear, specific area of concern or meaning
+- Can later be grouped under broader themes
 
-## Objective
-Create {level} categories that:
-1. **Address different aspects** of the research question
-2. **Group conceptually related clusters** that share similar underlying concerns or themes
-3. **Form distinct categories** that don't overlap in meaning
-4. **Support clear interpretation** of how respondents approach the research question
+OUTPUT FORMAT:
+Return a JSON object with the following structure:
 
-## Grouping Strategy
-- **For THEMES**: Group clusters that address the same major aspect or dimension of the research question
-- **For TOPICS**: Within a theme, group clusters that focus on the same specific area or sub-concern
-
-## Evaluation Criteria
-Each {level} should:
-- Have a **clear, descriptive name** that explains what unifies the clusters
-- Contain **2-8 related clusters** (avoid single-cluster categories)
-- Represent a **meaningful distinction** in how people respond to the research question
-- Be **easily understood** by researchers analyzing the survey results
-
-## Guidelines
-- Aim for **3-7 total categories** - not too many, not too few
-- Ensure **every cluster belongs to exactly one category**
-- Focus on **conceptual relationships** rather than surface-level word similarities
-- Consider what would be **most useful for survey analysis**
+{
+"topics": [
+{
+"label": "Portie grootte aanpassingen",
+"cluster_ids": ["38", "15", "22"],
+"explanation": "These clusters deal with requests to modify portion sizes and offer portion variety options."
+},
+{
+"label": "Ingrediënt kwaliteit verbetering",
+"cluster_ids": ["12", "29"],
+"explanation": "These responses focus on using fresher, higher quality ingredients in meal preparation."
+}
+]
+}
 
 Language: {language}
 
-Here are the clusters to organize:
+Input cluster labels:
 {clusters}
+"""
 
-REQUIRED OUTPUT FORMAT:
-Return a JSON object with a single key "{level}s", containing an array of objects with these fields:
-- "label": A clear, descriptive name for the {level} (what aspect of the research question it addresses)
-- "cluster_ids": An array of cluster IDs belonging to this {level}
-- "explanation": Brief explanation of the shared theme that unifies these clusters (1-2 sentences)
+THEME_CREATION_PROMPT = """
+You are a {language} expert in grouping topics into THEMES (Level 1 nodes).
+Themes represent broad conceptual areas that organize topics into coherent, high-level insights related to the research question:
+"{var_lab}"
+
+TASK:
+Group the topics into themes that:
+- Each contain 2 or more topics
+- Reflect a distinct major dimension of the issue
+- Are clearly different from each other
+- Help interpret how respondents experience or approach the research question
+
+OUTPUT FORMAT:
+Return a JSON object with the following structure:
+
+{
+"themes": [
+{
+"label": "Product samenstelling en kwaliteit",
+"topic_labels": ["Portie grootte aanpassingen", "Ingrediënt kwaliteit verbetering"],
+"explanation": "This theme groups topics reflecting how respondents want producers to modify the physical composition and quality of ready-made meals."
+},
+{
+"label": "Voedingswaarde en gezondheid",
+"topic_labels": ["Zout en suiker vermindering", "Gezonde ingrediënten toevoegen"],
+"explanation": "This theme centers on health-focused improvements that respondents want to see in nutritional content."
+}
+]
+}
+
+Language: {language}
+
+Input topic labels:
+{topics}
 """
 
 HIERARCHICAL_THEME_SUMMARY_PROMPT = """
-You are analyzing survey responses to: "{var_lab}"
+You are a {language} expert in analyzing a theme derived from survey responses to the question:
+"{var_lab}"
 
 Theme: {theme_label}
 
-This theme contains the following hierarchical structure:
+Structure:
 {theme_structure}
 
-## Your Task
-Write a comprehensive analysis that explains:
-1. **What this theme reveals** about how respondents approach the research question
-2. **Key patterns and insights** within this theme
-3. **Practical implications** for understanding the survey results
+TASK:
+- Write an analytical summary of this theme. Your goal is to explain what the theme reveals about how respondents interpret or experience the issue.
 
-## Analysis Framework
-- **Main Focus**: What specific aspect or dimension of the research question does this theme address?
-- **Response Patterns**: What are the common concerns, preferences, or perspectives within this theme?
-- **Distinctions**: How do the different topics within this theme provide nuanced insights?
-- **Research Value**: What does this theme contribute to answering the research question?
+FOCUS:
+- What dimension of the research question does this theme address?
+- What are the key ideas, concerns, or viewpoints expressed?
+- How do the topics within this theme offer different perspectives or nuances?
+- What are the implications for interpreting the overall dataset?
 
-## Writing Guidelines
-- Write **2-3 well-structured paragraphs**
-- Use **clear, analytical language** suitable for research reports
-- Focus on **insights and implications** rather than just describing content
-- Emphasize **what respondents are telling us** about the research question
-- Connect **specific findings to broader research objectives**
+OUTPUT FORMAT:
+Return a JSON object with the following structure:
+
+{
+"summary": "This theme highlights respondents' shared focus on improving the physical composition of ready-made meals, particularly around portion sizes and ingredient quality. Topics within this theme show nuanced differences, from requests for larger portions to demands for fresher ingredients. Collectively, they reveal that consumers want more control over meal composition and higher quality standards.",
+"relevance": "This theme explains how respondents want producers to fundamentally change what goes into meals and how much is provided."
+}
 
 Language: {language}
-
-REQUIRED OUTPUT FORMAT:
-Return a JSON object with these fields:
-- "summary": A comprehensive 2-3 paragraph analysis of the theme focusing on insights and implications
-- "relevance": A clear 1-2 sentence explanation of how this theme specifically contributes to answering the research question
 """
 
 
