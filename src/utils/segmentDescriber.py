@@ -29,7 +29,8 @@ class LangChainPipeline :
         self.llm = ChatOpenAI(
             temperature=0,
             model=model_name,
-            openai_api_key=api_key)
+            openai_api_key=api_key,
+            model_kwargs={"seed": 42})
 
         self.parser = JsonOutputParser()
         self.retry_delay = 2
