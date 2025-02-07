@@ -55,8 +55,9 @@ class ClusterContent(BaseModel):
     unique_descriptions: List[str]
     sample_items: List[Dict[str, str]]  # code, description pairs
     item_count: int
+    embeddings: Optional[npt.NDArray[np.float32]] = None  # Store embeddings for centroid calculation
     
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
 
 
 class HierarchicalCluster(BaseModel):
