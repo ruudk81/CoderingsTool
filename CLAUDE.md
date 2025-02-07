@@ -63,18 +63,22 @@ We segmented responses to a survey question and clustered these segments by thei
 
 The labeller will follow a multi-phase approach to create hierarchical labels:
 
-1. **Phase 1: Initial Label Generation**
-   - Extract descriptive codes and descriptions from clusters
-   - Generate initial labels for each cluster using LLM
+1. **Phase 1: Merge initial clusters that are not meaningfully differentiated**
+   - Merge initial clusters with super high cosine similarity of embeddings (based on descriptive codes and code descriptions. Auto-merge >0.95 similarity)
+   - Use LLM to determine which clusters should be merged based on their semantic similarity
+   - Apply semantic merging of the clusters to create differentiated groups
+   - Track cluster-to-group mappings throughout
 
-2. **Phase 2: Merge initial clusters that are not meaningfully differentiated**
-   - Merge initial clusters with super high cosine similarity of embeddings (label+most representative descriptive codes and code descriptions. Auto-merge >0.95 similarity)
-   - Use LLM to score the similarity of the remaining clusters. This needs to be done as efficiently as possible.
-   - Apply semantic merging of the remaining clusters to create differentiated labels
-   - Track cluster-to-label mappings throughout
+2. **Phase 2: Initial Label Generation**
+   - Extract descriptive codes and descriptions from merged clusters
+   - Generate initial labels for each merged cluster using LLM
+   - Create distinctive and descriptive labels based on cluster content
 
 3. **Phase 3: Hierarchical Organization**
    - Organize merged clusters into 3-level hierarchy
+   - Create meta-level categories (e.g., "1", "2", "3")
+   - Create meso-level subcategories (e.g., "1.1", "1.2")
+   - Assign micro-level identifiers (e.g., "1.1.1", "1.1.2")
    - Ensure meaningful differentiation at each level
    - Validate mutual exclusivity within levels
 
@@ -171,35 +175,43 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 
 ## Development Priorities
 
-**TODO 1: Implement Semantic Merging**  
+**TODO 1: Implement Cluster Merging**  
 - Use LLM to determine which clusters should merge
 - Create merge groups and remap dictionary
 - Apply merging to consolidate similar clusters
 - Output: `Dict[int, int]` mapping old IDs to new IDs
 - Merge rationale tracking for transparency
-- Not exhaustive pairwise comparisons but sequential merging by addition
+- Optimize process using similarity-based filtering
+- Not exhaustive pairwise comparisons but sequential merging with priority
 
-**TODO 2: Implement Hierarchical Structure Creation**  
+**TODO 2: Implement Initial Label Generation**
+- Generate descriptive labels for merged clusters
+- Extract representative content from each merged cluster
+- Use LLM to create clear, distinctive labels
+- Ensure labels reflect the research question context
+
+**TODO 3: Implement Hierarchical Structure Creation**  
 - Organize merged clusters into 3-level hierarchy
 - Create meta-level categories (e.g., "1", "2", "3")
 - Create meso-level subcategories (e.g., "1.1", "1.2")
 - Assign micro-level identifiers (e.g., "1.1.1", "1.1.2")
 - Use LLM to ensure logical grouping through var_lab lens
 
-**TODO 3: Implement Label Refinement**  
+**TODO 4: Implement Label Refinement and Theme Summarization**  
 - Ensure labels are mutually exclusive within each level
 - Optimize labels for clarity and distinctiveness
 - Maintain alignment with var_lab context
 - Refine labels to maximize differentiation
+- Generate theme summaries explaining research question relevance
 - Hierarchical context awareness (meta→meso→micro)
 - Original cluster details included for micro-level refinement
 
-**TODO 6: Update Main run_pipeline Method**  
-- Execute 4-stage pipeline sequentially
-- Stage 1: Initial labeling of micro-clusters
-- Stage 2: Semantic merging with remap dictionary
-- Stage 3: Create 3-level hierarchy
-- Stage 4: Refine labels for mutual exclusivity
+**TODO 5: Update Main run_pipeline Method**  
+- Execute 4-phase pipeline sequentially
+- Phase 1: Merge similar micro-clusters
+- Phase 2: Generate labels for merged clusters
+- Phase 3: Create 3-level hierarchy
+- Phase 4: Refine labels and generate theme summaries
 - Convert results to LabelModel format
 - Comprehensive progress tracking and statistics
 - Processing time measurement
