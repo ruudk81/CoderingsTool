@@ -393,8 +393,8 @@ class ThematicLabeller:
         
         result = await self._invoke_with_retries(prompt, SingleDiscoveryResponse)
         
-        # Parse result into Codebook
-        return self._parse_codebook(result.model_dump())
+        # Parse result into Codebook - pass labeled_clusters for proper subject labels
+        return self._parse_codebook(result.model_dump(), labeled_clusters)
     
     async def _phase2_discovery_mapreduce(self, labeled_clusters: List[ClusterLabel]) -> Codebook:
         """Phase 2: MapReduce for theme discovery"""
@@ -512,10 +512,12 @@ class ThematicLabeller:
         )
         
         result = await self._invoke_with_retries(prompt, MapDiscoveryResponse)
-        return self._parse_codebook(result.model_dump())
+        return self._parse_codebook(result.model_dump(), labeled_clusters)
     
-    def _parse_codebook(self, result: Dict) -> Codebook:
+    def _parse_codebook(self, result: Dict, labeled_clusters: List[ClusterLabel]) -> Codebook:
         """Parse JSON result into Codebook structure with proper numeric IDs"""
+        # Create cluster label lookup for subjects
+        cluster_label_lookup = {c.cluster_id: c.label for c in labeled_clusters}
         themes = []
         topics = []
         subjects = []
@@ -563,7 +565,7 @@ class ThematicLabeller:
                 )
                 topics.append(topic)
             
-            # Process subjects
+            # Process subjects - use individual cluster labels
             for subject_data in result['subjects']:
                 # For subjects, the direct_clusters contain the actual micro-cluster IDs
                 for cluster_id in subject_data.get('direct_clusters', []):
@@ -572,11 +574,13 @@ class ThematicLabeller:
                     parent_numeric_str = parent_id.replace('temp_', '')
                     parent_numeric_id = float(parent_numeric_str) if parent_numeric_str else None
                     
+                    # Use the actual cluster label from Phase 1, not the group label
+                    cluster_label = cluster_label_lookup.get(cluster_id, f"Cluster {cluster_id}")
                     subject = CodebookEntry(
                         id=str(cluster_id),
                         numeric_id=float(cluster_id),
                         level=3,
-                        label=subject_data['label'],
+                        label=cluster_label,  # Use individual cluster label!
                         description=subject_data.get('description', ''),
                         parent_id=parent_numeric_str if parent_numeric_str else None,
                         parent_numeric_id=parent_numeric_id,
@@ -620,16 +624,18 @@ class ThematicLabeller:
                         )
                         topics.append(topic)
                         
-                        # Extract subjects (keywords)
+                        # Extract subjects (keywords) - use individual cluster labels, not group labels
                         if 'subjects' in topic_data:
                             for subject_data in topic_data['subjects']:
                                 # Subjects map to micro_clusters directly
                                 for cluster_id in subject_data.get('micro_clusters', []):
+                                    # Use the actual cluster label from Phase 1, not the group label
+                                    cluster_label = cluster_label_lookup.get(cluster_id, f"Cluster {cluster_id}")
                                     subject = CodebookEntry(
                                         id=str(cluster_id),
                                         numeric_id=float(cluster_id),
                                         level=3,
-                                        label=subject_data['label'],
+                                        label=cluster_label,  # Use individual cluster label!
                                         description=subject_data.get('description', ''),
                                         parent_id=topic_id,
                                         parent_numeric_id=topic_numeric_id,
@@ -637,12 +643,52 @@ class ThematicLabeller:
                                     )
                                     subjects.append(subject)
         
+        # Remove duplicates and clean up hierarchy
+        themes = self._remove_duplicate_entries(themes, "themes")
+        topics = self._remove_duplicate_entries(topics, "topics") 
+        subjects = self._remove_duplicate_entries(subjects, "subjects")
+        
         return Codebook(
             survey_question=self.survey_question,
             themes=themes,
             topics=topics,
             subjects=subjects
         )
+    
+    def _remove_duplicate_entries(self, entries: List[CodebookEntry], entry_type: str) -> List[CodebookEntry]:
+        """Remove duplicate entries based on label, keeping the one with more clusters"""
+        if not entries:
+            return entries
+            
+        # Group by label
+        label_groups = {}
+        for entry in entries:
+            label = entry.label.strip().lower()
+            if label not in label_groups:
+                label_groups[label] = []
+            label_groups[label].append(entry)
+        
+        # Keep best entry from each group
+        unique_entries = []
+        total_duplicates_removed = 0
+        
+        for label, group in label_groups.items():
+            if len(group) == 1:
+                unique_entries.append(group[0])
+            else:
+                # Multiple entries with same label - keep the one with most clusters
+                best_entry = max(group, key=lambda e: len(e.direct_clusters))
+                unique_entries.append(best_entry)
+                group_duplicates = len(group) - 1
+                total_duplicates_removed += group_duplicates
+                
+                removed_ids = [e.id for e in group if e != best_entry]
+                print(f"    🧹 Removed {group_duplicates} duplicate {entry_type} with label '{group[0].label}': {removed_ids} (keeping {best_entry.id})")
+        
+        if total_duplicates_removed > 0:
+            print(f"    📊 Total duplicates removed: {total_duplicates_removed} {entry_type}")
+        
+        return unique_entries
     
     async def _phase3_assignment(self, labeled_clusters: List[ClusterLabel], codebook: Codebook) -> List[ThemeAssignment]:
         """Phase 3: Assign clusters to themes with probabilities"""
@@ -845,22 +891,29 @@ class ThematicLabeller:
                 
                 print(f"    ✨ Applied {refinement_count} label refinements to hierarchy")
                 
-                # Debug: Show what was refined
+                # Debug: Show what was refined - print ALL refinements, not just changes
                 if 'themes' in result.refined_labels and result.refined_labels['themes']:
-                    print("    🔧 Theme refinements applied:")
+                    print("    🔧 Theme refinements:")
                     for theme_id, new_label in result.refined_labels['themes'].items():
                         if theme_id in theme_label_lookup:
                             old_label = theme_label_lookup[theme_id].label
-                            if old_label != new_label:
-                                print(f"      Theme {theme_id}: '{old_label}' → '{new_label}'")
+                            print(f"      Theme {theme_id}: '{old_label}' → '{new_label}' {'✓ CHANGED' if old_label != new_label else '(no change)'}")
+                        else:
+                            print(f"      Theme {theme_id}: NOT FOUND in lookup")
                 
                 if 'topics' in result.refined_labels and result.refined_labels['topics']:
-                    print("    🔧 Topic refinements applied:")
+                    print("    🔧 Topic refinements:")
                     for topic_id, new_label in result.refined_labels['topics'].items():
                         if topic_id in topic_label_lookup:
                             old_label = topic_label_lookup[topic_id].label
-                            if old_label != new_label:
-                                print(f"      Topic {topic_id}: '{old_label}' → '{new_label}'")
+                            print(f"      Topic {topic_id}: '{old_label}' → '{new_label}' {'✓ CHANGED' if old_label != new_label else '(no change)'}")
+                        else:
+                            print(f"      Topic {topic_id}: NOT FOUND in lookup")
+                
+                if 'subjects' in result.refined_labels and result.refined_labels['subjects']:
+                    print("    🔧 Subject refinements:")
+                    for subject_id, new_label in result.refined_labels['subjects'].items():
+                        print(f"      Subject {subject_id}: → '{new_label}'")
             
             if result.quality_issues:
                 print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
