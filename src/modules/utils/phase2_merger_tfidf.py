@@ -266,11 +266,13 @@ if __name__ == "__main__":
     import asyncio
     import json
     from pathlib import Path
+    import sys
+    sys.path.insert(0, r'C:\Users\rkn\Python_apps\Coderingstool\src')
     from cache_config import CacheConfig
     from cache_manager import CacheManager
     from config import OPENAI_API_KEY, DEFAULT_MODEL
     import models
-    from modules.utils import data_io
+    import data_io
     
     # Load test data
     cache_config = CacheConfig()
@@ -280,7 +282,7 @@ if __name__ == "__main__":
     var_name = "Q20"
     
     # Load clusters from cache
-    cluster_results = cache_manager.load_from_cache(filename, models.ClusterModel, "clusters")
+    cluster_results = cache_manager.load_from_cache(filename, "clusters", models.ClusterModel)
     phase1_labels = cache_manager.load_intermediate_data(filename, "phase1_labels")
     
     if cluster_results and phase1_labels:
