@@ -216,6 +216,7 @@ class ThematicLabeller:
         labeled_clusters = await self._phase1_familiarization(micro_clusters)
         phase1_time = time.time() - phase1_start
         print(f"  ✓ Phase 1 completed in {phase1_time:.1f} seconds")
+        print(f"  Generated {len(labeled_clusters)} cluster labels")
         
         # Check cache for Phase 2
         cache_key = f"codebook_{self._generate_cache_key(labeled_clusters)}"
@@ -232,11 +233,18 @@ class ThematicLabeller:
             # Phase 2: Theme Discovery
             print("\n🔍 Phase 2: Theme Discovery - Building codebook...")
             phase2_start = time.time()
-            if len(labeled_clusters) <= self.map_reduce_threshold:
-                print(f"  Using single call (≤{self.map_reduce_threshold} clusters)")
+            
+            # For discovery, we want to see ALL clusters together for context
+            # Only use MapReduce for very large datasets (>100 clusters)
+            use_single_call_threshold = 100  # Increased from 30
+            
+            if len(labeled_clusters) <= use_single_call_threshold:
+                print(f"  Using single call to see all {len(labeled_clusters)} clusters together")
+                print(f"  This ensures the LLM has full context for creating coherent themes")
                 codebook = await self._phase2_discovery_single(labeled_clusters)
             else:
-                print(f"  Using MapReduce ({len(labeled_clusters)} clusters)")
+                print(f"  Using MapReduce for {len(labeled_clusters)} clusters (>{use_single_call_threshold})")
+                print(f"  Warning: This may result in less coherent themes due to limited context")
                 codebook = await self._phase2_discovery_mapreduce(labeled_clusters)
             phase2_time = time.time() - phase2_start
             print(f"  ✓ Phase 2 completed in {phase2_time:.1f} seconds")
@@ -811,13 +819,15 @@ class ThematicLabeller:
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}
                             
-                            # Apply Keyword (Dict[int, str]) - this is the micro_cluster
-                            segment.Keyword = segment.micro_cluster
+                            # Apply Keyword (Dict[int, str]) - use cluster label
+                            cluster_label = labels['label']
+                            segment.Keyword = {cluster_id: cluster_label}
                         else:
                             # Handle unmapped clusters
                             segment.Theme = {999: "Other: Unmapped cluster"}
                             segment.Topic = {99.9: "Other: Unmapped cluster"}
-                            segment.Keyword = segment.micro_cluster
+                            # For unmapped clusters, just use the cluster ID
+                            segment.Keyword = {cluster_id: f"Cluster {cluster_id}"}
             
             label_models.append(label_model)
         
