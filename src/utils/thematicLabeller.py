@@ -187,7 +187,9 @@ class ThematicLabeller:
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay ** attempt)
+                    # Use min to cap the delay at 10 seconds
+                    delay = min(self.config.retry_delay * (attempt + 1), 10)
+                    await asyncio.sleep(delay)
                     print(f"Retry {attempt + 1}/{max_retries} after error: {str(e)}")
         
         raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {str(last_error)}")
@@ -209,7 +211,11 @@ class ThematicLabeller:
         
         # Phase 1: Familiarization
         print("\n📝 Phase 1: Familiarization - Labeling all clusters...")
+        import time
+        phase1_start = time.time()
         labeled_clusters = await self._phase1_familiarization(micro_clusters)
+        phase1_time = time.time() - phase1_start
+        print(f"  ✓ Phase 1 completed in {phase1_time:.1f} seconds")
         
         # Check cache for Phase 2
         cache_key = f"codebook_{self._generate_cache_key(labeled_clusters)}"
@@ -225,12 +231,15 @@ class ThematicLabeller:
         else:
             # Phase 2: Theme Discovery
             print("\n🔍 Phase 2: Theme Discovery - Building codebook...")
+            phase2_start = time.time()
             if len(labeled_clusters) <= self.map_reduce_threshold:
                 print(f"  Using single call (≤{self.map_reduce_threshold} clusters)")
                 codebook = await self._phase2_discovery_single(labeled_clusters)
             else:
                 print(f"  Using MapReduce ({len(labeled_clusters)} clusters)")
                 codebook = await self._phase2_discovery_mapreduce(labeled_clusters)
+            phase2_time = time.time() - phase2_start
+            print(f"  ✓ Phase 2 completed in {phase2_time:.1f} seconds")
             
             # Cache codebook
             if self.cache_manager:
@@ -240,11 +249,17 @@ class ThematicLabeller:
         
         # Phase 3: Assignment
         print("\n🎯 Phase 3: Assignment - Assigning themes to clusters...")
+        phase3_start = time.time()
         assignments = await self._phase3_assignment(labeled_clusters, codebook)
+        phase3_time = time.time() - phase3_start
+        print(f"  ✓ Phase 3 completed in {phase3_time:.1f} seconds")
         
         # Phase 4: Refinement
         print("\n✨ Phase 4: Refinement - Finalizing labels...")
+        phase4_start = time.time()
         final_labels = await self._phase4_refinement(labeled_clusters, assignments, codebook)
+        phase4_time = time.time() - phase4_start
+        print(f"  ✓ Phase 4 completed in {phase4_time:.1f} seconds")
         
         # Apply to original cluster models
         print("\n✅ Applying hierarchy to responses...")
@@ -306,25 +321,29 @@ class ThematicLabeller:
             task = self._invoke_with_retries(prompt, FamiliarizationResponse)
             tasks.append((cluster_id, representatives, task))
         
-        # Execute tasks
-        for cluster_id, representatives, task in tasks:
-            try:
-                result = await task
-                labeled_clusters.append(ClusterLabel(
-                    cluster_id=cluster_id,
-                    label=result.label,
-                    description=result.description,
-                    representatives=representatives
-                ))
-            except Exception as e:
-                print(f"Error labeling cluster {cluster_id}: {str(e)}")
-                # Create fallback label
-                labeled_clusters.append(ClusterLabel(
-                    cluster_id=cluster_id,
-                    label="UNLABELED",
-                    description="Failed to generate label",
-                    representatives=representatives
-                ))
+        # Execute tasks concurrently in batches
+        print(f"  Processing {len(tasks)} clusters with max {self.config.concurrent_requests} concurrent requests...")
+        
+        for i in range(0, len(tasks), self.config.concurrent_requests):
+            batch = tasks[i:i + self.config.concurrent_requests]
+            batch_results = await asyncio.gather(*[task for _, _, task in batch], return_exceptions=True)
+            
+            for (cluster_id, representatives, _), result in zip(batch, batch_results):
+                if isinstance(result, Exception):
+                    print(f"Error labeling cluster {cluster_id}: {str(result)}")
+                    labeled_clusters.append(ClusterLabel(
+                        cluster_id=cluster_id,
+                        label="UNLABELED",
+                        description="Failed to generate label",
+                        representatives=representatives
+                    ))
+                else:
+                    labeled_clusters.append(ClusterLabel(
+                        cluster_id=cluster_id,
+                        label=result.label,
+                        description=result.description,
+                        representatives=representatives
+                    ))
         
         return labeled_clusters
     
@@ -370,8 +389,10 @@ class ThematicLabeller:
         
         print(f"  Created {len(batches)} batches of ~{self.batch_size} clusters each")
         
-        # Map phase
-        batch_hierarchies = []
+        # Map phase - process batches concurrently
+        print(f"  Processing {len(batches)} batches concurrently...")
+        batch_tasks = []
+        
         for batch_idx, batch in enumerate(batches):
             cluster_summaries = []
             for cluster in batch:
@@ -385,7 +406,18 @@ class ThematicLabeller:
                 batch_clusters="\n".join(cluster_summaries)
             )
             
-            result = await self._invoke_with_retries(prompt, MapDiscoveryResponse)
+            task = self._invoke_with_retries(prompt, MapDiscoveryResponse)
+            batch_tasks.append((batch_idx, task))
+        
+        # Execute all batch tasks concurrently
+        batch_results = await asyncio.gather(*[task for _, task in batch_tasks], return_exceptions=True)
+        
+        # Process results
+        batch_hierarchies = []
+        for (batch_idx, _), result in zip(batch_tasks, batch_results):
+            if isinstance(result, Exception):
+                print(f"Error processing batch {batch_idx}: {str(result)}")
+                continue
             
             # Parse themes with proper numeric IDs and levels
             themes = []
@@ -431,12 +463,12 @@ class ThematicLabeller:
                     direct_clusters=s.get('direct_clusters', [])
                 ))
             
-            batch_hierarchies.append(BatchHierarchy(
-                batch_id=f"batch_{batch_idx:03d}",
-                themes=themes,
-                topics=topics,
-                subjects=subjects
-            ))
+                batch_hierarchies.append(BatchHierarchy(
+                    batch_id=f"batch_{batch_idx:03d}",
+                    themes=themes,
+                    topics=topics,
+                    subjects=subjects
+                ))
         
         # Reduce phase
         print(f"  Reducing {len(batch_hierarchies)} batch hierarchies...")
@@ -619,25 +651,29 @@ class ThematicLabeller:
             task = self._invoke_with_retries(prompt, AssignmentResponse)
             tasks.append((cluster.cluster_id, task))
         
-        # Execute tasks
-        for cluster_id, task in tasks:
-            try:
-                result = await task
-                assignments.append(ThemeAssignment(
-                    cluster_id=cluster_id,
-                    theme_assignments=result.theme_assignments,
-                    topic_assignments=result.topic_assignments,
-                    subject_assignments=result.subject_assignments
-                ))
-            except Exception as e:
-                print(f"Error assigning cluster {cluster_id}: {str(e)}")
-                # Create empty assignment
-                assignments.append(ThemeAssignment(
-                    cluster_id=cluster_id,
-                    theme_assignments={"other": 1.0},
-                    topic_assignments={"other": 1.0},
-                    subject_assignments={"other": 1.0}
-                ))
+        # Execute tasks concurrently in batches
+        print(f"  Processing {len(tasks)} assignments with max {self.config.concurrent_requests} concurrent requests...")
+        
+        for i in range(0, len(tasks), self.config.concurrent_requests):
+            batch = tasks[i:i + self.config.concurrent_requests]
+            batch_results = await asyncio.gather(*[task for _, task in batch], return_exceptions=True)
+            
+            for (cluster_id, _), result in zip(batch, batch_results):
+                if isinstance(result, Exception):
+                    print(f"Error assigning cluster {cluster_id}: {str(result)}")
+                    assignments.append(ThemeAssignment(
+                        cluster_id=cluster_id,
+                        theme_assignments={"other": 1.0},
+                        topic_assignments={"other": 1.0},
+                        subject_assignments={"other": 1.0}
+                    ))
+                else:
+                    assignments.append(ThemeAssignment(
+                        cluster_id=cluster_id,
+                        theme_assignments=result.theme_assignments,
+                        topic_assignments=result.topic_assignments,
+                        subject_assignments=result.subject_assignments
+                    ))
         
         return assignments
     
