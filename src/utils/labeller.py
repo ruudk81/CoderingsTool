@@ -198,6 +198,12 @@ class HierarchicalLabeller:
         if self.verbose:
             print("\n🔄 Starting hierarchical labeling process...")
         
+        # Validate input
+        if not cluster_models:
+            if self.verbose:
+                print("❌ No cluster models provided. Cannot process hierarchy.")
+            return []
+        
         # Step 1: Extract micro-clusters with representatives
         if self.verbose:
             print("📊 Step 1: Extracting micro-clusters with representatives...")
@@ -564,7 +570,7 @@ if __name__ == "__main__":
     # Load cluster models from cache (output of step 5)
     cluster_models = cache_manager.load_from_cache(filename, "cluster", models.ClusterModel)
     
-    if cluster_models:
+    if cluster_models is not None and len(cluster_models) > 0:
         print(f"Loaded {len(cluster_models)} cluster models")
         
         # Initialize labeller
@@ -598,6 +604,59 @@ if __name__ == "__main__":
                                 break
                 if sample_count >= 5:
                     break
+            
+            # Print detailed hierarchy overview
+            print("\n" + "="*80)
+            print("📊 DETAILED HIERARCHY OVERVIEW")
+            print("="*80)
+            
+            # Collect all unique themes and topics
+            theme_structure = {}
+            for model in label_models:
+                if model.response_segment:
+                    for segment in model.response_segment:
+                        if segment.Theme and segment.Topic:
+                            theme_id = list(segment.Theme.keys())[0]
+                            theme_text = list(segment.Theme.values())[0]
+                            topic_id = list(segment.Topic.keys())[0]
+                            topic_text = list(segment.Topic.values())[0]
+                            
+                            if theme_id not in theme_structure:
+                                theme_structure[theme_id] = {
+                                    'text': theme_text,
+                                    'topics': {}
+                                }
+                            
+                            if topic_id not in theme_structure[theme_id]['topics']:
+                                theme_structure[theme_id]['topics'][topic_id] = {
+                                    'text': topic_text,
+                                    'count': 0
+                                }
+                            
+                            theme_structure[theme_id]['topics'][topic_id]['count'] += 1
+            
+            # Print hierarchical structure
+            for theme_id in sorted(theme_structure.keys()):
+                theme = theme_structure[theme_id]
+                theme_name = theme['text'].split(':')[0].strip()
+                theme_desc = theme['text'].split(':', 1)[1].strip() if ':' in theme['text'] else ''
+                
+                print(f"\n🎯 THEME {theme_id}: {theme_name}")
+                if theme_desc:
+                    print(f"   Description: {theme_desc}")
+                print(f"   Topics: {len(theme['topics'])}")
+                
+                for topic_id in sorted(theme['topics'].keys()):
+                    topic = theme['topics'][topic_id]
+                    topic_name = topic['text'].split(':')[0].strip()
+                    topic_desc = topic['text'].split(':', 1)[1].strip() if ':' in topic['text'] else ''
+                    
+                    print(f"\n   📌 TOPIC {topic_id}: {topic_name}")
+                    if topic_desc:
+                        print(f"      Description: {topic_desc}")
+                    print(f"      Segments: {topic['count']}")
+            
+            print("\n" + "="*80)
             
             # Save results to cache
             print("\n💾 Saving label models to cache...")
