@@ -15,6 +15,10 @@ umap-learn==0.5.7
 nest-asyncio==1.6.0
 tqdm==4.67.0
 
+# Jupyter widgets (prevents tqdm warnings)
+ipywidgets==8.1.5
+jupyter==1.1.1
+
 # === NLP AND AI PACKAGES ===
 pydantic==2.10.4
 pydantic-core==2.27.2
