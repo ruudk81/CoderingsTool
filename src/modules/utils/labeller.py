@@ -654,70 +654,91 @@ class Labeller:
 
 # Example usage
 if __name__ == "__main__":
+    """Test the labeller with actual cluster data"""
     import nest_asyncio
     nest_asyncio.apply()
-   
-    import sys
-    sys.path.insert(0, r'C:\Users\rkn\Python_apps\Coderingstool\src')
     
-    from modules.utils import csvHandler
+    import sys
+    from pathlib import Path
+    
+    # Add project paths
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    
+    from cache_manager import CacheManager
+    from cache_config import CacheConfig
+    import data_io
     import models
     
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
+    
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    csv_handler = csvHandler.CsvHandler()
+    var_name = "Q20"
     
-    # Load cluster data
-    cluster_data = csv_handler.load_from_csv(filename, 'clusters', models.ClusterModel)
+    # Load cluster data from cache
+    cluster_data = cache_manager.load_from_cache(filename, 'clusters', models.ClusterModel)
     
-    # Create labeller
-    labeller = Labeller(
-        input_list=cluster_data,
-        var_lab="Customer feedback about product quality",
-        verbose=True
-    )
-    
-    # Generate labels
-    labeller.generate_labels()
-    
-    # Convert to label models
-    label_models = labeller.to_label_model()
-    
-    # Generate summaries
-    label_models = labeller.generate_summary(label_models)
-    
-    # Save results
-    csv_handler.save_to_csv(label_models, filename, 'labels')
-    
-    # Generate theme summaries
-    theme_summaries = labeller.generate_theme_summaries(label_models)
-    
-    # Print theme summaries
-    print("\n\n=== THEME SUMMARIES ===")
-    for theme_id, theme_data in sorted(theme_summaries.items()):
-        print(f"\nTheme {theme_id}: {theme_data['label']}")
-        print(f"Summary: {theme_data['summary']}")
-        print("\nCodes within this theme:")
-        for code_id, code_info in sorted(theme_data['codes'].items(), 
-                                       key=lambda x: x[1]['count'], 
-                                       reverse=True):
-            print(f"  {code_info['label']} (Count: {code_info['count']}, Similarity: {code_info['similarity_to_theme']:.2f})")
-        print("-" * 60)
-    
-    # Print example results
-    print("\n\n=== EXAMPLE RESPONSES ===")
-    for model in label_models[:3]:
-        print(f"\nRespondent {model.respondent_id}:")
-        print(f"Original response: {model.response}")
-        print(f"Summary: {model.summary}")
-        if model.response_segment:
-            for i, segment in enumerate(model.response_segment):
-                print(f"\n  Segment {i+1}:")
-                print(f"    Segment response: {segment.segment_response}")
-                print(f"    Descriptive code: {segment.descriptive_code}")
-                print(f"    Code description: {segment.code_description}")
-                if segment.Theme:
-                    print(f"    Themes: {list(segment.Theme.values())}")
-                if segment.Topic:
-                    print(f"    Topics: {list(segment.Topic.values())}")
-                if segment.Code:
-                    print(f"    Codes: {list(segment.Code.values())}")
+    if cluster_data:
+        print(f"Loaded {len(cluster_data)} cluster results from cache")
+        
+        # Get variable label from metadata
+        data_loader = data_io.DataLoader()
+        var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+        print(f"Variable label: {var_lab}")
+        
+        # Create labeller
+        labeller = Labeller(
+            input_list=cluster_data,
+            var_lab=var_lab,
+            verbose=True
+        )
+        
+        # Generate labels
+        labeller.generate_labels()
+        
+        # Convert to label models
+        label_models = labeller.to_label_model()
+        
+        # Generate summaries
+        label_models = labeller.generate_summary(label_models)
+        
+        # Save results to cache
+        cache_manager.save_to_cache(label_models, filename, 'labels')
+        print(f"Saved {len(label_models)} label results to cache")
+        
+        # Generate theme summaries
+        theme_summaries = labeller.generate_theme_summaries(label_models)
+        
+        # Print theme summaries
+        print("\n\n=== THEME SUMMARIES ===")
+        for theme_id, theme_data in sorted(theme_summaries.items()):
+            print(f"\nTheme {theme_id}: {theme_data['label']}")
+            print(f"Summary: {theme_data['summary']}")
+            print("\nCodes within this theme:")
+            for code_id, code_info in sorted(theme_data['codes'].items(), 
+                                           key=lambda x: x[1]['count'], 
+                                           reverse=True):
+                print(f"  {code_info['label']} (Count: {code_info['count']}, Similarity: {code_info['similarity_to_theme']:.2f})")
+            print("-" * 60)
+        
+        # Print example results
+        print("\n\n=== EXAMPLE RESPONSES ===")
+        for model in label_models[:3]:
+            print(f"\nRespondent {model.respondent_id}:")
+            print(f"Original response: {model.response}")
+            print(f"Summary: {model.summary}")
+            if model.response_segment:
+                for i, segment in enumerate(model.response_segment):
+                    print(f"\n  Segment {i+1}:")
+                    print(f"    Segment response: {segment.segment_response}")
+                    print(f"    Descriptive code: {segment.descriptive_code}")
+                    print(f"    Code description: {segment.code_description}")
+                    if segment.Theme:
+                        print(f"    Themes: {list(segment.Theme.values())}")
+                    if segment.Topic:
+                        print(f"    Topics: {list(segment.Topic.values())}")
+                    if segment.Code:
+                        print(f"    Codes: {list(segment.Code.values())}")
+    else:
+        print("No cluster data found in cache. Please run the clustering step first.")
