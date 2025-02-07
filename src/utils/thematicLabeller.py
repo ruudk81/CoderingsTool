@@ -216,22 +216,22 @@ class ThematicLabeller:
                 self.verbose_reporter.stat_line("✅ Codebook structure approved!")
                 break
             else:
-                review_attempt += 1
-            
                 self.verbose_reporter.stat_line("⚠️ Structure needs improvement")
                 if judgment.specific_issues:
                     self.verbose_reporter.stat_line("Issues identified:")
                     for issue in judgment.specific_issues: #[:3]
                         self.verbose_reporter.stat_line(f"- {issue}", bullet="  ")
                 
-                if review_attempt >= max_review_attempts:
-                    self.verbose_reporter.stat_line("⚠️ Maximum review attempts reached, proceeding with current structure")
-                    break
-                
                 # Phase 4: Review and improve structure
                 self.verbose_reporter.step_start("Phase 4: Theme Review", emoji="🔄")
                 self.codebook = await self._phase4_theme_review(self.codebook, judgment)
                 self.verbose_reporter.step_complete("📝 Codebook structure has been revised")
+                
+                review_attempt += 1
+        
+        # Final check if we exhausted attempts without approval
+        if review_attempt >= max_review_attempts and not judgment.is_logical:
+            self.verbose_reporter.stat_line("⚠️ Maximum review attempts reached, proceeding with current structure")
          
         # =============================================================================
         # Phase 5: Label Refinement  
