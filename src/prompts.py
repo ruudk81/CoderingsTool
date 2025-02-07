@@ -311,30 +311,38 @@ Return a JSON object with a single key "labels", containing an array of objects 
 
 SIMILARITY_SCORING_PROMPT = """
 You are tasked with comparing clusters based on their labels and most representative 
-descriptive codes and code descriptions. Please give a score from 0 to 1 for how 
-similar they are from the point of view of addressing the research question.
+descriptive codes and code descriptions. Your job is to determine if these clusters
+are NOT meaningfully differentiated in how they address the research question.
 
 Research question: "{var_lab}"
 Language: {language}
 
-Scoring scale:
-- 0 = maximally differentiated (completely different themes)
-- 0.5 = pretty similar, probably sharing an overarching theme or response pattern
-- 1 = not positively differentiated at all, there is no difference or the difference 
-      does not help in any way to explain how respondents answered the research 
-      question differently
+IMPORTANT: ONLY say YES to merging if the clusters represent essentially the same response 
+from survey participants. Be VERY CONSERVATIVE with merging. When in doubt, do NOT merge.
 
-For each pair of clusters, also indicate whether they should be merged (score >= 0.7).
+Guidelines for your decision:
+- YES (merge): The clusters represent the same type of response and do not reflect meaningfully 
+  different answers to the research question. They are essentially duplicates or extremely 
+  close variations of the same response.
+
+- NO (don't merge): The clusters represent distinct response types, contain different 
+  suggestions, concerns, or perspectives, or add unique information relevant to the 
+  research question.
+
+IMPORTANT: Different topics within the same broad theme should usually NOT be merged unless 
+they are truly saying the same thing. For example:
+- "Use less salt" and "Use less sugar" should NOT be merged despite both being about reducing ingredients
+- "More vegetarian options" and "More vegan options" should NOT be merged despite both being about dietary preferences
+- "Better quality meat" and "More meat in portions" should NOT be merged despite both being about meat
 
 {cluster_pairs}
 
 REQUIRED OUTPUT FORMAT:
-Return a JSON object with a single key "scores", containing an array of objects with these fields:
+Return a JSON object with a single key "decisions", containing an array of objects with these fields:
 - "cluster_id_1": First cluster ID
 - "cluster_id_2": Second cluster ID  
-- "score": Similarity score between 0.0 and 1.0
-- "merge_suggested": Boolean indicating if merge is recommended (score >= 0.7)
-- "reason": Brief explanation of the similarity/difference
+- "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
+- "reason": Brief explanation of your decision (1-2 sentences maximum)
 """
 
 HIERARCHY_CREATION_PROMPT = """
