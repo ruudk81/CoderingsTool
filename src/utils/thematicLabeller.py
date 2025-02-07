@@ -235,7 +235,8 @@ class ThematicLabeller:
                 codebook = await self._phase4_theme_review(codebook, judgment)
                 self.verbose_reporter.step_complete("📝 Codebook structure has been revised")
         
-                self.codebook = codebook
+        # Update self.codebook with the final version (whether approved or after max attempts)
+        self.codebook = codebook
          
         # =============================================================================
         # Phase 5: Label Refinement  
