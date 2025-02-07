@@ -171,3 +171,100 @@ class Phase1Labeller:
     def _create_batches(self, items: List[int], batch_size: int) -> List[List[int]]:
         """Create batches from a list of items"""
         return [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+
+
+if __name__ == "__main__":
+    """Test Phase 1 with sample cluster data"""
+    import sys
+    from pathlib import Path
+    import json
+    
+    # Add project paths
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    
+    from openai import AsyncOpenAI
+    import instructor
+    from config import OPENAI_API_KEY, DEFAULT_MODEL
+    
+    # Create sample cluster data for testing
+    sample_clusters = {
+        1: ClusterData(
+            cluster_id=1,
+            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal", "Biologisch afbreekbaar"],
+            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen", "Wil biologisch afbreekbare opties"],
+            embeddings=np.random.randn(3, 768),  # Mock embeddings
+            centroid=np.random.randn(768),
+            size=3
+        ),
+        2: ClusterData(
+            cluster_id=2,
+            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten", "Eerlijke prijs"],
+            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn", "Prijs moet eerlijk zijn"],
+            embeddings=np.random.randn(3, 768),  # Mock embeddings
+            centroid=np.random.randn(768),
+            size=3
+        )
+    }
+    
+    # Test parameters
+    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    
+    # Initialize configuration
+    config = LabellerConfig(
+        api_key=OPENAI_API_KEY,
+        model=DEFAULT_MODEL,
+        batch_size=2
+    )
+    
+    # Initialize phase 1 labeller
+    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+    phase1 = Phase1Labeller(config, client)
+    
+    async def run_test():
+        """Run the test"""
+        print("=== Testing Phase 1: Initial Label Generation ===")
+        print(f"Variable label: {var_lab}")
+        print(f"Number of clusters: {len(sample_clusters)}")
+        
+        try:
+            # Generate labels
+            labels = await phase1.label_clusters(sample_clusters, var_lab)
+            
+            # Display results
+            print("\n=== Results ===")
+            for cluster_id, label in labels.items():
+                print(f"\nCluster {cluster_id}:")
+                print(f"  Label: {label.label}")
+                print(f"  Keywords: {', '.join(label.keywords)}")
+                print(f"  Confidence: {label.confidence:.2f}")
+                
+                # Show representative items
+                cluster = sample_clusters[cluster_id]
+                reps = phase1._get_representative_items(cluster, n=3)
+                print("  Representative items:")
+                for i, item in enumerate(reps, 1):
+                    print(f"    {i}. {item['code']} ({item['similarity']:.3f})")
+            
+            # Save results
+            output_data = {
+                cluster_id: {
+                    "label": label.label,
+                    "keywords": label.keywords,
+                    "confidence": label.confidence
+                }
+                for cluster_id, label in labels.items()
+            }
+            
+            output_file = Path("phase1_test_results.json")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\nResults saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error during testing: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Run the test
+    asyncio.run(run_test())

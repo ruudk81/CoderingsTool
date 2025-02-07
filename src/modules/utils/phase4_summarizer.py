@@ -177,3 +177,158 @@ class Phase4Summarizer:
                 "summary": "Unable to generate summary",
                 "relevance": "Unable to analyze relevance"
             }
+
+
+if __name__ == "__main__":
+    """Test Phase 4 with sample hierarchical structure"""
+    import sys
+    from pathlib import Path
+    import json
+    
+    # Add project paths
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    
+    from openai import AsyncOpenAI
+    import instructor
+    from config import OPENAI_API_KEY, DEFAULT_MODEL
+    from labeller import HierarchyNode
+    
+    # Create sample hierarchical structure for testing
+    sample_hierarchy = HierarchicalStructure(
+        themes=[
+            HierarchyNode(
+                node_id="1",
+                level="theme",
+                label="Duurzaamheid en milieu",
+                children=[
+                    HierarchyNode(
+                        node_id="1.1",
+                        level="topic",
+                        label="Verpakkingen en afval",
+                        children=[
+                            HierarchyNode(
+                                node_id="1.1.1",
+                                level="code",
+                                label="Minder verpakkingsmateriaal",
+                                children=[],
+                                cluster_ids=[1, 2]
+                            ),
+                            HierarchyNode(
+                                node_id="1.1.2",
+                                level="code",
+                                label="Biologisch afbreekbare verpakkingen",
+                                children=[],
+                                cluster_ids=[3, 4]
+                            )
+                        ],
+                        cluster_ids=[1, 2, 3, 4]
+                    )
+                ],
+                cluster_ids=[0]  # Merged cluster ID
+            ),
+            HierarchyNode(
+                node_id="2",
+                level="theme",
+                label="Prijs en waarde",
+                children=[
+                    HierarchyNode(
+                        node_id="2.1",
+                        level="topic",
+                        label="Prijs-kwaliteit verhouding",
+                        children=[
+                            HierarchyNode(
+                                node_id="2.1.1",
+                                level="code",
+                                label="Betaalbare prijzen",
+                                children=[],
+                                cluster_ids=[5]
+                            ),
+                            HierarchyNode(
+                                node_id="2.1.2",
+                                level="code",
+                                label="Waar voor je geld",
+                                children=[],
+                                cluster_ids=[6]
+                            )
+                        ],
+                        cluster_ids=[5, 6]
+                    )
+                ],
+                cluster_ids=[1]  # Merged cluster ID
+            )
+        ],
+        cluster_to_path={
+            1: "1.1.1",
+            2: "1.1.1",
+            3: "1.1.2",
+            4: "1.1.2",
+            5: "2.1.1",
+            6: "2.1.2"
+        }
+    )
+    
+    # Test parameters
+    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    
+    # Initialize configuration
+    config = LabellerConfig(
+        api_key=OPENAI_API_KEY,
+        model=DEFAULT_MODEL
+    )
+    
+    # Initialize phase 4 summarizer
+    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+    phase4 = Phase4Summarizer(config, client)
+    
+    async def run_test():
+        """Run the test"""
+        print("=== Testing Phase 4: Theme Summarization ===")
+        print(f"Variable label: {var_lab}")
+        print(f"Number of themes: {len(sample_hierarchy.themes)}")
+        
+        try:
+            # Test individual theme info collection
+            for theme in sample_hierarchy.themes:
+                info = phase4._collect_theme_info(theme, sample_hierarchy)
+                print(f"\nTheme {theme.node_id} info:")
+                print(f"  Label: {info['theme_label']}")
+                print(f"  Topics: {len(info['topics'])}")
+                print(f"  Total clusters: {info['total_clusters']}")
+            
+            # Generate summaries
+            summaries = await phase4.generate_summaries(sample_hierarchy, var_lab)
+            
+            # Display results
+            print("\n=== Theme Summaries ===")
+            for summary in summaries:
+                print(f"\nTHEME {summary.theme_id}: {summary.theme_label}")
+                print(f"\nSummary:")
+                print(summary.summary[:500] + "..." if len(summary.summary) > 500 else summary.summary)
+                print(f"\nRelevance to research question:")
+                print(summary.relevance_to_question[:300] + "..." if len(summary.relevance_to_question) > 300 else summary.relevance_to_question)
+                print("-" * 50)
+            
+            # Save results
+            output_data = [
+                {
+                    "theme_id": summary.theme_id,
+                    "theme_label": summary.theme_label,
+                    "summary": summary.summary,
+                    "relevance_to_question": summary.relevance_to_question
+                }
+                for summary in summaries
+            ]
+            
+            output_file = Path("phase4_test_results.json")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\nResults saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error during testing: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Run the test
+    asyncio.run(run_test())

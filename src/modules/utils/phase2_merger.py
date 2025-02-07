@@ -396,3 +396,151 @@ class Phase2Merger:
         # So for batch_size=10, we get 45 pairs
         actual_batch_size = min(batch_size, 10)  # Limit to avoid too many pairs
         return [items[i:i + actual_batch_size] for i in range(0, len(items), actual_batch_size)]
+
+
+if __name__ == "__main__":
+    """Test Phase 2 with sample cluster data and labels"""
+    import sys
+    from pathlib import Path
+    import json
+    
+    # Add project paths
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    
+    from openai import AsyncOpenAI
+    import instructor
+    from config import OPENAI_API_KEY, DEFAULT_MODEL
+    
+    # Create sample cluster data for testing
+    sample_clusters = {
+        1: ClusterData(
+            cluster_id=1,
+            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal"],
+            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen"],
+            embeddings=np.random.randn(2, 768),  # Mock embeddings
+            centroid=np.random.randn(768),
+            size=2
+        ),
+        2: ClusterData(
+            cluster_id=2,
+            descriptive_codes=["Biologisch afbreekbaar", "Milieuvriendelijk verpakken"],
+            code_descriptions=["Wil biologisch afbreekbare opties", "Duurzame verpakkingsmaterialen"],
+            embeddings=np.random.randn(2, 768),  # Mock embeddings
+            centroid=np.random.randn(768),
+            size=2
+        ),
+        3: ClusterData(
+            cluster_id=3,
+            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten"],
+            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn"],
+            embeddings=np.random.randn(2, 768),  # Mock embeddings
+            centroid=np.random.randn(768),
+            size=2
+        )
+    }
+    
+    # Create sample initial labels
+    sample_labels = {
+        1: InitialLabel(
+            cluster_id=1,
+            label="Minder afval en verpakking",
+            keywords=["afval", "verpakkingen", "minder"],
+            confidence=0.9
+        ),
+        2: InitialLabel(
+            cluster_id=2,
+            label="Milieuvriendelijke verpakkingen",
+            keywords=["milieu", "duurzaam", "biologisch"],
+            confidence=0.85
+        ),
+        3: InitialLabel(
+            cluster_id=3,
+            label="Prijs-kwaliteit verhouding",
+            keywords=["prijs", "kwaliteit", "betaalbaar"],
+            confidence=0.8
+        )
+    }
+    
+    # Make clusters 1 and 2 similar (environmental concerns)
+    sample_clusters[1].centroid = np.random.randn(768)
+    sample_clusters[2].centroid = sample_clusters[1].centroid + np.random.randn(768) * 0.1
+    sample_clusters[3].centroid = np.random.randn(768) * 2  # Very different
+    
+    # Test parameters
+    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    
+    # Initialize configuration
+    config = LabellerConfig(
+        api_key=OPENAI_API_KEY,
+        model=DEFAULT_MODEL,
+        batch_size=10,
+        similarity_threshold=0.85,  # For auto-merge
+        merge_score_threshold=0.7   # For LLM merge
+    )
+    
+    # Initialize phase 2 merger
+    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+    phase2 = Phase2Merger(config, client)
+    
+    async def run_test():
+        """Run the test"""
+        print("=== Testing Phase 2: Cluster Merging ===")
+        print(f"Variable label: {var_lab}")
+        print(f"Number of clusters: {len(sample_clusters)}")
+        
+        try:
+            # Test auto-merge first
+            auto_groups = phase2._auto_merge_by_similarity(sample_clusters)
+            print(f"\nAuto-merge groups: {auto_groups}")
+            
+            # Run full merge process
+            merge_mapping = await phase2.merge_similar_clusters(
+                sample_clusters, sample_labels, var_lab
+            )
+            
+            # Display results
+            print("\n=== Merge Results ===")
+            print(f"Merge groups: {merge_mapping.merge_groups}")
+            print(f"\nCluster mapping:")
+            for cid, merged_id in merge_mapping.cluster_to_merged.items():
+                print(f"  Cluster {cid} → Merged cluster {merged_id}")
+            
+            print(f"\nMerge reasons:")
+            for merged_id, reason in merge_mapping.merge_reasons.items():
+                print(f"  Merged {merged_id}: {reason}")
+            
+            # Calculate statistics
+            original_count = len(sample_clusters)
+            merged_count = len(merge_mapping.merge_groups)
+            reduction = (1 - merged_count/original_count) * 100
+            
+            print(f"\nStatistics:")
+            print(f"  Original clusters: {original_count}")
+            print(f"  Merged clusters: {merged_count}")
+            print(f"  Reduction: {reduction:.1f}%")
+            
+            # Save results
+            output_data = {
+                "merge_groups": merge_mapping.merge_groups,
+                "cluster_mapping": merge_mapping.cluster_to_merged,
+                "merge_reasons": merge_mapping.merge_reasons,
+                "statistics": {
+                    "original": original_count,
+                    "merged": merged_count,
+                    "reduction_percent": reduction
+                }
+            }
+            
+            output_file = Path("phase2_test_results.json")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\nResults saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error during testing: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Run the test
+    asyncio.run(run_test())
