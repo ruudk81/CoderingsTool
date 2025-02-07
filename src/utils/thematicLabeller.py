@@ -850,33 +850,61 @@ class ThematicLabeller:
         try:
             result = await self._invoke_with_retries(prompt, RefinementResponse)
             
-            # Apply refinements if any - but DON'T modify the codebook in place
+            # Apply refinements safely - only modify labels, not structure
             if result.refined_labels:
                 refinement_count = 0
                 
-                print(f"    🔧 DEBUG: Phase 4 refinement disabled to prevent hierarchy destruction")
-                print(f"    📊 Received refinements for themes, topics, and subjects")
-                print(f"    ⚠️  Refinements NOT applied to preserve hierarchy structure")
+                # Create lookups for safe label updates
+                theme_lookup = {t.id: t for t in codebook.themes}
+                topic_lookup = {t.id: t for t in codebook.topics}
+                subject_lookup = {s.id: s for s in codebook.subjects}
                 
-                # DEBUG: Show what would have been refined
-                if 'themes' in result.refined_labels and result.refined_labels['themes']:
-                    print(f"    📝 Would refine {len(result.refined_labels['themes'])} theme labels")
+                # Apply theme label refinements
+                if 'themes' in result.refined_labels:
+                    for theme_id, refined_label in result.refined_labels['themes'].items():
+                        if theme_id in theme_lookup:
+                            old_label = theme_lookup[theme_id].label
+                            theme_lookup[theme_id].label = refined_label
+                            refinement_count += 1
+                            print(f"      🏷️  Theme {theme_id}: '{old_label}' → '{refined_label}'")
                 
-                if 'topics' in result.refined_labels and result.refined_labels['topics']:
-                    print(f"    📝 Would refine {len(result.refined_labels['topics'])} topic labels")
+                # Apply topic label refinements
+                if 'topics' in result.refined_labels:
+                    for topic_id, refined_label in result.refined_labels['topics'].items():
+                        if topic_id in topic_lookup:
+                            old_label = topic_lookup[topic_id].label
+                            topic_lookup[topic_id].label = refined_label
+                            refinement_count += 1
+                            print(f"      🏷️  Topic {topic_id}: '{old_label}' → '{refined_label}'")
                 
-                if 'subjects' in result.refined_labels and result.refined_labels['subjects']:
-                    print(f"    📝 Would refine {len(result.refined_labels['subjects'])} subject labels")
+                # Apply subject label refinements (these are cluster labels)
+                if 'subjects' in result.refined_labels:
+                    for subject_id, refined_label in result.refined_labels['subjects'].items():
+                        # For subjects, update both the codebook entry and the final_labels
+                        if subject_id in subject_lookup:
+                            old_label = subject_lookup[subject_id].label
+                            subject_lookup[subject_id].label = refined_label
+                            refinement_count += 1
+                            print(f"      🏷️  Subject {subject_id}: '{old_label}' → '{refined_label}'")
+                        
+                        # Also update in final_labels if it's a cluster ID
+                        try:
+                            cluster_id = int(subject_id)
+                            if cluster_id in final_labels:
+                                final_labels[cluster_id]['label'] = refined_label
+                        except ValueError:
+                            continue
                 
-                print(f"    💡 Hierarchy preservation prioritized over label refinement")
+                print(f"    ✨ Applied {refinement_count} label refinements")
             
             if result.quality_issues:
-                print(f"    ⚠️  Found {len(result.quality_issues)} quality issues (noted but not applied)")
+                print(f"    📋 Identified {len(result.quality_issues)} quality issues for review:")
+                for issue in result.quality_issues[:3]:  # Show first 3
+                    print(f"      - {issue.get('current_label', 'Unknown')}: {issue.get('issue', 'No description')}")
         
         except Exception as e:
             print(f"    ❌ LLM refinement failed: {str(e)}")
         
-        # Return original final_labels without modification to preserve hierarchy
         return final_labels
     
     def _get_best_assignment(self, assignments: Dict[str, float], threshold: float = None) -> Tuple[str, float]:
