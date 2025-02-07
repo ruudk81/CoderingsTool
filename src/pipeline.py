@@ -5,6 +5,7 @@ import sys
 import os
 import time
 import random
+import argparse
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -21,20 +22,55 @@ for path in project_paths:
 import models
 
 # === CONFIG ========================================================================================================
-from modules.utils import data_io, csvHandler
+from modules.utils import data_io
+from cache_manager import CacheManager
+from cache_config import CacheConfig, ProcessingConfig
 
+# Initialize cache manager
+cache_config = CacheConfig()
+processing_config = ProcessingConfig()
+cache_manager = CacheManager(cache_config)
+
+# Pipeline configuration
 filename             = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column            = "DLNMID"
 var_name             = "Q20"
-csv_handler          = csvHandler.CsvHandler()
-filepath             = csv_handler.get_filepath(filename, 'data')
 data_loader          = data_io.DataLoader()
 var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
 
+# === COMMAND LINE ARGUMENTS ========================================================================================
+parser = argparse.ArgumentParser(description='CoderingsTool Pipeline')
+parser.add_argument('--force-recalculate', action='store_true', help='Force recalculation of all steps')
+parser.add_argument('--force-step', type=str, help='Force recalculation of specific step')
+parser.add_argument('--migrate', action='store_true', help='Migrate from old CSV handler')
+parser.add_argument('--cleanup', action='store_true', help='Clean up old cache files')
+parser.add_argument('--stats', action='store_true', help='Show cache statistics')
+args = parser.parse_args()
+
+# Handle cache operations
+if args.cleanup:
+    cache_manager.cleanup_old_cache()
+    print("Cache cleanup completed")
+    exit(0)
+
+if args.stats:
+    stats = cache_manager.get_statistics()
+    print("\nCache Statistics:")
+    print(f"Total entries: {stats['total_entries']}")
+    print(f"Total size: {stats['total_size_bytes'] / (1024**3):.2f} GB")
+    print("\nBy step:")
+    for step, info in stats['by_step'].items():
+        print(f"  {step}: {info['count']} files, {info['size'] / (1024**2):.2f} MB")
+    exit(0)
+
 # === STEP 1 ========================================================================================================
 """get data"""
-if  os.path.exists(filepath):
-    raw_text_list    = csv_handler.load_from_csv(filename, 'data', models.ResponseModel)
+step_name = "data"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    raw_text_list = cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
+    print(f"Loaded {len(raw_text_list)} items from cache for step: {step_name}")
 else:    
     start_time       = time.time()
     raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
@@ -43,7 +79,7 @@ else:
     end_time         = time.time()
     elapsed_time     = end_time - start_time
     
-    csv_handler.save_to_csv(raw_text_list, filename, 'data' )  
+    cache_manager.save_to_cache(raw_text_list, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
 
 
@@ -51,8 +87,12 @@ else:
 """preprocess data"""
 from modules.utils import textNormalizer, spellChecker, textFinalizer
 
-if  os.path.exists(filepath):
-    preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
+step_name = "preprocessed"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
+    print(f"Loaded {len(preprocessed_text)} items from cache for step: {step_name}")
 else: 
     text_normalizer       = textNormalizer.TextNormalizer()
     spell_checker         = spellChecker.SpellChecker()
@@ -67,12 +107,12 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    csv_handler.save_to_csv(preprocessed_text, filename, 'preprocessed' )  
+    cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug print
 idx = 1 
-for response in preprocessed_text:
+for response in preprocessed_text[:10]:  # Limit debug output
     print(f"{idx}. {response.response}")
     idx += 1
         
@@ -81,8 +121,12 @@ for response in preprocessed_text:
 """describe and segment data"""
 from modules.utils import qualityFilter, segmentDescriber
 
-if  os.path.exists(filepath):
-    encoded_text          = csv_handler.load_from_csv(filename, 'segmented_descriptions', models.DescriptiveModel)
+step_name = "segmented_descriptions"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
+    print(f"Loaded {len(encoded_text)} items from cache for step: {step_name}")
 else: 
     start_time            = time.time()
     config                = qualityFilter.GraderConfig()
@@ -95,8 +139,8 @@ else:
     end_time              = time.time()
     elapsed_time          = end_time - start_time
   
-    csv_handler.save_to_csv(encoded_text, filename, 'segmented_descriptions' )  
-    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
+    print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
 
     print("\nSummary:")
     for key, value in grading_summary.items(): 
@@ -105,7 +149,6 @@ else:
     print("\nMeaningless responses")
     random_graded_text = random.sample(graded_text, min(20, len(graded_text)))
     for text in random_graded_text:
-        #print(text.respondent_id)
         if text.quality_filter:
             print(text.response)
     
@@ -126,8 +169,12 @@ for result in random_encoded_text:
 """get embeddings"""
 from modules.utils import embedder  
 
-if  os.path.exists(filepath):
-    embedded_text           = csv_handler.load_from_csv(filename, 'embeddings', models.EmbeddingsModel)
+step_name = "embeddings"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
+    print(f"Loaded {len(embedded_text)} items from cache for step: {step_name}")
 else:
     start_time              = time.time()
     get_embeddings          = embedder.Embedder()
@@ -138,7 +185,7 @@ else:
     end_time                = time.time()
     elapsed_time            = end_time - start_time
     
-    csv_handler.save_to_csv(embedded_text, filename, 'embeddings' )  
+    cache_manager.save_to_cache(embedded_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
 
 #debug print 
@@ -151,8 +198,8 @@ for result in embedded_text[:1]:
         print(f"  - Segment: {code.segment_response}")
         print(f"    Code: {code.descriptive_code}")
         print(f"    Description: {code.code_description}")
-        print(f"    Code embedding: {code.code_embedding}")
-        print(f"    Description embedding: {code.description_embedding}")
+        print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
+        print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
     print("\n")
 
 
@@ -160,8 +207,12 @@ for result in embedded_text[:1]:
 "get clusters"
 from modules.utils import clusterer  
 
-if  os.path.exists(filepath):
-    embedded_text           = csv_handler.load_from_csv(filename, 'embeddings', models.ClusterModel)
+step_name = "clusters"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
+    print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
     start_time              = time.time()
     clusterer               = clusterer.ClusterGenerator(input_list=embedded_text, var_lab=var_lab, embedding_type="code", verbose=True)
@@ -170,7 +221,7 @@ else:
     end_time                = time.time()
     elapsed_time            = end_time - start_time
 
-    csv_handler.save_to_csv(cluster_results, filename, 'clusters')
+    cache_manager.save_to_cache(cluster_results, filename, step_name, processing_config, elapsed_time)
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
 # debug print
@@ -202,3 +253,63 @@ for meta_id, count in sorted(meta_cluster_counts.items()):
         print(f"  - {meta_cluster_descriptions[meta_id][i]}")
 
 
+# === STEP 6 ========================================================================================================
+"""get labels"""
+from modules.utils import labeller
+
+step_name = "labels"
+force_recalc = args.force_recalculate or args.force_step == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+    labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
+    print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
+else:
+    start_time = time.time()
+    labeller_config = labeller.LabellerConfig()
+    label_generator = labeller.Labeller(config=labeller_config)
+    
+    # Convert cluster results to label model format
+    label_input = [item.to_model(models.LabelModel) for item in cluster_results]
+    labeled_results = label_generator.label_clusters(label_input)
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
+    print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
+
+# debug print
+print("\nLabel Summary:")
+theme_counts = defaultdict(int)
+for result in labeled_results:
+    for segment in result.response_segment or []:
+        if hasattr(segment, 'Theme') and segment.Theme:
+            theme_id = list(segment.Theme.keys())[0]
+            theme_counts[theme_id] += 1
+
+print(f"Found {len(theme_counts)} themes in results")
+for theme_id, count in sorted(theme_counts.items()):
+    print(f"Theme {theme_id}: {count} items")
+    # Show a few examples
+    examples = []
+    for result in labeled_results[:50]:  # Sample first 50 results
+        for segment in result.response_segment or []:
+            if hasattr(segment, 'Theme') and segment.Theme and theme_id in segment.Theme:
+                examples.append(segment.Theme[theme_id])
+                if len(examples) >= 3:
+                    break
+        if len(examples) >= 3:
+            break
+    
+    for example in examples[:3]:
+        print(f"  - {example}")
+
+
+# === MIGRATION =====================================================================================================
+# Migrate from old CSV handler if requested
+if args.migrate:
+    print("\n=== Migrating from old CSV handler ===")
+    from modules.utils import csvHandler
+    old_csv_handler = csvHandler.CsvHandler()
+    migration_count = cache_manager.migrate_from_csv_handler(old_csv_handler, filename)
+    print(f"Migration completed: {migration_count} files migrated")
