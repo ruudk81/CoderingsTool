@@ -1,6 +1,7 @@
 # === FOLDERS TO IGNORE ===
 backup/
 env/
+hunspell/
 
 # === SPECIFIC FILES TO IGNORE === 
 Coderingstool
