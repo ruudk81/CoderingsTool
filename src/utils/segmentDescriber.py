@@ -13,15 +13,18 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig
+from config import (OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,
+                    SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG)
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class LangChainPipeline :
-    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, temperature: float = 0.0):
+    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
+                 temperature: float = 0.0, config: SegmentationConfig = None):
         self.language = language
         self.var_lab = var_lab
+        self.config = config or DEFAULT_SEGMENTATION_CONFIG
       
         model_config = ModelConfig()
         
@@ -32,8 +35,8 @@ class LangChainPipeline :
             seed=model_config.seed)
 
         self.parser = JsonOutputParser()
-        self.retry_delay = 2
-        self.max_retries = 3
+        self.retry_delay = self.config.retry_delay
+        self.max_retries = self.config.max_retries
         
         self.chain = self.build_chain()
 
@@ -115,27 +118,26 @@ class CodingBatch(BaseModel):
 class SegmentDescriber:
     def __init__(
         self, 
+        config: SegmentationConfig = None,
         provider: str = "openai", 
         api_key: str = None, 
         model: str = None, 
         base_url: str = None,
-        max_tokens: int = 16000,  
-        completion_reserve: int = 1000,  
-        max_batch_size: int = 5,
         var_lab : str = "",
         verbose: bool = False,
         model_config: ModelConfig = None):
         
         # Use provided config or create default
+        self.config = config or DEFAULT_SEGMENTATION_CONFIG
         self.model_config = model_config or ModelConfig()
         
         self.provider = provider.lower()
         self.openai_api_key = api_key or OPENAI_API_KEY
         # Use model from config for segmentation/description stage
-        self.openai_model = model or self.model_config.get_model_for_stage('segmentation')
-        self.max_tokens = max_tokens
-        self.completion_reserve = completion_reserve
-        self.max_batch_size = max_batch_size
+        self.openai_model = model or self.config.model
+        self.max_tokens = self.config.max_tokens
+        self.completion_reserve = self.config.completion_reserve
+        self.max_batch_size = self.config.max_batch_size
         self._debug_print_first_prompt = True
         self.varlab = var_lab
         self.verbose_reporter = VerboseReporter(verbose)
@@ -146,7 +148,8 @@ class SegmentDescriber:
             api_key=self.openai_api_key,
             language=DEFAULT_LANGUAGE,
             var_lab = "",
-            temperature=self.model_config.get_temperature_for_stage('segmentation')) 
+            temperature=self.config.temperature,
+            config=self.config) 
             
         self.chain = self.langchain_pipeline.build_chain()
 
@@ -396,7 +399,7 @@ class SegmentDescriber:
                         code_count += 1
                         
                         # Collect examples
-                        if len(code_examples) < 5 and segment.segment_response:
+                        if len(code_examples) < self.config.max_code_examples and segment.segment_response:
                             code_examples.append(f'"{segment.segment_response}" → "{segment.descriptive_code}"')
         
         avg_code_length = total_code_length / code_count if code_count > 0 else 0

@@ -4,20 +4,22 @@ import asyncio
 from typing import List, Dict
 from openai import AsyncOpenAI
 import models
-from config import OPENAI_API_KEY, DEFAULT_EMBEDDING_MODEL
+from config import OPENAI_API_KEY, DEFAULT_EMBEDDING_MODEL, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class Embedder:
     def __init__(
         self, 
+        config: EmbeddingConfig = None,
         provider: str = "openai",
         client: any = None, 
         embedding_model: str = None, 
         var_lab: str = None,
         verbose: bool = False):
         
+        self.config = config or DEFAULT_EMBEDDING_CONFIG
         self.client = client or AsyncOpenAI(api_key=os.getenv(OPENAI_API_KEY))
-        self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
+        self.embedding_model = embedding_model or self.config.embedding_model
         self.var_lab = var_lab
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose)
@@ -25,7 +27,8 @@ class Embedder:
         
         self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
     
-    async def generate_description_batches(self, data: List[models.EmbeddingsModel], batch_size: int = 100):
+    async def generate_description_batches(self, data: List[models.EmbeddingsModel], batch_size: int = None):
+        batch_size = batch_size or self.config.batch_size
         all_segments = []
         segment_indices = []
         
@@ -48,7 +51,8 @@ class Embedder:
         
         return batches_responses, batches_indices
         
-    async def generate_code_batches(self, data: List[models.EmbeddingsModel], batch_size: int = 100):
+    async def generate_code_batches(self, data: List[models.EmbeddingsModel], batch_size: int = None):
+        batch_size = batch_size or self.config.batch_size
         all_segments = []
         segment_indices = []
         
@@ -74,7 +78,8 @@ class Embedder:
         response = await self.client.embeddings.create(input=responses, model=self.embedding_model)
         return [item.embedding for item in response.data]
         
-    def get_code_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = 5):
+    def get_code_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = None):
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         if var_lab is not None:
             self.var_lab = var_lab
         
@@ -83,7 +88,8 @@ class Embedder:
         self.verbose_reporter.step_complete("Code embeddings generated")
         return result
       
-    def get_description_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = 5):
+    def get_description_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = None):
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         if var_lab is not None:
             self.var_lab = var_lab
         
@@ -92,15 +98,18 @@ class Embedder:
         self.verbose_reporter.step_complete("Description embeddings generated")
         return result
         
-    async def _get_description_embeddings_async(self, data: List[models.EmbeddingsModel], max_concurrent: int = 5):
+    async def _get_description_embeddings_async(self, data: List[models.EmbeddingsModel], max_concurrent: int = None):
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         batches_responses, batches_indices = await self.generate_description_batches(data)
         return await self._process_embeddings(data, batches_responses, batches_indices, max_concurrent, is_description=True)
     
-    async def _get_code_embeddings_async(self, data: List[models.EmbeddingsModel], max_concurrent: int = 5):
+    async def _get_code_embeddings_async(self, data: List[models.EmbeddingsModel], max_concurrent: int = None):
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         batches_responses, batches_indices = await self.generate_code_batches(data)
         return await self._process_embeddings(data, batches_responses, batches_indices, max_concurrent, is_description=False)
     
-    async def _process_embeddings(self, data: List[models.EmbeddingsModel], batches_responses, batches_indices, max_concurrent: int = 5, is_description: bool = False):
+    async def _process_embeddings(self, data: List[models.EmbeddingsModel], batches_responses, batches_indices, max_concurrent: int = None, is_description: bool = False):
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         # Calculate total segments
         total_segments = sum(len(batch) for batch in batches_responses)
         batch_size = len(batches_responses[0]) if batches_responses else 0
@@ -139,7 +148,7 @@ class Embedder:
         
         # Show sample embeddings
         sample_segments = []
-        for resp in data[:3]:  # First 3 responses
+        for resp in data[:self.config.max_sample_responses]:  # First N responses
             if resp.response_segment:
                 seg = resp.response_segment[0]
                 if is_description:
@@ -208,7 +217,7 @@ class Embedder:
         for cluster_text in cluster_texts:
             task = client.embeddings.create(
                 input=cluster_text,
-                model="text-embedding-3-large"
+                model=self.embedding_model
             )
             tasks.append(task)
     
@@ -220,7 +229,9 @@ class Embedder:
     def embed_word_clusters(self, clusters: Dict[int, List[str]]) -> np.ndarray: 
         return asyncio.run(self._async_embed_word_clusters(clusters))
     
-    async def _async_embed_words(self, words: List[str], batch_size: int = 100, max_concurrent: int = 5) -> Dict[str, np.ndarray]:
+    async def _async_embed_words(self, words: List[str], batch_size: int = None, max_concurrent: int = None) -> Dict[str, np.ndarray]:
+        batch_size = batch_size or self.config.batch_size
+        max_concurrent = max_concurrent or self.config.max_concurrent_requests
         semaphore = asyncio.Semaphore(max_concurrent)
         result_dict = {}
         
@@ -253,7 +264,7 @@ class Embedder:
         
         return ordered_embeddings
     
-    def embed_words(self, words: List[str], batch_size: int = 100, max_concurrent: int = 5) -> Dict[str, np.ndarray]:
+    def embed_words(self, words: List[str], batch_size: int = None, max_concurrent: int = None) -> Dict[str, np.ndarray]:
        
         return asyncio.run(self._async_embed_words(words, batch_size, max_concurrent))
 

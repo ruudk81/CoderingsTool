@@ -105,7 +105,7 @@ else:
     verbose_reporter.section_header("PREPROCESSING PHASE")
  
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
-    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE)
+    spell_checker         = spellChecker.SpellChecker(config=processing_config.spell_check_config if hasattr(processing_config, 'spell_check_config') else None, verbose=VERBOSE)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
     
     start_time            = time.time()
@@ -141,8 +141,7 @@ else:
     verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
     
     start_time            = time.time()
-    config                = qualityFilter.GraderConfig()
-    grader                = qualityFilter.Grader(preprocessed_text, var_lab, config, verbose=VERBOSE)
+    grader                = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE)
     graded_text           = grader.grade()
     grading_summary       = grader.summary()
     filtered_text         = grader.filter()
