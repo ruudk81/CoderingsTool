@@ -920,7 +920,7 @@ if __name__ == "__main__":
             print(f"\n✅ Successfully labeled {len(labeled_results)} responses")
             
             # Save to cache
-            cache_manager.save_to_cache(labeled_results, filename, "labels", elapsed_time=0)
+            cache_manager.save_to_cache(labeled_results, filename, "labels")
             print("💾 Saved labeled results to cache")
             
             # Print sample results
