@@ -850,77 +850,33 @@ class ThematicLabeller:
         try:
             result = await self._invoke_with_retries(prompt, RefinementResponse)
             
-            # Apply refinements if any - handle nested structure from prompt
+            # Apply refinements if any - but DON'T modify the codebook in place
             if result.refined_labels:
                 refinement_count = 0
                 
-                # The refined_labels comes in the format: {"themes": {...}, "topics": {...}, "subjects": {...}}
-                # We need to map this back to our cluster assignments
+                print(f"    🔧 DEBUG: Phase 4 refinement disabled to prevent hierarchy destruction")
+                print(f"    📊 Received refinements for themes, topics, and subjects")
+                print(f"    ⚠️  Refinements NOT applied to preserve hierarchy structure")
                 
-                # Create reverse lookups from the codebook
-                theme_label_lookup = {t.id: t for t in codebook.themes}
-                topic_label_lookup = {t.id: t for t in codebook.topics}
-                
-                # Apply theme refinements
-                if 'themes' in result.refined_labels:
-                    for theme_id, refined_theme_label in result.refined_labels['themes'].items():
-                        if theme_id in theme_label_lookup:
-                            # Update the codebook entry
-                            theme_label_lookup[theme_id].label = refined_theme_label
-                            refinement_count += 1
-                
-                # Apply topic refinements
-                if 'topics' in result.refined_labels:
-                    for topic_id, refined_topic_label in result.refined_labels['topics'].items():
-                        if topic_id in topic_label_lookup:
-                            # Update the codebook entry
-                            topic_label_lookup[topic_id].label = refined_topic_label
-                            refinement_count += 1
-                
-                # Subject refinements would apply to individual cluster labels
-                if 'subjects' in result.refined_labels:
-                    for subject_id, refined_subject_label in result.refined_labels['subjects'].items():
-                        try:
-                            cluster_id = int(subject_id)
-                            if cluster_id in final_labels:
-                                final_labels[cluster_id]['label'] = refined_subject_label
-                                refinement_count += 1
-                        except ValueError:
-                            # Skip non-numeric subject IDs
-                            continue
-                
-                print(f"    ✨ Applied {refinement_count} label refinements to hierarchy")
-                
-                # Debug: Show what was refined - print ALL refinements, not just changes
+                # DEBUG: Show what would have been refined
                 if 'themes' in result.refined_labels and result.refined_labels['themes']:
-                    print("    🔧 Theme refinements:")
-                    for theme_id, new_label in result.refined_labels['themes'].items():
-                        if theme_id in theme_label_lookup:
-                            old_label = theme_label_lookup[theme_id].label
-                            print(f"      Theme {theme_id}: '{old_label}' → '{new_label}' {'✓ CHANGED' if old_label != new_label else '(no change)'}")
-                        else:
-                            print(f"      Theme {theme_id}: NOT FOUND in lookup")
+                    print(f"    📝 Would refine {len(result.refined_labels['themes'])} theme labels")
                 
                 if 'topics' in result.refined_labels and result.refined_labels['topics']:
-                    print("    🔧 Topic refinements:")
-                    for topic_id, new_label in result.refined_labels['topics'].items():
-                        if topic_id in topic_label_lookup:
-                            old_label = topic_label_lookup[topic_id].label
-                            print(f"      Topic {topic_id}: '{old_label}' → '{new_label}' {'✓ CHANGED' if old_label != new_label else '(no change)'}")
-                        else:
-                            print(f"      Topic {topic_id}: NOT FOUND in lookup")
+                    print(f"    📝 Would refine {len(result.refined_labels['topics'])} topic labels")
                 
                 if 'subjects' in result.refined_labels and result.refined_labels['subjects']:
-                    print("    🔧 Subject refinements:")
-                    for subject_id, new_label in result.refined_labels['subjects'].items():
-                        print(f"      Subject {subject_id}: → '{new_label}'")
+                    print(f"    📝 Would refine {len(result.refined_labels['subjects'])} subject labels")
+                
+                print(f"    💡 Hierarchy preservation prioritized over label refinement")
             
             if result.quality_issues:
-                print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
+                print(f"    ⚠️  Found {len(result.quality_issues)} quality issues (noted but not applied)")
         
         except Exception as e:
             print(f"    ❌ LLM refinement failed: {str(e)}")
         
+        # Return original final_labels without modification to preserve hierarchy
         return final_labels
     
     def _get_best_assignment(self, assignments: Dict[str, float], threshold: float = None) -> Tuple[str, float]:
