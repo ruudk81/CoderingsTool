@@ -4,7 +4,8 @@ from collections import defaultdict
 import numpy as np
 import numpy.typing as npt
 from sklearn.metrics.pairwise import cosine_similarity
-from openai import AsyncOpenAI
+from openai import OpenAI, AsyncOpenAI
+import instructor
 import logging
 from tqdm.asyncio import tqdm
 import models
@@ -139,10 +140,14 @@ class ClusterMerger:
     def __init__(self, input_list=None, var_lab=None, config=None, client=None):
         self.config = config or LabellerConfig()
         self.semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
-        self.client = client or AsyncOpenAI(api_key=self.config.api_key)
+        self.client = client
         self.max_merge_group_size = 5      # Maximum size for any merge group
         self.similarity_threshold = 0.95   # Fixed threshold for high similarity pairs
         
+        # Validate input_list is a list of ClusterModel objects if provided
+        if input_list is not None and not all(isinstance(item, models.ClusterModel) for item in input_list):
+            raise ValueError("input_list must be a list of ClusterModel objects")
+            
         # Store input data if provided
         self.input_clusters = input_list
         self.var_lab = var_lab
@@ -480,12 +485,10 @@ class ClusterMerger:
     
     async def _get_merge_decisions(self, prompt: str) -> BatchMergeDecisionResponse:
         """Get binary merge decisions from LLM"""
-        import instructor
-        
-        # Use the client from initialization if it's already an instructor client, otherwise wrap it
-        client = self.client
-        if not hasattr(self.client, 'chat') or not hasattr(self.client.chat, 'completions') or not hasattr(self.client.chat.completions, 'create'):
-            client = instructor.from_openai(self.client)
+        # Create an instructor-patched client
+        client = instructor.from_openai(
+            AsyncOpenAI(api_key=self.config.api_key)
+        )
         
         messages = [
             {"role": "system", "content": "You are an expert in thematic analysis and survey response clustering."},
@@ -555,7 +558,11 @@ class ClusterMerger:
         """
         # Update input data if provided
         if input_list is not None:
+            # Validate input_list is a list of ClusterModel objects
+            if not all(isinstance(item, models.ClusterModel) for item in input_list):
+                raise ValueError("input_list must be a list of ClusterModel objects")
             self.input_clusters = input_list
+            
         if var_lab is not None:
             self.var_lab = var_lab
             
@@ -566,6 +573,10 @@ class ClusterMerger:
         # Run the actual merging process
         merged_clusters = asyncio.run(self._merge_clusters_async())
         
+        # Verify output is a list of ClusterModel objects
+        if not all(isinstance(item, models.ClusterModel) for item in merged_clusters):
+            raise ValueError("Output must be a list of ClusterModel objects")
+            
         # Return both the merged clusters and the merge mapping for caching
         return merged_clusters, self.merge_mapping
         
@@ -703,6 +714,12 @@ class ClusterMerger:
         """Convert internal data to ClusterModel format
         
         Similar to ClusterGenerator.to_cluster_model, but handles merged clusters
+        
+        Args:
+            merge_mapping: MergeMapping object with merge groups and mapping information
+            
+        Returns:
+            List of ClusterModel objects with updated cluster assignments
         """
         # Convert input data to internal format
         output_list = self._convert_to_mappers(merge_mapping)
@@ -742,6 +759,7 @@ class ClusterMerger:
                 # Use merged cluster ID for micro_cluster
                 micro_cluster = None
                 if item.merged_cluster_id is not None:
+                    # Store the cluster ID with an empty string (will be populated with labels later)
                     micro_cluster = {item.merged_cluster_id: ""}
                 
                 # Create submodel
@@ -767,7 +785,8 @@ class ClusterMerger:
             )
             
             result_models.append(model)
-        
+            
+        logger.info(f"Converted results to {len(result_models)} ClusterModel objects")
         return result_models
 
 
