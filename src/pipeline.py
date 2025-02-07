@@ -1,7 +1,7 @@
 """start in src"""
 
 # ===  MODULES ========================================================================================================
-import sys
+#import sys
 #import os
 import time
 import random
@@ -31,7 +31,6 @@ var_name             = "Q20"
 data_loader          = data_io.DataLoader()
 var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
 
-# We'll configure logging after parsing args
 
 # === COMMAND LINE ARGUMENTS ========================================================================================
 parser = argparse.ArgumentParser(description='CoderingsTool Pipeline')
@@ -115,11 +114,11 @@ else:
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug print
-idx = 1 
-for response in preprocessed_text[:10]:  # Limit debug output
-    print(f"{idx}. {response.response}")
-    idx += 1
+# #debug print
+# idx = 1 
+# for response in preprocessed_text[:10]:  # Limit debug output
+#     print(f"{idx}. {response.response}")
+#     idx += 1
         
 
 # === STEP 3 ========================================================================================================
@@ -157,17 +156,17 @@ else:
         if text.quality_filter:
             print(text.response)
     
-#debug print
-random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
-for result in random_encoded_text:
-    print(f"\nRespondent ID: {result.respondent_id}")
-    print(f"Response: {result.response}")
-    print("Descriptive Codes:")
-    codes = result.response_segment or []
-    for code in codes:
-        print(f"  - Segment: {code.segment_response}")
-        print(f"    Code: {code.descriptive_code}")
-        print(f"    Description: {code.code_description}")    
+# #debug print
+# random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
+# for result in random_encoded_text:
+#     print(f"\nRespondent ID: {result.respondent_id}")
+#     print(f"Response: {result.response}")
+#     print("Descriptive Codes:")
+#     codes = result.response_segment or []
+#     for code in codes:
+#         print(f"  - Segment: {code.segment_response}")
+#         print(f"    Code: {code.descriptive_code}")
+#         print(f"    Description: {code.code_description}")    
 
 
 # === STEP 4 ========================================================================================================
@@ -194,23 +193,23 @@ else:
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
 
 #debug print 
-for result in embedded_text[:1]:
-    print(f"\nRespondent ID: {result.respondent_id}")
-    print(f"Response: {result.response}")
-    print("Descriptive Codes:")
-    codes = result.response_segment or []
-    for code in codes:
-        print(f"  - Segment: {code.segment_response}")
-        print(f"    Code: {code.descriptive_code}")
-        print(f"    Description: {code.code_description}")
-        print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
-        print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
-    print("\n")
+# for result in embedded_text[:1]:
+#     print(f"\nRespondent ID: {result.respondent_id}")
+#     print(f"Response: {result.response}")
+#     print("Descriptive Codes:")
+#     codes = result.response_segment or []
+#     for code in codes:
+#         print(f"  - Segment: {code.segment_response}")
+#         print(f"    Code: {code.descriptive_code}")
+#         print(f"    Description: {code.code_description}")
+#         print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
+#         print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
+#     print("\n")
 
 
 # === STEP 5 ========================================================================================================
 "get clusters"
-from utils import clusterer, clusterMerger2
+from utils import clusterer, clusterMerger
 
 step_name = "clusters"
 force_recalc = args.force_recalculate or args.force_step == step_name
@@ -220,33 +219,23 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    
-    # Step 5a: Initial clustering
     print(f"\nClustering with embedding_type={args.embedding_type}")
-    
-    # Create clusterer - no config needed for simplified version
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
         embedding_type=args.embedding_type,
         verbose=True )
-    
     cluster_gen.run_pipeline()
     initial_clusters = cluster_gen.to_cluster_model()
-    
-    for result in initial_clusters:
-        print(result)
-        break
-
-    # Quality metrics are already displayed by the simplified clusterer
     print("\nInitial clustering completed successfully")
     
-    # Step 5b: Merge similar clusters
+    # # debug print 
+    # for result in initial_clusters:
+    #     print(result)
+    #     break
+
     print("\nMerging similar clusters...")
-    # Create merger config with verbose flag from command line args
-    
-    from utils import clusterer, clusterMerger3
-    merger = clusterMerger3.ClusterMerger(
+    merger = clusterMerger.ClusterMerger(
         input_list=initial_clusters, 
         var_lab=var_lab)
     cluster_results, merge_mapping = merger.merge_clusters()
@@ -256,9 +245,7 @@ else:
     cache_key = 'cluster_merge_mapping'
     cache_data = {
         'merge_mapping': merge_mapping,
-        'cluster_data': merger.cluster_data,
-        'initial_labels': merger.initial_labels
-    }
+        'cluster_data': merger.cluster_data}
     cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
     print(f"Saved merge mapping to cache with key '{cache_key}'")
     
@@ -289,8 +276,8 @@ micro_cluster_descriptions = defaultdict(list)
 
 for response_items in cluster_results:
     for segment_items in response_items.response_segment:
-        if segment_items.mirco_cluster is not None:
-            micro_id = list(segment_items.mirco_cluster.keys())[0]  # Get the micro-cluster ID
+        if segment_items.micro_cluster is not None:
+            micro_id = list(segment_items.micro_cluster.keys())[0]  # Get the micro-cluster ID
             micro_cluster_counts[micro_id] += 1
             micro_cluster_codes[micro_id].append(segment_items.descriptive_code)
             micro_cluster_descriptions[micro_id].append(segment_items.code_description)
@@ -301,7 +288,8 @@ for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 cl
     
     sample_size = min(3, len(micro_cluster_codes[micro_id]))
     for i in range(sample_size):
-        print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
+        #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
+        print(f"  - {micro_cluster_descriptions[micro_id][i]}")
 
 
 # === STEP 6 ========================================================================================================
