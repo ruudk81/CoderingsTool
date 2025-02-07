@@ -436,7 +436,7 @@ class Labeller:
                     self.client.chat.completions.create,
                     model=self.config.model,
                     messages=[
-                        {"role": "system", "content": f"You are a {self.config.language} expert summarizing customer feedback."},
+                        {"role": "system", "content": f"You are a {self.config.language} expert summarizing survey responses."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=self.config.temperature,
@@ -573,7 +573,7 @@ class Labeller:
                     self.client.chat.completions.create,
                     model=self.config.model,
                     messages=[
-                        {"role": "system", "content": f"You are a {self.config.language} expert analyzing customer feedback themes."},
+                        {"role": "system", "content": f"You are a {self.config.language} expert analyzing survey response themes."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=self.config.temperature,

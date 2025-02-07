@@ -180,7 +180,7 @@ Ensure all output is written in {language}, unless the code is "NA".
 """
 
 CLUSTER_LABELING_PROMPT = """
-You are a {language} expert in thematic analysis of customer feedback about prepared meals.
+You are a {language} expert in thematic analysis of survey responses.
 
 # Survey Question Context
 These responses were given to: "{var_lab}"
@@ -211,10 +211,11 @@ This is a {cluster_type} cluster, which represents {cluster_type_description}.
    - topic: Specific enough to distinguish from other topics
    - code: Detailed enough to capture specific issues
 
-# Special Instructions
-- For food-related clusters: Use domain-specific terminology
-- For quality issues: Be specific about the type of quality concern
-- For preference clusters: Indicate the direction of preference
+# Instructions
+Based on the survey question context, create labels that:
+- Directly relate to what's being asked in the survey
+- Use domain-appropriate terminology based on the question topic
+- Capture the essence of the clustered responses
 
 # Output Format
 You must return a JSON object with exactly these fields:
@@ -224,7 +225,7 @@ You must return a JSON object with exactly these fields:
 """
 
 RESPONSE_SUMMARY_PROMPT = """
-You are a {language} expert summarizing customer feedback about prepared meals.
+You are a {language} expert summarizing survey responses.
 
 # Survey Question
 "{var_lab}"
@@ -241,15 +242,16 @@ Codes: {codes}
 Create a 1-2 sentence summary in {language} that:
 1. Captures the main points from the original response
 2. Uses the assigned labels as context
-3. Sounds natural as a summary of customer feedback
+3. Sounds natural as a summary of survey feedback
 4. Maintains the respondent's perspective
+5. Relates directly to the survey question
 
 # Output
-Write a concise summary that someone reviewing customer feedback would find useful.
+Write a concise summary that helps understand what the respondent is saying about the topic asked in the survey question.
 """
 
 THEME_SUMMARY_PROMPT = """
-You are a {language} expert creating a summary for a theme in customer feedback analysis about prepared meals.
+You are a {language} expert creating a summary for a theme in survey response analysis.
 
 # Theme
 {theme_label}
@@ -261,19 +263,21 @@ You are a {language} expert creating a summary for a theme in customer feedback 
 {representative_items}
 
 # Task
-Based on these representative examples, create a comprehensive summary that:
+Based on these representative examples and the survey question context, create a comprehensive summary that:
 1. Captures the main concerns or topics within this theme
 2. Explains how the different codes relate to each other
-3. Provides insight into what customers are saying overall about this theme
+3. Provides insight into what respondents are saying overall about this theme
+4. Relates directly to what was asked in the survey question
 
 # Requirements
 - Write in {language}
-- Be specific about customer preferences and concerns
+- Be specific about respondent views and concerns
 - Use 2-3 sentences maximum
 - Focus on the common patterns across the examples
+- Ensure the summary makes sense in the context of the survey question
 
 # Output
-Write a clear, insightful summary that helps understand what this theme represents.
+Write a clear, insightful summary that helps understand what this theme represents in relation to the survey question.
 """
 
 
