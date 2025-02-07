@@ -237,6 +237,19 @@ class ClusteringConfig:
         }
 
 
+@dataclass
+class LabellerConfig:
+    """Configuration for hierarchical labeller"""
+    model: str = DEFAULT_MODEL
+    temperature: float = 0.3
+    max_tokens: int = 4000
+    language: str = DEFAULT_LANGUAGE
+    max_retries: int = 3
+    batch_size: int = 8  # Micro-clusters per batch
+    top_k_representatives: int = 3  # Representative codes per cluster
+    concurrent_requests: int = 5
+
+
 # =============================================================================
 # CACHE DATABASE
 # =============================================================================
@@ -635,6 +648,7 @@ class CacheDatabase:
 DEFAULT_CACHE_CONFIG = CacheConfig()
 DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
+DEFAULT_LABELLER_CONFIG = LabellerConfig()
 
 # Environment-based overrides
 if os.getenv("CODERINGSTOOL_CACHE_DIR"):
