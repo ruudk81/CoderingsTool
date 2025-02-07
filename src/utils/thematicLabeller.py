@@ -808,12 +808,15 @@ class ThematicLabeller:
             if result.refined_labels:
                 print(f"    ✨ Applied {len(result.refined_labels)} label refinements")
                 for cluster_id_str, refinements in result.refined_labels.items():
-                    cluster_id = int(cluster_id_str)
-                    if cluster_id in final_labels:
-                        if 'label' in refinements:
-                            final_labels[cluster_id]['label'] = refinements['label']
-                        if 'description' in refinements:
-                            final_labels[cluster_id]['description'] = refinements['description']
+                    try:
+                        cluster_id = int(cluster_id_str)
+                        if cluster_id in final_labels:
+                            if 'label' in refinements:
+                                final_labels[cluster_id]['label'] = refinements['label']
+                            if 'description' in refinements:
+                                final_labels[cluster_id]['description'] = refinements['description']
+                    except ValueError:
+                        print(f"    ⚠️  Skipping invalid cluster ID in refinements: '{cluster_id_str}'")
             
             if result.quality_issues:
                 print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
