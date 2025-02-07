@@ -42,8 +42,6 @@ VERBOSE = True  # Enable verbose output for debugging in Spyder
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
-MIN_QUALITY_SCORE = 0.3  # Minimum acceptable clustering quality (currently not used)
-MAX_NOISE_RATIO = 0.5  # Maximum noise ratio before micro-clustering (currently not used)
 
 # Initialize data loader and get variable label
 data_loader = data_io.DataLoader()
@@ -89,15 +87,15 @@ from utils.verbose_reporter import VerboseReporter
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
+VERBOSE = False
+
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
     print(f"Loaded {len(preprocessed_text)} items from cache for step: {step_name}")
 else: 
-    # Initialize verbose reporter for preprocessing phase
     verbose_reporter = VerboseReporter(VERBOSE)
     verbose_reporter.section_header("PREPROCESSING PHASE")
-    
-    # Initialize components with verbose flag
+ 
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
     spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
@@ -111,26 +109,14 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Show preprocessing summary
-    if VERBOSE:
-        verbose_reporter.summary("PREPROCESSING SUMMARY", {
+    verbose_reporter.summary("PREPROCESSING SUMMARY", {
             f"Input: {len(raw_text_list)} responses → Output: {len(preprocessed_text)} responses": "",
             f"Total processing time: {elapsed_time:.1f} seconds": "",
-            f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""
-        })
+            f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""})
     
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
-    
-    # Print traditional output for non-verbose mode
-    if not VERBOSE:
-        print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug print
-# idx = 1 
-# for response in preprocessed_text[:10]:  # Limit debug output
-#     print(f"{idx}. {response.response}")
-#     idx += 1
-        
 
 # === STEP 3 ========================================================================================================
 """describe and segment data"""
@@ -143,10 +129,8 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
     print(f"Loaded {len(encoded_text)} items from cache for step: {step_name}")
 else: 
-    # Initialize verbose reporter for segmentation phase
-    if VERBOSE:
-        verbose_reporter = VerboseReporter(VERBOSE)
-        verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE", emoji="📊")
+    verbose_reporter = VerboseReporter(VERBOSE)
+    verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
     
     start_time            = time.time()
     config                = qualityFilter.GraderConfig()
@@ -158,45 +142,15 @@ else:
     encoded_text          = encoder.generate_codes(filtered_text, var_lab)
     end_time              = time.time()
     elapsed_time          = end_time - start_time
-  
-    # Show segmentation summary
-    if VERBOSE:
-        # Calculate filtering rate from the summary
-        filtering_rate = 100 - grading_summary['meaningful_percentage']
-        verbose_reporter.summary("SEGMENTATION SUMMARY", {
-            f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
-            f"Total processing time: {elapsed_time:.1f} seconds": "",
-            f"Filtering rate: {filtering_rate:.1f}%": ""
-        })
+
+    filtering_rate = 100 - grading_summary['meaningful_percentage']
+    verbose_reporter.summary("SEGMENTATION SUMMARY", {
+                f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
+                f"Total processing time: {elapsed_time:.1f} seconds": "",
+                f"Filtering rate: {filtering_rate:.1f}%": ""})
     
     cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
-    
-    # Print traditional output for non-verbose mode
-    if not VERBOSE:
-        print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
-
-        print("\nSummary:")
-        for key, value in grading_summary.items(): 
-            print(f"{key}: {value}")
-            
-        print("\nMeaningless responses")
-        random_graded_text = random.sample(graded_text, min(20, len(graded_text)))
-        for text in random_graded_text:
-            if text.quality_filter:
-                print(text.response)
-    
-#debug print - only show when not in verbose mode
-if not VERBOSE:
-    random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
-    for result in random_encoded_text:
-        print(f"\nRespondent ID: {result.respondent_id}")
-    print(f"Response: {result.response}")
-    print("Descriptive Codes:")
-    codes = result.response_segment or []
-    for code in codes:
-        print(f"  - Segment: {code.segment_response}")
-        print(f"    Code: {code.descriptive_code}")
-        print(f"    Description: {code.code_description}")    
+    print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
 
 
 # === STEP 4 ========================================================================================================
