@@ -310,30 +310,43 @@ Return a JSON object with a single key "labels", containing an array of objects 
 """
 
 SIMILARITY_SCORING_PROMPT = """
-You are tasked with comparing clusters based on their labels and most representative 
-descriptive codes and code descriptions. Your job is to determine if these clusters
-are NOT meaningfully differentiated in how they address the research question.
+RESEARCH QUESTION: "{var_lab}"
 
-Research question: "{var_lab}"
+You are evaluating whether clusters of survey responses represent meaningfully different answers to the research question above.
+
+## Your Decision Task:
+Determine whether each pair of clusters should be merged based on how they address the research question. 
+
+The key question for each comparison is:
+"Do these clusters represent meaningfully different responses to the research question, or are they essentially saying the same thing?"
+
 Language: {language}
 
-IMPORTANT: ONLY say YES to merging if the clusters represent essentially the same response 
-from survey participants. Be VERY CONSERVATIVE with merging. When in doubt, do NOT merge.
+## Decision Criteria:
 
-Guidelines for your decision:
-- YES (merge): The clusters represent the same type of response and do not reflect meaningfully 
-  different answers to the research question. They are essentially duplicates or extremely 
-  close variations of the same response.
+### YES (merge) ONLY IF:
+- Both clusters express essentially the same sentiment, concern, suggestion, or perspective
+- The differences between them are minimal or irrelevant to the research question
+- A survey analyst would reasonably group these responses together as the same type of answer
 
-- NO (don't merge): The clusters represent distinct response types, contain different 
-  suggestions, concerns, or perspectives, or add unique information relevant to the 
-  research question.
+### NO (don't merge) IF:
+- The clusters represent distinct viewpoints, suggestions, or concerns
+- They focus on different aspects of the research question
+- They provide unique or complementary information
+- They represent different topics even within the same broad theme
+- There is ANY meaningful differentiation relevant to understanding survey responses
 
-IMPORTANT: Different topics within the same broad theme should usually NOT be merged unless 
-they are truly saying the same thing. For example:
-- "Use less salt" and "Use less sugar" should NOT be merged despite both being about reducing ingredients
-- "More vegetarian options" and "More vegan options" should NOT be merged despite both being about dietary preferences
-- "Better quality meat" and "More meat in portions" should NOT be merged despite both being about meat
+## Important Guidelines:
+- Focus SPECIFICALLY on the research question context
+- Base decisions on the MOST REPRESENTATIVE responses in each cluster (shown by cosine similarity to centroid)
+- Be conservative - when in doubt, keep clusters separate
+- Consider semantic meaning, not just surface-level wording
+
+## Examples of clusters that should NOT be merged:
+- "Use less salt" vs. "Use less sugar" (different ingredients despite similar theme)
+- "More vegetarian options" vs. "More vegan options" (distinct dietary preferences)
+- "Better quality meat" vs. "More meat in portions" (quality vs. quantity distinction)
+- "Like the packaging" vs. "Like the taste" (different aspects being praised)
 
 {cluster_pairs}
 
