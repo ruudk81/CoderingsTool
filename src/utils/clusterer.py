@@ -38,8 +38,8 @@ class ResultMapper(BaseModel):
     # input
     respondent_id: Any
     segment_id: str
-    descriptive_code: str
-    code_description: str
+    segment_label: str
+    segment_description: str
     code_embedding: npt.NDArray[np.float32]
     description_embedding: npt.NDArray[np.float32]
     # add
@@ -135,16 +135,16 @@ class ClusterGenerator:
             if response_item.response_segment:
                 for segment_item in response_item.response_segment:
                     # Check if segment_item has the required attributes
-                    if (hasattr(segment_item, 'descriptive_code') and 
-                        hasattr(segment_item, 'code_description') and
+                    if (hasattr(segment_item, 'segment_label') and 
+                        hasattr(segment_item, 'segment_description') and
                         hasattr(segment_item, 'code_embedding') and
                         hasattr(segment_item, 'description_embedding')):
                         
                         self.output_list.append(ResultMapper(
                             respondent_id=response_item.respondent_id,
                             segment_id=segment_item.segment_id,
-                            descriptive_code=segment_item.descriptive_code or "NA",
-                            code_description=segment_item.code_description or "NA",
+                            segment_label=segment_item.segment_label or "NA",
+                            segment_description=segment_item.segment_description or "NA",
                             code_embedding=segment_item.code_embedding,
                             description_embedding=segment_item.description_embedding
                         ))
@@ -196,7 +196,7 @@ class ClusterGenerator:
                     print(f"Code Cluster {cluster_id}: {count} items")
                 
                 # Show a sample of codes per cluster
-                self._print_sample_items_per_cluster(initial_code_clusters, "descriptive_code", "Code")
+                self._print_sample_items_per_cluster(initial_code_clusters, "segment_label", "Code")
                 
         # Cluster description embeddings if needed
         if self.embedding_type == "description":
@@ -214,7 +214,7 @@ class ClusterGenerator:
                     print(f"Description Cluster {cluster_id}: {count} items")
                 
                 # Show a sample of descriptions per cluster
-                self._print_sample_items_per_cluster(initial_description_clusters, "code_description", "Description")
+                self._print_sample_items_per_cluster(initial_description_clusters, "segment_description", "Description")
 
     def _print_sample_items_per_cluster(self, clusters, attribute, label_prefix, sample_size=5):
         # Helper method to print samples from each cluster
@@ -269,10 +269,10 @@ class ClusterGenerator:
         # Get current clusters and items based on embedding type
         if self.embedding_type == "code":
             clusters = [item.initial_code_cluster for item in self.output_list]
-            items = [item.descriptive_code for item in self.output_list]
+            items = [item.segment_label for item in self.output_list]
         else:
             clusters = [item.initial_description_cluster for item in self.output_list]
-            items = [item.code_description for item in self.output_list]
+            items = [item.segment_description for item in self.output_list]
         
         # Get IDs for filtering
         respondent_ids = [item.respondent_id for item in self.output_list]
@@ -413,8 +413,8 @@ class ClusterGenerator:
                 submodel = models.ClusterSubmodel(
                     segment_id=item.segment_id,
                     segment_response=segment_response,
-                    descriptive_code=item.descriptive_code,
-                    code_description=item.code_description,
+                    segment_label=item.segment_label,
+                    segment_description=item.segment_description,
                     code_embedding=item.code_embedding,
                     description_embedding=item.description_embedding,
                     meta_cluster=None,  # No meta clusters in simple version
