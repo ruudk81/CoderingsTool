@@ -17,7 +17,7 @@ class MergerConfig(BaseModel):
     """Configuration for the ClusterMerger"""
     model: str = DEFAULT_MODEL
     api_key: str = OPENAI_API_KEY
-    max_concurrent_requests: int = 10
+    max_concurrent_requests: int = 5 #10
     batch_size: int = 5  # Reduced for better prompt management
     similarity_threshold: float = 0.95   
     max_retries: int = 3
