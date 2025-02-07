@@ -239,7 +239,7 @@ class Labeller:
                                 micro_cluster=segment.micro_cluster,
                                 Theme={int(theme_id): theme_node.label} if theme_node else None,
                                 Topic={hash('.'.join(path_parts[:2])) % 10000: topic_node.label} if topic_node else None,
-                                Code={hash(path) % 10000: code_node.label} if code_node else None
+                                Keyword={hash(path) % 10000: code_node.label} if code_node else None
                             )
                             
                             label_segments.append(label_segment)
@@ -349,8 +349,8 @@ if __name__ == "__main__":
                         topic_id, topic_label = list(segment.Topic.items())[0]
                         theme_topics[theme_id][topic_id] = topic_label
                         
-                        if segment.Code:
-                            code_id, code_label = list(segment.Code.items())[0]
+                        if segment.Keyword:
+                            code_id, code_label = list(segment.Keyword.items())[0]
                             topic_codes[theme_id][topic_id].append((code_id, code_label))
         
         # Display the hierarchical structure
