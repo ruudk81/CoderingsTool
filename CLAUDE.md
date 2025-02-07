@@ -15,8 +15,17 @@ The core pipeline successfully processes data through 5 complete stages:
 
 Work to be done/TODO:
 6. **📌 Hierarchical clustering** - node level 1,2,3 clustering by LLM microclusters. level 1= themes, level 2= topics and level 3= keywords
+   - ☐ Design MapReduce pipeline structure with LangChain
+   - ☐ Implement micro-cluster extraction with representative selection
+   - ☐ Create Map phase for batch summarization
+   - ☐ Create Reduce phase for hierarchical summarization
+   - ☐ Implement final hierarchy generation with constraints
 7. **📌 Summarization** - LLM produced summary of each theme
+   - ☐ Implement theme summarization using LLM
 8. **📌 Visualization** - dendrogram and wordclouds based on c-tf-idf and mmr
+   - ☐ Implement visualization: dendrograms for hierarchical structure
+   - ☐ Implement visualization: wordclouds based on C-TF-IDF
+   - ☐ Implement MMR (Maximal Marginal Relevance) for keyword selection
 
 
 ## Project Structure
@@ -91,4 +100,11 @@ CoderingsTool/
 cd src
 python pipeline.py
 ```
+
+## Development Workflow
+
+### Collaboration Rules
+- **Claude develops**: Claude develops, refines and updates code, which will be added, committed and pushed to the GitHub repo
+- **User tests**: The user will pull the updates and test code in Spyder, locally
+- **Iterative refinement**: Based on test results, Claude will update and improve the code
 
