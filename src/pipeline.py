@@ -1,16 +1,11 @@
 """
 CoderingsTool Pipeline
 =====================
-Main processing pipeline for analyzing open-ended survey responses.
-
 To run: python pipeline.py (from src directory)
-
-Configuration: Modify the PIPELINE CONFIGURATION section below
 """
 
 # ===  MODULES ========================================================================================================
 import time
-import random
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -29,7 +24,7 @@ processing_config = ProcessingConfig()
 cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
-# Test data configuration
+# Test data 
 filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
 var_name = "Q20"
@@ -44,7 +39,7 @@ EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
 
 # Initialize data loader and get variable label
-data_loader = data_io.DataLoader(verbose=VERBOSE)
+data_loader = data_io.DataLoader(verbose=False)
 var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
 # Display configuration
@@ -62,7 +57,6 @@ print("=" * 80)
 # === STEP 1 ========================================================================================================
 """get data"""
 from utils.verbose_reporter import VerboseReporter
-
 step_name = "data"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
@@ -71,7 +65,9 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     print(f"Loaded {len(raw_text_list)} items from cache for step: {step_name}")
 else:
     verbose_reporter = VerboseReporter(VERBOSE)
-    verbose_reporter.section_header("DATA LOADING PHASE")
+    verbose_reporter.section_header("DATA LOADING SUMMARY")
+    data_loader = data_io.DataLoader(verbose=VERBOSE)
+
     
     start_time       = time.time()
     raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
@@ -79,11 +75,6 @@ else:
     raw_text_list    = [models.ResponseModel(respondent_id=resp_id, response=resp if resp is not None else "" ) for resp_id, resp in raw_unstructued]
     end_time         = time.time()
     elapsed_time     = end_time - start_time
-    
-    verbose_reporter.summary("DATA LOADING SUMMARY", {
-        f"Total responses loaded: {len(raw_text_list)}": "",
-        f"Processing time: {elapsed_time:.1f} seconds": ""
-    })
     
     cache_manager.save_to_cache(raw_text_list, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
@@ -105,7 +96,7 @@ else:
     verbose_reporter.section_header("PREPROCESSING PHASE")
  
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
-    spell_checker         = spellChecker.SpellChecker(config=processing_config.spell_check_config if hasattr(processing_config, 'spell_check_config') else None, verbose=VERBOSE)
+    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
     
     start_time            = time.time()
@@ -117,10 +108,10 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    verbose_reporter.summary("PREPROCESSING SUMMARY", {
-            f"Input: {len(raw_text_list)} responses → Output: {len(preprocessed_text)} responses": "",
-            f"Total processing time: {elapsed_time:.1f} seconds": "",
-            f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""})
+    # verbose_reporter.summary("PREPROCESSING SUMMARY", {
+    #         f"Input: {len(raw_text_list)} responses → Output: {len(preprocessed_text)} responses": "",
+    #         f"Total processing time: {elapsed_time:.1f} seconds": "",
+    #         f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""})
     
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
@@ -150,11 +141,11 @@ else:
     end_time              = time.time()
     elapsed_time          = end_time - start_time
 
-    filtering_rate = 100 - grading_summary['meaningful_percentage']
-    verbose_reporter.summary("SEGMENTATION SUMMARY", {
-                f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
-                f"Total processing time: {elapsed_time:.1f} seconds": "",
-                f"Filtering rate: {filtering_rate:.1f}%": ""})
+    # filtering_rate = 100 - grading_summary['meaningful_percentage']
+    # verbose_reporter.summary("SEGMENTATION SUMMARY", {
+    #             f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
+    #             f"Total processing time: {elapsed_time:.1f} seconds": "",
+    #             f"Filtering rate: {filtering_rate:.1f}%": ""})
     
     cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
@@ -182,35 +173,19 @@ else:
     embedded_text           = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
     end_time                = time.time()
     elapsed_time            = end_time - start_time
+
+    # total_segments = sum(len(resp.response_segment) for resp in embedded_text if resp.response_segment)
     
-    # Calculate total segments for summary
-    total_segments = sum(len(resp.response_segment) for resp in embedded_text if resp.response_segment)
-    
-    verbose_reporter.summary("EMBEDDINGS SUMMARY", {
-        f"Input: {len(encoded_text)} responses → Output: {len(embedded_text)} embedded responses": "",
-        f"Total segments embedded: {total_segments}": "",
-        f"Embedding model: {get_embeddings.embedding_model}": "",
-        f"Total processing time: {elapsed_time:.1f} seconds": "",
-        f"Average processing rate: {total_segments/elapsed_time:.1f} segments/second": ""
-    })
+    # verbose_reporter.summary("EMBEDDINGS SUMMARY", {
+    #     f"Input: {len(encoded_text)} responses → Output: {len(embedded_text)} embedded responses": "",
+    #     f"Total segments embedded: {total_segments}": "",
+    #     f"Embedding model: {get_embeddings.embedding_model}": "",
+    #     f"Total processing time: {elapsed_time:.1f} seconds": "",
+    #     f"Average processing rate: {total_segments/elapsed_time:.1f} segments/second": ""
+    # })
     
     cache_manager.save_to_cache(embedded_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
-
-#debug print 
-for result in embedded_text[:1]:
-    print(f"\nRespondent ID: {result.respondent_id}")
-    print(f"Response: {result.response}")
-    print("Descriptive Codes:")
-    codes = result.response_segment or []
-    for code in codes:
-        print(f"  - Segment: {code.segment_response}")
-        print(f"    Code: {code.descriptive_code}")
-        print(f"    Description: {code.code_description}")
-        print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
-        print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
-    print("\n")
-
 
 # === STEP 5 ========================================================================================================
 "get clusters"
