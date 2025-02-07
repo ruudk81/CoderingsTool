@@ -531,3 +531,83 @@ class HierarchicalLabeller:
         print(f"\n📋 Theme Overview:")
         for theme in hierarchy.themes:
             print(f"   {theme.id}. {theme.name} ({len(theme.topics)} topics)")
+
+
+# =============================================================================
+# TEST/USAGE SECTION
+# =============================================================================
+
+if __name__ == "__main__":
+    """Test the hierarchical labeller with cached data"""
+    
+    # Add parent directory to path for imports
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    
+    from cache_manager import CacheManager
+    from config import CacheConfig
+    import models
+    
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
+    
+    # Test parameters
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    var_name = "Q20"
+    
+    print(f"Loading cluster data for {var_name} from {filename}...")
+    
+    # Load cluster models from cache (output of step 5)
+    cluster_models = cache_manager.load_from_cache(filename, "cluster", models.ClusterModel)
+    
+    if cluster_models:
+        print(f"Loaded {len(cluster_models)} cluster models")
+        
+        # Initialize labeller
+        labeller = HierarchicalLabeller(
+            var_lab=var_name,
+            verbose=True
+        )
+        
+        # Process hierarchy
+        print("\nProcessing hierarchical labels...")
+        label_models = labeller.process_hierarchy(cluster_models)
+        
+        # Print sample results
+        if label_models:
+            print(f"\n✅ Generated {len(label_models)} label models")
+            
+            # Show first few labeled segments
+            print("\n📝 Sample labeled segments:")
+            sample_count = 0
+            for model in label_models[:5]:  # First 5 responses
+                if model.response_segment:
+                    for segment in model.response_segment:
+                        if segment.Theme and segment.Topic:
+                            sample_count += 1
+                            print(f"\nSegment: {segment.code_description}")
+                            print(f"Theme: {list(segment.Theme.values())[0]}")
+                            print(f"Topic: {list(segment.Topic.values())[0]}")
+                            print(f"Keyword: {list(segment.Keyword.values())[0] if segment.Keyword else 'N/A'}")
+                            
+                            if sample_count >= 5:
+                                break
+                if sample_count >= 5:
+                    break
+            
+            # Save results to cache
+            print("\n💾 Saving label models to cache...")
+            success = cache_manager.save_to_cache(
+                label_models,
+                filename,
+                "label"
+            )
+            
+            if success:
+                print("✅ Label models saved successfully!")
+            else:
+                print("❌ Failed to save label models")
+    else:
+        print("❌ No cluster models found in cache. Please run steps 1-5 first.")
