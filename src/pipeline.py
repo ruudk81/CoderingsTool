@@ -25,7 +25,6 @@ import models
 from modules.utils import data_io
 from cache_manager import CacheManager
 from cache_config import CacheConfig, ProcessingConfig
-from modules.utils.clustering_config import ClusteringConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -254,104 +253,53 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
 else:
     start_time = time.time()
     
-    # Create clustering configuration from command line arguments
-    clustering_config = ClusteringConfig(
-        embedding_type=args.embedding_type,
-        language=args.language,
-        min_quality_score=args.min_quality_score,
-        max_noise_ratio=args.max_noise_ratio
-    )
+    # Create simplified clusterer
+    print(f"\nClustering with embedding_type={args.embedding_type}")
     
-    print(f"\nClustering with config: embedding_type={clustering_config.embedding_type}, "
-          f"language={clustering_config.language}, min_quality={clustering_config.min_quality_score}")
-    
-    # Create clusterer with config
+    # Create clusterer - no config needed for simplified version
     clusterer = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
-        config=clustering_config,
+        embedding_type=args.embedding_type,
         verbose=True
     )
     
     clusterer.run_pipeline()
     cluster_results = clusterer.to_cluster_model()
     
-    # Extract and display quality metrics
-    quality_metrics = None
-    if clusterer.clustering_attempts:
-        quality_metrics = clusterer.clustering_attempts[-1]
-        
-        # Count meta clusters
-        meta_cluster_ids = set()
-        for result in cluster_results:
-            for segment in result.response_segment:
-                if segment.meta_cluster:
-                    meta_cluster_ids.add(list(segment.meta_cluster.keys())[0])
-        
-        quality_metrics['num_meta_clusters'] = len(meta_cluster_ids)
-        
-        print("\n📊 Clustering Quality Metrics:")
-        for key, value in quality_metrics.items():
-            if isinstance(value, (int, float)):
-                print(f"  {key}: {value:.3f}")
-            else:
-                print(f"  {key}: {value}")
-        
-        # Warn if quality is below threshold
-        if quality_metrics['overall_quality'] < clustering_config.min_quality_score:
-            print(f"\n⚠️ WARNING: Clustering quality ({quality_metrics['overall_quality']:.3f}) "
-                  f"is below threshold ({clustering_config.min_quality_score})")
-    
-    # Show retry attempts if any
-    if len(clusterer.clustering_attempts) > 1:
-        print(f"\n🔄 Clustering attempts: {len(clusterer.clustering_attempts)}")
-        for i, attempt in enumerate(clusterer.clustering_attempts):
-            print(f"  Attempt {i+1}: quality={attempt['overall_quality']:.3f}")
+    # Quality metrics are already displayed by the simplified clusterer
+    # No need to extract or display them again
+    print("\nClustering completed successfully")
     
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Save clustering results and metrics to cache
+    # Save clustering results to cache
     cache_manager.save_to_cache(cluster_results, filename, step_name, processing_config, elapsed_time)
-    
-    # Save quality metrics separately
-    if quality_metrics:
-        # Update config with actual parameters used
-        clustering_config.min_samples = clusterer.min_samples
-        clustering_config.min_cluster_size = clusterer.min_cluster_size
-        
-        # Save metrics with all attempts
-        cache_manager.save_clustering_metrics(filename, clusterer.clustering_attempts, clustering_config)
     
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
 # debug print
 from collections import defaultdict
-meta_cluster_counts = defaultdict(int)
-meta_cluster_codes = defaultdict(list)
-meta_cluster_descriptions = defaultdict(list)
+micro_cluster_counts = defaultdict(int)
+micro_cluster_codes = defaultdict(list)
+micro_cluster_descriptions = defaultdict(list)
 
 for response_items in cluster_results:
     for segment_items in response_items.response_segment:
-        if segment_items.meta_cluster is not None:
-            meta_id = list(segment_items.meta_cluster.keys())[0]  # Get the meta-cluster ID
-            meta_cluster_counts[meta_id] += 1
-            meta_cluster_codes[meta_id].append(segment_items.descriptive_code)
-            meta_cluster_descriptions[meta_id].append(segment_items.code_description)
+        if segment_items.mirco_cluster is not None:
+            micro_id = list(segment_items.mirco_cluster.keys())[0]  # Get the micro-cluster ID
+            micro_cluster_counts[micro_id] += 1
+            micro_cluster_codes[micro_id].append(segment_items.descriptive_code)
+            micro_cluster_descriptions[micro_id].append(segment_items.code_description)
 
-print(f"Found {len(meta_cluster_counts)} meta-clusters in results")
-for meta_id, count in sorted(meta_cluster_counts.items()):
-    print(f"\n📚 Meta-cluster {meta_id}: {count} items")
-  
-        
-    sample_size = min(5, len(meta_cluster_codes[meta_id]))
-    for i in range(sample_size):
-        print(f"  - {meta_cluster_codes[meta_id][i]}")    
+print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
+for micro_id, count in sorted(micro_cluster_counts.items())[:10]:  # Show first 10 clusters
+    print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
     
-    
-    sample_size = min(5, len(meta_cluster_descriptions[meta_id]))
+    sample_size = min(3, len(micro_cluster_codes[micro_id]))
     for i in range(sample_size):
-        print(f"  - {meta_cluster_descriptions[meta_id][i]}")
+        print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
 
 
 # === STEP 6 ========================================================================================================
