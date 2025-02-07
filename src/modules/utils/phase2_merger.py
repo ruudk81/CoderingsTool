@@ -1,218 +1,313 @@
 import asyncio
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Any
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import AsyncOpenAI
 import logging
+from tqdm.asyncio import tqdm
+import networkx as nx
 
 try:
     # When running as a script
     from labeller import (
-        LabellerConfig, ClusterData, InitialLabel, MergeMapping
+        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+        BatchSimilarityResponse, SimilarityScore
     )
 except ImportError:
     # When imported as a module
     from .labeller import (
-        LabellerConfig, ClusterData, InitialLabel, MergeMapping
+        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
+        BatchSimilarityResponse, SimilarityScore
     )
+from prompts import SIMILARITY_SCORING_PROMPT
 
 logger = logging.getLogger(__name__)
 
 
 class Phase2Merger:
-    """Phase 2: Merge clusters that are not meaningfully differentiated"""
+    """Phase 2: Merge clusters that are not meaningfully differentiated from the perspective of the research question"""
     
-    def __init__(self, config: LabellerConfig):
+    def __init__(self, config: LabellerConfig, client=None):
         self.config = config
         self.semaphore = asyncio.Semaphore(config.max_concurrent_requests)
-        self.openai_client = AsyncOpenAI(api_key=config.api_key)
+        self.client = client or AsyncOpenAI(api_key=config.api_key)
     
     async def merge_similar_clusters(self,
                                    cluster_data: Dict[int, ClusterData],
                                    initial_labels: Dict[int, InitialLabel],
                                    var_lab: str) -> MergeMapping:
         """Main method to identify and merge similar clusters"""
-        logger.info("Phase 2: Analyzing cluster similarity and merging based on descriptive codes...")
+        logger.info(f"Phase 2: Analyzing cluster similarity for research question: '{var_lab}'")
         
-        # Get descriptive codes embeddings instead of label embeddings
-        descriptive_embeddings, cluster_ids = await self._get_descriptive_codes_embeddings(cluster_data)
+        # Step 1: First identify very similar clusters by embedding cosine similarity (fast pre-filter)
+        auto_merge_groups = await self._identify_highly_similar_clusters(cluster_data)
+        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on embedding similarity > {self.config.similarity_threshold}")
         
-        # Calculate similarities based on descriptive code embeddings
-        similarities = cosine_similarity(descriptive_embeddings)
+        # Step 2: Create initial cluster ID groups from auto-merge results
+        cluster_groups = self._initialize_cluster_groups(auto_merge_groups, list(cluster_data.keys()))
+        logger.info(f"Starting with {len(cluster_groups)} cluster groups after auto-merging")
         
-        # Show similarity distribution analysis for descriptive code embeddings
-        self._show_descriptive_codes_similarity_distribution(similarities, cluster_ids)
+        # Step 3: Use LLM to analyze semantic similarity between remaining groups
+        merge_graph = await self._analyze_group_similarity(cluster_groups, cluster_data, initial_labels, var_lab)
         
-        # Auto-merge clusters based on descriptive codes similarity
-        auto_merge_groups = self._auto_merge_by_descriptive_similarity(similarities, cluster_ids)
-        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on descriptive codes similarity")
+        # Step 4: Use graph-based connected components to find merge groups
+        final_merge_groups = self._find_connected_components(merge_graph, cluster_groups)
+        logger.info(f"Final merge: {len(cluster_data)} clusters → {len(final_merge_groups)} groups")
         
-        # Create final merge mapping
-        merge_mapping = self._create_merge_mapping(auto_merge_groups, initial_labels)
-        
-        logger.info(f"Final merge: {len(cluster_data)} → {len(merge_mapping.merge_groups)} clusters")
+        # Step 5: Create final merge mapping
+        merge_mapping = self._create_merge_mapping(final_merge_groups, initial_labels)
         
         return merge_mapping
     
-    
-    async def _get_descriptive_codes_embeddings(self, cluster_data: Dict[int, ClusterData]) -> Tuple[np.ndarray, List[int]]:
-        """Get embeddings for descriptive codes of each cluster"""
+    async def _identify_highly_similar_clusters(self, cluster_data: Dict[int, ClusterData]) -> List[List[int]]:
+        """Identify clusters with very high embedding similarity for auto-merging"""
+        logger.info("Pre-filtering clusters based on embedding similarity...")
         
+        # Get all cluster IDs
         cluster_ids = list(cluster_data.keys())
-        
-        # Create text from descriptive codes for each cluster
-        descriptive_texts = []
-        for cid in cluster_ids:
-            cluster = cluster_data[cid]
-            # Use the descriptive codes (top 10 or all if less)
-            codes_text = ". ".join(cluster.descriptive_codes[:10])
-            descriptive_texts.append(codes_text)
-        
-        logger.info(f"Getting embeddings for {len(descriptive_texts)} clusters' descriptive codes...")
-        
-        # Get embeddings in batches
-        embeddings = []
-        batch_size = 50  # Smaller batch since texts might be longer
-        
-        for i in range(0, len(descriptive_texts), batch_size):
-            batch = descriptive_texts[i:i + batch_size]
-            response = await self.openai_client.embeddings.create(
-                model="text-embedding-3-small",
-                input=batch
-            )
-            embeddings.extend([e.embedding for e in response.data])
-        
-        logger.info(f"Successfully obtained {len(embeddings)} descriptive code embeddings")
-        
-        return np.array(embeddings), cluster_ids
-    
-    def _show_descriptive_codes_similarity_distribution(self, similarities: np.ndarray, cluster_ids: List[int]):
-        """Show distribution analysis of descriptive codes similarities"""
-        if len(cluster_ids) <= 1:
-            return
-        
-        # Extract upper triangle (excluding diagonal)
-        all_similarities = []
-        for i in range(len(cluster_ids)):
-            for j in range(i+1, len(cluster_ids)):
-                all_similarities.append(similarities[i, j])
-        
-        all_similarities = np.array(all_similarities)
-        
-        # Calculate statistics
-        stats = {
-            'min': np.min(all_similarities),
-            'max': np.max(all_similarities),
-            'mean': np.mean(all_similarities),
-            'median': np.median(all_similarities),
-            'std': np.std(all_similarities),
-            'p90': np.percentile(all_similarities, 90),
-            'p95': np.percentile(all_similarities, 95),
-            'p99': np.percentile(all_similarities, 99)
-        }
-        
-        # Create histogram bins: 0.05 steps up to 0.9, then 0.01 steps from 0.9 to 1.0
-        bins_coarse = np.arange(0, 0.9, 0.05)
-        bins_fine = np.arange(0.9, 1.01, 0.01)
-        bins = np.concatenate([bins_coarse, bins_fine])
-        hist, bin_edges = np.histogram(all_similarities, bins=bins)
-        
-        logger.info("\n=== Descriptive Codes Cosine Similarity Distribution Analysis ===")
-        logger.info(f"Total pairs analyzed: {len(all_similarities)}")
-        logger.info("\nStatistics:")
-        logger.info(f"  Min:    {stats['min']:.4f}")
-        logger.info(f"  Max:    {stats['max']:.4f}")
-        logger.info(f"  Mean:   {stats['mean']:.4f}")
-        logger.info(f"  Median: {stats['median']:.4f}")
-        logger.info(f"  Std:    {stats['std']:.4f}")
-        logger.info(f"  90th percentile: {stats['p90']:.4f}")
-        logger.info(f"  95th percentile: {stats['p95']:.4f}")
-        logger.info(f"  99th percentile: {stats['p99']:.4f}")
-        
-        logger.info("\nDistribution:")
-        max_count = max(hist)
-        for i, count in enumerate(hist):
-            start = bin_edges[i]
-            end = bin_edges[i+1]
-            bar_length = int(40 * count / max_count) if max_count > 0 else 0
-            bar = '█' * bar_length
-            logger.info(f"  {start:.3f}-{end:.3f}: {bar} ({count} pairs)")
-        
-        # Count pairs above certain thresholds
-        thresholds = [0.9, 0.95, 0.98, 0.99]
-        logger.info("\nPairs above thresholds:")
-        for threshold in thresholds:
-            count = np.sum(all_similarities > threshold)
-            percentage = 100 * count / len(all_similarities)
-            logger.info(f"  > {threshold}: {count} pairs ({percentage:.1f}%)")
-        
-        logger.info("=" * 50)
-    
-    
-    def _auto_merge_by_descriptive_similarity(self, similarities: np.ndarray, cluster_ids: List[int]) -> List[List[int]]:
-        """Auto-merge clusters based on descriptive codes similarity"""
         if len(cluster_ids) <= 1:
             return [[cid] for cid in cluster_ids]
         
-        # Log high similarity pairs
-        high_similarity_pairs = []
+        # Calculate pairwise similarities between cluster centroids
+        centroids = np.array([cluster_data[cid].centroid for cid in cluster_ids])
+        similarities = cosine_similarity(centroids)
+        
+        # Find clusters to merge based on high similarity
+        similarity_threshold = self.config.similarity_threshold
+        merge_pairs = []
+        
         for i in range(len(cluster_ids)):
             for j in range(i+1, len(cluster_ids)):
                 sim_score = similarities[i, j]
-                if sim_score > 0.9:  # Log pairs above 0.9 similarity
-                    high_similarity_pairs.append((cluster_ids[i], cluster_ids[j], sim_score))
+                if sim_score > similarity_threshold:
+                    merge_pairs.append((cluster_ids[i], cluster_ids[j]))
+                    logger.info(f"Auto-merge candidates: Clusters {cluster_ids[i]} & {cluster_ids[j]} (similarity: {sim_score:.4f})")
         
-        # Sort by similarity score
-        high_similarity_pairs.sort(key=lambda x: x[2], reverse=True)
-        
-        # Log the highest similarity pairs
-        logger.info("High descriptive codes similarity pairs (>0.9):")
-        for i, (cid1, cid2, score) in enumerate(high_similarity_pairs[:10]):
-            logger.info(f"  Clusters {cid1} & {cid2}: {score:.4f}")
-        if len(high_similarity_pairs) > 10:
-            logger.info(f"  ... and {len(high_similarity_pairs) - 10} more pairs")
-        
-        # Find groups to merge
-        merged = set()
-        merge_groups = []
-        merge_decisions = []  # Track merge decisions for logging
-        
-        for i, cid1 in enumerate(cluster_ids):
-            if cid1 in merged:
-                continue
+        # Use graph-based connected components to find groups
+        if not merge_pairs:
+            return []  # No highly similar clusters found
             
-            group = [cid1]
-            merged.add(cid1)
-            
-            for j, cid2 in enumerate(cluster_ids[i+1:], i+1):
-                if cid2 in merged:
-                    continue
-                
-                sim_score = similarities[i, j]
-                if sim_score > self.config.similarity_threshold:
-                    group.append(cid2)
-                    merged.add(cid2)
-                    merge_decisions.append((cid1, cid2, sim_score))
-            
-            merge_groups.append(group)
+        G = nx.Graph()
+        G.add_nodes_from(cluster_ids)
+        G.add_edges_from(merge_pairs)
         
-        # Log merge decisions
-        logger.info(f"\nAuto-merge decisions based on descriptive codes (threshold={self.config.similarity_threshold}):")
-        for cid1, cid2, score in merge_decisions[:10]:
-            logger.info(f"  Merging {cid1} & {cid2} (descriptive codes similarity: {score:.4f})")
-        if len(merge_decisions) > 10:
-            logger.info(f"  ... and {len(merge_decisions) - 10} more merges")
-        
-        # Add any remaining clusters as singleton groups
-        for cid in cluster_ids:
-            if cid not in merged:
-                merge_groups.append([cid])
+        # Get connected components as merge groups
+        merge_groups = [list(comp) for comp in nx.connected_components(G) if len(comp) > 1]
         
         return merge_groups
     
+    def _initialize_cluster_groups(self, auto_merge_groups: List[List[int]], all_cluster_ids: List[int]) -> List[List[int]]:
+        """Initialize cluster groups based on auto-merge results"""
+        # Create a set of all clusters that are already in merge groups
+        merged_clusters = set()
+        for group in auto_merge_groups:
+            merged_clusters.update(group)
+        
+        # Add singleton groups for clusters not in any merge group
+        result_groups = list(auto_merge_groups)  # Make a copy
+        for cid in all_cluster_ids:
+            if cid not in merged_clusters:
+                result_groups.append([cid])
+        
+        return result_groups
+    
+    async def _analyze_group_similarity(self,
+                                      cluster_groups: List[List[int]],
+                                      cluster_data: Dict[int, ClusterData],
+                                      initial_labels: Dict[int, InitialLabel],
+                                      var_lab: str) -> nx.Graph:
+        """Analyze semantic similarity between cluster groups using LLM"""
+        logger.info(f"Analyzing semantic similarity between {len(cluster_groups)} cluster groups...")
+        
+        # Create similarity graph
+        G = nx.Graph()
+        
+        # Add all clusters as nodes
+        for group in cluster_groups:
+            for cid in group:
+                G.add_node(cid)
+        
+        # Add edges within auto-merged groups (they're already determined to be similar)
+        for group in cluster_groups:
+            if len(group) > 1:
+                for i in range(len(group)):
+                    for j in range(i+1, len(group)):
+                        G.add_edge(group[i], group[j], 
+                                  weight=1.0,
+                                  reason="Auto-merged based on embedding similarity")
+        
+        # Create representative for each group (use the first cluster in each group)
+        group_representatives = [group[0] for group in cluster_groups]
+        
+        # Only compare representatives if more than one group exists
+        if len(group_representatives) > 1:
+            # Create pairs for comparison (only comparing between groups)
+            comparison_pairs = []
+            for i in range(len(group_representatives)):
+                for j in range(i+1, len(group_representatives)):
+                    # Get original groups these representatives belong to
+                    group1 = cluster_groups[i]
+                    group2 = cluster_groups[j]
+                    
+                    # Add pair for comparison
+                    comparison_pairs.append((group_representatives[i], group_representatives[j]))
+            
+            # Check similarity between representative pairs
+            G = await self._analyze_pair_similarity(
+                comparison_pairs, cluster_data, initial_labels, var_lab, G)
+        
+        return G
+    
+    async def _analyze_pair_similarity(self,
+                                     pairs: List[Tuple[int, int]],
+                                     cluster_data: Dict[int, ClusterData],
+                                     initial_labels: Dict[int, InitialLabel],
+                                     var_lab: str,
+                                     graph: nx.Graph) -> nx.Graph:
+        """Analyze semantic similarity between cluster pairs using LLM"""
+        if not pairs:
+            return graph
+            
+        logger.info(f"Analyzing {len(pairs)} cluster pairs for semantic similarity...")
+        
+        # Create batches of pairs
+        batches = [pairs[i:i + self.config.batch_size] for i in range(0, len(pairs), self.config.batch_size)]
+        
+        # Process batches with progress bar
+        with tqdm(total=len(pairs), desc="Analyzing cluster pairs") as pbar:
+            for batch in batches:
+                # Create prompt for batch analysis
+                prompt = self._create_similarity_prompt(batch, cluster_data, initial_labels, var_lab)
+                
+                # Get similarity scores
+                try:
+                    async with self.semaphore:
+                        scores = await self._get_similarity_scores(prompt)
+                        
+                        # Update graph with similarity scores
+                        for score in scores.scores:
+                            # Only add edges for clusters that should be merged
+                            if score.merge_suggested:
+                                graph.add_edge(
+                                    score.cluster_id_1,
+                                    score.cluster_id_2,
+                                    weight=score.score,
+                                    reason=score.reason
+                                )
+                                logger.info(f"Merge suggested: Clusters {score.cluster_id_1} & {score.cluster_id_2} "
+                                           f"(score: {score.score:.2f}, reason: {score.reason})")
+                            else:
+                                logger.debug(f"No merge: Clusters {score.cluster_id_1} & {score.cluster_id_2} "
+                                           f"(score: {score.score:.2f})")
+                        
+                        # Update progress
+                        pbar.update(len(batch))
+                except Exception as e:
+                    logger.error(f"Error analyzing similarity batch: {e}")
+                    # Continue with next batch
+        
+        return graph
+    
+    def _create_similarity_prompt(self,
+                                pairs: List[Tuple[int, int]],
+                                cluster_data: Dict[int, ClusterData],
+                                initial_labels: Dict[int, InitialLabel],
+                                var_lab: str) -> str:
+        """Create prompt for similarity scoring between cluster pairs"""
+        prompt = SIMILARITY_SCORING_PROMPT.replace("{var_lab}", var_lab)
+        prompt = prompt.replace("{language}", self.config.language)
+        
+        # Create cluster pair descriptions
+        pair_descriptions = []
+        
+        for cluster_id_1, cluster_id_2 in pairs:
+            # Get data for first cluster
+            cluster1 = cluster_data[cluster_id_1]
+            label1 = initial_labels[cluster_id_1].label
+            
+            # Get representative items for first cluster (codes and descriptions)
+            codes1 = cluster1.descriptive_codes[:5]  # Use top 5 codes
+            descriptions1 = cluster1.code_descriptions[:5]  # Use top 5 descriptions
+            
+            # Get data for second cluster
+            cluster2 = cluster_data[cluster_id_2]
+            label2 = initial_labels[cluster_id_2].label
+            
+            # Get representative items for second cluster (codes and descriptions)
+            codes2 = cluster2.descriptive_codes[:5]  # Use top 5 codes
+            descriptions2 = cluster2.code_descriptions[:5]  # Use top 5 descriptions
+            
+            # Create pair description
+            description = f"\n\nCOMPARISON: Cluster {cluster_id_1} vs Cluster {cluster_id_2}\n"
+            description += f"\nCluster {cluster_id_1}:"
+            description += f"\n- Label: {label1}"
+            description += f"\n- Representative codes:"
+            for i, code in enumerate(codes1):
+                description += f"\n  {i+1}. {code}"
+            description += f"\n- Code descriptions:"
+            for i, desc in enumerate(descriptions1):
+                description += f"\n  {i+1}. {desc}"
+            
+            description += f"\n\nCluster {cluster_id_2}:"
+            description += f"\n- Label: {label2}"
+            description += f"\n- Representative codes:"
+            for i, code in enumerate(codes2):
+                description += f"\n  {i+1}. {code}"
+            description += f"\n- Code descriptions:"
+            for i, desc in enumerate(descriptions2):
+                description += f"\n  {i+1}. {desc}"
+            
+            pair_descriptions.append(description)
+        
+        prompt = prompt.replace("{cluster_pairs}", "\n".join(pair_descriptions))
+        
+        return prompt
+    
+    async def _get_similarity_scores(self, prompt: str) -> BatchSimilarityResponse:
+        """Get similarity scores from LLM"""
+        import instructor
+        
+        # Use the client from initialization if it's already an instructor client, otherwise wrap it
+        client = self.client
+        if not hasattr(self.client, 'chat') or not hasattr(self.client.chat, 'completions') or not hasattr(self.client.chat.completions, 'create'):
+            client = instructor.from_openai(self.client)
+        
+        messages = [
+            {"role": "system", "content": "You are an expert in thematic analysis and survey response clustering."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        # With retry logic
+        for attempt in range(self.config.max_retries):
+            try:
+                response = await client.chat.completions.create(
+                    model=self.config.model,
+                    messages=messages,
+                    response_model=BatchSimilarityResponse,
+                    temperature=0.3,
+                    max_tokens=4000
+                )
+                return response
+            except Exception as e:
+                if attempt < self.config.max_retries - 1:
+                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                else:
+                    logger.error(f"Failed to get similarity scores after {self.config.max_retries} attempts: {e}")
+                    raise e
+    
+    def _find_connected_components(self, graph: nx.Graph, cluster_groups: List[List[int]]) -> List[List[int]]:
+        """Find connected components in similarity graph"""
+        # Get connected components
+        connected_components = list(nx.connected_components(graph))
+        
+        # Convert components to lists
+        component_lists = [list(comp) for comp in connected_components]
+        
+        return component_lists
+    
     def _create_merge_mapping(self,
-                            merge_groups: List[List[int]],
-                            initial_labels: Dict[int, InitialLabel]) -> MergeMapping:
+                           merge_groups: List[List[int]],
+                           initial_labels: Dict[int, InitialLabel]) -> MergeMapping:
         """Create final merge mapping"""
         cluster_to_merged = {}
         merge_reasons = {}
@@ -222,12 +317,17 @@ class Phase2Merger:
             for cid in group:
                 cluster_to_merged[cid] = i
             
-            # Create merge reason
+            # Create merge reason based on whether it's a merge or not
             if len(group) > 1:
+                # Get labels of clusters in this group (limit to first 3 for readability)
                 labels = [initial_labels[cid].label for cid in group[:3]]
+                if len(group) > 3:
+                    labels.append(f"and {len(group) - 3} more")
+                
                 merge_reasons[i] = f"Merged similar clusters: {', '.join(labels)}"
             else:
-                merge_reasons[i] = f"No merge needed: {initial_labels[group[0]].label}"
+                # Single cluster, no merging
+                merge_reasons[i] = f"No similar clusters found: {initial_labels[group[0]].label}"
         
         return MergeMapping(
             merge_groups=merge_groups,
@@ -237,7 +337,7 @@ class Phase2Merger:
 
 
 if __name__ == "__main__":
-    """Test Phase 2 with actual cached data from Phase 1"""
+    """Test Phase 2 with actual cached cluster data"""
     import sys
     from pathlib import Path
     import json
@@ -251,6 +351,7 @@ if __name__ == "__main__":
     from cache_config import CacheConfig
     import data_io
     import models
+    import instructor
     
     # Initialize cache manager
     cache_config = CacheConfig()
@@ -269,53 +370,33 @@ if __name__ == "__main__":
     if cluster_results and phase1_labels:
         print(f"Loaded {len(cluster_results)} cluster results from cache")
         print(f"Loaded {len(phase1_labels)} phase 1 labels from cache")
-        print(f"Type of phase1_labels: {type(phase1_labels)}")
         
-        # Print first item to debug
-        first_key = list(phase1_labels.keys())[0]
-        print(f"First key: {first_key}, type: {type(first_key)}")
-        print(f"First value type: {type(phase1_labels[first_key])}")
-        if hasattr(phase1_labels[first_key], '__dict__'):
-            print(f"First value attributes: {phase1_labels[first_key].__dict__}")
+        # Extract cluster data from the results
+        from labeller import Labeller
+        temp_labeller = Labeller()
+        cluster_data = temp_labeller.extract_cluster_data(cluster_results)
+        print(f"Extracted data for {len(cluster_data)} clusters")
         
-        try:
-            # Extract cluster data from the results
-            from labeller import Labeller
-            temp_labeller = Labeller()
-            cluster_data = temp_labeller.extract_cluster_data(cluster_results)
-            print(f"Extracted data for {len(cluster_data)} clusters")
-        except Exception as e:
-            print(f"Error extracting cluster data: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-        
-        try:
-            # Convert labels to InitialLabel objects if needed
-            initial_labels = {}
-            for cluster_id, label_data in phase1_labels.items():
-                try:
-                    # Check if it's already an InitialLabel instance
-                    if hasattr(label_data, 'label') and hasattr(label_data, 'keywords') and hasattr(label_data, 'confidence'):
-                        # Already an InitialLabel object
-                        initial_labels[cluster_id] = label_data
-                    elif isinstance(label_data, dict):
-                        # Convert from dict
-                        initial_labels[cluster_id] = InitialLabel(**label_data)
-                    else:
-                        print(f"Unexpected type for label_data: {type(label_data)}")
-                        # Try to use it directly
-                        initial_labels[cluster_id] = label_data
-                except Exception as e:
-                    print(f"Error processing cluster {cluster_id}: {e}")
-                    print(f"Type of label_data: {type(label_data)}")
-                    print(f"Content: {label_data}")
-                    raise
-        except Exception as e:
-            print(f"Error converting labels: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        # Convert labels to InitialLabel objects if needed
+        initial_labels = {}
+        for cluster_id, label_data in phase1_labels.items():
+            try:
+                # Check if it's already an InitialLabel instance
+                if hasattr(label_data, 'label') and hasattr(label_data, 'keywords') and hasattr(label_data, 'confidence'):
+                    # Already an InitialLabel object
+                    initial_labels[cluster_id] = label_data
+                elif isinstance(label_data, dict):
+                    # Convert from dict
+                    initial_labels[cluster_id] = InitialLabel(**label_data)
+                else:
+                    print(f"Unexpected type for label_data: {type(label_data)}")
+                    # Try to use it directly
+                    initial_labels[cluster_id] = label_data
+            except Exception as e:
+                print(f"Error processing cluster {cluster_id}: {e}")
+                print(f"Type of label_data: {type(label_data)}")
+                print(f"Content: {label_data}")
+                raise
         
         # Get variable label
         data_loader = data_io.DataLoader()
@@ -326,127 +407,64 @@ if __name__ == "__main__":
         config = LabellerConfig(
             api_key=OPENAI_API_KEY,
             model=DEFAULT_MODEL,
-            batch_size=10,
-            similarity_threshold=0.98,  # For auto-merge - raised to be less aggressive
-            merge_score_threshold=0.7   # For LLM merge (not used anymore)
+            batch_size=5,  # Process a smaller batch size for merge analysis
+            similarity_threshold=0.95,  # For auto-merge by embedding similarity
+            merge_score_threshold=0.7   # For LLM merge threshold
         )
-    
+        
         # Initialize phase 2 merger
-        phase2 = Phase2Merger(config)
+        client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+        phase2 = Phase2Merger(config, client)
         
         async def run_test():
             """Run the test"""
-            print("=== Testing Phase 2: Cluster Merging with Real Data ===")
+            print("=== Testing Phase 2: LLM-Based Cluster Merging with Real Data ===")
             print(f"Variable label: {var_lab}")
             print(f"Number of clusters: {len(cluster_data)}")
             
+            # Set up logging for test
+            import logging
+            logging.basicConfig(level=logging.INFO, format='%(message)s')
+            
             try:
-                # Set up logging for the test
-                import logging
-                logging.basicConfig(level=logging.INFO, format='%(message)s')
-                
-                print("\n=== Starting detailed merge analysis ===\n")
-                
-                # Now we'll use descriptive codes embeddings for merge analysis
-                print("=== DESCRIPTIVE CODES-BASED MERGE ANALYSIS ===")
-                
-                # Get descriptive codes embeddings
-                desc_embeddings, cluster_ids = await phase2._get_descriptive_codes_embeddings(cluster_data)
-                
-                # Calculate pairwise similarities of descriptive codes
-                similarities = cosine_similarity(desc_embeddings)
-                
-                # Capture all similarity scores
-                desc_merge_scores = []
-                for i in range(len(cluster_ids)):
-                    for j in range(i+1, len(cluster_ids)):
-                        sim_score = similarities[i, j]
-                        desc_merge_scores.append({
-                            'cluster1': cluster_ids[i],
-                            'cluster2': cluster_ids[j],
-                            'score': sim_score,
-                            'merged': sim_score > config.similarity_threshold
-                        })
-                
-                # Sort by score descending
-                desc_merge_scores.sort(key=lambda x: x['score'], reverse=True)
-                
-                print(f"\nTop 20 Descriptive codes similarity scores (threshold={config.similarity_threshold}):")
-                for i, score_info in enumerate(desc_merge_scores[:20]):
-                    status = "MERGED" if score_info['merged'] else "not merged"
-                    cid1 = score_info['cluster1']
-                    cid2 = score_info['cluster2']
-                    print(f"  {i+1}. Clusters {cid1} & {cid2}: {score_info['score']:.4f} ({status})")
-                    print(f"     Codes 1: {', '.join(cluster_data[cid1].descriptive_codes[:3])}...")
-                    print(f"     Codes 2: {', '.join(cluster_data[cid2].descriptive_codes[:3])}...")
-                
-                # Create histogram of descriptive codes merge scores
-                desc_scores_only = [s['score'] for s in desc_merge_scores]
-                
-                # Create bins: 0.05 steps up to 0.9, then 0.01 steps from 0.9 to 1.0
-                bins_coarse = np.arange(0, 0.9, 0.05)
-                bins_fine = np.arange(0.9, 1.01, 0.01)
-                bins = np.concatenate([bins_coarse, bins_fine])
-                hist, bin_edges = np.histogram(desc_scores_only, bins=bins)
-                
-                print("\nDescriptive codes similarity score distribution:")
-                max_count = max(hist)
-                for i, count in enumerate(hist):
-                    start = bin_edges[i]
-                    end = bin_edges[i+1]
-                    bar_length = int(40 * count / max_count) if max_count > 0 else 0
-                    bar = '█' * bar_length
-                    print(f"  {start:.3f}-{end:.3f}: {bar} ({count} pairs)")
-                
-                # Now run merge process (descriptive codes similarity)
-                print("\n=== MERGE PROCESS (Descriptive Codes Similarity) ===")
-                
                 # Run merge process
                 merge_mapping = await phase2.merge_similar_clusters(
                     cluster_data, initial_labels, var_lab
                 )
                 
-                print(f"\nThreshold Analysis:")
-                print(f"Auto-merge threshold: {config.similarity_threshold}")
-                
-                desc_merged_count = sum(1 for s in desc_merge_scores if s['merged'])
-                print(f"Descriptive codes-based merge merged: {desc_merged_count} pairs")
-                
                 # Display results
                 print("\n=== Merge Results ===")
-                print(f"Number of merge groups: {len(merge_mapping.merge_groups)}")
+                print(f"Original clusters: {len(cluster_data)}")
+                print(f"Merged clusters: {len(merge_mapping.merge_groups)}")
+                
+                # Calculate reduction
+                reduction = (1 - len(merge_mapping.merge_groups)/len(cluster_data)) * 100
+                print(f"Reduction: {reduction:.1f}%")
                 
                 # Show some examples of merged clusters
-                print(f"\nSample cluster mappings (first 10):")
-                for i, (cid, merged_id) in enumerate(merge_mapping.cluster_to_merged.items()):
+                print(f"\nSample merge groups (first 10):")
+                for i, group in enumerate(merge_mapping.merge_groups):
                     if i >= 10:
                         break
-                    print(f"  Cluster {cid} → Merged cluster {merged_id}")
+                    
+                    if len(group) > 1:
+                        group_labels = [initial_labels[cid].label for cid in group]
+                        print(f"\nGroup {i} ({len(group)} clusters):")
+                        for j, (cid, label) in enumerate(zip(group, group_labels)):
+                            print(f"  {j+1}. Cluster {cid}: {label}")
+                    else:
+                        print(f"\nGroup {i} (1 cluster):")
+                        print(f"  Cluster {group[0]}: {initial_labels[group[0]].label}")
                 
-                # Calculate statistics
-                original_count = len(cluster_data)
-                merged_count = len(merge_mapping.merge_groups)
-                reduction = (1 - merged_count/original_count) * 100
+                # Count distribution of group sizes
+                group_sizes = [len(group) for group in merge_mapping.merge_groups]
+                size_counts = {}
+                for size in group_sizes:
+                    size_counts[size] = size_counts.get(size, 0) + 1
                 
-                print(f"\nStatistics:")
-                print(f"  Original clusters: {original_count}")
-                print(f"  Merged clusters: {merged_count}")
-                print(f"  Reduction: {reduction:.1f}%")
-                
-                # Provide threshold recommendations
-                print("\n=== THRESHOLD RECOMMENDATIONS ===")
-                
-                # Analyze descriptive codes-merge scores to suggest threshold
-                desc_scores_sorted = sorted([s['score'] for s in desc_merge_scores], reverse=True)
-                percentiles = np.percentile(desc_scores_sorted, [99, 98, 97, 96, 95])
-                
-                print("\nDescriptive codes similarity score percentiles:")
-                for i, (p, val) in enumerate(zip([99, 98, 97, 96, 95], percentiles)):
-                    print(f"  {p}th percentile: {val:.4f}")
-                
-                print("\nSuggested adjustments to reduce merging:")
-                print(f"  Current descriptive codes-merge threshold: {config.similarity_threshold}")
-                print(f"  Consider raising to: {percentiles[1]:.4f} (98th percentile) or {percentiles[0]:.4f} (99th percentile)")
+                print("\nGroup size distribution:")
+                for size, count in sorted(size_counts.items()):
+                    print(f"  Size {size}: {count} groups")
                 
                 # Save to cache for phase 3
                 cache_key = 'phase2_merge_mapping'
@@ -460,12 +478,12 @@ if __name__ == "__main__":
                 
                 # Save to JSON for inspection
                 output_data = {
-                    "merge_groups": merge_mapping.merge_groups,
-                    "cluster_mapping": merge_mapping.cluster_to_merged,
-                    "merge_reasons": merge_mapping.merge_reasons,
+                    "merge_groups": [[int(cid) for cid in group] for group in merge_mapping.merge_groups],
+                    "cluster_mapping": {str(k): v for k, v in merge_mapping.cluster_to_merged.items()},
+                    "merge_reasons": {str(k): v for k, v in merge_mapping.merge_reasons.items()},
                     "statistics": {
-                        "original": original_count,
-                        "merged": merged_count,
+                        "original": len(cluster_data),
+                        "merged": len(merge_mapping.merge_groups),
                         "reduction_percent": reduction
                     }
                 }
