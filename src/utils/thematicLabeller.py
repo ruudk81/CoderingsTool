@@ -102,7 +102,8 @@ class ThematicLabeller:
     """Main orchestrator for thematic analysis using instructor"""
     
     def __init__(self, config: LabellerConfig = None, cache_manager=None, filename: str = None):
-        self.config = config or DEFAULT_LABELLER_CONFIG
+        # Force fresh config to avoid caching issues
+        self.config = config or LabellerConfig()
         self.cache_manager = cache_manager
         self.filename = filename or "unknown"
         self.survey_question = ""
@@ -377,7 +378,7 @@ class ThematicLabeller:
             summary = f"Cluster {cluster.cluster_id}: {cluster.label}\n"
             summary += f"Description: {cluster.description}\n"
             summary += "Representatives:\n"
-            for i, (desc, sim) in enumerate(cluster.representatives[:2], 1):
+            for i, (desc, _) in enumerate(cluster.representatives[:2], 1):
                 summary += f"  {i}. {desc}\n"
             cluster_summaries.append(summary)
         
