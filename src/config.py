@@ -184,7 +184,7 @@ class LabellerConfig:
     top_k_representatives: int = 3  # Representative examples per cluster
     map_reduce_threshold: int = 30  # Use MapReduce if more clusters
     batch_size: int = 10  # Clusters per batch in MapReduce
-    assignment_threshold: float = 0.5  # Minimum probability for assignment (lowered for better coverage)
+    assignment_threshold: float = 0.3  # Minimum probability for assignment (lowered for better coverage)
     
     # LLM refinement option
     use_llm_refinement: bool = True  # Enable Phase 4 LLM refinement by default

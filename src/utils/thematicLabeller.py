@@ -844,6 +844,23 @@ class ThematicLabeller:
                             continue
                 
                 print(f"    ✨ Applied {refinement_count} label refinements to hierarchy")
+                
+                # Debug: Show what was refined
+                if 'themes' in result.refined_labels and result.refined_labels['themes']:
+                    print("    🔧 Theme refinements applied:")
+                    for theme_id, new_label in result.refined_labels['themes'].items():
+                        if theme_id in theme_label_lookup:
+                            old_label = theme_label_lookup[theme_id].label
+                            if old_label != new_label:
+                                print(f"      Theme {theme_id}: '{old_label}' → '{new_label}'")
+                
+                if 'topics' in result.refined_labels and result.refined_labels['topics']:
+                    print("    🔧 Topic refinements applied:")
+                    for topic_id, new_label in result.refined_labels['topics'].items():
+                        if topic_id in topic_label_lookup:
+                            old_label = topic_label_lookup[topic_id].label
+                            if old_label != new_label:
+                                print(f"      Topic {topic_id}: '{old_label}' → '{new_label}'")
             
             if result.quality_issues:
                 print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
