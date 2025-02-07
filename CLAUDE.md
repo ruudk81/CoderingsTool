@@ -45,6 +45,24 @@ This document captures the context and progress from our conversation that began
 - Reduce dimensions of embedding with UMAP
 - Cluster with HDBSCAN
 - Create initial micro-clusters
+- Detailed Sub-Steps:
+  1. Step 5a: Initial Clustering with HDBSCAN
+    - Using the ClusterGenerator class
+    - Creates micro-clusters through dimensionality reduction with UMAP and clustering with HDBSCAN
+    - Outputs ClusterModel objects with initial micro-clusters
+  2. Step 5b: Cluster Merging
+    - Using the ClusterMerger class
+    - Takes ClusterModel objects from Step 5a as input
+    - Evaluates cluster similarity and merges based on research question relevance
+    - Outputs updated ClusterModel objects with merged clusters
+    - Also produces a merge_mapping for traceability
+
+  The implementation appears to be functioning correctly:
+  1. ✅ ClusterMerger is properly integrated with the pipeline
+  2. ✅ ClusterMerger uses ClusterModel for both input and output
+  3. ✅ ClusterMerger initializes all data standalone without labeller dependencies
+  4. ✅ ClusterMerger stores micro_cluster with merged clusters in the output
+  5. ✅ The merge_mapping provides a temporary format for merging information that can be printed
 
 ### Step 6: Merge Similar Clusters ✓ (Completed)
 - Merge HDBSCAN's initial micro-clusters using LLM evaluation
@@ -258,5 +276,11 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 - Comprehensive progress tracking and statistics
 - Processing time measurement
 
+**Area for Further Improvement: Cluster Generation Optimization**
+- Integrate automatic parameter selection from ClusteringConfig for UMAP and HDBSCAN
+- Replace hardcoded parameters in ClusterGenerator with dynamic ones from ClusteringConfig
+- Better integrate quality metrics for cluster evaluation
+- Develop improved outlier handling strategies as outlined in CLUSTERING_IMPROVEMENT_PLAN.md
+
 ## Workflow Memories
-- You push and commit changes the the GitHub repository. And I run the test in Python.
+- You push and commit changes to the GitHub repository. And I run the test in Python.
