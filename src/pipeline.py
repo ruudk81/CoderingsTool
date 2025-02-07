@@ -198,7 +198,8 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
+    if VERBOSE:
+        print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
@@ -206,20 +207,24 @@ else:
         verbose=VERBOSE )
     cluster_gen.run_pipeline()
     initial_clusters = cluster_gen.to_cluster_model()
-    print("\nInitial clustering completed successfully")
+    if VERBOSE:
+        print("\nInitial clustering completed successfully")
     
     # # debug print 
     # for result in initial_clusters:
     #     print(result)
     #     break
 
-    print("\nMerging similar clusters...")
+    if VERBOSE:
+        print("\nMerging similar clusters...")
     merger = clusterMerger.ClusterMerger(
         input_list=initial_clusters, 
         var_lab=var_lab,
-        config=cluster_gen.config)  # Use same config as ClusterGenerator
+        config=cluster_gen.config,  # Use same config as ClusterGenerator
+        verbose=VERBOSE)
     cluster_results, merge_mapping = merger.merge_clusters()
-    print("\nCluster merging completed successfully")
+    if VERBOSE:
+        print("\nCluster merging completed successfully")
     
     # Save merge mapping data for later use by labeller
     cache_key = 'cluster_merge_mapping'
@@ -227,18 +232,20 @@ else:
         'merge_mapping': merge_mapping,
         'cluster_data': merger.cluster_data}
     cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
-    print(f"Saved merge mapping to cache with key '{cache_key}'")
+    if VERBOSE:
+        print(f"Saved merge mapping to cache with key '{cache_key}'")
     
     # Display merge statistics
-    total_initial = len(merger.cluster_data)
-    total_final = len(set(merge_mapping.cluster_to_merged.values()))
-    merged_groups = [g for g in merge_mapping.merge_groups if len(g) > 1]
-    reduction = (total_initial - total_final) / total_initial * 100 if total_initial > 0 else 0
-    
-    print(f"Initial clusters: {total_initial}")
-    print(f"Final clusters: {total_final}")
-    print(f"Merged clusters: {len(merged_groups)}")
-    print(f"Reduction: {reduction:.1f}%")
+    if VERBOSE:
+        total_initial = len(merger.cluster_data)
+        total_final = len(set(merge_mapping.cluster_to_merged.values()))
+        merged_groups = [g for g in merge_mapping.merge_groups if len(g) > 1]
+        reduction = (total_initial - total_final) / total_initial * 100 if total_initial > 0 else 0
+        
+        print(f"Initial clusters: {total_initial}")
+        print(f"Final clusters: {total_final}")
+        print(f"Merged clusters: {len(merged_groups)}")
+        print(f"Reduction: {reduction:.1f}%")
     
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -246,30 +253,31 @@ else:
     # Save clustering results to cache
     cache_manager.save_to_cache(cluster_results, filename, step_name, elapsed_time)
     
-    print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
+    if VERBOSE:
+        print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
 # debug print
-from collections import defaultdict
-micro_cluster_counts = defaultdict(int)
-micro_cluster_codes = defaultdict(list)
-micro_cluster_descriptions = defaultdict(list)
+if VERBOSE:
+    from collections import defaultdict
+    micro_cluster_counts = defaultdict(int)
+    micro_cluster_codes = defaultdict(list)
+    micro_cluster_descriptions = defaultdict(list)
 
-for response_items in cluster_results:
-    for segment_items in response_items.response_segment:
-        if segment_items.micro_cluster is not None:
-            micro_id = list(segment_items.micro_cluster.keys())[0]  # Get the micro-cluster ID
-            micro_cluster_counts[micro_id] += 1
-            micro_cluster_codes[micro_id].append(segment_items.segment_label)
-            micro_cluster_descriptions[micro_id].append(segment_items.segment_description)
+    for response_items in cluster_results:
+        for segment_items in response_items.response_segment:
+            if segment_items.micro_cluster is not None:
+                micro_id = list(segment_items.micro_cluster.keys())[0]  # Get the micro-cluster ID
+                micro_cluster_counts[micro_id] += 1
+                micro_cluster_codes[micro_id].append(segment_items.segment_label)
+                micro_cluster_descriptions[micro_id].append(segment_items.segment_description)
 
-print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
-for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
-    print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
-    
-    sample_size = min(3, len(micro_cluster_codes[micro_id]))
-    for i in range(sample_size):
-        #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
-        print(f"  - {micro_cluster_descriptions[micro_id][i]}")
+    print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
+    for micro_id, count in sorted(micro_cluster_counts.items()):  # Show all clusters
+        print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
+        
+        sample_size = min(3, len(micro_cluster_codes[micro_id]))
+        for i in range(sample_size):
+            print(f"  - {micro_cluster_descriptions[micro_id][i]}")
 
 
 # === STEP 6 ========================================================================================================

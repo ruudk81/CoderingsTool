@@ -12,6 +12,7 @@ import models
 from pydantic import BaseModel, ConfigDict
 from prompts import MERGE_PROMPT
 from config import OPENAI_API_KEY, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
+from utils.verbose_reporter import VerboseReporter
 
 class ClusterData(BaseModel):
     """Internal representation of cluster with extracted data"""
@@ -78,6 +79,9 @@ class ClusterMerger:
         self.input_clusters: List[models.ClusterModel] = []
         self.merge_mapping: Optional[MergeMap] = None
         
+        # Initialize verbose reporter
+        self.verbose_reporter = VerboseReporter(self.verbose)
+        
         # Initialize async semaphore for rate limiting
         self.semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
         
@@ -93,13 +97,11 @@ class ClusterMerger:
             self.input_clusters = input_list
             self.populate_from_input_list(input_list)
             
-            if self.verbose:
-                print(f"Initialized ClusterMerger with {len(input_list)} clusters")
+            self.verbose_reporter.stat_line(f"Initialized ClusterMerger with {len(input_list)} clusters")
    
     def populate_from_input_list(self, input_list: List[models.ClusterModel]) -> None:
         """Extract cluster data from input ClusterModel objects"""
-        if self.verbose:
-            print("Populating cluster data from input models...")
+        self.verbose_reporter.stat_line("Populating cluster data from input models")
   
         input_data = defaultdict(lambda: {
             'segment_labels': [],
@@ -133,28 +135,25 @@ class ClusterMerger:
   
     async def merge_similar_clusters(self, cluster_data: Dict[int, ClusterData], var_lab: str) -> MergeMap:
         """Main method to identify and merge similar clusters using concurrent processing"""
-        if self.verbose:
-            print(f"Analyzing cluster similarity for research question: '{var_lab}'")
+        self.verbose_reporter.step_start("Analyzing cluster similarities", "📊")
         
         # Calculate all pairwise similarities between clusters
         similarities_dict = await self._calculate_all_similarities(cluster_data)
-        if self.verbose:
-            print(f"Calculated similarities between all {len(cluster_data)} clusters")
+        self.verbose_reporter.stat_line(f"Calculated similarities between all {len(cluster_data)} clusters")
         
         # Sort all pairs by similarity and filter by threshold
         sorted_pairs = self._get_sorted_similarity_pairs(similarities_dict)
         high_similarity_pairs = [(c1, c2, sim) for c1, c2, sim in sorted_pairs 
                                if sim >= self.similarity_threshold]
         
-        if self.verbose:
-            print(f"Found {len(high_similarity_pairs)} pairs with similarity ≥ {self.similarity_threshold}")
+        self.verbose_reporter.stat_line(f"Found {len(high_similarity_pairs)} pairs with similarity ≥ {self.similarity_threshold}")
+        self.verbose_reporter.step_complete("Similarity analysis completed")
         
         # Process all merge decisions concurrently
         merge_groups = await self._concurrent_pairs_merging(
             high_similarity_pairs, cluster_data, var_lab)
         
-        if self.verbose:
-            print(f"Final merge: {len(cluster_data)} clusters → {len(merge_groups)} groups")
+        self.verbose_reporter.stat_line(f"Final merge: {len(cluster_data)} clusters → {len(merge_groups)} groups")
         
         # Create final merge mapping
         merge_mapping = self._create_merge_mapping(merge_groups)
@@ -186,17 +185,19 @@ class ClusterMerger:
                 all_sim_values.append(sim_score)
                 similarity_dict[(cluster_ids[i], cluster_ids[j])] = sim_score
         
-        # Log similarity distribution
-        if self.verbose and all_sim_values:
+        # Display similarity statistics using VerboseReporter
+        if all_sim_values:
             all_sim_values = np.array(all_sim_values)
-            print("Similarity statistics:")
-            print(f"  Min: {np.min(all_sim_values):.4f}")
-            print(f"  Max: {np.max(all_sim_values):.4f}")
-            print(f"  Mean: {np.mean(all_sim_values):.4f}")
-            print(f"  Median: {np.median(all_sim_values):.4f}")
-            print("  Percentiles:")
-            for p in [50, 75, 90, 95, 99]:
-                print(f"    {p}%: {np.percentile(all_sim_values, p):.4f}")
+            similarity_stats = {
+                "Min similarity": f"{np.min(all_sim_values):.3f}",
+                "Max similarity": f"{np.max(all_sim_values):.3f}",
+                "Mean similarity": f"{np.mean(all_sim_values):.3f}",
+                "Median similarity": f"{np.median(all_sim_values):.3f}",
+                "95th percentile": f"{np.percentile(all_sim_values, 95):.3f}",
+                "High-similarity pairs (≥0.95)": len([s for s in all_sim_values if s >= 0.95])
+            }
+            
+            self.verbose_reporter.summary("Similarity Statistics", similarity_stats, "📊")
             
         return similarity_dict
     
@@ -213,8 +214,7 @@ class ClusterMerger:
         3. Handles failures gracefully without stopping the process
         4. Applies merge decisions after all evaluations complete
         """
-        if self.verbose:
-            print(f"Starting concurrent pair-based merging with {len(sorted_pairs)} high-similarity pairs...")
+        self.verbose_reporter.step_start(f"Evaluating {len(sorted_pairs)} high-similarity pairs", "🔍")
         
         # Initialize cluster groups (each cluster starts in its own group)
         all_clusters = set()
@@ -223,33 +223,31 @@ class ClusterMerger:
             all_clusters.add(c2)
         all_clusters.update(cluster_data.keys())
         
-        if self.verbose:
-            print(f"Processing a total of {len(all_clusters)} clusters")
+        self.verbose_reporter.stat_line(f"Processing a total of {len(all_clusters)} clusters")
         
         # Filter valid pairs (not already in same group, size constraints, etc.)
         valid_pairs = self._filter_valid_pairs(sorted_pairs)
         
         if not valid_pairs:
-            if self.verbose:
-                print("No valid pairs to evaluate after filtering")
+            self.verbose_reporter.stat_line("No valid pairs to evaluate after filtering")
             return [[cid] for cid in all_clusters]
         
-        if self.verbose:
-            print(f"Found {len(valid_pairs)} valid pairs to evaluate")
+        self.verbose_reporter.stat_line(f"Found {len(valid_pairs)} valid pairs to evaluate")
         
         # Get all merge decisions concurrently
         merge_decisions = await self._process_all_merge_batches(valid_pairs, cluster_data, var_lab)
         
         # Apply merge decisions to create final groups
+        self.verbose_reporter.step_start("Applying merge decisions", "🔗")
         final_groups = self._apply_merge_decisions(all_clusters, valid_pairs, merge_decisions)
         
         # Calculate and log statistics
         total_merged = sum(1 for g in final_groups if len(g) > 1)
         merge_reduction = (len(all_clusters) - len(final_groups)) / len(all_clusters) * 100 if all_clusters else 0
         
-        if self.verbose:
-            print(f"Created {len(final_groups)} merge groups ({total_merged} merged groups) from {len(all_clusters)} clusters")
-            print(f"Reduction: {merge_reduction:.1f}%")
+        self.verbose_reporter.stat_line(f"Created {len(final_groups)} merge groups ({total_merged} merged groups)")
+        self.verbose_reporter.stat_line(f"Reduction: {merge_reduction:.1f}%")
+        self.verbose_reporter.step_complete(f"Collected {len(merge_decisions)} merge decisions")
             
         return final_groups
     
@@ -273,8 +271,7 @@ class ClusterMerger:
         batches = [valid_pairs[i:i + batch_size] 
                   for i in range(0, len(valid_pairs), batch_size)]
         
-        if self.verbose:
-            print(f"Processing {len(batches)} batches concurrently with batch size {batch_size}")
+        self.verbose_reporter.stat_line(f"Processing {len(batches)} batches concurrently with batch size {batch_size}")
         
         # Create concurrent tasks for all batches
         tasks = [self._process_merge_batch(batch, cluster_data, var_lab) 
@@ -297,10 +294,9 @@ class ClusterMerger:
             # Merge the decisions from this batch
             all_decisions.update(batch_result)
         
-        if self.verbose:
-            if failed_batches > 0:
-                print(f"{failed_batches} out of {len(batches)} batches failed completely")
-            print(f"Successfully collected {len(all_decisions)} merge decisions")
+        if failed_batches > 0:
+            self.verbose_reporter.stat_line(f"{failed_batches} out of {len(batches)} batches failed")
+        self.verbose_reporter.stat_line(f"Successfully collected {len(all_decisions)} merge decisions")
         
         return all_decisions
     
@@ -336,11 +332,7 @@ class ClusterMerger:
                         pair_key = (decision.cluster_id_1, decision.cluster_id_2)
                         decisions_dict[pair_key] = decision.should_merge
                         
-                        # Log individual decisions
-                        if self.verbose:
-                            status = "MERGE" if decision.should_merge else "SEPARATE"
-                            reason = decision.reason #[:50] + "..." if len(decision.reason) > 50 else decision.reason
-                            print(f"  {decision.cluster_id_1} & {decision.cluster_id_2}: {status} - {reason}")
+                        # Individual decisions are too verbose - we'll show summary later
                 
                 return decisions_dict
                 
@@ -441,14 +433,10 @@ class ClusterMerger:
                 merge_groups[g2] = []
                 merges_applied += 1
                 
-                if self.verbose:
-                    print(f"Applied merge: clusters {c1} & {c2} (similarity: {similarity:.4f})")
+                # Individual merge messages are too verbose - summary provided elsewhere
         
         # Filter out empty groups
         final_groups = [group for group in merge_groups if group]
-        
-        if self.verbose:
-            print(f"Applied {merges_applied} merges successfully")
         
         return final_groups
     
@@ -528,75 +516,146 @@ class ClusterMerger:
             cluster_to_merged=cluster_to_merged,
             merge_reasons=merge_reasons
         )
+    
+    def _get_key_merge_examples(self, merge_groups: List[List[int]], n=3):
+        """Get top N merge examples with similarity scores and themes"""
+        merge_examples = []
+        
+        # Sort merge groups by size (number of clusters merged)
+        sorted_groups = sorted([group for group in merge_groups if len(group) > 1], 
+                              key=len, reverse=True)[:n]
+        
+        for group in sorted_groups:
+            if len(group) > 1:
+                # Create merge chain representation
+                merge_chain = " → ".join(str(cid) for cid in group)
+                
+                # Get representative theme from the largest cluster in the group
+                largest_cluster_id = max(group, key=lambda cid: self.cluster_data[cid].size)
+                theme = self._get_cluster_theme(self.cluster_data[largest_cluster_id])
+                
+                merge_examples.append(f"Clusters {merge_chain}: {theme}")
+        
+        return merge_examples
+    
+    def _get_cluster_theme(self, cluster_data: ClusterData, max_length=60):
+        """Generate a brief theme description for a cluster"""
+        if not cluster_data.segment_descriptions:
+            return "No descriptions available"
+            
+        # Use the most representative description
+        if cluster_data.cluster_embeddings.size > 0:
+            similarities = cosine_similarity([cluster_data.centroid], 
+                                           cluster_data.cluster_embeddings)[0]
+            best_idx = np.argmax(similarities)
+            desc = cluster_data.segment_descriptions[best_idx]
+        else:
+            desc = cluster_data.segment_descriptions[0]
+        
+        return desc[:max_length] + "..." if len(desc) > max_length else desc
+    
+    def _get_final_cluster_examples(self, final_clusters: List[List[int]], n=5):
+        """Get examples of final clusters after merging"""
+        cluster_examples = []
+        
+        # Sort by final cluster size (total items across all merged clusters)
+        cluster_sizes = []
+        for i, group in enumerate(final_clusters):
+            total_size = sum(self.cluster_data[cid].size for cid in group if cid in self.cluster_data)
+            cluster_sizes.append((i, total_size, group))
+        
+        # Get top clusters by size
+        top_clusters = sorted(cluster_sizes, key=lambda x: x[1], reverse=True)[:n]
+        
+        for cluster_idx, total_size, group in top_clusters:
+            if group and group[0] in self.cluster_data:
+                # Use the largest original cluster as representative
+                largest_cluster_id = max(group, key=lambda cid: self.cluster_data[cid].size if cid in self.cluster_data else 0)
+                if largest_cluster_id in self.cluster_data:
+                    theme = self._get_cluster_theme(self.cluster_data[largest_cluster_id])
+                    merge_info = f" (merged from {len(group)} clusters)" if len(group) > 1 else ""
+                    cluster_examples.append(f"Final cluster {cluster_idx}: {total_size} items{merge_info} - {theme}")
+        
+        return cluster_examples
 
     def merge_clusters(self, input_list=None, var_lab=None):
         """Main entry point for merging clusters"""
         import time
         start_time = time.time()
         
-        if self.verbose:
-            print(f"Starting cluster merging process with {len(input_list) if input_list else 0} clusters")
+        # Start the merge phase with VerboseReporter
+        self.verbose_reporter.section_header("CLUSTER MERGING PHASE", "🔗")
+        self.verbose_reporter.step_start(f"Starting cluster merging process", "🔍")
         
         # Update input data if provided
         if input_list is not None:
             if not all(isinstance(item, models.ClusterModel) for item in input_list):
                 raise ValueError("input_list must be a list of ClusterModel objects")
             self.input_clusters = input_list
-            if self.verbose:
-                print(f"Received {len(input_list)} ClusterModel objects as input")
+            self.verbose_reporter.stat_line(f"Received {len(input_list)} ClusterModel objects as input")
             
         if var_lab is not None:
             self.var_lab = var_lab
-            if self.verbose:
-                print(f"Using research question: '{var_lab}'")
+            self.verbose_reporter.stat_line(f"Research question: '{var_lab}'")
             
         # Validate input
         if not self.input_clusters or not self.var_lab:
             raise ValueError("Input clusters and var_lab must be provided")
         
         # Run the merging process
-        if self.verbose:
-            print("Beginning concurrent cluster merge analysis...")
         merged_clusters = asyncio.run(self._merge_clusters_async())
         
         # Verify output
         if not all(isinstance(item, models.ClusterModel) for item in merged_clusters):
             raise ValueError("Output must be a list of ClusterModel objects")
         
-        # Calculate time taken
+        # Calculate time taken and final summary
         end_time = time.time()
         elapsed_time = end_time - start_time
-        if self.verbose:
-            print(f"Cluster merging completed in {elapsed_time:.2f} seconds")
-            print(f"Produced {len(merged_clusters)} ClusterModel objects with merged clusters")
+        
+        self.verbose_reporter.step_complete(f"Cluster merging completed in {elapsed_time:.1f}s")
+        self.verbose_reporter.stat_line(f"Produced {len(merged_clusters)} ClusterModel objects")
             
         return merged_clusters, self.merge_mapping
         
     async def _merge_clusters_async(self):
         """Async implementation of cluster merging"""
-        if self.verbose:
-            print(f"Extracted data for {len(self.cluster_data)} clusters")
+        self.verbose_reporter.stat_line(f"Extracted data for {len(self.cluster_data)} clusters")
         
         # Merge similar clusters
         merge_mapping = await self.merge_similar_clusters(self.cluster_data, self.var_lab)
         
         # Convert to ClusterModel format
-        if self.verbose:
-            print("Converting merged clusters to ClusterModel format...")
+        self.verbose_reporter.step_start("Converting merged clusters to ClusterModel format", "🔗")
         merged_clusters = self.to_cluster_model(merge_mapping)
+        self.verbose_reporter.step_complete("Conversion completed")
         
-        # Calculate and log statistics
+        # Calculate and display statistics with smart examples
         total_initial = len(self.cluster_data)
         total_final = len(set(merge_mapping.cluster_to_merged.values()))
         merged_groups = [g for g in merge_mapping.merge_groups if len(g) > 1]
+        reduction = (1 - total_final/total_initial) * 100 if total_initial > 0 else 0
         
-        if self.verbose:
-            print("Cluster merging statistics:")
-            print(f"Initial clusters: {total_initial}")
-            print(f"Merge groups: {len(merged_groups)}")
-            print(f"Final clusters after merging: {total_final}")
-            print(f"Reduction: {(1 - total_final/total_initial) * 100:.1f}%")
-                	
+        # Create summary statistics
+        merge_stats = {
+            "Initial clusters": total_initial,
+            "Final clusters": total_final,
+            "Merge groups": len(merged_groups),
+            "Reduction": f"{reduction:.1f}%"
+        }
+        
+        self.verbose_reporter.summary("Merge Results", merge_stats, "📊")
+        
+        # Show key merge examples
+        key_merges = self._get_key_merge_examples(merge_mapping.merge_groups, 3)
+        if key_merges:
+            self.verbose_reporter.sample_list("Key merge examples", key_merges)
+        
+        # Show final cluster examples
+        final_examples = self._get_final_cluster_examples(merge_mapping.merge_groups, 5)
+        if final_examples:
+            self.verbose_reporter.sample_list("Final cluster examples", final_examples)
+        
         self.merge_mapping = merge_mapping
         return merged_clusters
 
@@ -683,6 +742,5 @@ class ClusterMerger:
             )
             result_models.append(model)
             
-        if self.verbose:
-            print(f"Converted results to {len(result_models)} ClusterModel objects")
+        self.verbose_reporter.stat_line(f"Converted results to {len(result_models)} ClusterModel objects")
         return result_models

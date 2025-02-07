@@ -12,6 +12,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 import models
 from config import DEFAULT_LANGUAGE, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
 from utils.cluster_quality import ClusterQualityAnalyzer
+from utils.verbose_reporter import VerboseReporter
 import warnings  # hard coded warning in umap about hidden stat
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
 
@@ -55,6 +56,9 @@ class ClusterGenerator:
         self.verbose = verbose if verbose is not None else self.config.verbose
         # Store the original input list to preserve response data
         self.original_input_list = input_list if input_list else []
+        
+        # Initialize verbose reporter
+        self.verbose_reporter = VerboseReporter(self.verbose)
        
         if input_list:
             self.populate_from_input_list(input_list)
@@ -71,8 +75,7 @@ class ClusterGenerator:
                 n_jobs=umap_config.n_jobs,
                 low_memory=umap_config.low_memory,
                 transform_seed=umap_config.transform_seed)
-            if self.verbose:
-                print("Using configured UMAP dimensionality reduction")
+            self.verbose_reporter.stat_line("Using configured UMAP dimensionality reduction")
         else:
             self.dim_reduction_model = dim_reduction_model
             
@@ -93,8 +96,7 @@ class ClusterGenerator:
                 hdbscan_params['min_samples'] = hdbscan_config.min_samples
                 
             self.cluster_model = hdbscan.HDBSCAN(**hdbscan_params)
-            if self.verbose:
-                print("Using configured HDBSCAN clustering")
+            self.verbose_reporter.stat_line("Using configured HDBSCAN clustering")
         else:
             self.cluster_model = cluster_model
         
@@ -114,8 +116,7 @@ class ClusterGenerator:
                 vectorizer_params['max_features'] = vectorizer_config.max_features
                 
             self.vectorizer_model = CountVectorizer(**vectorizer_params)
-            if self.verbose:
-                print("Using configured CountVectorizer")
+            self.verbose_reporter.stat_line("Using configured CountVectorizer")
         else:
             self.vectorizer_model = vectorizer_model
 
@@ -128,10 +129,59 @@ class ClusterGenerator:
                 return 'english'
         else:
             return 'english'
+    
+    def _get_top_clusters_by_size(self, clusters, n=5):
+        """Get top N clusters by size with representative descriptions"""
+        cluster_counts = Counter(clusters)
+        # Remove noise cluster (-1) for top clusters
+        valid_clusters = {k: v for k, v in cluster_counts.items() if k != -1}
+        top_clusters = sorted(valid_clusters.items(), key=lambda x: x[1], reverse=True)[:n]
+        
+        cluster_examples = []
+        for cluster_id, count in top_clusters:
+            # Get representative description for this cluster
+            cluster_items = [item for item in self.output_list 
+                           if (self.embedding_type == "code" and item.initial_code_cluster == cluster_id) or
+                              (self.embedding_type == "description" and item.initial_description_cluster == cluster_id)]
+            
+            if cluster_items:
+                rep_desc = self._get_representative_description(cluster_items)
+                cluster_examples.append(f"Cluster {cluster_id}: {count} items - {rep_desc}")
+        
+        return cluster_examples
+    
+    def _get_representative_description(self, cluster_items, max_length=50):
+        """Get most representative description using centroid similarity"""
+        if not cluster_items:
+            return "No items"
+            
+        # Use the first description as fallback
+        if len(cluster_items) == 1:
+            desc = cluster_items[0].segment_description
+            return desc[:max_length] + "..." if len(desc) > max_length else desc
+        
+        # For multiple items, find most representative
+        descriptions = [item.segment_description for item in cluster_items]
+        embeddings = [item.description_embedding for item in cluster_items 
+                     if item.description_embedding is not None]
+        
+        if embeddings:
+            # Calculate centroid and find closest description
+            embeddings_array = np.array(embeddings)
+            centroid = np.mean(embeddings_array, axis=0)
+            
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarities = cosine_similarity(embeddings_array, centroid.reshape(1, -1)).flatten()
+            best_idx = np.argmax(similarities)
+            desc = descriptions[best_idx]
+        else:
+            # Fallback to first description
+            desc = descriptions[0]
+        
+        return desc[:max_length] + "..." if len(desc) > max_length else desc
 
     def populate_from_input_list(self, input_list: List[models.EmbeddingsModel]) -> None:
-        if self.verbose:
-            print("Populating output list from input models...")
+        self.verbose_reporter.stat_line("Populating output list from input models")
         
         self.output_list = []
         
@@ -155,8 +205,7 @@ class ClusterGenerator:
 
     def add_reduced_embeddings(self) -> None:
         # Reduces dimensionality of embeddings and adds them to output_list.
-        if self.verbose:
-            print("Reducing dimensionality of embeddings...")
+        self.verbose_reporter.step_start("Reducing dimensionality of embeddings", "📊")
         
         # Process code embeddings if needed
         if self.embedding_type == "code":
@@ -176,13 +225,11 @@ class ClusterGenerator:
             for i, item in enumerate(self.output_list):
                 item.reduced_description_embedding = reduced_description_embeddings[i]
                 
-        if self.verbose:
-            print("Completed dimensionality reduction")
+        self.verbose_reporter.step_complete("Dimensionality reduction completed")
 
     def add_initial_clusters(self) -> None:
         # Performs initial clustering on reduced embeddings and adds cluster labels to output_list.
-        if self.verbose:
-            print("Clustering reduced embeddings...")
+        self.verbose_reporter.step_start("Clustering reduced embeddings", "🔍")
 
         # Cluster code embeddings if needed
         if self.embedding_type == "code":
@@ -193,14 +240,16 @@ class ClusterGenerator:
             for i, item in enumerate(self.output_list):
                 item.initial_code_cluster = initial_code_clusters[i]
             
-            if self.verbose:
-                cluster_counts = Counter(initial_code_clusters)
-                print(f"Code clusters: {len(set(initial_code_clusters))} clusters found")
-                for cluster_id, count in sorted(cluster_counts.items()):
-                    print(f"Code Cluster {cluster_id}: {count} items")
-                
-                # Show a sample of codes per cluster
-                self._print_sample_items_per_cluster(initial_code_clusters, "segment_label", "Code")
+            cluster_counts = Counter(initial_code_clusters)
+            self.verbose_reporter.stat_line(f"Code clusters: {len(set(initial_code_clusters))} clusters found")
+            noise_count = cluster_counts.get(-1, 0)
+            if noise_count > 0:
+                self.verbose_reporter.stat_line(f"Noise cluster (-1): {noise_count} items")
+            
+            # Show top clusters with smart examples
+            top_clusters = self._get_top_clusters_by_size(initial_code_clusters, 5)
+            if top_clusters:
+                self.verbose_reporter.sample_list("Largest clusters", top_clusters)
                 
         # Cluster description embeddings if needed
         if self.embedding_type == "description":
@@ -211,32 +260,23 @@ class ClusterGenerator:
             for i, item in enumerate(self.output_list):
                 item.initial_description_cluster = initial_description_clusters[i]
             
-            if self.verbose:
-                cluster_counts = Counter(initial_description_clusters)
-                print(f"Description clusters: {len(set(initial_description_clusters))} clusters found")
-                for cluster_id, count in sorted(cluster_counts.items()):
-                    print(f"Description Cluster {cluster_id}: {count} items")
-                
-                # Show a sample of descriptions per cluster
-                self._print_sample_items_per_cluster(initial_description_clusters, "segment_description", "Description")
+            cluster_counts = Counter(initial_description_clusters)
+            self.verbose_reporter.stat_line(f"Description clusters: {len(set(initial_description_clusters))} clusters found")
+            noise_count = cluster_counts.get(-1, 0)
+            if noise_count > 0:
+                self.verbose_reporter.stat_line(f"Noise cluster (-1): {noise_count} items")
+            
+            # Show top clusters with smart examples
+            top_clusters = self._get_top_clusters_by_size(initial_description_clusters, 5)
+            if top_clusters:
+                self.verbose_reporter.sample_list("Largest clusters", top_clusters)
+        
+        self.verbose_reporter.step_complete("Initial clustering completed")
 
-    def _print_sample_items_per_cluster(self, clusters, attribute, label_prefix, sample_size=5):
-        # Helper method to print samples from each cluster
-        cluster_to_items = defaultdict(list)
-        for cluster, item in zip(clusters, self.output_list):
-            value = getattr(item, attribute)
-            if value and value.lower() != "na":
-                cluster_to_items[cluster].append(value)
-                
-        for cluster in sorted(cluster_to_items.keys()):
-            print(f"{label_prefix} Cluster {cluster}:")
-            for item_text in cluster_to_items[cluster][:sample_size]:
-                print(f" - {item_text}")
 
     def calculate_and_display_quality_metrics(self) -> Dict:
         """Calculate quality metrics for the clustering results - informational only"""
-        if self.verbose:
-            print("\n📊 Clustering Quality Metrics (informational only):")
+        self.verbose_reporter.step_start("Quality assessment", "📈")
         
         metrics = {}
         
@@ -255,20 +295,21 @@ class ClusterGenerator:
         # Calculate overall quality score
         metrics['overall_quality'] = quality_analyzer.calculate_quality_score(metrics)
         
-        # Display metrics
-        if self.verbose:
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    print(f"  {key}: {value:.3f}")
-                else:
-                    print(f"  {key}: {value}")
+        # Display metrics using VerboseReporter
+        formatted_metrics = {}
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                formatted_metrics[key] = f"{value:.3f}"
+            else:
+                formatted_metrics[key] = str(value)
+        
+        self.verbose_reporter.summary("Clustering Quality Metrics", formatted_metrics, "📊")
         
         return metrics
 
     def filter_and_remap_clusters(self) -> None:
         """Filter out NA items and remap cluster IDs to be sequential"""
-        if self.verbose:
-            print("\n🧹 Filtering NA items and remapping clusters...")
+        self.verbose_reporter.step_start("Filtering NA items and remapping clusters", "🧹")
         
         # Get current clusters and items based on embedding type
         if self.embedding_type == "code":
@@ -295,8 +336,7 @@ class ClusterGenerator:
                 filtered_clusters.append(cluster)
                 filtered_items.append(item)
         
-        if self.verbose:
-            print(f"Filtered out {len(clusters) - len(filtered_clusters)} items (noise or NA)")
+        self.verbose_reporter.stat_line(f"Filtered out {len(clusters) - len(filtered_clusters)} items (noise or NA)")
         
         # Remap cluster IDs to be sequential
         unique_clusters = sorted(set(filtered_clusters))
@@ -318,40 +358,33 @@ class ClusterGenerator:
             else:
                 item.initial_description_cluster = updated_clusters.get(key, None)
         
-        if self.verbose:
-            print(f"Remapped {len(unique_clusters)} clusters to sequential IDs (0-{len(unique_clusters)-1})")
+        self.verbose_reporter.stat_line(f"Remapped {len(unique_clusters)} clusters to sequential IDs (0-{len(unique_clusters)-1})")
+        self.verbose_reporter.step_complete("Filter and remap completed")
 
     def run_pipeline(self, embedding_type: str = None) -> None:
         
         if embedding_type:
             self.embedding_type = embedding_type
-            
-        if self.verbose:
-            print(f"\n🚀 Running simple clustering pipeline with embedding type: {self.embedding_type}")
+        
+        # Start the main clustering pipeline
+        self.verbose_reporter.section_header("CLUSTERING PHASE", "🔬")
+        self.verbose_reporter.step_start(f"Clustering with embedding type: {self.embedding_type}", "🎯")
             
         if not self.output_list:
             raise ValueError("Output list is empty. Please populate it first.")
         
         # Step 1: Reduce dimensionality of embeddings
-        if self.verbose:
-            print("\n📊 STEP 1: Dimensionality Reduction")
         self.add_reduced_embeddings()
         
         # Step 2: Perform initial clustering
-        if self.verbose:
-            print("\n🔍 STEP 2: Initial Clustering")
         self.add_initial_clusters()
         
         # Step 3: Calculate and display quality metrics (if enabled)
         if self.config.enable_quality_metrics:
-            if self.verbose:
-                print("\n📈 STEP 3: Quality Assessment")
             self.calculate_and_display_quality_metrics()
         
         # Step 4: Filter NA items and remap clusters (if enabled)
         if self.config.filter_na_items or self.config.remap_cluster_ids:
-            if self.verbose:
-                print("\n🧹 STEP 4: Filter and Remap")
             if self.config.filter_na_items and self.config.remap_cluster_ids:
                 self.filter_and_remap_clusters()
             elif self.config.filter_na_items:
@@ -361,21 +394,24 @@ class ClusterGenerator:
                 # Just remap, don't filter
                 pass  # TODO: Implement remap-only method if needed
         
-        if self.verbose:
-            print("\n✅ Pipeline completed successfully")
-            
-            # Print some summary statistics after filtering
-            if self.embedding_type == "code":
-                clusters = [item.initial_code_cluster for item in self.output_list if item.initial_code_cluster is not None]
-            else:
-                clusters = [item.initial_description_cluster for item in self.output_list if item.initial_description_cluster is not None]
-            
-            unique_clusters = set(clusters)
-            print("\nSUMMARY (after filtering):")
-            print(f"- Total items processed: {len(self.output_list)}")
-            print(f"- Items with valid clusters: {len(clusters)}")
-            print(f"- Clusters found: {len(unique_clusters)}")
-            print(f"- Items filtered out: {len(self.output_list) - len(clusters)}")
+        # Final summary
+        if self.embedding_type == "code":
+            clusters = [item.initial_code_cluster for item in self.output_list if item.initial_code_cluster is not None]
+        else:
+            clusters = [item.initial_description_cluster for item in self.output_list if item.initial_description_cluster is not None]
+        
+        unique_clusters = set(clusters)
+        
+        # Create final summary
+        summary_stats = {
+            "Total items processed": len(self.output_list),
+            "Items with valid clusters": len(clusters),
+            "Clusters found": len(unique_clusters),
+            "Items filtered out": len(self.output_list) - len(clusters)
+        }
+        
+        self.verbose_reporter.summary("Final Clustering Summary", summary_stats, "📊")
+        self.verbose_reporter.step_complete("Clustering pipeline completed successfully")
             
     def to_cluster_model(self) -> List[models.ClusterModel]:
        
