@@ -525,7 +525,7 @@ class ThematicLabeller:
                     level=1,
                     label=theme_data['label'],
                     description=theme_data.get('description', ''),
-                    direct_clusters=theme_data.get('direct_clusters', [])
+                    direct_clusters=[]  # Themes should not have direct clusters
                 )
                 themes.append(theme)
             
@@ -549,7 +549,7 @@ class ThematicLabeller:
                     description=topic_data.get('description', ''),
                     parent_id=str(int(parent_numeric_id)) if parent_numeric_id else None,
                     parent_numeric_id=parent_numeric_id,
-                    direct_clusters=topic_data.get('direct_clusters', [])
+                    direct_clusters=[]  # Topics should not have direct clusters
                 )
                 topics.append(topic)
             
@@ -595,7 +595,7 @@ class ThematicLabeller:
                     level=1,
                     label=theme_data['label'],
                     description=theme_data.get('description', ''),
-                    direct_clusters=theme_data.get('direct_clusters', [])
+                    direct_clusters=[]  # Themes should not have direct clusters
                 )
                 themes.append(theme)
                 
@@ -614,7 +614,7 @@ class ThematicLabeller:
                             description=topic_data.get('description', ''),
                             parent_id=theme_id,
                             parent_numeric_id=theme_numeric_id,
-                            direct_clusters=topic_data.get('direct_clusters', [])
+                            direct_clusters=[]  # Topics should not have direct clusters
                         )
                         topics.append(topic)
                         
@@ -685,56 +685,48 @@ class ThematicLabeller:
         return unique_entries
     
     async def _phase3_assignment(self, labeled_clusters: List[ClusterLabel], codebook: Codebook) -> List[ThemeAssignment]:
-        """Phase 3: Assign clusters to themes with probabilities"""
-        from prompts import PHASE3_ASSIGNMENT_PROMPT
-        
+        """Phase 3: Map clusters to their assigned hierarchy positions"""
         assignments = []
         
-        # Format codebook for prompt
-        codebook_text = self._format_codebook_for_prompt(codebook)
-        
-        # Process each cluster
-        tasks = []
+        # In strict hierarchy, clusters are already placed in subjects during Phase 2
+        # We just need to find where each cluster was placed
         for cluster in labeled_clusters:
-            # Format representatives
-            reps_text = "\n".join([f"- {desc}" for desc, _ in cluster.representatives[:3]])
+            cluster_id = cluster.cluster_id
             
-            prompt = PHASE3_ASSIGNMENT_PROMPT.format(
-                survey_question=self.survey_question,
-                language=self.config.language,
-                cluster_id=cluster.cluster_id,
-                cluster_label=cluster.label,
-                cluster_description=cluster.description,
-                representatives=reps_text,
-                codebook=codebook_text
-            )
+            # Find which subject contains this cluster
+            found = False
+            for subject in codebook.subjects:
+                if cluster_id in subject.direct_clusters:
+                    # Found the subject containing this cluster
+                    topic_id = subject.parent_id
+                    
+                    # Find the topic's theme
+                    theme_id = None
+                    for topic in codebook.topics:
+                        if topic.id == topic_id:
+                            theme_id = topic.parent_id
+                            break
+                    
+                    if theme_id:
+                        # Create deterministic assignment (1.0 probability)
+                        assignments.append(ThemeAssignment(
+                            cluster_id=cluster_id,
+                            theme_assignments={theme_id: 1.0},
+                            topic_assignments={topic_id: 1.0},
+                            subject_assignments={subject.id: 1.0}
+                        ))
+                        found = True
+                        break
             
-            task = self._invoke_with_retries(prompt, AssignmentResponse)
-            tasks.append((cluster.cluster_id, task))
-        
-        # Execute tasks concurrently in batches
-        print(f"  Processing {len(tasks)} assignments with max {self.config.concurrent_requests} concurrent requests...")
-        
-        for i in range(0, len(tasks), self.config.concurrent_requests):
-            batch = tasks[i:i + self.config.concurrent_requests]
-            batch_results = await asyncio.gather(*[task for _, task in batch], return_exceptions=True)
-            
-            for (cluster_id, _), result in zip(batch, batch_results):
-                if isinstance(result, Exception):
-                    print(f"Error assigning cluster {cluster_id}: {str(result)}")
-                    assignments.append(ThemeAssignment(
-                        cluster_id=cluster_id,
-                        theme_assignments={"other": 1.0},
-                        topic_assignments={"other": 1.0},
-                        subject_assignments={"other": 1.0}
-                    ))
-                else:
-                    assignments.append(ThemeAssignment(
-                        cluster_id=cluster_id,
-                        theme_assignments=result.theme_assignments,
-                        topic_assignments=result.topic_assignments,
-                        subject_assignments=result.subject_assignments
-                    ))
+            if not found:
+                # Cluster wasn't found in any subject - assign to "other"
+                print(f"  ⚠️  Cluster {cluster_id} not found in any subject!")
+                assignments.append(ThemeAssignment(
+                    cluster_id=cluster_id,
+                    theme_assignments={"other": 1.0},
+                    topic_assignments={"other": 1.0},
+                    subject_assignments={"other": 1.0}
+                ))
         
         return assignments
     
@@ -746,8 +738,6 @@ class ThematicLabeller:
             lines.append(f"\nTHEME {theme.id}: {theme.label}")
             if theme.description:
                 lines.append(f"  Description: {theme.description}")
-            if theme.direct_clusters:
-                lines.append(f"  Direct clusters: {theme.direct_clusters}")
             
             # Find related topics
             related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
@@ -755,8 +745,6 @@ class ThematicLabeller:
                 lines.append(f"  TOPIC {topic.id}: {topic.label}")
                 if topic.description:
                     lines.append(f"    Description: {topic.description}")
-                if topic.direct_clusters:
-                    lines.append(f"    Direct clusters: {topic.direct_clusters}")
                 
                 # Find related subjects
                 related_subjects = [s for s in codebook.subjects if s.parent_id == topic.id]
@@ -1014,12 +1002,8 @@ class ThematicLabeller:
         print(f"  - {len(codebook.topics)} Topics")
         print(f"  - {len(codebook.subjects)} Subjects")
         
-        # Count total assigned clusters
+        # Count total assigned clusters (only from subjects in strict hierarchy)
         total_clusters = set()
-        for theme in codebook.themes:
-            total_clusters.update(theme.direct_clusters)
-        for topic in codebook.topics:
-            total_clusters.update(topic.direct_clusters)
         for subject in codebook.subjects:
             total_clusters.update(subject.direct_clusters)
         
@@ -1039,8 +1023,6 @@ class ThematicLabeller:
             print(f"\n🎯 THEME {theme.id}: {theme.label}")
             if theme.description:
                 print(f"   Description: {theme.description}")
-            if theme.direct_clusters:
-                print(f"   Direct clusters: {theme.direct_clusters}")
             
             # Find related topics
             related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
@@ -1049,8 +1031,6 @@ class ThematicLabeller:
                     print(f"\n   📍 TOPIC {topic.id}: {topic.label}")
                     if topic.description:
                         print(f"      Description: {topic.description}")
-                    if topic.direct_clusters:
-                        print(f"      Direct clusters: {topic.direct_clusters}")
                     
                     # Find related subjects
                     related_subjects = [s for s in codebook.subjects if s.parent_id == topic.id]
