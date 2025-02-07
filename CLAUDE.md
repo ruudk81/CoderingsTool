@@ -749,39 +749,43 @@ Each test section includes:
 - JSON output file saving
 - Error handling and traceback printing
 
-### Current Work: Tuning Phase 2 Merger (Less Aggressive)
+### Current Work: New TF-IDF Based Phase 2 Merger
 
-**Issue**: Phase 2 merger is too aggressive, merging clusters that should remain separate.
+**Major Change**: Replaced LLM-based merger with TF-IDF and embeddings approach
 
-**Analysis Approach**
-1. **Enhanced Similarity Distribution Analysis**
-   - Track all cosine similarity scores from embeddings  
-   - Track all LLM similarity scores
-   - Show detailed distribution statistics (mean, median, percentiles)
-   - Create histogram visualizations
+**New Algorithm**
+1. **TF-IDF Text Analysis**
+   - Extract keywords from each cluster using TF-IDF
+   - Weight keywords using embedding similarity
+   - Create weighted TF-IDF representations
 
-2. **Adjustable Parameters**
-   - `similarity_threshold`: Raised from 0.95 to 0.98 for auto-merge
-   - `merge_score_threshold`: Currently 0.7 for LLM merge
-   - Need to make these configurable via CLI
-   - Consider adding minimum cluster size constraints
+2. **HDBSCAN Clustering**
+   - Use weighted TF-IDF vectors
+   - Apply HDBSCAN to find groups of similar clusters
+   - Groups become merged clusters
+   - Noise points remain unmerged
 
-3. **Implementation Progress**
-   - ✓ Added similarity distribution analysis to phase2_merger.py
-   - ✓ Added cosine similarity logging for high-similarity pairs
-   - ✓ Added LLM similarity score logging
-   - ✓ Enhanced test section with detailed score analysis
-   - ✓ Added threshold recommendations based on percentiles
-   - ⏳ Making thresholds configurable via CLI
-   - ⏳ Creating parameter tuning mode
+3. **Key Benefits**
+   - No LLM API calls needed
+   - Purely algorithmic approach
+   - Based on text content similarity
+   - Automatic grouping via HDBSCAN
 
-4. **Test Section Enhancements**
-   - Separate analysis of auto-merge (cosine) and LLM similarity scores
-   - Top 20 scores from each method with merge status
-   - Distribution histograms for both score types
-   - Comparison of merge decisions between methods
-   - Percentile analysis for threshold recommendations
-   - Suggestions for adjusting thresholds to reduce aggressive merging
+4. **Implementation Status**
+   - ✓ Created new phase2_merger.py with TF-IDF logic
+   - ✓ Backed up original as phase2_merger_original.py
+   - ✓ Removed LLM dependency
+   - ✓ Added keyword extraction and weighting
+   - ✓ Integrated HDBSCAN for automatic merging
+   - ⏳ Testing with real data
+
+5. **Algorithm Details**
+   - Combines cluster text (codes + descriptions)
+   - Extracts top 20 keywords per cluster
+   - Weights keywords by embedding similarity
+   - Creates weighted TF-IDF matrix
+   - Uses cosine similarity in HDBSCAN
+   - Noise clusters remain unmerged
 
 ### Next TODO: Retry Mechanisms and Robustness
 
