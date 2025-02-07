@@ -13,7 +13,7 @@ from typing import Type, TypeVar, List, Optional, Dict, get_type_hints, get_orig
 from pydantic import BaseModel
 import numpy as np
 
-from ..config import CacheConfig, ProcessingConfig
+from config import CacheConfig, ProcessingConfig
 
 
 logger = logging.getLogger(__name__)
