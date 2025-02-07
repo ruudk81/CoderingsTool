@@ -282,14 +282,14 @@ for response_items in cluster_results:
             micro_cluster_codes[micro_id].append(segment_items.descriptive_code)
             micro_cluster_descriptions[micro_id].append(segment_items.code_description)
 
-print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
-for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
-    print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
+# print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
+# for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
+#     print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
     
-    sample_size = min(3, len(micro_cluster_codes[micro_id]))
-    for i in range(sample_size):
-        #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
-        print(f"  - {micro_cluster_descriptions[micro_id][i]}")
+#     sample_size = min(3, len(micro_cluster_codes[micro_id]))
+#     for i in range(sample_size):
+#         #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
+#         print(f"  - {micro_cluster_descriptions[micro_id][i]}")
 
 
 # === STEP 6 ========================================================================================================
@@ -304,14 +304,9 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    
-    # Initialize the new labeller with config
     labeller_config = labeller.LabellerConfig()
     label_generator = labeller.Labeller(config=labeller_config)
-    
-    # Run the new 4-stage pipeline
     labeled_results = label_generator.run_pipeline(cluster_results, var_lab)
-    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
@@ -319,47 +314,91 @@ else:
     print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
 
 # debug print
-print("\nLabel Summary:")
-theme_counts = defaultdict(int)
-topic_counts = defaultdict(int)
+from collections import  Counter #defaultdict
+print("\n=== UNPACKING HIERARCHICAL LABELS ===")
 
+# Data structures to collect hierarchy
+themes = {}
+theme_summaries = {}
+theme_topics = defaultdict(lambda: {})
+topic_codes = defaultdict(lambda: defaultdict(list))
+
+# Process each result to extract hierarchy
 for result in labeled_results:
-    for segment in result.response_segment or []:
-        # Check for Theme (meta-level)
-        if hasattr(segment, 'Theme') and segment.Theme:
-            theme_id = list(segment.Theme.keys())[0]
-            theme_counts[theme_id] += 1
+    # Extract theme summary if available
+    if result.summary:
+        # Store all summaries we find (they might be theme-specific)
+        for segment in result.response_segment:
+            if segment.Theme:
+                theme_id = list(segment.Theme.keys())[0]
+                if theme_id not in theme_summaries:
+                    theme_summaries[theme_id] = result.summary
+    
+    # Extract hierarchical structure
+    for segment in result.response_segment:
+        if segment.Theme:
+            theme_id, theme_label = list(segment.Theme.items())[0]
+            themes[theme_id] = theme_label
+            
+            if segment.Topic:
+                topic_id, topic_label = list(segment.Topic.items())[0]
+                theme_topics[theme_id][topic_id] = topic_label
+                
+                if segment.Keyword:
+                    code_id, code_label = list(segment.Keyword.items())[0]
+                    topic_codes[theme_id][topic_id].append((code_id, code_label))
+
+# Display the hierarchical structure
+print(f"\nFound {len(themes)} themes:")
+
+for theme_id in sorted(themes.keys()):
+    print(f"\n{'='*60}")
+    print(f"THEME {theme_id}: {themes[theme_id]}")
+    print(f"{'='*60}")
+    
+    # Theme summary
+    if theme_id in theme_summaries:
+        print("\nSummary:")
+        print(f"{theme_summaries[theme_id][:500]}...")
+    
+    # Topics in this theme
+    topics_in_theme = theme_topics[theme_id]
+    print(f"\nTopics ({len(topics_in_theme)}):")
+    
+    for topic_id in sorted(topics_in_theme.keys()):
+        topic_label = topics_in_theme[topic_id]
+        print(f"\n  TOPIC {topic_id}: {topic_label}")
         
-        # Check for Topic (micro-level) 
-        if hasattr(segment, 'Topic') and segment.Topic:
-            topic_id = list(segment.Topic.keys())[0]
-            topic_counts[topic_id] += 1
+        codes_in_topic = topic_codes[theme_id][topic_id]
+        code_counts = Counter(codes_in_topic)
+        sorted_code_counts = sorted(code_counts.items())
+        
+        print(f"  Unique Codes ({len(sorted_code_counts)}):")
+        for (code_id, code_label), count in sorted_code_counts:
+            print(f"    CODE {code_id}: {code_label} (#{count})")
 
-print(f"Found {len(theme_counts)} themes in results")
-for theme_id, count in sorted(theme_counts.items())[:10]:  # Show first 10
-    print(f"Theme {theme_id}: {count} items")
-    # Show theme label
-    for result in labeled_results:
-        for segment in result.response_segment or []:
-            if hasattr(segment, 'Theme') and segment.Theme and theme_id in segment.Theme:
-                print(f"  Label: {segment.Theme[theme_id]}")
-                break
-        else:
-            continue
-        break
+# Summary statistics
+print("\n=== SUMMARY STATISTICS ===")
+print(f"Total respondents processed: {len(labeled_results)}")
+print(f"Total segments processed: {sum(len(r.response_segment) for r in labeled_results)}")
+print(f"Total themes: {len(themes)}")
+total_topics = sum(len(topics) for topics in theme_topics.values())
+print(f"Total topics: {total_topics}")
+total_codes = len(set([code for theme in topic_codes.values() for topic in theme.values() for code in topic]))
+print(f"Total codes: {total_codes}")
 
-print(f"\nFound {len(topic_counts)} topics in results")
-# Show sample of topics
-for topic_id, count in sorted(topic_counts.items())[:5]:  # Show first 5
-    print(f"Topic {topic_id}: {count} items")
-    # Show topic label
-    for result in labeled_results:
-        for segment in result.response_segment or []:
-            if hasattr(segment, 'Topic') and segment.Topic and topic_id in segment.Topic:
-                print(f"  Label: {segment.Topic[topic_id]}")
-                break
-        else:
-            continue
-        break
+if cluster_results:
+    print(f"Loaded {len(cluster_results)} cluster results from cache")
+    
+    # Count total clusters
+    unique_clusters = set()
+    for result in cluster_results:
+        for segment in result.response_segment:
+            if segment.micro_cluster:
+                cluster_id = list(segment.micro_cluster.keys())[0]
+                unique_clusters.add(cluster_id) 
+
+print(f"Original clusters: {len(unique_clusters)}")
+
 
 
