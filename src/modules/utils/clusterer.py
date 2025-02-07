@@ -27,8 +27,14 @@ from config import DEFAULT_LANGUAGE
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
-from clustering_config import ClusteringConfig
-from cluster_quality import ClusterQualityMetrics
+
+# Try both import methods to handle different environments
+try:
+    from clustering_config import ClusteringConfig
+    from cluster_quality import ClusterQualityAnalyzer
+except ImportError:
+    from .clustering_config import ClusteringConfig
+    from .cluster_quality import ClusterQualityAnalyzer
 
 
 # Structured formats 
@@ -74,12 +80,12 @@ class ClusterGenerator:
         
         # Store config and quality metrics
         self.config = config or ClusteringConfig()
-        self.quality_metrics = ClusterQualityMetrics(verbose=verbose)
+        self.quality_analyzer = None  # Will be initialized after clustering
         self.clustering_attempts = []  # Track attempts for reporting
         
         # Override embedding_type from config if provided
-        if config and config.embedding_type:
-            self.embedding_type = config.embedding_type
+        if self.config and self.config.embedding_type:
+            self.embedding_type = self.config.embedding_type
        
         if input_list:
             self.populate_from_input_list(input_list)
@@ -640,11 +646,15 @@ class ClusterGenerator:
     
     def calculate_clustering_quality(self, embeddings: np.ndarray, labels: np.ndarray) -> Dict:
         """Calculate quality metrics for the clustering results"""
-        metrics = self.quality_metrics.calculate_all_metrics(
-            embeddings, 
-            labels,
-            min_quality_threshold=self.config.min_quality_score
-        )
+        # Initialize quality analyzer with embeddings and labels
+        self.quality_analyzer = ClusterQualityAnalyzer(embeddings, labels)
+        
+        # Get full quality report
+        metrics = self.quality_analyzer.get_full_report()
+        
+        # Calculate overall quality score
+        metrics['overall_quality'] = self.quality_analyzer.calculate_quality_score(metrics)
+        
         self.clustering_attempts.append(metrics)
         return metrics
     
@@ -791,9 +801,10 @@ if __name__ == "__main__":
     csv_handler.save_to_csv(cluster_results, filename, 'clusters')
     
     # Print quality metrics
-    if clusterer.quality_metrics:
+    if clusterer.clustering_attempts:
         print("\nClustering Quality Metrics:")
-        for key, value in clusterer.quality_metrics.items():
+        final_metrics = clusterer.clustering_attempts[-1]  # Get last attempt (final result)
+        for key, value in final_metrics.items():
             print(f"  {key}: {value:.3f}")
     
     # Print cluster summary
@@ -811,6 +822,12 @@ if __name__ == "__main__":
 
     print(f"\nFound {len(meta_cluster_counts)} meta-clusters in results")
     print(f"Clustering parameters used: min_samples={clusterer.min_samples}, min_cluster_size={clusterer.min_cluster_size}")
+    
+    # Show retry attempts if any
+    if len(clusterer.clustering_attempts) > 1:
+        print(f"\nClustering attempts: {len(clusterer.clustering_attempts)}")
+        for i, attempt in enumerate(clusterer.clustering_attempts):
+            print(f"  Attempt {i+1}: quality={attempt.get('overall_quality', 0):.3f}")
     for meta_id, count in sorted(meta_cluster_counts.items()):
         print(f"\n📚 Meta-cluster {meta_id}: {count} items")
       
