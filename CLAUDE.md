@@ -45,7 +45,7 @@ This document captures the context and progress from our conversation that began
 - reduce dimensions of embedding with UMAP
 - cluster with HBDSCAN
 
-### TOTO
+### TODO
 - step 6: merge HBDSCAN's initial micro clusters by LLM prompt
 - step 7a: label merged micro clusters 
 - step 6b: hierarchical labelling, aside from micro labels alsa macro and micro labeleling by LLM prompt.
