@@ -483,7 +483,8 @@ class Labeller:
                                 if code_id not in theme_data['codes']:
                                     theme_data['codes'][code_id] = {
                                         'label': code_label,
-                                        'items': []
+                                        'items': [],
+                                        'count': 0
                                     }
                                 
                                 theme_data['codes'][code_id]['items'].append({
@@ -492,6 +493,7 @@ class Labeller:
                                     'description': segment.code_description,
                                     'descriptive_code': segment.descriptive_code
                                 })
+                                theme_data['codes'][code_id]['count'] += 1
                                 theme_data['all_embeddings'].append(segment.code_embedding)
         
         if not theme_data['all_embeddings']:
@@ -535,7 +537,8 @@ class Labeller:
             representative_data[code_id] = {
                 'label': code_data['label'],
                 'segments': [item[1] for item in top_segments],
-                'similarity_to_theme': code_data['similarity']
+                'similarity_to_theme': code_data['similarity'],
+                'count': theme_data['codes'][code_id]['count']
             }
         
         return representative_data
@@ -616,13 +619,14 @@ class Labeller:
                     tasks.append((
                         theme_id, 
                         theme_label,
+                        representative_items,
                         self._generate_theme_summary(theme_id, theme_label, representative_items)
                     ))
             
             results = []
-            for theme_id, theme_label, summary_task in tasks:
+            for theme_id, theme_label, representative_items, summary_task in tasks:
                 summary = await summary_task
-                results.append((theme_id, theme_label, summary))
+                results.append((theme_id, theme_label, representative_items, summary))
             
             return results
         
@@ -630,14 +634,20 @@ class Labeller:
         summaries = asyncio.run(generate_all_theme_summaries())
         
         # Process results
-        for theme_id, theme_label, summary in summaries:
+        for theme_id, theme_label, representative_items, summary in summaries:
             theme_summaries[theme_id] = {
                 'label': theme_label,
                 'summary': summary,
-                'response_count': sum(1 for model in label_models 
-                                    for segment in (model.response_segment or [])
-                                    if segment.Theme and theme_id in segment.Theme)
+                'codes': {}
             }
+            
+            # Add code information
+            for code_id, code_data in representative_items.items():
+                theme_summaries[theme_id]['codes'][code_id] = {
+                    'label': code_data['label'],
+                    'count': code_data['count'],
+                    'similarity_to_theme': code_data['similarity_to_theme']
+                }
         
         return theme_summaries
 
@@ -685,8 +695,12 @@ if __name__ == "__main__":
     print("\n\n=== THEME SUMMARIES ===")
     for theme_id, theme_data in sorted(theme_summaries.items()):
         print(f"\nTheme {theme_id}: {theme_data['label']}")
-        print(f"Response count: {theme_data['response_count']}")
         print(f"Summary: {theme_data['summary']}")
+        print("\nCodes within this theme:")
+        for code_id, code_info in sorted(theme_data['codes'].items(), 
+                                       key=lambda x: x[1]['count'], 
+                                       reverse=True):
+            print(f"  {code_info['label']} (Count: {code_info['count']}, Similarity: {code_info['similarity_to_theme']:.2f})")
         print("-" * 60)
     
     # Print example results
