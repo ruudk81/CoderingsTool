@@ -332,3 +332,132 @@ class Phase3Organizer:
             # Verify theme cluster_ids match children
             # Note: theme.cluster_ids contains merged IDs, theme_clusters contains original IDs
             # So we skip this validation for now as it's not directly comparable
+
+
+if __name__ == "__main__":
+    """Test Phase 3 with sample merged clusters"""
+    import sys
+    from pathlib import Path
+    import json
+    
+    # Add project paths
+    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    
+    from openai import AsyncOpenAI
+    import instructor
+    from config import OPENAI_API_KEY, DEFAULT_MODEL
+    import numpy as np
+    
+    # Create sample merged clusters for testing
+    sample_merged_clusters = {
+        0: MergedCluster(
+            merged_id=0,
+            original_ids=[1, 2],  # Merged clusters 1 and 2
+            label="Minder afval en milieuvriendelijke verpakkingen",
+            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal", "Biologisch afbreekbaar", "Milieuvriendelijk verpakken"],
+            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen", "Wil biologisch afbreekbare opties", "Duurzame verpakkingsmaterialen"],
+            centroid=np.random.randn(768)
+        ),
+        1: MergedCluster(
+            merged_id=1,
+            original_ids=[3],  # Single cluster
+            label="Prijs-kwaliteit verhouding",
+            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten"],
+            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn"],
+            centroid=np.random.randn(768)
+        ),
+        2: MergedCluster(
+            merged_id=2,
+            original_ids=[4, 5],  # Additional merged clusters
+            label="Gezonde en biologische producten",
+            descriptive_codes=["Gezonde voeding", "Biologische producten", "Zonder toevoegingen"],
+            code_descriptions=["Belangrijk voor gezondheid", "Biologisch geteeld", "Geen kunstmatige stoffen"],
+            centroid=np.random.randn(768)
+        )
+    }
+    
+    # Test parameters
+    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    
+    # Initialize configuration
+    config = LabellerConfig(
+        api_key=OPENAI_API_KEY,
+        model=DEFAULT_MODEL
+    )
+    
+    # Initialize phase 3 organizer
+    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+    phase3 = Phase3Organizer(config, client)
+    
+    async def run_test():
+        """Run the test"""
+        print("=== Testing Phase 3: Hierarchical Organization ===")
+        print(f"Variable label: {var_lab}")
+        print(f"Number of merged clusters: {len(sample_merged_clusters)}")
+        
+        try:
+            # Create hierarchy
+            hierarchy = await phase3.create_hierarchy(sample_merged_clusters, var_lab)
+            
+            # Display results
+            print("\n=== Hierarchical Structure ===")
+            
+            for theme in hierarchy.themes:
+                print(f"\nTHEME {theme.node_id}: {theme.label}")
+                print(f"  Clusters: {theme.cluster_ids}")
+                
+                for topic in theme.children:
+                    print(f"\n  TOPIC {topic.node_id}: {topic.label}")
+                    print(f"    Clusters: {topic.cluster_ids}")
+                    
+                    for code in topic.children:
+                        print(f"\n    CODE {code.node_id}: {code.label}")
+                        print(f"      Original clusters: {code.cluster_ids}")
+            
+            # Show cluster to path mapping
+            print("\n=== Cluster to Path Mapping ===")
+            for cluster_id, path in sorted(hierarchy.cluster_to_path.items()):
+                print(f"  Cluster {cluster_id} → {path}")
+            
+            # Save results
+            output_data = {
+                "themes": [
+                    {
+                        "id": theme.node_id,
+                        "label": theme.label,
+                        "cluster_ids": theme.cluster_ids,
+                        "topics": [
+                            {
+                                "id": topic.node_id,
+                                "label": topic.label,
+                                "cluster_ids": topic.cluster_ids,
+                                "codes": [
+                                    {
+                                        "id": code.node_id,
+                                        "label": code.label,
+                                        "original_clusters": code.cluster_ids
+                                    }
+                                    for code in topic.children
+                                ]
+                            }
+                            for topic in theme.children
+                        ]
+                    }
+                    for theme in hierarchy.themes
+                ],
+                "cluster_to_path": hierarchy.cluster_to_path
+            }
+            
+            output_file = Path("phase3_test_results.json")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\nResults saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error during testing: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Run the test
+    asyncio.run(run_test())
