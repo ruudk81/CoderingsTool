@@ -122,17 +122,18 @@ class Phase2Merger:
             tf, idf, weighted_clusters_dict, words
         )
         
-        # Normalize for clustering
-        normalized_vectors = normalize(weighted_c_tf_idf.toarray())
+        # Normalize for clustering (L2 normalization makes euclidean distance equivalent to cosine)
+        normalized_vectors = normalize(weighted_c_tf_idf.toarray(), norm='l2', axis=1)
         
         # Step 6: Use HDBSCAN to find groups of similar clusters
         # Use more conservative parameters to prevent over-merging
         meta_clusterer = hdbscan.HDBSCAN(
             min_cluster_size=4,  # Increased to be less aggressive
             min_samples=3,  # Require more samples for core points
-            metric='cosine',  # Better for text similarity
+            metric='euclidean',  # Use euclidean (cosine not supported by BallTree)
             cluster_selection_method='eom',
-            cluster_selection_epsilon=0.5  # Allow some flexibility
+            cluster_selection_epsilon=0.3,  # Tighter epsilon for less merging
+            algorithm='best'  # Let HDBSCAN choose the best algorithm
         )
         
         merge_labels = meta_clusterer.fit_predict(normalized_vectors)
