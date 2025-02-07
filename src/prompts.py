@@ -248,4 +248,32 @@ Create a 1-2 sentence summary in {language} that:
 Write a concise summary that someone reviewing customer feedback would find useful.
 """
 
+THEME_SUMMARY_PROMPT = """
+You are a {language} expert creating a summary for a theme in customer feedback analysis about prepared meals.
+
+# Theme
+{theme_label}
+
+# Survey Question
+"{var_lab}"
+
+# Most Representative Codes and Examples
+{representative_items}
+
+# Task
+Based on these representative examples, create a comprehensive summary that:
+1. Captures the main concerns or topics within this theme
+2. Explains how the different codes relate to each other
+3. Provides insight into what customers are saying overall about this theme
+
+# Requirements
+- Write in {language}
+- Be specific about customer preferences and concerns
+- Use 2-3 sentences maximum
+- Focus on the common patterns across the examples
+
+# Output
+Write a clear, insightful summary that helps understand what this theme represents.
+"""
+
 

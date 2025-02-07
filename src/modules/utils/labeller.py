@@ -8,12 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from tqdm import tqdm
 import instructor
 from openai import OpenAI
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Project imports
 import models
 from config import DEFAULT_LANGUAGE, DEFAULT_MODEL, OPENAI_API_KEY
 from modules.utils import qualityFilter
-from prompts import CLUSTER_LABELING_PROMPT, RESPONSE_SUMMARY_PROMPT
+from prompts import CLUSTER_LABELING_PROMPT, RESPONSE_SUMMARY_PROMPT, THEME_SUMMARY_PROMPT
 
 # Patch OpenAI client with instructor for structured output
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY))
@@ -456,6 +457,190 @@ class Labeller:
                 summary_parts.append(f"Code: {', '.join(list(codes)[:2])}")
             
             return "; ".join(summary_parts) if summary_parts else "No specific labels"
+    
+    def get_representative_items_for_theme(
+        self, 
+        theme_id: int, 
+        label_models: List[models.LabelModel],
+        max_codes: int = 5,
+        max_segments_per_code: int = 3
+    ) -> Dict:
+        """Get most representative codes and segments for a theme using embeddings"""
+        
+        # 1. Collect all items in this theme
+        theme_data = {
+            'codes': {},  # code_id -> list of items
+            'all_embeddings': []
+        }
+        
+        for model in label_models:
+            if model.response_segment:
+                for segment in model.response_segment:
+                    if segment.Theme and theme_id in segment.Theme:
+                        # Store code data
+                        if segment.Code:
+                            for code_id, code_label in segment.Code.items():
+                                if code_id not in theme_data['codes']:
+                                    theme_data['codes'][code_id] = {
+                                        'label': code_label,
+                                        'items': []
+                                    }
+                                
+                                theme_data['codes'][code_id]['items'].append({
+                                    'embedding': segment.code_embedding,
+                                    'segment': segment.segment_response,
+                                    'description': segment.code_description,
+                                    'descriptive_code': segment.descriptive_code
+                                })
+                                theme_data['all_embeddings'].append(segment.code_embedding)
+        
+        if not theme_data['all_embeddings']:
+            return {}
+        
+        # 2. Calculate theme centroid
+        theme_centroid = np.mean(theme_data['all_embeddings'], axis=0)
+        
+        # 3. Find most representative codes
+        code_representations = {}
+        for code_id, code_data in theme_data['codes'].items():
+            # Calculate mean embedding for this code
+            code_embedding = np.mean([item['embedding'] for item in code_data['items']], axis=0)
+            # Calculate similarity to theme centroid
+            similarity = cosine_similarity([code_embedding], [theme_centroid])[0][0]
+            code_representations[code_id] = {
+                'similarity': similarity,
+                'label': code_data['label'],
+                'items': code_data['items']
+            }
+        
+        # 4. Select top codes by similarity
+        top_codes = sorted(code_representations.items(), 
+                          key=lambda x: x[1]['similarity'], 
+                          reverse=True)[:max_codes]
+        
+        # 5. For each top code, find most representative segments
+        representative_data = {}
+        for code_id, code_data in top_codes:
+            code_centroid = np.mean([item['embedding'] for item in code_data['items']], axis=0)
+            
+            # Calculate similarities for all segments in this code
+            similarities = []
+            for item in code_data['items']:
+                sim = cosine_similarity([item['embedding']], [code_centroid])[0][0]
+                similarities.append((sim, item))
+            
+            # Select top segments
+            top_segments = sorted(similarities, key=lambda x: x[0], reverse=True)[:max_segments_per_code]
+            
+            representative_data[code_id] = {
+                'label': code_data['label'],
+                'segments': [item[1] for item in top_segments],
+                'similarity_to_theme': code_data['similarity']
+            }
+        
+        return representative_data
+    
+    async def _generate_theme_summary(self, theme_id: int, theme_label: str, 
+                                     representative_items: Dict) -> str:
+        """Generate a summary for a single theme using LLM"""
+        
+        # Format representative items for the prompt
+        items_text = ""
+        for code_id, code_data in representative_items.items():
+            items_text += f"\nCode: {code_data['label']}\n"
+            items_text += f"Relevance to theme: {code_data['similarity_to_theme']:.2f}\n"
+            items_text += "Representative examples:\n"
+            
+            for item in code_data['segments']:
+                items_text += f"  - Segment: \"{item['segment']}\"\n"
+                items_text += f"    Description: {item['description']}\n"
+                items_text += f"    Code: {item['descriptive_code']}\n"
+        
+        prompt = THEME_SUMMARY_PROMPT.format(
+            language=self.config.language,
+            var_lab=self.var_lab,
+            theme_label=theme_label,
+            representative_items=items_text
+        )
+        
+        try:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.client.chat.completions.create,
+                    model=self.config.model,
+                    messages=[
+                        {"role": "system", "content": f"You are a {self.config.language} expert analyzing customer feedback themes."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=300  # Theme summaries can be a bit longer
+                )
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if self.verbose:
+                print(f"Error generating theme summary for theme {theme_id}: {e}")
+            return f"Error generating summary for theme {theme_label}"
+    
+    def generate_theme_summaries(self, label_models: List[models.LabelModel]) -> Dict[int, Dict]:
+        """Generate summaries for all themes based on their most representative content"""
+        
+        if self.verbose:
+            print("\nGenerating theme summaries...")
+        
+        # Extract unique themes
+        themes = {}
+        for model in label_models:
+            if model.response_segment:
+                for segment in model.response_segment:
+                    if segment.Theme:
+                        for theme_id, theme_label in segment.Theme.items():
+                            themes[theme_id] = theme_label
+        
+        if self.verbose:
+            print(f"Found {len(themes)} unique themes")
+        
+        # Generate summaries for each theme
+        theme_summaries = {}
+        
+        async def generate_all_theme_summaries():
+            tasks = []
+            for theme_id, theme_label in themes.items():
+                # Get representative items
+                representative_items = self.get_representative_items_for_theme(
+                    theme_id, label_models
+                )
+                
+                if representative_items:
+                    tasks.append((
+                        theme_id, 
+                        theme_label,
+                        self._generate_theme_summary(theme_id, theme_label, representative_items)
+                    ))
+            
+            results = []
+            for theme_id, theme_label, summary_task in tasks:
+                summary = await summary_task
+                results.append((theme_id, theme_label, summary))
+            
+            return results
+        
+        # Run async tasks
+        summaries = asyncio.run(generate_all_theme_summaries())
+        
+        # Process results
+        for theme_id, theme_label, summary in summaries:
+            theme_summaries[theme_id] = {
+                'label': theme_label,
+                'summary': summary,
+                'response_count': sum(1 for model in label_models 
+                                    for segment in (model.response_segment or [])
+                                    if segment.Theme and theme_id in segment.Theme)
+            }
+        
+        return theme_summaries
 
 
 # Example usage
@@ -494,7 +679,19 @@ if __name__ == "__main__":
     # Save results
     csv_handler.save_to_csv(label_models, filename, 'labels')
     
+    # Generate theme summaries
+    theme_summaries = labeller.generate_theme_summaries(label_models)
+    
+    # Print theme summaries
+    print("\n\n=== THEME SUMMARIES ===")
+    for theme_id, theme_data in sorted(theme_summaries.items()):
+        print(f"\nTheme {theme_id}: {theme_data['label']}")
+        print(f"Response count: {theme_data['response_count']}")
+        print(f"Summary: {theme_data['summary']}")
+        print("-" * 60)
+    
     # Print example results
+    print("\n\n=== EXAMPLE RESPONSES ===")
     for model in label_models[:3]:
         print(f"\nRespondent {model.respondent_id}:")
         print(f"Original response: {model.response}")
