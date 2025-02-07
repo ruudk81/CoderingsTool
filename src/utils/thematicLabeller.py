@@ -104,7 +104,7 @@ class ThematicLabeller:
     def __init__(self, config: LabellerConfig = None, cache_manager=None, filename: str = None):
         # Force fresh config to avoid caching issues
         self.config = config or LabellerConfig()
-        self.cache_manager = cache_manager
+        self.cache_manager = cache_manager  # Only kept for compatibility with test section
         self.filename = filename or "unknown"
         self.survey_question = ""
         
