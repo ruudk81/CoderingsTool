@@ -83,6 +83,10 @@ class ClusterGenerator:
         self.quality_analyzer = None  # Will be initialized after clustering
         self.clustering_attempts = []  # Track attempts for reporting
         
+        # Store clustering parameters
+        self.min_samples = None
+        self.min_cluster_size = None
+        
         # Override embedding_type from config if provided
         if self.config and self.config.embedding_type:
             self.embedding_type = self.config.embedding_type
@@ -108,6 +112,9 @@ class ClusterGenerator:
             data_size = len(self.output_list) if self.output_list else 1000
             cluster_params = self.config.get_auto_params(data_size)
             self.cluster_model = hdbscan.HDBSCAN(**cluster_params)
+            # Store parameters for reporting
+            self.min_samples = cluster_params['min_samples']
+            self.min_cluster_size = cluster_params['min_cluster_size']
             if self.verbose:
                 print("Using default clustering: HDBSCAN")
                 print(f"Parameters: {cluster_params}")
