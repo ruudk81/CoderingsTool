@@ -87,6 +87,7 @@ class MergerConfig(BaseModel):
     max_retries: int = 3
     retry_delay: int = 2
     language: str = DEFAULT_LANGUAGE
+    verbose: bool = False  # If True, enable detailed logging
 
 # Define models for cluster data
 class ClusterData(BaseModel):
@@ -133,6 +134,7 @@ class BatchMergeDecisionResponse(BaseModel):
     
     model_config = ConfigDict(from_attributes=True)
 
+# Set up logger
 logger = logging.getLogger(__name__)
 
 
@@ -145,6 +147,9 @@ class ClusterMerger:
         self.client = client
         self.max_merge_group_size = 5      # Maximum size for any merge group
         self.similarity_threshold = 0.95   # Fixed threshold for high similarity pairs
+        
+        # Configure logging based on verbose flag
+        self._configure_logging()
         
         # Validate input_list is a list of ClusterModel objects if provided
         if input_list is not None and not all(isinstance(item, models.ClusterModel) for item in input_list):
@@ -558,26 +563,40 @@ class ClusterMerger:
             - List of ClusterModel objects with merged clusters
             - MergeMapping object with merge information (for caching)
         """
+        import time
+        start_time = time.time()
+        
+        logger.info(f"Starting cluster merging process with {len(input_list) if input_list else 0} clusters")
+        
         # Update input data if provided
         if input_list is not None:
             # Validate input_list is a list of ClusterModel objects
             if not all(isinstance(item, models.ClusterModel) for item in input_list):
                 raise ValueError("input_list must be a list of ClusterModel objects")
             self.input_clusters = input_list
+            logger.info(f"Received {len(input_list)} ClusterModel objects as input")
             
         if var_lab is not None:
             self.var_lab = var_lab
+            logger.info(f"Using research question: '{var_lab}'")
             
         # Validate input
         if not self.input_clusters or not self.var_lab:
             raise ValueError("Input clusters and var_lab must be provided")
         
         # Run the actual merging process
+        logger.info("Beginning cluster merge analysis...")
         merged_clusters = asyncio.run(self._merge_clusters_async())
         
         # Verify output is a list of ClusterModel objects
         if not all(isinstance(item, models.ClusterModel) for item in merged_clusters):
             raise ValueError("Output must be a list of ClusterModel objects")
+        
+        # Calculate time taken
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.info(f"Cluster merging completed in {elapsed_time:.2f} seconds")
+        logger.info(f"Produced {len(merged_clusters)} ClusterModel objects with merged clusters")
             
         # Return both the merged clusters and the merge mapping for caching
         return merged_clusters, self.merge_mapping
@@ -712,6 +731,22 @@ class ClusterMerger:
         
         return output_list
     
+    def _configure_logging(self):
+        """Configure logger based on verbose flag"""
+        # Create console handler if none exists
+        if not logger.handlers:
+            console_handler = logging.StreamHandler()
+            formatter = logging.Formatter('[CLUSTER MERGER] %(levelname)s: %(message)s')
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
+        
+        # Set log level based on verbose flag
+        if self.config.verbose:
+            logger.setLevel(logging.INFO)
+            logger.info("Verbose logging enabled for ClusterMerger")
+        else:
+            logger.setLevel(logging.WARNING)
+            
     def to_cluster_model(self, merge_mapping) -> List[models.ClusterModel]:
         """Convert internal data to ClusterModel format
         
