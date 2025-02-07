@@ -63,73 +63,75 @@ class MergeResultMapper(BaseModel):
     # Config
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for arrays with embeddings
 
+# Import prompts with fallbacks
 try:
-    # Try direct import (from utils folder)
-    from labeller import (
-        LabellerConfig, ClusterData, InitialLabel, MergeMapping
-    )
     from prompts import SIMILARITY_SCORING_PROMPT
-    
-    # Define new response models for binary merging decision
-    class MergeDecision(BaseModel):
-        """Decision about whether to merge two clusters"""
-        cluster_id_1: int
-        cluster_id_2: int
-        should_merge: bool
-        reason: str
-        
-        model_config = ConfigDict(from_attributes=True)
-
-    class BatchMergeDecisionResponse(BaseModel):
-        """Batch response for merge decisions"""
-        decisions: list[MergeDecision]
-        
-        model_config = ConfigDict(from_attributes=True)
 except ImportError:
     try:
-        # Try relative import (as module)
-        from .labeller import (
-            LabellerConfig, ClusterData, InitialLabel, MergeMapping
-        )
         from ..prompts import SIMILARITY_SCORING_PROMPT
-        
-        # Define new response models for binary merging decision
-        class MergeDecision(BaseModel):
-            """Decision about whether to merge two clusters"""
-            cluster_id_1: int
-            cluster_id_2: int
-            should_merge: bool
-            reason: str
-            
-            model_config = ConfigDict(from_attributes=True)
-
-        class BatchMergeDecisionResponse(BaseModel):
-            """Batch response for merge decisions"""
-            decisions: list[MergeDecision]
-            
-            model_config = ConfigDict(from_attributes=True)
     except ImportError:
-        # Try absolute import (from any directory)
-        from src.modules.utils.labeller import (
-            LabellerConfig, ClusterData, InitialLabel, MergeMapping
-        )
         from src.prompts import SIMILARITY_SCORING_PROMPT
-        
-        # Define new response models for binary merging decision
-        class MergeDecision(BaseModel):
-            """Decision about whether to merge two clusters"""
-            cluster_id_1: int
-            cluster_id_2: int
-            should_merge: bool
-            reason: str
-            
-            model_config = ConfigDict(from_attributes=True)
 
-        class BatchMergeDecisionResponse(BaseModel):
-            """Batch response for merge decisions"""
-            decisions: list[MergeDecision]
-            
-            model_config = ConfigDict(from_attributes=True)
+# Configuration for the merger
+from config import OPENAI_API_KEY, DEFAULT_MODEL, DEFAULT_LANGUAGE
+
+# Define configuration and data models directly to avoid circular imports
+class MergerConfig(BaseModel):
+    """Configuration for the ClusterMerger"""
+    model: str = DEFAULT_MODEL
+    api_key: str = OPENAI_API_KEY
+    max_concurrent_requests: int = 10
+    batch_size: int = 20
+    similarity_threshold: float = 0.95  # Auto-merge threshold
+    merge_score_threshold: float = 0.7  # LLM merge threshold
+    max_retries: int = 3
+    retry_delay: int = 2
+    language: str = DEFAULT_LANGUAGE
+
+# Define models for cluster data
+class ClusterData(BaseModel):
+    """Internal representation of cluster with extracted data"""
+    cluster_id: int
+    descriptive_codes: List[str]
+    code_descriptions: List[str]
+    embeddings: np.ndarray
+    centroid: np.ndarray
+    size: int
+    
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
+
+class InitialLabel(BaseModel):
+    """Initial label for a cluster"""
+    cluster_id: int
+    label: str
+    keywords: List[str]
+    confidence: float = Field(ge=0.0, le=1.0)
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class MergeMapping(BaseModel):
+    """Mapping of cluster merges"""
+    merge_groups: List[List[int]]  # Groups of cluster IDs to merge
+    cluster_to_merged: Dict[int, int]  # Original cluster ID → Merged cluster ID
+    merge_reasons: Dict[int, str]  # Merged cluster ID → Reason
+    
+    model_config = ConfigDict(from_attributes=True)
+
+# Define response models for binary merging decision
+class MergeDecision(BaseModel):
+    """Decision about whether to merge two clusters"""
+    cluster_id_1: int
+    cluster_id_2: int
+    should_merge: bool
+    reason: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class BatchMergeDecisionResponse(BaseModel):
+    """Batch response for merge decisions"""
+    decisions: list[MergeDecision]
+    
+    model_config = ConfigDict(from_attributes=True)
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +140,7 @@ class ClusterMerger:
     """Merges clusters that are not meaningfully differentiated from the perspective of the research question"""
     
     def __init__(self, input_list=None, var_lab=None, config=None, client=None):
-        self.config = config or LabellerConfig()
+        self.config = config or MergerConfig()
         self.semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
         self.client = client
         self.max_merge_group_size = 5      # Maximum size for any merge group
