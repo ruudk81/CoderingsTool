@@ -50,35 +50,9 @@ class BatchLabelResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+
+
 # Phase 2 Data Models
-class SimilarityScore(BaseModel):
-    """Similarity score between clusters"""
-    cluster_id_1: int
-    cluster_id_2: int
-    score: float = Field(ge=0.0, le=1.0)
-    merge_suggested: bool
-    reason: str
-    
-    model_config = ConfigDict(from_attributes=True)
-
-
-class BatchSimilarityResponse(BaseModel):
-    """Batch response for similarity scoring"""
-    scores: List[SimilarityScore]
-    
-    model_config = ConfigDict(from_attributes=True)
-
-
-class MergeMapping(BaseModel):
-    """Mapping of cluster merges"""
-    merge_groups: List[List[int]]  # Groups of cluster IDs to merge
-    cluster_to_merged: Dict[int, int]  # Original cluster ID → Merged cluster ID
-    merge_reasons: Dict[int, str]  # Merged cluster ID → Reason
-    
-    model_config = ConfigDict(from_attributes=True)
-
-
-# Phase 3 Data Models
 class HierarchyNode(BaseModel):
     """Node in the hierarchical structure"""
     node_id: str  # e.g., "1.2.3"
@@ -98,7 +72,7 @@ class HierarchicalStructure(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Phase 4 Data Models
+# Phase 3 Data Models
 class ThemeSummary(BaseModel):
     """Summary for a theme"""
     theme_id: str
@@ -122,16 +96,6 @@ class ClusterData(BaseModel):
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
 
 
-class MergedCluster(BaseModel):
-    """Cluster after merging"""
-    merged_id: int
-    original_ids: List[int]
-    label: str
-    descriptive_codes: List[str]
-    code_descriptions: List[str]
-    centroid: np.ndarray
-    
-    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
 
 
 class Labeller:
@@ -161,17 +125,12 @@ class Labeller:
         initial_labels = await self.phase1_initial_labels(cluster_data, var_lab)
         logger.info(f"Generated initial labels for {len(initial_labels)} clusters")
         
-        # Phase 2: Merge similar clusters
-        merge_mapping = await self.phase2_merge_similar(cluster_data, initial_labels, var_lab)
-        merged_clusters = self.apply_merging(cluster_data, initial_labels, merge_mapping)
-        logger.info(f"Merged to {len(merged_clusters)} clusters")
-        
-        # Phase 3: Create hierarchy
-        hierarchy = await self.phase3_create_hierarchy(merged_clusters, var_lab)
+        # Phase 2: Create hierarchy (merger moved to step 5)
+        hierarchy = await self.phase2_create_hierarchy(cluster_data, initial_labels, var_lab)
         logger.info("Created hierarchical structure")
         
-        # Phase 4: Generate summaries
-        summaries = await self.phase4_theme_summaries(hierarchy, var_lab)
+        # Phase 3: Generate summaries
+        summaries = await self.phase3_theme_summaries(hierarchy, var_lab)
         logger.info(f"Generated {len(summaries)} theme summaries")
         
         # Convert to output format
@@ -188,8 +147,8 @@ class Labeller:
         # Collect data by cluster ID
         for result in cluster_results:
             for segment in result.response_segment:
-                if segment.mirco_cluster is not None:
-                    cluster_id = list(segment.mirco_cluster.keys())[0]
+                if segment.micro_cluster is not None:
+                    cluster_id = list(segment.micro_cluster.keys())[0]
                     cluster_data[cluster_id]['descriptive_codes'].append(segment.descriptive_code)
                     cluster_data[cluster_id]['code_descriptions'].append(segment.code_description)
                     # Use description embeddings by default
@@ -217,90 +176,38 @@ class Labeller:
                                   var_lab: str) -> Dict[int, InitialLabel]:
         """Phase 1: Generate initial labels for each cluster"""
         try:
-            from phase1_labeller import Phase1Labeller
+            from labeller_phase1_labeller import Phase1Labeller
         except ImportError:
-            from .phase1_labeller import Phase1Labeller
+            from .labeller_phase1_labeller import Phase1Labeller
         
         phase1 = Phase1Labeller(self.config, self.client)
         return await phase1.label_clusters(cluster_data, var_lab)
     
-    async def phase2_merge_similar(self, 
-                                 cluster_data: Dict[int, ClusterData],
-                                 initial_labels: Dict[int, InitialLabel],
-                                 var_lab: str) -> MergeMapping:
-        """Phase 2: Merge clusters that are not meaningfully differentiated"""
-        try:
-            from clusterMerger import ClusterMerger
-        except ImportError:
-            from .clusterMerger import ClusterMerger
-        
-        merger = ClusterMerger(self.config, self.client)
-        return await merger.merge_similar_clusters(cluster_data, initial_labels, var_lab)
-    
-    def apply_merging(self,
-                     cluster_data: Dict[int, ClusterData],
-                     initial_labels: Dict[int, InitialLabel],
-                     merge_mapping: MergeMapping) -> Dict[int, MergedCluster]:
-        """Apply the merge mapping to create merged clusters"""
-        merged_clusters = {}
-        next_id = 0
-        
-        # Process each merge group
-        for group in merge_mapping.merge_groups:
-            # Collect data from all clusters in the group
-            all_codes = []
-            all_descriptions = []
-            all_embeddings = []
-            
-            for cluster_id in group:
-                cluster = cluster_data[cluster_id]
-                all_codes.extend(cluster.descriptive_codes)
-                all_descriptions.extend(cluster.code_descriptions)
-                all_embeddings.append(cluster.embeddings)
-            
-            # Combine embeddings and calculate new centroid
-            combined_embeddings = np.vstack(all_embeddings)
-            new_centroid = np.mean(combined_embeddings, axis=0)
-            
-            # Use the label from the cluster with highest confidence
-            best_cluster_id = max(group, key=lambda cid: initial_labels[cid].confidence)
-            label = initial_labels[best_cluster_id].label
-            
-            merged_clusters[next_id] = MergedCluster(
-                merged_id=next_id,
-                original_ids=group,
-                label=label,
-                descriptive_codes=all_codes,
-                code_descriptions=all_descriptions,
-                centroid=new_centroid
-            )
-            next_id += 1
-        
-        return merged_clusters
-    
-    async def phase3_create_hierarchy(self,
-                                    merged_clusters: Dict[int, MergedCluster],
+    async def phase2_create_hierarchy(self,
+                                    cluster_data: Dict[int, ClusterData],
+                                    initial_labels: Dict[int, InitialLabel],
                                     var_lab: str) -> HierarchicalStructure:
-        """Phase 3: Create 3-level hierarchical structure"""
+        """Phase 2: Create 3-level hierarchical structure"""
         try:
-            from phase3_organizer import Phase3Organizer
+            from labeller_phase2_organizer import Phase2Organizer
         except ImportError:
-            from .phase3_organizer import Phase3Organizer
+            from .labeller_phase2_organizer import Phase2Organizer
         
-        phase3 = Phase3Organizer(self.config, self.client)
-        return await phase3.create_hierarchy(merged_clusters, var_lab)
+        phase2 = Phase2Organizer(self.config, self.client)
+        return await phase2.create_hierarchy(cluster_data, initial_labels, var_lab)
     
-    async def phase4_theme_summaries(self,
+    
+    async def phase3_theme_summaries(self,
                                    hierarchy: HierarchicalStructure,
                                    var_lab: str) -> List[ThemeSummary]:
-        """Phase 4: Generate summaries for each theme"""
+        """Phase 3: Generate summaries for each theme"""
         try:
-            from phase4_summarizer import Phase4Summarizer
+            from labeller_phase3_summarizer import Phase3Summarizer
         except ImportError:
-            from .phase4_summarizer import Phase4Summarizer
+            from .labeller_phase3_summarizer import Phase3Summarizer
         
-        phase4 = Phase4Summarizer(self.config, self.client)
-        return await phase4.generate_summaries(hierarchy, var_lab)
+        phase3 = Phase3Summarizer(self.config, self.client)
+        return await phase3.generate_summaries(hierarchy, var_lab)
     
     def create_label_models(self,
                           cluster_results: List[models.ClusterModel],
@@ -318,8 +225,8 @@ class Labeller:
             label_segments = []
             
             for segment in result.response_segment:
-                if segment.mirco_cluster is not None:
-                    cluster_id = list(segment.mirco_cluster.keys())[0]
+                if segment.micro_cluster is not None:
+                    cluster_id = list(segment.micro_cluster.keys())[0]
                     
                     # Get hierarchy path for this cluster
                     if cluster_id in hierarchy.cluster_to_path:
@@ -345,7 +252,7 @@ class Labeller:
                                 code_description=segment.code_description,
                                 code_embedding=segment.code_embedding,
                                 description_embedding=segment.description_embedding,
-                                mirco_cluster=segment.mirco_cluster,
+                                micro_cluster=segment.micro_cluster,
                                 Theme={int(theme_id): theme_node.label} if theme_node else None,
                                 Topic={hash('.'.join(path_parts[:2])) % 10000: topic_node.label} if topic_node else None,
                                 Code={hash(path) % 10000: code_node.label} if code_node else None
@@ -408,8 +315,8 @@ if __name__ == "__main__":
         unique_clusters = set()
         for result in cluster_results:
             for segment in result.response_segment:
-                if segment.mirco_cluster:
-                    cluster_id = list(segment.mirco_cluster.keys())[0]
+                if segment.micro_cluster:
+                    cluster_id = list(segment.micro_cluster.keys())[0]
                     unique_clusters.add(cluster_id)
         
         print(f"Found {len(unique_clusters)} unique clusters")
