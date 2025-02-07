@@ -335,10 +335,11 @@ class Phase3Organizer:
 
 
 if __name__ == "__main__":
-    """Test Phase 3 with sample merged clusters"""
+    """Test Phase 3 with actual cached data from Phase 2"""
     import sys
     from pathlib import Path
     import json
+    import pickle
     
     # Add project paths
     sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
@@ -346,58 +347,59 @@ if __name__ == "__main__":
     from openai import AsyncOpenAI
     import instructor
     from config import OPENAI_API_KEY, DEFAULT_MODEL
-    import numpy as np
+    from cache_manager import CacheManager
+    from cache_config import CacheConfig
+    import data_io
     
-    # Create sample merged clusters for testing
-    sample_merged_clusters = {
-        0: MergedCluster(
-            merged_id=0,
-            original_ids=[1, 2],  # Merged clusters 1 and 2
-            label="Minder afval en milieuvriendelijke verpakkingen",
-            descriptive_codes=["Ik wil minder afval", "Te veel verpakkingsmateriaal", "Biologisch afbreekbaar", "Milieuvriendelijk verpakken"],
-            code_descriptions=["Consument wil minder afval produceren", "Te veel plastic verpakkingen", "Wil biologisch afbreekbare opties", "Duurzame verpakkingsmaterialen"],
-            centroid=np.random.randn(768)
-        ),
-        1: MergedCluster(
-            merged_id=1,
-            original_ids=[3],  # Single cluster
-            label="Prijs-kwaliteit verhouding",
-            descriptive_codes=["Goede prijs-kwaliteit", "Betaalbare producten"],
-            code_descriptions=["Goede verhouding tussen prijs en kwaliteit", "Producten moeten betaalbaar zijn"],
-            centroid=np.random.randn(768)
-        ),
-        2: MergedCluster(
-            merged_id=2,
-            original_ids=[4, 5],  # Additional merged clusters
-            label="Gezonde en biologische producten",
-            descriptive_codes=["Gezonde voeding", "Biologische producten", "Zonder toevoegingen"],
-            code_descriptions=["Belangrijk voor gezondheid", "Biologisch geteeld", "Geen kunstmatige stoffen"],
-            centroid=np.random.randn(768)
-        )
-    }
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
     
-    # Test parameters
-    var_lab = "Wat vind je het belangrijkste bij het kopen van voedselproducten?"
+    # File and variable info
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    var_name = "Q20"
     
-    # Initialize configuration
-    config = LabellerConfig(
-        api_key=OPENAI_API_KEY,
-        model=DEFAULT_MODEL
-    )
+    # Load phase 2 results from cache
+    phase2_data = cache_manager.load_intermediate_data(filename, "phase2_merge_mapping", dict)
     
-    # Initialize phase 3 organizer
-    client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
-    phase3 = Phase3Organizer(config, client)
-    
-    async def run_test():
-        """Run the test"""
-        print("=== Testing Phase 3: Hierarchical Organization ===")
-        print(f"Variable label: {var_lab}")
-        print(f"Number of merged clusters: {len(sample_merged_clusters)}")
+    if phase2_data:
+        print("Loaded phase 2 results from cache")
         
-        try:
-            # Create hierarchy
-            hierarchy = await phase3.create_hierarchy(sample_merged_clusters, var_lab)
+        # Extract components
+        merge_mapping = phase2_data['merge_mapping']
+        cluster_data = phase2_data['cluster_data']
+        initial_labels = phase2_data['initial_labels']
+        
+        # Create merged clusters (from labeller.py apply_merging method)
+        from labeller import Labeller
+        temp_labeller = Labeller()
+        merged_clusters = temp_labeller.apply_merging(cluster_data, initial_labels, merge_mapping)
+        print(f"Created {len(merged_clusters)} merged clusters")
+        
+        # Get variable label
+        data_loader = data_io.DataLoader()
+        var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+        print(f"Variable label: {var_lab}")
+        
+        # Initialize configuration
+        config = LabellerConfig(
+            api_key=OPENAI_API_KEY,
+            model=DEFAULT_MODEL
+        )
+    
+        # Initialize phase 3 organizer
+        client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+        phase3 = Phase3Organizer(config, client)
+        
+        async def run_test():
+            """Run the test"""
+            print("=== Testing Phase 3: Hierarchical Organization with Real Data ===")
+            print(f"Variable label: {var_lab}")
+            print(f"Number of merged clusters: {len(merged_clusters)}")
+            
+            try:
+                # Create hierarchy
+                hierarchy = await phase3.create_hierarchy(merged_clusters, var_lab)
             
             # Display results
             print("\n=== Hierarchical Structure ===")
@@ -414,50 +416,68 @@ if __name__ == "__main__":
                         print(f"\n    CODE {code.node_id}: {code.label}")
                         print(f"      Original clusters: {code.cluster_ids}")
             
-            # Show cluster to path mapping
-            print("\n=== Cluster to Path Mapping ===")
-            for cluster_id, path in sorted(hierarchy.cluster_to_path.items()):
-                print(f"  Cluster {cluster_id} → {path}")
-            
-            # Save results
-            output_data = {
-                "themes": [
-                    {
-                        "id": theme.node_id,
-                        "label": theme.label,
-                        "cluster_ids": theme.cluster_ids,
-                        "topics": [
-                            {
-                                "id": topic.node_id,
-                                "label": topic.label,
-                                "cluster_ids": topic.cluster_ids,
-                                "codes": [
-                                    {
-                                        "id": code.node_id,
-                                        "label": code.label,
-                                        "original_clusters": code.cluster_ids
-                                    }
-                                    for code in topic.children
-                                ]
-                            }
-                            for topic in theme.children
-                        ]
-                    }
-                    for theme in hierarchy.themes
-                ],
-                "cluster_to_path": hierarchy.cluster_to_path
-            }
-            
-            output_file = Path("phase3_test_results.json")
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"\nResults saved to: {output_file}")
-            
-        except Exception as e:
-            print(f"Error during testing: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    # Run the test
-    asyncio.run(run_test())
+                # Save to cache for phase 4
+                cache_key = 'phase3_hierarchy'
+                cache_data = {
+                    'hierarchy': hierarchy,
+                    'merged_clusters': merged_clusters
+                }
+                cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
+                print(f"\nSaved results to cache with key '{cache_key}'")
+                
+                # Show cluster to path mapping (sample)
+                print("\n=== Cluster to Path Mapping (first 10) ===")
+                for i, (cluster_id, path) in enumerate(sorted(hierarchy.cluster_to_path.items())):
+                    if i >= 10:
+                        print(f"  ... and {len(hierarchy.cluster_to_path) - 10} more")
+                        break
+                    print(f"  Cluster {cluster_id} → {path}")
+                
+                # Save results
+                output_data = {
+                    "themes": [
+                        {
+                            "id": theme.node_id,
+                            "label": theme.label,
+                            "cluster_ids": theme.cluster_ids,
+                            "topics": [
+                                {
+                                    "id": topic.node_id,
+                                    "label": topic.label,
+                                    "cluster_ids": topic.cluster_ids,
+                                    "codes": [
+                                        {
+                                            "id": code.node_id,
+                                            "label": code.label,
+                                            "original_clusters": code.cluster_ids
+                                        }
+                                        for code in topic.children
+                                    ]
+                                }
+                                for topic in theme.children
+                            ]
+                        }
+                        for theme in hierarchy.themes
+                    ],
+                    "cluster_to_path": hierarchy.cluster_to_path
+                }
+                
+                output_file = Path("phase3_test_results.json")
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                
+                print(f"Results saved to: {output_file}")
+                
+            except Exception as e:
+                print(f"Error during testing: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Run the test
+        asyncio.run(run_test())
+    else:
+        print("Missing required cached data.")
+        print("Please ensure you have run:")
+        print("  1. python clusterer.py")
+        print("  2. python phase1_labeller.py")
+        print("  3. python phase2_merger.py")
