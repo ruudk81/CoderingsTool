@@ -41,14 +41,27 @@ This document captures the context and progress from our conversation that began
 - Combines embeddings
 - Working with OpenAI API
   
-### Step 5: Get Clusters ✓ 
-- reduce dimensions of embedding with UMAP
-- cluster with HBDSCAN
+### Step 5: Get Clusters ✓ (Completed)
+- Reduce dimensions of embedding with UMAP
+- Cluster with HDBSCAN
+- Create initial micro-clusters
+
+### Step 6: Merge Similar Clusters ✓ (Completed)
+- Merge HDBSCAN's initial micro-clusters using LLM evaluation
+- Identify clusters that are not meaningfully differentiated
+- Focus on research question relevance
+- Preserve traceability to original clusters
+- Cache merge mapping for next phase
 
 ### TODO
-- step 6: merge HBDSCAN's initial micro clusters by LLM prompt
-- step 7a: label merged micro clusters 
-- step 6b: hierarchical labelling, aside from micro labels alsa macro and micro labeleling by LLM prompt.
+- Step 7a: Label merged micro-clusters
+  - Create descriptive labels for the 38 merged clusters
+  - Focus on distinctive aspects relevant to research question
+  
+- Step 7b: Generate hierarchical structure
+  - Create meta (themes) and meso (topics) levels
+  - Organize micro-clusters into logical groupings
+  - Ensure mutual exclusivity within levels
 
 
 **Guiding Principles**
@@ -61,24 +74,27 @@ We segmented responses to a survey question and clustered these segments by thei
 
 **Overall Workflow**
 
-The labeller will follow a multi-phase approach to create hierarchical labels:
+The labeller follows a multi-phase approach to create hierarchical labels:
 
-1. **Phase 1: Merge initial clusters that are not meaningfully differentiated**
-   - Merge initial clusters with super high cosine similarity of embeddings (based on descriptive codes and code descriptions. Auto-merge >0.95 similarity)
-   - Use LLM to determine which clusters should be merged based on their semantic similarity
-   - Apply semantic merging of the clusters to create differentiated groups
-   - Track cluster-to-group mappings throughout
+1. **✅ COMPLETED - Phase 1: Merge initial clusters that are not meaningfully differentiated**
+   - Merged initial clusters with high cosine similarity (based on descriptive codes and code descriptions)
+   - Used LLM to determine which clusters should be merged based on semantic similarity
+   - Applied semantic merging to create differentiated groups
+   - Tracked cluster-to-group mappings throughout
+   - Reduced from 52 initial clusters to 38 merged clusters (26.9% reduction)
    
-   **Improvement to LLM Merge Decisions:**
-   - Focus the LLM on the research question (var_lab) as the primary context
-   - Present 5 most representative descriptive codes per cluster (based on cosine similarity to centroid)
-   - Frame the decision task explicitly: "Are these clusters meaningfully differentiated in how they answer the research question?"
-   - Batch multiple cluster pair evaluations for efficiency
+   **Key Improvements to LLM Merge Decisions:**
+   - Focused the LLM on the research question (var_lab) as the primary context
+   - Presented 5 most representative descriptive codes per cluster (based on cosine similarity to centroid)
+   - Framed the decision task explicitly: "Are these clusters meaningfully differentiated in how they answer the research question?"
+   - Batched multiple cluster pair evaluations for efficiency (reduced API calls)
    - Structured prompt with clear decision criteria focused on the var_lab perspective
+   - Achieved semantically meaningful merges (e.g., salt-related, portion size, variety clusters)
 
-2. **Phase 2: Initial Label Generation**
-   - Extract descriptive codes and descriptions from merged clusters
+2. **Phase 2: Initial Label Generation (NEXT)**
+   - Extract descriptive codes and descriptions from the 38 merged clusters
    - Generate initial labels for each merged cluster using LLM
+   - Design prompts to focus on the research question context
    - Create distinctive and descriptive labels based on cluster content
 
 3. **Phase 3: Hierarchical Organization**
@@ -182,20 +198,39 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 
 ## Development Priorities
 
-**TODO 1: Implement Cluster Merging**  
-- Use LLM to determine which clusters should merge
-- Create merge groups and remap dictionary
-- Apply merging to consolidate similar clusters
-- Output: `Dict[int, int]` mapping old IDs to new IDs
-- Merge rationale tracking for transparency
-- Optimize process using similarity-based filtering
-- Not exhaustive pairwise comparisons but sequential merging with priority
+**✅ COMPLETED: Phase 1 - Cluster Merging**
+- Implemented Phase2Merger class in phase2_merger.py
+- Created efficient batch processing for LLM cluster comparison
+- Developed research question-focused similarity evaluation
+- Used representative items based on cosine similarity to centroid
+- Created merge groups and remap dictionary
+- Applied merging to consolidate similar clusters
+- Saved merge mapping (with Dict[int, int] of old-to-new cluster IDs)
+- Added merge rationale tracking for transparency
+- Achieved significant efficiency through batched LLM calls
 
-**TODO 2: Implement Initial Label Generation**
-- Generate descriptive labels for merged clusters
+**Results Summary:**
+- Processed 52 initial micro-clusters
+- Merged into 38 final clusters (26.9% reduction)
+- Created 8 multi-cluster groups and preserved 30 singleton clusters
+- Meaningful merges included:
+  - Salt-related clusters (groups of 4 and 3 clusters)
+  - Portion size clusters (3 clusters)
+  - Variety-focused clusters (3 clusters)
+  - Health-related clusters (3 clusters)
+  - Vegetable-related clusters (2 clusters)
+  - Satisfaction/continuation clusters (2 clusters)
+  - Freshness-focused clusters (2 clusters)
+- Preserved important distinctions between price vs. affordability, salt vs. sugar reduction, etc.
+- Successfully cached merge mapping for next pipeline phase
+
+**TODO 2: Implement Initial Label Generation for Merged Clusters**
+- Generate descriptive labels for the 38 merged clusters from Phase 1
 - Extract representative content from each merged cluster
 - Use LLM to create clear, distinctive labels
 - Ensure labels reflect the research question context
+- Load merge mapping from cache to work with the updated cluster structure
+- Design prompt to focus on the most semantically central content in each merged cluster
 
 **TODO 3: Implement Hierarchical Structure Creation**  
 - Organize merged clusters into 3-level hierarchy
