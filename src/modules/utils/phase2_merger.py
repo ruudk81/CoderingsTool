@@ -35,28 +35,75 @@ except (NameError, AttributeError):
         sys.path.insert(0, src_dir)
     print(f"Added {src_dir} to path for imports")
 
+from pydantic import BaseModel, Field, ConfigDict
+
 try:
     # Try direct import (from utils folder)
     from labeller import (
-        LabellerConfig, ClusterData, InitialLabel, MergeMapping,
-        BatchSimilarityResponse, SimilarityScore
+        LabellerConfig, ClusterData, InitialLabel, MergeMapping
     )
     from prompts import SIMILARITY_SCORING_PROMPT
+    
+    # Define new response models for binary merging decision
+    class MergeDecision(BaseModel):
+        """Decision about whether to merge two clusters"""
+        cluster_id_1: int
+        cluster_id_2: int
+        should_merge: bool
+        reason: str
+        
+        model_config = ConfigDict(from_attributes=True)
+
+    class BatchMergeDecisionResponse(BaseModel):
+        """Batch response for merge decisions"""
+        decisions: list[MergeDecision]
+        
+        model_config = ConfigDict(from_attributes=True)
 except ImportError:
     try:
         # Try relative import (as module)
         from .labeller import (
-            LabellerConfig, ClusterData, InitialLabel, MergeMapping,
-            BatchSimilarityResponse, SimilarityScore
+            LabellerConfig, ClusterData, InitialLabel, MergeMapping
         )
         from ..prompts import SIMILARITY_SCORING_PROMPT
+        
+        # Define new response models for binary merging decision
+        class MergeDecision(BaseModel):
+            """Decision about whether to merge two clusters"""
+            cluster_id_1: int
+            cluster_id_2: int
+            should_merge: bool
+            reason: str
+            
+            model_config = ConfigDict(from_attributes=True)
+
+        class BatchMergeDecisionResponse(BaseModel):
+            """Batch response for merge decisions"""
+            decisions: list[MergeDecision]
+            
+            model_config = ConfigDict(from_attributes=True)
     except ImportError:
         # Try absolute import (from any directory)
         from src.modules.utils.labeller import (
-            LabellerConfig, ClusterData, InitialLabel, MergeMapping,
-            BatchSimilarityResponse, SimilarityScore
+            LabellerConfig, ClusterData, InitialLabel, MergeMapping
         )
         from src.prompts import SIMILARITY_SCORING_PROMPT
+        
+        # Define new response models for binary merging decision
+        class MergeDecision(BaseModel):
+            """Decision about whether to merge two clusters"""
+            cluster_id_1: int
+            cluster_id_2: int
+            should_merge: bool
+            reason: str
+            
+            model_config = ConfigDict(from_attributes=True)
+
+        class BatchMergeDecisionResponse(BaseModel):
+            """Batch response for merge decisions"""
+            decisions: list[MergeDecision]
+            
+            model_config = ConfigDict(from_attributes=True)
 
 logger = logging.getLogger(__name__)
 
@@ -68,30 +115,30 @@ class Phase2Merger:
         self.config = config
         self.semaphore = asyncio.Semaphore(config.max_concurrent_requests)
         self.client = client or AsyncOpenAI(api_key=config.api_key)
+        # Override similarity threshold to be more conservative
+        self.similarity_threshold = 0.98  # Higher threshold for auto-merging
+        self.max_merge_group_size = 5     # Maximum size for any merge group
     
     async def merge_similar_clusters(self,
                                    cluster_data: Dict[int, ClusterData],
                                    initial_labels: Dict[int, InitialLabel],
                                    var_lab: str) -> MergeMapping:
-        """Main method to identify and merge similar clusters"""
+        """Main method to identify and merge similar clusters using a hierarchical approach"""
         logger.info(f"Phase 2: Analyzing cluster similarity for research question: '{var_lab}'")
         
         # Step 1: First identify very similar clusters by embedding cosine similarity (fast pre-filter)
         auto_merge_groups = await self._identify_highly_similar_clusters(cluster_data)
-        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on embedding similarity > {self.config.similarity_threshold}")
+        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on embedding similarity > {self.similarity_threshold}")
         
-        # Step 2: Create initial cluster ID groups from auto-merge results
-        cluster_groups = self._initialize_cluster_groups(auto_merge_groups, list(cluster_data.keys()))
-        logger.info(f"Starting with {len(cluster_groups)} cluster groups after auto-merging")
+        # Step 2: Initialize merge groups from auto-merge results
+        merge_groups = self._initialize_merge_groups(auto_merge_groups, list(cluster_data.keys()))
+        logger.info(f"Starting with {len(merge_groups)} initial groups after auto-merging")
         
-        # Step 3: Use LLM to analyze semantic similarity between remaining groups
-        merge_graph = await self._analyze_group_similarity(cluster_groups, cluster_data, initial_labels, var_lab)
-        
-        # Step 4: Use graph-based connected components to find merge groups
-        final_merge_groups = self._find_connected_components(merge_graph, cluster_groups)
+        # Step 3: Use hierarchical one-by-one approach with LLM binary decisions
+        final_merge_groups = await self._hierarchical_merging(merge_groups, cluster_data, initial_labels, var_lab)
         logger.info(f"Final merge: {len(cluster_data)} clusters → {len(final_merge_groups)} groups")
         
-        # Step 5: Create final merge mapping
+        # Step 4: Create final merge mapping
         merge_mapping = self._create_merge_mapping(final_merge_groups, initial_labels)
         
         return merge_mapping
@@ -110,13 +157,13 @@ class Phase2Merger:
         similarities = cosine_similarity(centroids)
         
         # Find clusters to merge based on high similarity
-        similarity_threshold = self.config.similarity_threshold
+        # Use the higher threshold from __init__ (0.98)
         merge_pairs = []
         
         for i in range(len(cluster_ids)):
             for j in range(i+1, len(cluster_ids)):
                 sim_score = similarities[i, j]
-                if sim_score > similarity_threshold:
+                if sim_score > self.similarity_threshold:
                     merge_pairs.append((cluster_ids[i], cluster_ids[j]))
                     logger.info(f"Auto-merge candidates: Clusters {cluster_ids[i]} & {cluster_ids[j]} (similarity: {sim_score:.4f})")
         
@@ -128,13 +175,25 @@ class Phase2Merger:
         G.add_nodes_from(cluster_ids)
         G.add_edges_from(merge_pairs)
         
-        # Get connected components as merge groups
-        merge_groups = [list(comp) for comp in nx.connected_components(G) if len(comp) > 1]
+        # Get connected components as merge groups and enforce maximum size
+        merge_groups = []
+        for comp in nx.connected_components(G):
+            if len(comp) > 1:
+                # Split large components if they exceed max size
+                comp_list = list(comp)
+                if len(comp_list) > self.max_merge_group_size:
+                    # Split into smaller groups of at most max_merge_group_size
+                    for i in range(0, len(comp_list), self.max_merge_group_size):
+                        group = comp_list[i:i + self.max_merge_group_size]
+                        merge_groups.append(group)
+                        logger.info(f"Split large auto-merge group, created group with {len(group)} clusters")
+                else:
+                    merge_groups.append(comp_list)
         
         return merge_groups
     
-    def _initialize_cluster_groups(self, auto_merge_groups: List[List[int]], all_cluster_ids: List[int]) -> List[List[int]]:
-        """Initialize cluster groups based on auto-merge results"""
+    def _initialize_merge_groups(self, auto_merge_groups: List[List[int]], all_cluster_ids: List[int]) -> List[List[int]]:
+        """Initialize merge groups from auto-merge results and add singletons for remaining clusters"""
         # Create a set of all clusters that are already in merge groups
         merged_clusters = set()
         for group in auto_merge_groups:
@@ -148,109 +207,118 @@ class Phase2Merger:
         
         return result_groups
     
-    async def _analyze_group_similarity(self,
-                                      cluster_groups: List[List[int]],
-                                      cluster_data: Dict[int, ClusterData],
-                                      initial_labels: Dict[int, InitialLabel],
-                                      var_lab: str) -> nx.Graph:
-        """Analyze semantic similarity between cluster groups using LLM"""
-        logger.info(f"Analyzing semantic similarity between {len(cluster_groups)} cluster groups...")
+    async def _hierarchical_merging(self,
+                              initial_groups: List[List[int]],
+                              cluster_data: Dict[int, ClusterData],
+                              initial_labels: Dict[int, InitialLabel],
+                              var_lab: str) -> List[List[int]]:
+        """Hierarchically merge clusters using binary decisions from LLM"""
+        logger.info(f"Starting hierarchical merging of {len(initial_groups)} groups...")
         
-        # Create similarity graph
-        G = nx.Graph()
+        # Make a copy of the initial groups to work with
+        current_groups = initial_groups.copy()
         
-        # Add all clusters as nodes
-        for group in cluster_groups:
-            for cid in group:
-                G.add_node(cid)
+        # Set to track group pairs we've already compared
+        compared_pairs = set()
         
-        # Add edges within auto-merged groups (they're already determined to be similar)
-        for group in cluster_groups:
-            if len(group) > 1:
-                for i in range(len(group)):
-                    for j in range(i+1, len(group)):
-                        G.add_edge(group[i], group[j], 
-                                  weight=1.0,
-                                  reason="Auto-merged based on embedding similarity")
-        
-        # Create representative for each group (use the first cluster in each group)
-        group_representatives = [group[0] for group in cluster_groups]
-        
-        # Only compare representatives if more than one group exists
-        if len(group_representatives) > 1:
-            # Create pairs for comparison (only comparing between groups)
-            comparison_pairs = []
-            for i in range(len(group_representatives)):
-                for j in range(i+1, len(group_representatives)):
-                    # Get original groups these representatives belong to
-                    group1 = cluster_groups[i]
-                    group2 = cluster_groups[j]
-                    
-                    # Add pair for comparison
-                    comparison_pairs.append((group_representatives[i], group_representatives[j]))
+        # Keep iterating until we've compared all possible pairs
+        while True:
+            # Find a pair of groups to compare
+            pair_to_compare = self._find_next_pair(current_groups, compared_pairs)
             
-            # Check similarity between representative pairs
-            G = await self._analyze_pair_similarity(
-                comparison_pairs, cluster_data, initial_labels, var_lab, G)
-        
-        return G
-    
-    async def _analyze_pair_similarity(self,
-                                     pairs: List[Tuple[int, int]],
-                                     cluster_data: Dict[int, ClusterData],
-                                     initial_labels: Dict[int, InitialLabel],
-                                     var_lab: str,
-                                     graph: nx.Graph) -> nx.Graph:
-        """Analyze semantic similarity between cluster pairs using LLM"""
-        if not pairs:
-            return graph
-            
-        logger.info(f"Analyzing {len(pairs)} cluster pairs for semantic similarity...")
-        
-        # Create batches of pairs
-        batches = [pairs[i:i + self.config.batch_size] for i in range(0, len(pairs), self.config.batch_size)]
-        
-        # Process batches with progress bar
-        with tqdm(total=len(pairs), desc="Analyzing cluster pairs") as pbar:
-            for batch in batches:
-                # Create prompt for batch analysis
-                prompt = self._create_similarity_prompt(batch, cluster_data, initial_labels, var_lab)
+            # If no more pairs to compare, we're done
+            if not pair_to_compare:
+                break
                 
-                # Get similarity scores
-                try:
-                    async with self.semaphore:
-                        scores = await self._get_similarity_scores(prompt)
-                        
-                        # Update graph with similarity scores
-                        for score in scores.scores:
-                            # Only add edges for clusters that should be merged
-                            if score.merge_suggested:
-                                graph.add_edge(
-                                    score.cluster_id_1,
-                                    score.cluster_id_2,
-                                    weight=score.score,
-                                    reason=score.reason
-                                )
-                                logger.info(f"Merge suggested: Clusters {score.cluster_id_1} & {score.cluster_id_2} "
-                                           f"(score: {score.score:.2f}, reason: {score.reason})")
-                            else:
-                                logger.debug(f"No merge: Clusters {score.cluster_id_1} & {score.cluster_id_2} "
-                                           f"(score: {score.score:.2f})")
-                        
-                        # Update progress
-                        pbar.update(len(batch))
-                except Exception as e:
-                    logger.error(f"Error analyzing similarity batch: {e}")
-                    # Continue with next batch
+            group1_idx, group2_idx = pair_to_compare
+            group1 = current_groups[group1_idx]
+            group2 = current_groups[group2_idx]
+            
+            # Add to compared pairs set
+            compared_pairs.add((group1_idx, group2_idx))
+            
+            # Skip if either group would exceed max size if merged
+            if len(group1) + len(group2) > self.max_merge_group_size:
+                logger.info(f"Skipping comparison of groups {group1_idx} and {group2_idx} - would exceed max size")
+                continue
+            
+            # Get representatives for each group
+            rep1 = group1[0]
+            rep2 = group2[0]
+            
+            # Check if these should be merged
+            should_merge = await self._check_should_merge(rep1, rep2, cluster_data, initial_labels, var_lab)
+            
+            if should_merge:
+                # Merge the groups
+                logger.info(f"Merging groups {group1_idx} and {group2_idx}")
+                
+                # Create new merged group
+                merged_group = group1 + group2
+                
+                # Remove the original groups
+                # We need to be careful about indices - remove higher index first
+                if group1_idx > group2_idx:
+                    current_groups.pop(group1_idx)
+                    current_groups.pop(group2_idx)
+                else:
+                    current_groups.pop(group2_idx)
+                    current_groups.pop(group1_idx)
+                
+                # Add the new merged group
+                current_groups.append(merged_group)
+                
+                # Reset compared_pairs since we've changed the group structure
+                # Indices have changed, so we need to start fresh
+                compared_pairs = set()
         
-        return graph
+        # Return the final groups
+        return current_groups
     
-    def _create_similarity_prompt(self,
-                                pairs: List[Tuple[int, int]],
-                                cluster_data: Dict[int, ClusterData],
-                                initial_labels: Dict[int, InitialLabel],
-                                var_lab: str) -> str:
-        """Create prompt for similarity scoring between cluster pairs"""
+    def _find_next_pair(self, groups: List[List[int]], compared_pairs: Set[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+        """Find the next pair of groups to compare"""
+        for i in range(len(groups)):
+            for j in range(i+1, len(groups)):
+                if (i, j) not in compared_pairs:
+                    return (i, j)
+        return None
+    
+    async def _check_should_merge(self, 
+                               cluster_id_1: int, 
+                               cluster_id_2: int, 
+                               cluster_data: Dict[int, ClusterData],
+                               initial_labels: Dict[int, InitialLabel],
+                               var_lab: str) -> bool:
+        """Check if two clusters should be merged based on LLM decision"""
+        # Create the prompt
+        prompt = self._create_merge_decision_prompt(
+            [(cluster_id_1, cluster_id_2)], cluster_data, initial_labels, var_lab)
+        
+        # Get decision from LLM
+        async with self.semaphore:
+            try:
+                decisions = await self._get_merge_decisions(prompt)
+                
+                # Should only have one decision
+                if decisions and decisions.decisions and len(decisions.decisions) > 0:
+                    decision = decisions.decisions[0]
+                    logger.info(f"Merge decision for clusters {cluster_id_1} & {cluster_id_2}: "
+                              f"{decision.should_merge} (Reason: {decision.reason})")
+                    return decision.should_merge
+                
+                # Default to not merging if no clear decision
+                return False
+            except Exception as e:
+                logger.error(f"Error getting merge decision: {e}")
+                # Be conservative in case of errors
+                return False
+    
+    def _create_merge_decision_prompt(self,
+                                 pairs: List[Tuple[int, int]],
+                                 cluster_data: Dict[int, ClusterData],
+                                 initial_labels: Dict[int, InitialLabel],
+                                 var_lab: str) -> str:
+        """Create prompt for binary merge decisions"""
         prompt = SIMILARITY_SCORING_PROMPT.replace("{var_lab}", var_lab)
         prompt = prompt.replace("{language}", self.config.language)
         
@@ -300,8 +368,8 @@ class Phase2Merger:
         
         return prompt
     
-    async def _get_similarity_scores(self, prompt: str) -> BatchSimilarityResponse:
-        """Get similarity scores from LLM"""
+    async def _get_merge_decisions(self, prompt: str) -> BatchMergeDecisionResponse:
+        """Get binary merge decisions from LLM"""
         import instructor
         
         # Use the client from initialization if it's already an instructor client, otherwise wrap it
@@ -320,7 +388,7 @@ class Phase2Merger:
                 response = await client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
-                    response_model=BatchSimilarityResponse,
+                    response_model=BatchMergeDecisionResponse,
                     temperature=0.3,
                     max_tokens=4000
                 )
@@ -329,18 +397,10 @@ class Phase2Merger:
                 if attempt < self.config.max_retries - 1:
                     await asyncio.sleep(self.config.retry_delay * (attempt + 1))
                 else:
-                    logger.error(f"Failed to get similarity scores after {self.config.max_retries} attempts: {e}")
+                    logger.error(f"Failed to get merge decisions after {self.config.max_retries} attempts: {e}")
                     raise e
     
-    def _find_connected_components(self, graph: nx.Graph, cluster_groups: List[List[int]]) -> List[List[int]]:
-        """Find connected components in similarity graph"""
-        # Get connected components
-        connected_components = list(nx.connected_components(graph))
-        
-        # Convert components to lists
-        component_lists = [list(comp) for comp in connected_components]
-        
-        return component_lists
+    # Removed _find_connected_components method as it's no longer needed
     
     def _create_merge_mapping(self,
                            merge_groups: List[List[int]],
@@ -476,8 +536,7 @@ if __name__ == "__main__":
             api_key=OPENAI_API_KEY,
             model=DEFAULT_MODEL,
             batch_size=5,  # Process a smaller batch size for merge analysis
-            similarity_threshold=0.95,  # For auto-merge by embedding similarity
-            merge_score_threshold=0.7   # For LLM merge threshold
+            similarity_threshold=0.98  # For auto-merge by embedding similarity (will be overridden in init)
         )
         
         # Initialize phase 2 merger
