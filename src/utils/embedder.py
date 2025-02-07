@@ -5,6 +5,7 @@ from typing import List, Dict
 from openai import AsyncOpenAI
 import models
 from config import OPENAI_API_KEY, DEFAULT_EMBEDDING_MODEL
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class Embedder:
     def __init__(
@@ -12,13 +13,17 @@ class Embedder:
         provider: str = "openai",
         client: any = None, 
         embedding_model: str = None, 
-        var_lab: str = None):
+        var_lab: str = None,
+        verbose: bool = False):
         
         self.client = client or AsyncOpenAI(api_key=os.getenv(OPENAI_API_KEY))
         self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
         self.var_lab = var_lab
+        self.verbose = verbose
+        self.verbose_reporter = VerboseReporter(verbose)
+        self.stats = ProcessingStats()
         
-        print(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
+        self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
     
     async def generate_description_batches(self, data: List[models.EmbeddingsModel], batch_size: int = 100):
         all_segments = []
@@ -72,14 +77,20 @@ class Embedder:
     def get_code_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = 5):
         if var_lab is not None:
             self.var_lab = var_lab
-            
-        return asyncio.run(self._get_code_embeddings_async(data, max_concurrent))
+        
+        self.verbose_reporter.step_start("Generating Code Embeddings", emoji="🔤")
+        result = asyncio.run(self._get_code_embeddings_async(data, max_concurrent))
+        self.verbose_reporter.step_complete("Code embeddings generated")
+        return result
       
     def get_description_embeddings(self, data: List[models.EmbeddingsModel], var_lab: str = None, max_concurrent: int = 5):
         if var_lab is not None:
             self.var_lab = var_lab
-            
-        return asyncio.run(self._get_description_embeddings_async(data, max_concurrent))
+        
+        self.verbose_reporter.step_start("Generating Description Embeddings", emoji="📝")
+        result = asyncio.run(self._get_description_embeddings_async(data, max_concurrent))
+        self.verbose_reporter.step_complete("Description embeddings generated")
+        return result
         
     async def _get_description_embeddings_async(self, data: List[models.EmbeddingsModel], max_concurrent: int = 5):
         batches_responses, batches_indices = await self.generate_description_batches(data)
@@ -90,11 +101,21 @@ class Embedder:
         return await self._process_embeddings(data, batches_responses, batches_indices, max_concurrent, is_description=False)
     
     async def _process_embeddings(self, data: List[models.EmbeddingsModel], batches_responses, batches_indices, max_concurrent: int = 5, is_description: bool = False):
-        semaphore = asyncio.Semaphore(max_concurrent)
+        # Calculate total segments
+        total_segments = sum(len(batch) for batch in batches_responses)
+        batch_size = len(batches_responses[0]) if batches_responses else 0
         
-        async def process_batch(batch_responses, batch_indices):
+        self.verbose_reporter.stat_line(f"Total segments to embed: {total_segments}")
+        self.verbose_reporter.stat_line(f"Batch size: {batch_size}, Total batches: {len(batches_responses)}")
+        self.verbose_reporter.stat_line(f"Max concurrent requests: {max_concurrent}")
+        
+        semaphore = asyncio.Semaphore(max_concurrent)
+        processed_count = 0
+        
+        async def process_batch(batch_responses, batch_indices, batch_num):
+            nonlocal processed_count
             async with semaphore:
-                #print(f"Processing batch with {len(batch_responses)} items")
+                self.verbose_reporter.stat_line(f"Processing batch {batch_num}/{len(batches_responses)} ({len(batch_responses)} segments)...")
                 batch_embeddings = await self.process_batches(batch_responses)
                 
                 for (resp_idx, seg_idx), embedding in zip(batch_indices, batch_embeddings):
@@ -105,22 +126,41 @@ class Embedder:
                         data[resp_idx].response_segment[seg_idx].description_embedding = embedding_array
                     else:
                         data[resp_idx].response_segment[seg_idx].code_embedding = embedding_array
-                    
-                #print(f"Completed batch with {len(batch_responses)} items")
+                
+                processed_count += len(batch_responses)
+                self.verbose_reporter.stat_line(f"Progress: {processed_count}/{total_segments} segments processed ({processed_count/total_segments*100:.1f}%)")
 
         # Create and run tasks
         tasks = [
-            process_batch(batch_responses, batch_indices) 
-            for batch_responses, batch_indices in zip(batches_responses, batches_indices)]
+            process_batch(batch_responses, batch_indices, i+1) 
+            for i, (batch_responses, batch_indices) in enumerate(zip(batches_responses, batches_indices))]
         
-        print(f"Starting to process {len(tasks)} batches with max {max_concurrent} concurrent requests")
         await asyncio.gather(*tasks)
-        print(f"Completed all {len(tasks)} batches")
+        
+        # Show sample embeddings
+        sample_segments = []
+        for resp in data[:3]:  # First 3 responses
+            if resp.response_segment:
+                seg = resp.response_segment[0]
+                if is_description:
+                    sample_segments.append(f"{seg.descriptive_code}: {seg.code_description[:50]}...")
+                else:
+                    sample_segments.append(f"{seg.descriptive_code}")
+        
+        if sample_segments:
+            self.verbose_reporter.sample_list(f"Sample {'description' if is_description else 'code'} embeddings", sample_segments)
         
         return data
     
     def combine_embeddings(self, code_embeddings: list, description_embeddings: list) -> list:
-       
+        self.verbose_reporter.step_start("Combining Embeddings", emoji="🔗")
+        
+        # Count total segments
+        total_segments = sum(len(resp.response_segment) for resp in code_embeddings if resp.response_segment)
+        
+        self.verbose_reporter.stat_line(f"Responses with embeddings: {len(code_embeddings)}")
+        self.verbose_reporter.stat_line(f"Total segments to combine: {total_segments}")
+        
         # Create a dictionary to easily look up description embeddings by respondent_id and segment_id
         description_map = {}
         for resp in description_embeddings:
@@ -134,6 +174,7 @@ class Embedder:
         combined_embeddings = code_embeddings.copy()  # Make a shallow copy to avoid modifying original
         
         # Add description embeddings where they exist
+        combined_count = 0
         for resp in combined_embeddings:
             resp_id = resp.respondent_id
             if resp_id in description_map:
@@ -141,7 +182,17 @@ class Embedder:
                     seg_id = segment.segment_id
                     if seg_id in description_map[resp_id]:
                         segment.description_embedding = description_map[resp_id][seg_id]
+                        combined_count += 1
         
+        self.verbose_reporter.stat_line(f"Successfully combined: {combined_count} segment embeddings")
+        
+        # Check embedding dimensions
+        if combined_embeddings and combined_embeddings[0].response_segment:
+            first_seg = combined_embeddings[0].response_segment[0]
+            if hasattr(first_seg, 'code_embedding') and first_seg.code_embedding is not None:
+                self.verbose_reporter.stat_line(f"Embedding dimensions: {first_seg.code_embedding.shape[0]}")
+        
+        self.verbose_reporter.step_complete("Embeddings combined")
         return combined_embeddings
 
     async def _async_embed_word_clusters(self, clusters: Dict[int, List[str]]) -> np.ndarray:
@@ -178,7 +229,7 @@ class Embedder:
         
         async def process_batch(batch_words):
             async with semaphore:
-                print(f"Processing batch of {len(batch_words)} words")
+                self.verbose_reporter.stat_line(f"Processing batch of {len(batch_words)} words")
                 response = await self.client.embeddings.create(
                     input=batch_words,
                     model=self.embedding_model,
@@ -191,14 +242,14 @@ class Embedder:
                     embedding = np.array(item.embedding, dtype=np.float32)
                     result_dict[word] = embedding
                 
-                print(f"Completed batch of {len(batch_words)} words")
+                self.verbose_reporter.stat_line(f"Completed batch of {len(batch_words)} words")
         
         # Create and run tasks
         tasks = [process_batch(batch) for batch in word_batches]
         
-        print(f"Starting to process {len(tasks)} batches with max {max_concurrent} concurrent requests")
+        self.verbose_reporter.stat_line(f"Starting to process {len(tasks)} batches with max {max_concurrent} concurrent requests")
         await asyncio.gather(*tasks)
-        print(f"Completed embeddings for {len(words)} words")
+        self.verbose_reporter.stat_line(f"Completed embeddings for {len(words)} words")
         
         ordered_embeddings = [result_dict[word] for word in words]
         
