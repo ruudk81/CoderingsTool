@@ -110,14 +110,18 @@ Current testing approach:
 - ✓ Completed Phase 2: Clustering Improvements
 - ✓ Successfully tested automatic clustering with excellent results
 - ✓ Quality metrics working correctly (0.881 quality score achieved)
-- Pipeline integration (TODO #4) is next priority
-- All changes maintain backward compatibility with existing code
+- ✓ Pipeline integration completed with CLI arguments and metrics database
+- ✓ Pipeline successfully runs steps 1-5
+- 🔜 Next: Phase 3 - Improve labeling system (step 6)
 
 ### Files Modified in Phase 2
 1. `/workspaces/CoderingsTool/src/modules/utils/clustering_config.py` - NEW
 2. `/workspaces/CoderingsTool/src/modules/utils/cluster_quality.py` - NEW
 3. `/workspaces/CoderingsTool/src/modules/utils/clusterer.py` - UPDATED
-4. `/workspaces/CoderingsTool/CLAUDE.md` - UPDATED
+4. `/workspaces/CoderingsTool/src/pipeline.py` - UPDATED (CLI args, metrics)
+5. `/workspaces/CoderingsTool/src/cache_database.py` - UPDATED (metrics table)
+6. `/workspaces/CoderingsTool/src/cache_manager.py` - UPDATED (metrics methods)
+7. `/workspaces/CoderingsTool/CLAUDE.md` - UPDATED
 
 ### Key Principles Established
 1. **Always present plans before implementing**
@@ -129,7 +133,31 @@ Current testing approach:
 ### Next Immediate Step
 Test the current clusterer implementation with the quality metrics and automatic mode before proceeding to TODO #4 (Pipeline Integration).
 
-### Testing Instructions for clusterer.py
+### Pipeline Usage
+
+#### Command-Line Arguments
+```bash
+# Basic usage
+python pipeline.py
+
+# Clustering configuration
+python pipeline.py --embedding-type description  # or 'code'
+python pipeline.py --language nl                # or 'en'
+python pipeline.py --min-quality-score 0.7      # Quality threshold
+python pipeline.py --max-noise-ratio 0.1        # Max noise before micro-clustering
+
+# Cache control
+python pipeline.py --force-recalculate          # Recalculate all steps
+python pipeline.py --force-step clusters        # Recalculate specific step
+python pipeline.py --cleanup                    # Clean old cache files
+python pipeline.py --stats                      # Show cache statistics
+python pipeline.py --show-metrics               # Display clustering metrics
+
+# Combined example
+python pipeline.py --embedding-type code --min-quality-score 0.8 --force-step clusters
+```
+
+#### Testing clusterer.py Standalone
 
 To test the updated clusterer in Spyder:
 
@@ -147,11 +175,11 @@ To test the updated clusterer in Spyder:
    - Open clusterer.py in Spyder
    - The test section at the bottom will run automatically when you execute the file
    - It will:
-     - Load the data from the SPSS file
+     - Load embeddings from cache
      - Create a default ClusteringConfig (description embeddings, Dutch)
      - Run the clustering pipeline
      - Display quality metrics
-     - Save results to CSV
+     - Save results to cache
      - Show cluster summaries
 
 4. **What to look for:**
@@ -278,16 +306,18 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
    - Implement micro-clusters for outliers ✓
    - Calculate and report quality metrics ✓
 
-4. Add Pipeline Integration ⏳ NEXT PRIORITY
-   - Add command-line arguments
-   - Save quality metrics to cache
-   - Add success/failure reporting
+4. Add Pipeline Integration ✓ COMPLETED
+   - Added command-line arguments ✓
+   - Save quality metrics to cache database ✓
+   - Display metrics and warnings ✓
+   - Show retry attempts if any ✓
+   - Added --show-metrics option ✓
 
 5. Test and Refine ✓ TESTED
    - Successfully tested with 380 embeddings ✓
    - Achieved 0.881 quality score ✓
    - Created 28 meta-clusters from 791 segments ✓
-   - No retries needed - parameters worked on first attempt ✓
+   - Pipeline runs successfully steps 1-5 ✓
 
 #### Test Results Summary:
 - **Quality Score**: 0.881 (excellent)
