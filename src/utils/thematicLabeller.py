@@ -197,10 +197,8 @@ class ThematicLabeller:
         # =============================================================================
     
         self.verbose_reporter.step_start("Phase 2: Theme Discovery", emoji="🔍")
-        codebook = await self._phase2_discovery(labeled_clusters)
+        self.codebook = await self._phase2_discovery(labeled_clusters)
         self.verbose_reporter.step_complete("Codebook structure created")
-            
-        self.codebook = codebook
             
         # =============================================================================
         # Phase 3 and 4: Theme Review  
@@ -211,7 +209,7 @@ class ThematicLabeller:
         
         while review_attempt < max_review_attempts:
             self.verbose_reporter.step_start(f"Phase 3: Theme Judger (attempt {review_attempt + 1}/{max_review_attempts})", emoji="⚖️")
-            judgment = await self._phase3_theme_judger(codebook)
+            judgment = await self._phase3_theme_judger(self.codebook)
             self.verbose_reporter.step_complete("Codebook evaluation completed")
             
             if judgment.is_logical:
@@ -232,18 +230,15 @@ class ThematicLabeller:
                 
                 # Phase 4: Review and improve structure
                 self.verbose_reporter.step_start("Phase 4: Theme Review", emoji="🔄")
-                codebook = await self._phase4_theme_review(codebook, judgment)
+                self.codebook = await self._phase4_theme_review(self.codebook, judgment)
                 self.verbose_reporter.step_complete("📝 Codebook structure has been revised")
-        
-        # Update self.codebook with the final version (whether approved or after max attempts)
-        self.codebook = codebook
          
         # =============================================================================
         # Phase 5: Label Refinement  
         # =============================================================================
         
         self.verbose_reporter.step_start("Phase 5: Label Refinement", emoji="✨")
-        await self._phase5_label_refinement(codebook)
+        await self._phase5_label_refinement(self.codebook)
         self.verbose_reporter.step_complete("Labels polished")
         
         # =============================================================================
@@ -251,21 +246,21 @@ class ThematicLabeller:
         # =============================================================================
         
         self.verbose_reporter.step_start("Phase 6: Assignment", emoji="🎯")
-        assignments = await self._phase6_assignment(labeled_clusters, codebook)
+        assignments = await self._phase6_assignment(labeled_clusters, self.codebook)
         self.verbose_reporter.step_complete("Themes assigned to clusters")
         
         # Remove empty codes  after assignment
-        self._remove_empty_codes(codebook)
+        self._remove_empty_codes(self.codebook)
     
         # Print codebook
-        self._display_full_codebook(codebook)
+        self._display_full_codebook(self.codebook)
         self.final_labels = self._create_final_labels(labeled_clusters, assignments)
         
         self.verbose_reporter.stat_line("✅ Applying hierarchy to responses...")
-        result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, codebook)
+        result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, self.codebook)
         self._print_assignment_diagnostics(self.final_labels, micro_clusters)
         self.verbose_reporter.stat_line("🎉 Enhanced hierarchical labeling complete!")
-        self._print_summary(codebook)
+        self._print_summary(self.codebook)
 
         return result
     
