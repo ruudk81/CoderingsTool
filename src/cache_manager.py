@@ -454,3 +454,43 @@ class CacheManager:
         """Get cache usage statistics"""
         return self.db.get_cache_statistics()
     
+    def save_clustering_metrics(self, filename: str, metrics: Dict, config: 'ClusteringConfig'):
+        """Save clustering quality metrics to database"""
+        from modules.utils.clustering_config import ClusteringConfig
+        
+        # Get number of attempts from metrics if available
+        attempts = len(metrics) if isinstance(metrics, list) else 1
+        
+        # If metrics is a list, save the final metrics
+        final_metrics = metrics[-1] if isinstance(metrics, list) else metrics
+        
+        try:
+            # Get actual clustering parameters from metrics if available
+            if hasattr(config, 'min_samples') and hasattr(config, 'min_cluster_size'):
+                # Config has the actual parameters used
+                pass
+            else:
+                # Try to extract from metrics
+                if 'parameters' in final_metrics:
+                    params = final_metrics['parameters']
+                    if 'min_samples' in params:
+                        config.min_samples = params['min_samples']
+                    if 'min_cluster_size' in params:
+                        config.min_cluster_size = params['min_cluster_size']
+            
+            # Record metrics in database
+            self.db.record_clustering_metrics(
+                filename=filename,
+                metrics=final_metrics,
+                config=config,
+                attempts=attempts
+            )
+            logger.info(f"Saved clustering metrics for {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error saving clustering metrics: {e}")
+    
+    def get_clustering_metrics(self, filename: str, limit: int = 1) -> List[Dict]:
+        """Get clustering metrics for a file"""
+        return self.db.get_clustering_metrics(filename, limit)
+    
