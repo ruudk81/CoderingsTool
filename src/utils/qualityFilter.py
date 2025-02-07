@@ -6,7 +6,8 @@ from pydantic import BaseModel
 import instructor
 from openai import OpenAI
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig
+from config import (DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,
+                    QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG)
 from prompts import GRADER_INSTRUCTIONS
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
@@ -14,25 +15,19 @@ from .verbose_reporter import VerboseReporter, ProcessingStats
 # Patch OpenAI client with instructor for structured output
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY)) 
 
-class GraderConfig(BaseModel):
-    model: str = DEFAULT_MODEL
-    batch_size: int = 20 #TODO: DEFAULT_BATCHSIZE
-    temperature: float = 0.0 #TODO: DEFAULT_TEMPERATURE
-    max_tokens: int = 4000 #TODO: DEFAULT_TOKENS
-    language: str = DEFAULT_LANGUAGE
-    retries: int = 3 #TODO: DEFAULT_RETRIES
+# GraderConfig is now replaced by QualityFilterConfig from config.py
 
 class Grader:
     def __init__(
         self, 
         responses: List[models.DescriptiveModel], 
         var_lab: str,
-        config: Optional[GraderConfig] = None,
+        config: Optional[QualityFilterConfig] = None,
         verbose: bool = False):
         
         self.responses = responses
         self.question = var_lab
-        self.config = config or GraderConfig()
+        self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
         self.client = client
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.DescriptiveModel] = []
@@ -48,7 +43,7 @@ class Grader:
         
         responses_text = "\n".join(f"respondent_id: {rid}, response: \"{response}\"" for _, rid, response in batch)
         return self.grader_instructions.format(
-            language=self.config.language,
+            language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             responses=responses_text)
 
@@ -66,7 +61,7 @@ class Grader:
                         self.client.chat.completions.create,
                         model=self.config.model,
                         response_model=List[models.DescriptiveModel],
-                        max_retries=3,   
+                        max_retries=self.config.instructor_retries,   
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
                         max_tokens=self.config.max_tokens,
@@ -125,14 +120,14 @@ class Grader:
         
         for result in self._results:
             if hasattr(result, 'quality_score'):
-                if result.quality_score >= 0.7:
+                if result.quality_score >= self.config.high_quality_threshold:
                     quality_counts["high"] += 1
-                elif result.quality_score >= 0.4:
+                elif result.quality_score >= self.config.medium_quality_threshold:
                     quality_counts["medium"] += 1
                 else:
                     quality_counts["low"] += 1
             
-            if result.quality_filter and len(filtered_examples) < 5:
+            if result.quality_filter and len(filtered_examples) < self.config.max_filter_examples:
                 filtered_examples.append(f'"{result.response}" (quality filter: meaningless)')
         
         self._stats.output_count = len([r for r in self._results if not r.quality_filter])
@@ -189,8 +184,7 @@ if __name__ == "__main__":
 
     preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
 
-    config = GraderConfig(
-        language="Dutch",
+    config = QualityFilterConfig(
         batch_size=20,
         retries=3 )
 

@@ -11,14 +11,11 @@ import spacy
 import subprocess
 from collections import defaultdict
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH
+from config import (DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, 
+                    DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG)
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
-
-from config import ModelConfig
-config = ModelConfig()
-MAX_TOKENS = config.max_tokens
 
 # Nederlands of Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -77,9 +74,11 @@ class HunspellSession:
   
 
 class SpellChecker:
-    def __init__(self, openai_api_key: Optional[str] = None, openai_model: str = DEFAULT_MODEL, verbose: bool = False):
-        self.openai_api_key = OPENAI_API_KEY
-        self.openai_model = DEFAULT_MODEL
+    def __init__(self, config: SpellCheckConfig = None, openai_api_key: Optional[str] = None, 
+                 openai_model: str = None, verbose: bool = False):
+        self.config = config or DEFAULT_SPELLCHECK_CONFIG
+        self.openai_api_key = openai_api_key or OPENAI_API_KEY
+        self.openai_model = openai_model or DEFAULT_MODEL
         self.client = instructor.patch(OpenAI(api_key=self.openai_api_key))
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH 
@@ -116,7 +115,7 @@ class SpellChecker:
             return False
     
     @staticmethod
-    @lru_cache(maxsize=10000)
+    @lru_cache(maxsize=10000)  # TODO: Use config.cache_size
     def cached_levenshtein_distance(word1: str, word2: str) -> int:
         if word1 == word2:
             return 0
@@ -178,7 +177,7 @@ class SpellChecker:
         right_split_attempts = [(oov_word[i:], "right") for i in range(len(oov_word) - 3)]  
 
         all_splits = left_split_attempts + right_split_attempts
-        processed_splits = list(self.get_nlp().pipe([split for split, _ in all_splits], batch_size=32))
+        processed_splits = list(self.get_nlp().pipe([split for split, _ in all_splits], batch_size=self.config.spacy_batch_size))
 
         valid_splits = [
             (split, tag) for (split, tag), doc in zip(all_splits, processed_splits)
@@ -217,7 +216,7 @@ class SpellChecker:
         if not all(isinstance(s, str) for s in all_suggestions):
             raise TypeError("all_suggestions contains non-string values.")
 
-        processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=32))
+        processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=self.config.spacy_batch_size))
 
         filtered_suggestions = {
             candidate: [suggestion for suggestion, doc in zip(normalized_hunspell_results[candidate], processed_suggestions) if doc.vector_norm > 5]
@@ -270,7 +269,7 @@ class SpellChecker:
         current_batch_tasks = []
         current_batch_tokens = 0
         
-        max_batch_size = 5
+        max_batch_size = self.config.max_batch_size
         
         sorted_tasks = sorted(tasks, 
               key=lambda t: (len(t['response']) + len(t['oov_words'].split(', ')), str(t['respondent_id'])))
@@ -324,8 +323,8 @@ class SpellChecker:
     async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
         oov_words = list(best_suggestions_dict.keys())
         
-        max_tokens = MAX_TOKENS  
-        completion_reserve = 1000  # Reserve for completion
+        max_tokens = self.config.max_tokens  
+        completion_reserve = self.config.completion_reserve  # Reserve for completion
         
         corrected_sentences_dict = {}
         tasks = []
@@ -347,7 +346,7 @@ class SpellChecker:
                     "oov_words": ", ".join(response_oov_words),
                     "suggestions": ", ".join(str(suggestion) for word in response_oov_words for suggestion in best_suggestions_dict.get(word, ["OOV"])) })
         
-        repeated_char_pattern = re.compile(r'^(.)\1{4,}$')  #repeated 5+ times
+        repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')  # repeated N+ times
         single_word_pattern = re.compile(r'^[A-Za-z]+$')
         filtered_tasks = [
             task for task in tasks
@@ -382,8 +381,8 @@ class SpellChecker:
                 response_model=LLMCorrectionResponse,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=completion_reserve,
-                max_retries=3, 
-                seed = 42)
+                max_retries=self.config.retries, 
+                seed = self.config.seed)
             
             # Sorting corrections, to prevent variation by making processing consistent
             sorted_corrections = sorted(response.corrections, key=lambda x: str(x.respondent_id))
@@ -423,7 +422,7 @@ class SpellChecker:
         oov_identification_session = HunspellSession(self.hunspell_path, self.dict_path)
         
         try:
-            for doc in self.get_nlp().pipe(sentences_list, batch_size=32): #TODO process zonder spaCy
+            for doc in self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size): #TODO process zonder spaCy
                 doc_flagged = False
                 for token in doc:
                     if token.is_alpha and token.ent_type_ == "":
@@ -472,7 +471,7 @@ class SpellChecker:
                     corrections_made += 1
                     
                     # Store example for verbose output
-                    if len(correction_examples) < 10:  # Collect examples for display
+                    if len(correction_examples) < self.config.max_correction_examples:  # Collect examples for display
                         correction_examples.append((response.original_response, corrected_response))
                     
                     # Only show detailed output in non-verbose mode for debugging
