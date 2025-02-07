@@ -251,24 +251,26 @@ Language: {language}
 
 PHASE2_DISCOVERY_PROMPT = """
 You are a {language} thematic-analysis expert.
-Your task is to build a three-level code hierarchy (Theme → Topic → Code) that organises all response segments supplied below.
+Your task is to build a codebook with a three-level code hierarchy (Theme → Topic → Code) that organises all response segments supplied below.
 
-GOALS:
-- A codebook with a logical structure where each theme and topic represents ONE unified concept
-- Not a codebook that combines unrelated concepts into mixed categories
+CODE HIERARCHY:
+• **Theme (Level 1)** – the broadest, overarching dimension that unifies several related Topics.  
+• **Topic (Level 2)** – groups related Codes that share one specific characteristic and bridges Themes and Codes.  
+• **Code (Level 3)**  – captures a distinct, clearly defined type of response; the most granular unit.
+    
+WORKFLOW:
+1. **Merge into Codes** – Combine response segments that express the *same* granular detail into a single **Code**.  
+2. **Group into Topics** – Combine Codes that share **one** specific characteristic into a **Topic**.  
+3. **Group into Themes** – Combine Topics that share **one** overarching dimension into a **Theme**.
 
-DESIGN PRINCIPLES:
-- Level 3 **Codes** = Concrete categories within Topics; each code groups similar response segments
-- Level 2 **Topics** = Specific sub-dimensions within Themes  
-- Level 1 **Themes** = Broad, Overarching Dimensions (each about ONE major aspect)
-
-APPROACH:
-- First, merge segments that express the same idea into codes
-- Second, identify Codes, then group into Topics, then group into Themes
+ID RULES:
+• Use dotted numeric notation (`1`, `1.1`, `1.1.1`) assigned *sequentially* by first appearance.  
+• IDs must be unique.  
+• The `clusters` field of each Code must list the **exact cluster IDs** found in {cluster_summaries} (preserve spelling & capitalisation).
 
 INPUT:
-Survey question: {survey_question}  
-Response segments:  
+• Survey question: {survey_question}  
+• Response segments & cluster IDs:  
 {cluster_summaries}
 
 Output format (JSON):
@@ -276,17 +278,17 @@ Output format (JSON):
   "themes": [
     {{
       "id": "1",
-      "label": "Theme label (ONE concept)",
+      "label": "Theme label (ONE broad, overarching dimension)",
       "description": "What unifies this group",
       "topics": [
         {{
           "id": "1.1", 
-          "label": "Topic label (ONE aspect)",
+          "label": "Topic label (ONE specific characteristic)",
           "description": "What specific aspect this represents",
           "codes": [
             {{
               "id": "1.1.1",
-              "label": "Code label",
+              "label": "Code label (ONE granular detail",
               "description": "What type of response this captures",
               "clusters": [list of cluster IDs assigned to this code]
             }}
@@ -297,86 +299,84 @@ Output format (JSON):
   ]
 }}
 
-{improvement_instructions}
-
-Language: All output must be in {language}
+Write all labels and descriptions in **{language}**.  
+If *{language}* is empty or invalid, default to English.
 """
 
 PHASE3_THEME_JUDGER_PROMPT = """
-Review this codebook for: "{survey_question}"
+You are a {language} expert in auditing codebooks for open ended survey questions.
 
+Your mission: decide whether a three-level codebook is
+A. structurally correct (Theme → Topic → Code) and  
+B. MECE-compliant (labels are Mutually Exclusive & Collectively Exhaustive).
+
+INPUT
+• Survey question: "{survey_question}"
+• Codebook to audit:
 {codebook}
 
-First, analyze whether the themes, topics, and codes are organized in accordance with the STRUCTURAL DESIGN 
+TARGET STRUCTURE
+• Theme (Level 1) – broad, overarching dimension uniting multiple Topics.  
+• Topic (Level 2) – groups Codes sharing **one** specific characteristic; bridge between Themes and Codes.  
+• Code  (Level 3) – captures a single, clearly defined response type (granular unit).
 
-STRUCTURAL DESIGN:
-- Themes (Level 1):
-    - Represent the highest level of abstraction capturing broad, overarching dimension
-    - Each theme should unify several related topics under a common, broad conceptual umbrella
-- Topics (Level 2): 
-    - Topics refine Themes by grouping related codes that share a specific characteristic
-    - Topics bridge the gap between broad themes and granular codes
-- Codes (Level 3): 
-    - Each code captures a distinct, clearly defined type of response
-    - Codes provide granular detail in Topics to understand nuances within each topic
+AUDIT STEPS
+1. **Structural design** – Is every element placed at the correct level?  
+2. **Mutually Exclusive** – Does each Theme/Topic/Code express exactly **one** concept (no overlaps)?  
+3  **Double check** - Do none of the labels combine unrelated ideas (look for “and / & / en”)? 
+3. **Collectively Exhaustive** – Do all elements together cover the full range of responses?  
 
+When citing problems, **quote element IDs exactly as they appear in the codebook**.
 
-Second, evaluate if this codebook follows the MECE principle (Mutually Exclusive, Collectively Exhaustive):
-- Mutually Exclusive: Each theme/topic/code represents ONE distinct concept with no overlap
-- Collectively Exhaustive: All responses are covered
+OUTPUT 
+Return *only* valid JSON (no markdown, no extra commentary).
 
-Check specifically:
-1. Does each category represent a SINGLE, DISTINCT dimension?
-2. Could any item logically belong in multiple categories? (If yes = problem)
-3. Are there unrelated concepts combined in one category? (If yes = problem)
+If the codebook passes all checks:
 
-TIP: If a name contains "and" or "en", it likely combines TWO concepts that should be separate.
-Example: "Price and Accessibility" mixing economic and physical dimensions = NOT MECE
-
-Return YES if all categories are properly unified and the structure is logical.
-Return NO if any category mixes unrelated concepts.
-
-If NO, provide specific, actionable instructions for restructuring/remapping:
-- Which themes should be split or merged?
-- Which topics should be moved to different themes?
-- What new themes or topics are needed?
-
-Reference the SPECIFIC IDs and labels from the codebook above.
-For example: "Theme 1 [label] overlaps with Theme 2 [label]" NOT "Theme A overlaps with Theme B"
-
-Output format (JSON):
-If logical (YES):
 {{
   "is_logical": true,
   "feedback": null,
   "specific_issues": null
 }}
 
-If not logical (NO):
+If it fails any check:
+
 {{
   "is_logical": false,
-  "feedback": "Detailed instructions for improvement",
-  "specific_issues": ["Issue 1", "Issue 2", "Issue 3"]
+  "feedback": "Actionable guidance on how to fix the structure (split, merge, move, or add). Quote element IDs verbatim.",
+  "specific_issues": [
+    "Theme 1 [Customer Experience] overlaps with Theme 2 [Service Quality]",
+    "Topic 3.2 [Price and Accessibility] combines unrelated concepts"
+  ]
 }}
 
-Output language English.
+Write all JSON values in English.
 """
 
 PHASE4_THEME_REVIEW_PROMPT = """
-You are a {language} researcher correcting the codebook according to the instructions below.
+You are a {language} researcher.
+Your task is to **revise** an existing three-level codebook in line with the detailed feedback provided.
 
-Codebook to revise:
+INPUT
+• Codebook to revise:
 {current_codebook}
 
-Instructions for revision:
+• Revision instructions: 
 {improvement_feedback}
- 
-TASKS:
-Create a revised codebook based on the instructions given
-Move topics and codes and/or create new themes or topics, if need be.
-Rerurn a COMPLETE new codebook structure with all themes, topics, and codes.
 
-Output format (JSON):
+• Specific issues to address:
+{specific_issues}
+
+REVISION TASKS:
+1. Apply every instruction in the feedback.  
+2. Move Topics or Codes and/or create new Themes or Topics where needed.  
+3. Ensure the final structure is **complete** – every Theme contains Topics, every Topic contains Codes.  
+4. Preserve the original `cluster_ids` lists exactly as given.  
+5. Use dotted numeric IDs (`1`, `1.1`, `1.1.1`) sequentially by first appearance and ensure uniqueness.
+
+OUTPUT
+Return **only** valid JSON (no markdown, no commentary).
+
 {{
   "themes": [
     {{
@@ -402,9 +402,8 @@ Output format (JSON):
   ]
 }}
 
-Language: {language}
+Write all labels and descriptions in **{language}**.
 IMPORTANT: This is your chance to fix the structure. Make substantial improvements based on the feedback.
-
 """
 
 PHASE5_LABEL_REFINEMENT_PROMPT = """
