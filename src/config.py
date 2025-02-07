@@ -176,6 +176,9 @@ class ProcessingConfig:
     # Language settings
     language: str = "nl"
     spell_check_enabled: bool = True
+    
+    # Output control
+    verbose: bool = False
    
     # Clustering settings
     clustering_algorithm: str = "hdbscan"
