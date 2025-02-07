@@ -216,7 +216,10 @@ class Labeller:
                                   cluster_data: Dict[int, ClusterData], 
                                   var_lab: str) -> Dict[int, InitialLabel]:
         """Phase 1: Generate initial labels for each cluster"""
-        from .phase1_labeller import Phase1Labeller
+        try:
+            from phase1_labeller import Phase1Labeller
+        except ImportError:
+            from .phase1_labeller import Phase1Labeller
         
         phase1 = Phase1Labeller(self.config, self.client)
         return await phase1.label_clusters(cluster_data, var_lab)
@@ -226,7 +229,10 @@ class Labeller:
                                  initial_labels: Dict[int, InitialLabel],
                                  var_lab: str) -> MergeMapping:
         """Phase 2: Merge clusters that are not meaningfully differentiated"""
-        from .phase2_merger import Phase2Merger
+        try:
+            from phase2_merger import Phase2Merger
+        except ImportError:
+            from .phase2_merger import Phase2Merger
         
         phase2 = Phase2Merger(self.config, self.client)
         return await phase2.merge_similar_clusters(cluster_data, initial_labels, var_lab)
@@ -276,7 +282,10 @@ class Labeller:
                                     merged_clusters: Dict[int, MergedCluster],
                                     var_lab: str) -> HierarchicalStructure:
         """Phase 3: Create 3-level hierarchical structure"""
-        from .phase3_organizer import Phase3Organizer
+        try:
+            from phase3_organizer import Phase3Organizer
+        except ImportError:
+            from .phase3_organizer import Phase3Organizer
         
         phase3 = Phase3Organizer(self.config, self.client)
         return await phase3.create_hierarchy(merged_clusters, var_lab)
@@ -285,7 +294,10 @@ class Labeller:
                                    hierarchy: HierarchicalStructure,
                                    var_lab: str) -> List[ThemeSummary]:
         """Phase 4: Generate summaries for each theme"""
-        from .phase4_summarizer import Phase4Summarizer
+        try:
+            from phase4_summarizer import Phase4Summarizer
+        except ImportError:
+            from .phase4_summarizer import Phase4Summarizer
         
         phase4 = Phase4Summarizer(self.config, self.client)
         return await phase4.generate_summaries(hierarchy, var_lab)

@@ -5,9 +5,16 @@ from tqdm.asyncio import tqdm
 import logging
 from sklearn.metrics.pairwise import cosine_similarity
 
-from .labeller import (
-    LabellerConfig, InitialLabel, BatchLabelResponse, ClusterData
-)
+try:
+    # When running as a script
+    from labeller import (
+        LabellerConfig, InitialLabel, BatchLabelResponse, ClusterData
+    )
+except ImportError:
+    # When imported as a module
+    from .labeller import (
+        LabellerConfig, InitialLabel, BatchLabelResponse, ClusterData
+    )
 from prompts import INITIAL_LABEL_PROMPT
 
 logger = logging.getLogger(__name__)
