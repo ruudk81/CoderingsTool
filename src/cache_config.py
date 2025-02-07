@@ -50,8 +50,13 @@ class CacheConfig:
     verbose: bool = False
     
     def __post_init__(self):
-        """Ensure cache directory exists"""
+        """Ensure cache directory exists and adjust settings for platform"""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Disable atomic writes on Windows to avoid file locking issues
+        import platform
+        if platform.system() == 'Windows':
+            self.use_atomic_writes = False
         
     @property
     def db_path(self) -> Path:
