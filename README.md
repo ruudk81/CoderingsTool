@@ -42,6 +42,12 @@ cd src
 python pipeline.py
 ```
 
+Command-line options:
+- `--force-recalculate`: Force recalculation of all steps
+- `--force-step STEP_NAME`: Force specific step recalculation
+- `--cleanup`: Clean up old cache files
+- `--stats`: Show cache statistics
+
 ### Data Processing Steps
 
 1. **Data Import**: Loads survey responses from SPSS files
