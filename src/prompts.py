@@ -223,19 +223,30 @@ Return a JSON object with a single key "decisions", containing an array of objec
 """
 
 INITIAL_LABEL_PROMPT = """
-You are analyzing survey responses to the question: "{var_lab}"
+You are analyzing survey responses to the research question: "{var_lab}"
 
-Please label the following clusters based on their content. Each cluster shows the MOST REPRESENTATIVE items,
-selected using cosine similarity to the cluster centroid. These are the items that best capture the essence
-of each cluster.
+Your task is to create precise labels for micro-clusters that will be used to build a hierarchical thematic structure.
 
-For each cluster, provide:
-1. A concise, descriptive label that captures the main theme
-2. 3-5 keywords that represent the cluster
-3. A confidence score (0.0-1.0)
+## Context
+Each cluster contains the MOST REPRESENTATIVE responses that share similar meanings in relation to the research question. These labels will later be grouped into broader topics and themes.
 
-Focus on creating labels that directly answer or relate to the survey question. Base your labels primarily
-on the representative items shown, as they are the most characteristic of each cluster.
+## Labeling Criteria
+For each cluster, create a label that:
+1. **Explains what this cluster contributes** to answering the research question
+2. **Is specific and distinctive** - clearly separates this cluster from others
+3. **Uses clear, descriptive language** that supports grouping into broader categories
+4. **Focuses on the underlying meaning** rather than repeating exact words used
+
+## Label Requirements
+- **Length**: 2-6 words maximum
+- **Clarity**: Understandable without additional explanation
+- **Relevance**: Directly addresses an aspect of the research question
+- **Distinctiveness**: Clearly different from other cluster labels
+- **Groupability**: Easy to categorize into broader topics later
+
+## Examples of Good vs Poor Labels
+**Good**: "Price concerns", "Service quality issues", "Delivery speed expectations"
+**Poor**: "Various complaints", "Mixed feedback", "General responses"
 
 Language: {language}
 
@@ -244,59 +255,86 @@ Language: {language}
 REQUIRED OUTPUT FORMAT:
 Return a JSON object with a single key "labels", containing an array of objects with these fields:
 - "cluster_id": The cluster ID
-- "label": A concise descriptive label
-- "keywords": An array of 3-5 keywords
+- "label": A precise descriptive label (2-6 words)
+- "keywords": An array of 3-5 specific keywords that support the label
 - "confidence": A confidence score between 0.0 and 1.0
 """
 
 
 HIERARCHY_CREATION_PROMPT = """
-You are organizing survey response clusters for the question: "{var_lab}"
+You are building a hierarchical thematic structure for survey responses to: "{var_lab}"
 
-Your task is to group these clusters into {level}-level categories that represent major themes.
+Your task is to group cluster labels into {level}-level categories that form a logical hierarchy.
+
+## Objective
+Create {level} categories that:
+1. **Address different aspects** of the research question
+2. **Group conceptually related clusters** that share similar underlying concerns or themes
+3. **Form distinct categories** that don't overlap in meaning
+4. **Support clear interpretation** of how respondents approach the research question
+
+## Grouping Strategy
+- **For THEMES**: Group clusters that address the same major aspect or dimension of the research question
+- **For TOPICS**: Within a theme, group clusters that focus on the same specific area or sub-concern
+
+## Evaluation Criteria
 Each {level} should:
-1. Represent a distinct, broad theme related to the survey question
-2. Contain clusters that share conceptual similarity
-3. Be meaningful and interpretable in the context of the survey
+- Have a **clear, descriptive name** that explains what unifies the clusters
+- Contain **2-8 related clusters** (avoid single-cluster categories)
+- Represent a **meaningful distinction** in how people respond to the research question
+- Be **easily understood** by researchers analyzing the survey results
+
+## Guidelines
+- Aim for **3-7 total categories** - not too many, not too few
+- Ensure **every cluster belongs to exactly one category**
+- Focus on **conceptual relationships** rather than surface-level word similarities
+- Consider what would be **most useful for survey analysis**
 
 Language: {language}
 
 Here are the clusters to organize:
 {clusters}
 
-Group these clusters into 3-7 {level} categories. Each cluster should belong to exactly one category.
-
 REQUIRED OUTPUT FORMAT:
 Return a JSON object with a single key "{level}s", containing an array of objects with these fields:
-- "label": A descriptive name for the {level}
+- "label": A clear, descriptive name for the {level} (what aspect of the research question it addresses)
 - "cluster_ids": An array of cluster IDs belonging to this {level}
-- "explanation": Brief explanation of what unifies these clusters
+- "explanation": Brief explanation of the shared theme that unifies these clusters (1-2 sentences)
 """
 
 HIERARCHICAL_THEME_SUMMARY_PROMPT = """
-You are summarizing a theme from survey responses to the question: "{var_lab}"
+You are analyzing survey responses to: "{var_lab}"
 
 Theme: {theme_label}
 
-This theme contains the following structure:
+This theme contains the following hierarchical structure:
 {theme_structure}
 
-Your task is to:
-1. Write a comprehensive summary of this theme (2-3 paragraphs)
-2. Explain how this theme addresses the research question
+## Your Task
+Write a comprehensive analysis that explains:
+1. **What this theme reveals** about how respondents approach the research question
+2. **Key patterns and insights** within this theme
+3. **Practical implications** for understanding the survey results
 
-Focus on:
-- What respondents in this theme are expressing
-- Common patterns or perspectives
-- How these responses relate to the research question
-- Key insights or takeaways
+## Analysis Framework
+- **Main Focus**: What specific aspect or dimension of the research question does this theme address?
+- **Response Patterns**: What are the common concerns, preferences, or perspectives within this theme?
+- **Distinctions**: How do the different topics within this theme provide nuanced insights?
+- **Research Value**: What does this theme contribute to answering the research question?
+
+## Writing Guidelines
+- Write **2-3 well-structured paragraphs**
+- Use **clear, analytical language** suitable for research reports
+- Focus on **insights and implications** rather than just describing content
+- Emphasize **what respondents are telling us** about the research question
+- Connect **specific findings to broader research objectives**
 
 Language: {language}
 
 REQUIRED OUTPUT FORMAT:
 Return a JSON object with these fields:
-- "summary": A comprehensive 2-3 paragraph summary of the theme
-- "relevance": A 1-2 sentence explanation of how this theme addresses the research question
+- "summary": A comprehensive 2-3 paragraph analysis of the theme focusing on insights and implications
+- "relevance": A clear 1-2 sentence explanation of how this theme specifically contributes to answering the research question
 """
 
 
