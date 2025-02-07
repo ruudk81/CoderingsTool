@@ -124,7 +124,7 @@ class Grader:
 # example/test section
 if __name__ == "__main__":
     
-    from modules.utils import data_io, csvHandler
+    from utils import data_io, csvHandler
     
     filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column    = "DLNMID"
