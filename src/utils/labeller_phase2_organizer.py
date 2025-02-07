@@ -3,16 +3,7 @@ from typing import List, Dict, Set
 import logging
 from collections import defaultdict
 
-try:
-    # When running as a script
-    from labeller import (
-        LabellerConfig, MergedCluster, HierarchyNode, HierarchicalStructure
-    )
-except ImportError:
-    # When imported as a module
-    from .labeller import (
-        LabellerConfig, MergedCluster, HierarchyNode, HierarchicalStructure
-    )
+from utils.labeller import (LabellerConfig, HierarchyNode, HierarchicalStructure)
 from prompts import HIERARCHY_CREATION_PROMPT
 
 logger = logging.getLogger(__name__)
