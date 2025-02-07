@@ -547,14 +547,13 @@ class Labeller:
         # Format representative items for the prompt
         items_text = ""
         for code_id, code_data in representative_items.items():
-            items_text += f"\nCode: {code_data['label']}\n"
+            items_text += f"\nMicro cluster: {code_data['label']}\n"
             items_text += f"Relevance to theme: {code_data['similarity_to_theme']:.2f}\n"
             items_text += "Representative examples:\n"
             
             for item in code_data['segments']:
-                items_text += f"  - Segment: \"{item['segment']}\"\n"
-                items_text += f"    Description: {item['description']}\n"
-                items_text += f"    Code: {item['descriptive_code']}\n"
+                items_text += f"  - Descriptive code: {item['descriptive_code']}\n"
+                items_text += f"    Code description: {item['description']}\n"
         
         prompt = THEME_SUMMARY_PROMPT.format(
             language=self.config.language,
