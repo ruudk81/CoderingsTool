@@ -487,8 +487,9 @@ Your task:
 1. Analyze the representative responses to understand the core theme
 2. Create a concise thematic label (maximum 4 words) that captures the central idea
 3. Write a clear, specific description explaining what this cluster represents
-4. The label must express ONE concrete concept, concern, or issue - avoid compound ideas
-5. Base your analysis ONLY on what respondents are saying, not interpretations
+4. **SINGLE IDEA RULE**: The label must express EXACTLY ONE concept, concern, or issue
+5. **FORBIDDEN**: Never use "and", "en", "&", "or", "of", "/" (these indicate compound concepts)
+6. Base your analysis ONLY on what respondents are saying, not interpretations
 
 Labeling guidelines:
 - Use concrete, specific language (avoid generic terms like "various issues")
@@ -528,10 +529,22 @@ CRITICAL REQUIREMENTS:
    - Every Topic MUST have at least one Subject
    - ONLY Subjects can contain micro_clusters (in the "micro_clusters" field)
    - For simple themes, create a general topic/subject (e.g., "General Concerns")
-3. Each label must be maximum 4 words and express ONE clear idea
-4. Avoid compound labels with "and", "&", or multiple concepts
-5. Create an "Other" theme with appropriate topic/subject structure for outliers
-6. **MANDATORY**: You MUST distribute ALL {all_cluster_ids} clusters across subjects' micro_clusters arrays
+3. **SINGLE IDEA RULE**: Each label must express EXACTLY ONE idea/concept/pattern
+4. **FORBIDDEN WORDS**: Never use "and", "en", "&", "or", "of", "/" (these indicate compound concepts)
+5. **MUTUALLY EXCLUSIVE**: Categories cannot overlap - each cluster fits in only one place
+6. **LABEL TEST**: Ask "Is this about exactly one thing?" - if no, split it
+7. Create an "Other" theme with appropriate topic/subject structure for outliers
+8. **MANDATORY**: You MUST distribute ALL {all_cluster_ids} clusters across subjects' micro_clusters arrays
+
+GOOD EXAMPLES:
+✓ Theme: "Gezondheid" (Health) - single concept
+✓ Topic: "Zoutreductie" (Salt Reduction) - single aspect  
+✓ Subject: "Minder Zout" (Less Salt) - specific action
+
+BAD EXAMPLES:  
+✗ Theme: "Gezondheid en Voeding" (Health and Nutrition) - TWO concepts
+✗ Topic: "Zout en Suiker" (Salt and Sugar) - TWO substances
+✗ Subject: "Minder Conservering en Additieven" - TWO types
 
 Output format (JSON - NO COMMENTS):
 {{
@@ -593,6 +606,9 @@ VERIFICATION CHECKLIST - Before submitting your response:
 ✓ Every topic has at least one subject  
 ✓ No themes or topics have micro_clusters (only subjects do)
 ✓ All subjects have non-empty micro_clusters arrays
+✓ NO labels contain "and", "en", "&", "or", "of", "/" (forbidden compound words)
+✓ Each label represents EXACTLY ONE concept (single-idea test passed)
+✓ Categories are mutually exclusive (no overlap between themes/topics/subjects)
 
 Remember: All clusters from {all_cluster_ids} must appear in your output!
 """
@@ -614,8 +630,10 @@ STRICT Hierarchy Rules (MUST FOLLOW):
 2. Topics contain Subjects (NOT clusters)
 3. ONLY Subjects contain clusters (as "direct_clusters")
 4. Use temporary IDs (temp_1, temp_1.1, temp_1.1.1) - will be renumbered later
-5. Each label: maximum 4 words, ONE clear concept
-6. For simple themes, still create Topic and Subject levels
+5. **SINGLE IDEA RULE**: Each label represents EXACTLY ONE concept
+6. **FORBIDDEN WORDS**: Never use "and", "en", "&", "or", "of", "/" in labels
+7. **MUTUALLY EXCLUSIVE**: No overlap between categories at same level
+8. For simple themes, still create Topic and Subject levels
 
 IMPORTANT: Every cluster ID from this batch MUST appear ONCE in a subject's direct_clusters.
 
