@@ -10,6 +10,13 @@ import sys
 import os
 from pathlib import Path
 
+# Import nest_asyncio to allow nested event loops (for Spyder/IPython)
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass  # Not required outside of Jupyter/IPython environments
+
 # Add the src directory to the path for imports
 try:
     # When running as a script
@@ -560,8 +567,41 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
         
-        # Run the test
-        asyncio.run(run_test())
+        # Handle asyncio in Spyder/IPython which already has a running event loop
+        try:
+            # Get the current event loop
+            loop = asyncio.get_event_loop()
+            
+            # If running in IPython/Spyder, use nest_asyncio to avoid event loop issues
+            try:
+                import nest_asyncio
+                nest_asyncio.apply()
+                print("Applied nest_asyncio patch for running in Spyder/IPython")
+            except ImportError:
+                print("Consider installing nest_asyncio for better compatibility in Spyder/IPython")
+            
+            # Run the test
+            if loop.is_running():
+                # Already in an event loop (e.g., IPython/Spyder)
+                print("Running in existing event loop")
+                future = asyncio.ensure_future(run_test())
+                # For IPython, we need to return the result
+                # This is equivalent to 'await future' in async code
+                import IPython
+                IPython.display.display(IPython.display.HTML("Running async test... check output below"))
+                loop.run_until_complete(future)
+            else:
+                # Normal case outside of Jupyter/IPython
+                asyncio.run(run_test())
+        except RuntimeError as e:
+            # Last resort for running in Spyder/IPython
+            if "asyncio.run() cannot be called from a running event loop" in str(e):
+                print("Working around asyncio.run() in running event loop...")
+                import nest_asyncio
+                nest_asyncio.apply()
+                asyncio.run(run_test())
+            else:
+                raise
     else:
         print("Missing required cached data.")
         print("Please ensure you have run:")
