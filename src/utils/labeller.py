@@ -50,9 +50,13 @@ class HierarchyNode(BaseModel):
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
 
 class HierarchicalStructure(BaseModel):
-    """Complete hierarchical structure"""
+    """Complete hierarchical structure with explicit mappings"""
     themes: List[HierarchyNode]  # Level 1 nodes
     cluster_to_path: Dict[int, str]  # Cluster ID → Path (e.g., "1.2.3")
+    # New explicit mapping fields
+    cluster_to_topic: Dict[int, str]  # Cluster ID → Topic label
+    cluster_to_theme: Dict[int, str]  # Cluster ID → Theme label
+    topic_to_theme: Dict[str, str]    # Topic label → Theme label
     model_config = ConfigDict(from_attributes=True)
 
 class ThemeSummary(BaseModel):
@@ -286,21 +290,33 @@ class Labeller:
             themes = await self._create_themes_from_topics(topics, var_lab)
             logger.info(f"Created {len(themes)} themes")
             
-            # Step 3: Assign codes within topics (level 3)
+            # Step 3: Assign codes within topics (level 3) and build mappings
             cluster_to_path = {}
+            cluster_to_topic = {}
+            cluster_to_theme = {}
+            topic_to_theme = {}
+            
             for theme in themes:
                 for topic in theme.children:
+                    # Track topic to theme mapping
+                    topic_to_theme[topic.label] = theme.label
+                    
                     codes = self._create_codes(topic, cluster_data, initial_labels)
                     topic.children = codes
                     
-                    # Track cluster to path mapping
+                    # Track cluster mappings
                     for code in codes:
                         for cluster_id in code.cluster_ids:
                             cluster_to_path[cluster_id] = code.node_id
+                            cluster_to_topic[cluster_id] = topic.label
+                            cluster_to_theme[cluster_id] = theme.label
             
             hierarchy = HierarchicalStructure(
                 themes=themes,
-                cluster_to_path=cluster_to_path
+                cluster_to_path=cluster_to_path,
+                cluster_to_topic=cluster_to_topic,
+                cluster_to_theme=cluster_to_theme,
+                topic_to_theme=topic_to_theme
             )
             
             self._validate_hierarchy(hierarchy, cluster_data)
@@ -577,6 +593,13 @@ class Labeller:
             if unmapped:
                 logger.warning(f"Unmapped clusters: {unmapped}")
             
+            # Log mapping statistics
+            logger.info(f"Hierarchy mapping statistics:")
+            logger.info(f"  - Total clusters: {len(all_clusters)}")
+            logger.info(f"  - Mapped clusters: {len(mapped_clusters)}")
+            logger.info(f"  - Unique topics: {len(set(hierarchy.cluster_to_topic.values()))}")
+            logger.info(f"  - Unique themes: {len(set(hierarchy.cluster_to_theme.values()))}")
+            
             # Check hierarchy consistency
             for theme in hierarchy.themes:
                 theme_clusters = set()
@@ -587,7 +610,7 @@ class Labeller:
                     theme_clusters.update(topic_clusters)
                 
                 # Basic validation that clusters are properly assigned
-                logger.info(f"Theme {theme.node_id} has {len(theme_clusters)} clusters mapped")
+                logger.info(f"Theme '{theme.label}' (ID: {theme.node_id}) has {len(theme_clusters)} clusters mapped")
     
     class Phase3Summarizer:
         """Phase 3: Generate summaries for themes"""
@@ -882,6 +905,9 @@ class Labeller:
         # Create mapping from theme_id to summary
         summary_map = {s.theme_id: s for s in summaries}
         
+        # Create mapping from theme label to theme_id for summary lookup
+        theme_label_to_id = {theme.label: theme.node_id for theme in hierarchy.themes}
+        
         # Process each cluster result
         label_models = []
         
@@ -893,42 +919,46 @@ class Labeller:
                 if segment.micro_cluster is not None:
                     cluster_id = list(segment.micro_cluster.keys())[0]
                     
-                    # Get hierarchy path for this cluster
+                    # Use explicit mappings to get labels
                     if cluster_id in hierarchy.cluster_to_path:
+                        # Get labels from explicit mappings
+                        theme_label = hierarchy.cluster_to_theme.get(cluster_id)
+                        topic_label = hierarchy.cluster_to_topic.get(cluster_id)
+                        
+                        # Get the full path for code extraction
                         path = hierarchy.cluster_to_path[cluster_id]
                         path_parts = path.split('.')
                         
-                        # Find the theme node
+                        # Find nodes for code label
                         theme_id = path_parts[0]
                         theme_node = next((t for t in hierarchy.themes if t.node_id == theme_id), None)
                         
-                        if theme_node:
-                            # Navigate to topic and code
+                        code_label = None
+                        if theme_node and len(path_parts) >= 3:
                             topic_node = next((c for c in theme_node.children if c.node_id == '.'.join(path_parts[:2])), None)
-                            code_node = None
                             if topic_node:
                                 code_node = next((c for c in topic_node.children if c.node_id == path), None)
-                            
-                            # Create label submodel with proper hierarchical IDs
-                            # Extract numeric IDs from hierarchical node_ids
-                            # For display purposes, we'll use the last numeric part of the hierarchical ID
-                            topic_id = int(path_parts[1]) if len(path_parts) > 1 else None
-                            code_id = int(path_parts[2]) if len(path_parts) > 2 else None
-                            
-                            label_segment = models.LabelSubmodel(
-                                segment_id=segment.segment_id,
-                                segment_response=segment.segment_response,
-                                descriptive_code=segment.descriptive_code,
-                                code_description=segment.code_description,
-                                code_embedding=segment.code_embedding,
-                                description_embedding=segment.description_embedding,
-                                micro_cluster=segment.micro_cluster,
-                                Theme={int(theme_id): theme_node.label} if theme_node else None,
-                                Topic={topic_id: topic_node.label} if topic_node and topic_id is not None else None,
-                                Keyword={code_id: code_node.label} if code_node and code_id is not None else None
-                            )
-                            
-                            label_segments.append(label_segment)
+                                if code_node:
+                                    code_label = code_node.label
+                        
+                        # Extract numeric IDs from hierarchical node_ids for model compatibility
+                        topic_id = int(path_parts[1]) if len(path_parts) > 1 else None
+                        code_id = int(path_parts[2]) if len(path_parts) > 2 else None
+                        
+                        label_segment = models.LabelSubmodel(
+                            segment_id=segment.segment_id,
+                            segment_response=segment.segment_response,
+                            descriptive_code=segment.descriptive_code,
+                            code_description=segment.code_description,
+                            code_embedding=segment.code_embedding,
+                            description_embedding=segment.description_embedding,
+                            micro_cluster=segment.micro_cluster,
+                            Theme={int(theme_id): theme_label} if theme_label else None,
+                            Topic={topic_id: topic_label} if topic_label and topic_id is not None else None,
+                            Keyword={code_id: code_label} if code_label and code_id is not None else None
+                        )
+                        
+                        label_segments.append(label_segment)
             
             # Create label model
             if label_segments:
