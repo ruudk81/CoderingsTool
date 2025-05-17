@@ -179,4 +179,73 @@ Return a valid JSON array with these fields for each segment:
 Ensure all output is written in {language}, unless the code is "NA".
 """
 
+CLUSTER_LABELING_PROMPT = """
+You are a {language} expert in thematic analysis of customer feedback about prepared meals.
+
+# Survey Question Context
+These responses were given to: "{var_lab}"
+
+# Task Overview
+Create a descriptive label for a {cluster_type} cluster containing {n_items} similar responses.
+
+# Cluster Type Definition
+This is a {cluster_type} cluster, which represents {cluster_type_description}.
+
+# Cluster Content
+## Representative responses:
+{responses}
+
+## Associated descriptive codes:
+{codes}
+
+## Code descriptions:
+{descriptions}
+
+# Label Requirements
+1. Length: 2-5 words maximum
+2. Language: {language}
+3. Format: Natural {language} phrase (not ALL_CAPS)
+4. Content: Use ADJECTIVES and NOUNS that capture the CENTRAL MEANING
+5. Specificity: 
+   - theme: Broad enough to encompass multiple topics
+   - topic: Specific enough to distinguish from other topics
+   - code: Detailed enough to capture specific issues
+
+# Special Instructions
+- For food-related clusters: Use domain-specific terminology
+- For quality issues: Be specific about the type of quality concern
+- For preference clusters: Indicate the direction of preference
+
+# Output Format
+You must return a JSON object with exactly these fields:
+- "label": A concise, descriptive label in {language}
+- "confidence": Your confidence score (0.0 to 1.0)
+- "reasoning": Brief explanation in {language} of why this label fits
+"""
+
+RESPONSE_SUMMARY_PROMPT = """
+You are a {language} expert summarizing customer feedback about prepared meals.
+
+# Survey Question
+"{var_lab}"
+
+# Original Response
+{original_response}
+
+# Assigned Labels
+Themes: {themes}
+Topics: {topics}
+Codes: {codes}
+
+# Task
+Create a 1-2 sentence summary in {language} that:
+1. Captures the main points from the original response
+2. Uses the assigned labels as context
+3. Sounds natural as a summary of customer feedback
+4. Maintains the respondent's perspective
+
+# Output
+Write a concise summary that someone reviewing customer feedback would find useful.
+"""
+
 

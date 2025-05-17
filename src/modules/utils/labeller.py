@@ -10,6 +10,7 @@ from tqdm import tqdm
 import models
 from config import DEFAULT_LANGUAGE
 from modules.utils import qualityFilter
+from prompts import CLUSTER_LABELING_PROMPT, RESPONSE_SUMMARY_PROMPT
 
 
 class LabellerConfig(BaseModel):
@@ -21,6 +22,7 @@ class LabellerConfig(BaseModel):
     timeout: int = 30
     max_samples_per_cluster: int = 10
     min_samples_for_labeling: int = 3
+    language: str = DEFAULT_LANGUAGE
 
 
 class ClusterInfo(BaseModel):
@@ -176,27 +178,17 @@ class Labeller:
             "code": "specific code or detailed aspect within a topic"
         }
         
-        prompt = f"""You are analyzing a cluster of text responses about: {self.var_lab}
-
-This is a {cluster_info.cluster_type} cluster, which represents {cluster_type_descriptions[cluster_info.cluster_type]}.
-
-The cluster contains {len(cluster_info.items)} responses.
-
-Representative response samples:
-{chr(10).join(f"- {item}" for item in samples['responses'] if item)}
-
-Associated descriptive codes:
-{chr(10).join(f"- {code}" for code in samples['codes'] if code)}
-
-Code descriptions:
-{chr(10).join(f"- {desc}" for desc in samples['descriptions'] if desc)}
-
-Based on this content, provide:
-1. A concise, descriptive label (2-5 words) that captures the essence of this {cluster_info.cluster_type}
-2. Your confidence score (0.0 to 1.0) in this label
-3. Brief reasoning explaining why this label best represents the cluster
-
-The label should be specific enough to distinguish this cluster from others, but general enough to encompass all items within it."""
+        # Format the imported prompt with our variables
+        prompt = CLUSTER_LABELING_PROMPT.format(
+            language=self.config.language,
+            var_lab=self.var_lab,
+            cluster_type=cluster_info.cluster_type,
+            n_items=len(cluster_info.items),
+            cluster_type_description=cluster_type_descriptions[cluster_info.cluster_type],
+            responses=chr(10).join(f"- {item}" for item in samples['responses'] if item),
+            codes=chr(10).join(f"- {code}" for code in samples['codes'] if code),
+            descriptions=chr(10).join(f"- {desc}" for desc in samples['descriptions'] if desc)
+        )
         
         return prompt
     
