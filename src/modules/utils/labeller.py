@@ -1,24 +1,31 @@
 import asyncio
+import functools
 import time
 from typing import List, Dict, Optional, Set, Tuple
 from collections import defaultdict
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 from tqdm import tqdm
+import instructor
+from openai import OpenAI
 
 # Project imports
 import models
-from config import DEFAULT_LANGUAGE
+from config import DEFAULT_LANGUAGE, DEFAULT_MODEL, OPENAI_API_KEY
 from modules.utils import qualityFilter
 from prompts import CLUSTER_LABELING_PROMPT, RESPONSE_SUMMARY_PROMPT
+
+# Patch OpenAI client with instructor for structured output
+client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY))
 
 
 class LabellerConfig(BaseModel):
     """Configuration for the Labeller utility"""
-    model_name: str = "gpt-4o-mini"
+    model: str = DEFAULT_MODEL
     temperature: float = 0.0
     max_retries: int = 3
     batch_size: int = 10
+    max_tokens: int = 4000
     timeout: int = 30
     max_samples_per_cluster: int = 10
     min_samples_for_labeling: int = 3
@@ -77,21 +84,11 @@ class Labeller:
         # Extract cluster information
         self._extract_clusters()
         
-        # Set up LLM client following qualityFilter pattern
-        self._setup_llm()
-    
-    def _setup_llm(self):
-        """Set up the LLM client following qualityFilter pattern"""
-        import instructor
-        from openai import AsyncOpenAI
-        
-        self.client = instructor.from_openai(
-            AsyncOpenAI(),
-            mode=instructor.Mode.JSON
-        )
+        # Use the global client
+        self.client = client
         
         if self.verbose:
-            print(f"Initialized LLM client with model: {self.config.model_name}")
+            print(f"Initialized LLM client with model: {self.config.model}")
     
     def _extract_clusters(self):
         """Extract cluster information from input data"""
@@ -207,15 +204,21 @@ class Labeller:
         prompt = self._create_prompt(cluster_info, samples)
         
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.model_name,
-                messages=[
-                    {"role": "system", "content": "You are an expert at analyzing and categorizing text data."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_model=LabelResponse,
-                temperature=self.config.temperature,
-                max_retries=self.config.max_retries
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.client.chat.completions.create,
+                    model=self.config.model,
+                    response_model=LabelResponse,
+                    max_retries=self.config.max_retries,
+                    messages=[
+                        {"role": "system", "content": "You are an expert at analyzing and categorizing text data."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens
+                )
             )
             return response
         except Exception as e:
@@ -377,13 +380,23 @@ class Labeller:
         if self.verbose:
             print("\nGenerating response summaries...")
         
-        # Generate summaries synchronously
-        for model in label_models:
-            model.summary = self._generate_response_summary(model)
+        async def generate_summaries_async():
+            tasks = []
+            for model in label_models:
+                tasks.append(self._generate_response_summary(model))
+            
+            return await asyncio.gather(*tasks)
+        
+        # Run async function
+        summaries = asyncio.run(generate_summaries_async())
+        
+        # Apply summaries to models
+        for model, summary in zip(label_models, summaries):
+            model.summary = summary
         
         return label_models
     
-    def _generate_response_summary(self, label_model: models.LabelModel) -> str:
+    async def _generate_response_summary(self, label_model: models.LabelModel) -> str:
         """Generate a summary for a single response"""
         if not label_model.response_segment:
             return "No segments to summarize"
@@ -404,16 +417,45 @@ class Labeller:
         if not themes and not topics and not codes:
             return "No labels assigned"
         
-        # For now, let's create a simple summary based on the labels
-        summary_parts = []
-        if themes:
-            summary_parts.append(f"Theme: {', '.join(list(themes)[:2])}")
-        if topics:
-            summary_parts.append(f"Topic: {', '.join(list(topics)[:2])}")
-        if codes:
-            summary_parts.append(f"Code: {', '.join(list(codes)[:2])}")
+        # Use LLM to generate summary
+        prompt = RESPONSE_SUMMARY_PROMPT.format(
+            language=self.config.language,
+            var_lab=self.var_lab,
+            original_response=label_model.response,
+            themes=', '.join(themes) if themes else 'None',
+            topics=', '.join(topics) if topics else 'None',
+            codes=', '.join(codes) if codes else 'None'
+        )
         
-        return "; ".join(summary_parts) if summary_parts else "No specific labels"
+        try:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.client.chat.completions.create,
+                    model=self.config.model,
+                    messages=[
+                        {"role": "system", "content": f"You are a {self.config.language} expert summarizing customer feedback."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=200  # Summaries should be short
+                )
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if self.verbose:
+                print(f"Error generating summary for respondent {label_model.respondent_id}: {e}")
+            # Fallback to simple summary
+            summary_parts = []
+            if themes:
+                summary_parts.append(f"Theme: {', '.join(list(themes)[:2])}")
+            if topics:
+                summary_parts.append(f"Topic: {', '.join(list(topics)[:2])}")
+            if codes:
+                summary_parts.append(f"Code: {', '.join(list(codes)[:2])}")
+            
+            return "; ".join(summary_parts) if summary_parts else "No specific labels"
 
 
 # Example usage
