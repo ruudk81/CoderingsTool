@@ -385,22 +385,13 @@ The label should be specific enough to distinguish this cluster from others, but
         if self.verbose:
             print("\nGenerating response summaries...")
         
-        async def generate_summaries():
-            tasks = []
-            for model in label_models:
-                tasks.append(self._generate_response_summary(model))
-            
-            return await asyncio.gather(*tasks)
-        
-        summaries = asyncio.run(generate_summaries())
-        
-        # Apply summaries to models
-        for model, summary in zip(label_models, summaries):
-            model.summary = summary
+        # Generate summaries synchronously
+        for model in label_models:
+            model.summary = self._generate_response_summary(model)
         
         return label_models
     
-    async def _generate_response_summary(self, label_model: models.LabelModel) -> str:
+    def _generate_response_summary(self, label_model: models.LabelModel) -> str:
         """Generate a summary for a single response"""
         if not label_model.response_segment:
             return "No segments to summarize"
@@ -421,31 +412,16 @@ The label should be specific enough to distinguish this cluster from others, but
         if not themes and not topics and not codes:
             return "No labels assigned"
         
-        prompt = f"""Summarize the following response based on its hierarchical labels:
-
-Original response: {label_model.response}
-
-Themes: {', '.join(themes) if themes else 'None'}
-Topics: {', '.join(topics) if topics else 'None'}
-Codes: {', '.join(codes) if codes else 'None'}
-
-Provide a concise 1-2 sentence summary that captures the main essence of this response based on the labels."""
+        # For now, let's create a simple summary based on the labels
+        summary_parts = []
+        if themes:
+            summary_parts.append(f"Theme: {', '.join(list(themes)[:2])}")
+        if topics:
+            summary_parts.append(f"Topic: {', '.join(list(topics)[:2])}")
+        if codes:
+            summary_parts.append(f"Code: {', '.join(list(codes)[:2])}")
         
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.config.model_name,
-                messages=[
-                    {"role": "system", "content": "You are an expert at summarizing text based on hierarchical labels."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=self.config.temperature,
-                max_retries=self.config.max_retries
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            if self.verbose:
-                print(f"Error generating summary for respondent {label_model.respondent_id}: {e}")
-            return "Error generating summary"
+        return "; ".join(summary_parts) if summary_parts else "No specific labels"
 
 
 # Example usage
