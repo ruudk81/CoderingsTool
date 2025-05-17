@@ -426,10 +426,14 @@ The label should be specific enough to distinguish this cluster from others, but
 
 # Example usage
 if __name__ == "__main__":
+    import nest_asyncio
+    nest_asyncio.apply()
+   
     import sys
-    sys.path.insert(0, r'/workspaces/CoderingsTool/src')
+    sys.path.insert(0, r'C:\Users\rkn\Python_apps\Coderingstool\src')
     
     from modules.utils import csvHandler
+    import models
     
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     csv_handler = csvHandler.CsvHandler()
@@ -459,12 +463,17 @@ if __name__ == "__main__":
     # Print example results
     for model in label_models[:3]:
         print(f"\nRespondent {model.respondent_id}:")
+        print(f"Original response: {model.response}")
         print(f"Summary: {model.summary}")
         if model.response_segment:
-            for segment in model.response_segment:
+            for i, segment in enumerate(model.response_segment):
+                print(f"\n  Segment {i+1}:")
+                print(f"    Segment response: {segment.segment_response}")
+                print(f"    Descriptive code: {segment.descriptive_code}")
+                print(f"    Code description: {segment.code_description}")
                 if segment.Theme:
-                    print(f"  Themes: {list(segment.Theme.values())}")
+                    print(f"    Themes: {list(segment.Theme.values())}")
                 if segment.Topic:
-                    print(f"  Topics: {list(segment.Topic.values())}")
+                    print(f"    Topics: {list(segment.Topic.values())}")
                 if segment.Code:
-                    print(f"  Codes: {list(segment.Code.values())}")
+                    print(f"    Codes: {list(segment.Code.values())}")
