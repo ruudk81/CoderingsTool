@@ -335,6 +335,8 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 4. **Hardcoded parameters** - Reverted to original UMAP and HDBSCAN settings
 5. **Only micro-clusters** - No meta or meso clustering in clusterer
 6. **Pipeline compatibility** - Updated pipeline to work with simplified clusterer
+7. **NA filtering** - Filters out noise (-1) and "na" items, remaps to sequential IDs
+8. **Description embeddings by default** - Changed default from "code" to "description"
 
 #### Labeling System Improvements (TODO)
 1. **Update labeller to handle clustering hierarchy**
@@ -359,6 +361,9 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 2. **Class renamed** - `SimpleClusterGenerator` → `ClusterGenerator`
 3. **Pipeline updated** - Works with simplified clusterer, no config needed
 4. **Debug output** - Shows micro-clusters instead of meta-clusters
+5. **Import cleanup** - Removed unused imports (pandas, sklearn metrics, scipy)
+6. **Default to descriptions** - Clustering now defaults to description embeddings
+7. **HDBSCAN settings** - Set prediction_data=False (not needed for simple clustering)
 
 ### Future Phases
 1. Phase 4: Add proper error handling throughout
