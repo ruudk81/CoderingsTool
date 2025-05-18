@@ -690,7 +690,7 @@ Base your decision on semantic meaning rather than surface-level similarities.""
                     if pair_key in pair_reasons:
                         reasons.append(pair_reasons[pair_key])
             
-            merge_rationale[str(next_id)] = f"Merged clusters {group} - " + "; ".join(set(reasons)[:3])
+            merge_rationale[str(next_id)] = f"Merged clusters {group} - " + "; ".join(list(set(reasons))[:3])
             next_id += 1
         
         # Map non-merged clusters to new IDs
