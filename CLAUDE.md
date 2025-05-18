@@ -77,8 +77,7 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 ## Development Priorities
 
 ### Immediate Tasks (Current TODOs)
-1. Add migration utilities for existing data ⏳
-2. Create tests for cache system ⏳
+1. Create tests for cache system ⏳
 
 ### Completed Tasks
 - ✓ Analyzed pipeline.py CSV handling issues
@@ -122,7 +121,6 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 - Command-line arguments:
   - `--force-recalculate`: Force recalculation of all steps
   - `--force-step STEP_NAME`: Force specific step recalculation
-  - `--migrate`: Migrate from old CSV handler format
   - `--cleanup`: Clean up old cache files
   - `--stats`: Show cache statistics
 - Automatic cache invalidation based on configuration changes
