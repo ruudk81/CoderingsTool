@@ -552,11 +552,17 @@ class ClusterGenerator:
         cluster_to_meta = {}
         for idx, meta in enumerate(meta_cluster_labels):
             if meta != -1:
-                cluster_to_meta[idx] = meta
+                # Map actual cluster ID, not index
+                cluster_id = unique_clusters[idx] if idx < len(unique_clusters) else idx
+                cluster_to_meta[cluster_id] = meta
         
         # Handle outliers
         next_id = max(non_noise_meta_labels) + 1 if non_noise_meta_labels else 0
-        noise_clusters = [i for i, label in enumerate(meta_cluster_labels) if label == -1]
+        noise_clusters = []
+        for idx, label in enumerate(meta_cluster_labels):
+            if label == -1:
+                cluster_id = unique_clusters[idx] if idx < len(unique_clusters) else idx
+                noise_clusters.append(cluster_id)
         
         for noise_cluster in noise_clusters:
             cluster_to_meta[noise_cluster] = next_id
