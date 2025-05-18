@@ -42,7 +42,6 @@ var_lab              = data_loader.get_varlab(filename = filename, var_name = va
 parser = argparse.ArgumentParser(description='CoderingsTool Pipeline')
 parser.add_argument('--force-recalculate', action='store_true', help='Force recalculation of all steps')
 parser.add_argument('--force-step', type=str, help='Force recalculation of specific step')
-parser.add_argument('--migrate', action='store_true', help='Migrate from old CSV handler')
 parser.add_argument('--cleanup', action='store_true', help='Clean up old cache files')
 parser.add_argument('--stats', action='store_true', help='Show cache statistics')
 args = parser.parse_args()
@@ -305,11 +304,3 @@ for theme_id, count in sorted(theme_counts.items()):
         print(f"  - {example}")
 
 
-# === MIGRATION =====================================================================================================
-# Migrate from old CSV handler if requested
-if args.migrate:
-    print("\n=== Migrating from old CSV handler ===")
-    from modules.utils import csvHandler
-    old_csv_handler = csvHandler.CsvHandler()
-    migration_count = cache_manager.migrate_from_csv_handler(old_csv_handler, filename)
-    print(f"Migration completed: {migration_count} files migrated")
