@@ -4,6 +4,7 @@ import time
 from typing import List, Dict, Optional, Set, Tuple
 from collections import defaultdict
 import numpy as np
+import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field
 from tqdm import tqdm
 import instructor
