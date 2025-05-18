@@ -367,6 +367,8 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 - Output: `Dict[int, int]` mapping old IDs to new IDs
 - **Added**: Graph-based connected components for transitive merging
 - **Added**: Merge rationale tracking for transparency
+- **Updated**: Changed from exhaustive pairwise comparisons to sequential merging
+- **Improved**: Reduced comparisons from O(n²) to O(n) for better performance
 
 **TODO 4: Implement Stage 3 - Hierarchical Structure Creation** ✓ COMPLETED
 - Organize merged clusters into 3-level hierarchy
@@ -462,6 +464,7 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
    - Representative item selection via centroid similarity
    - Batch processing for efficiency
    - Standalone testing capability
+   - **Sequential merging algorithm** - Reduced comparisons from 1,326 to ~51 for 52 clusters
 
 #### Testing the System:
 ```bash
