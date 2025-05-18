@@ -367,11 +367,21 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
 else:
     start_time = time.time()
     labeller_config = labeller.LabellerConfig()
-    label_generator = labeller.Labeller(config=labeller_config)
+    label_generator = labeller.Labeller(
+        input_list=cluster_results,
+        var_lab=var_lab,
+        config=labeller_config,
+        verbose=True
+    )
     
-    # Convert cluster results to label model format
-    label_input = [item.to_model(models.LabelModel) for item in cluster_results]
-    labeled_results = label_generator.label_clusters(label_input)
+    # Generate labels
+    label_generator.generate_labels()
+    
+    # Convert to label models
+    labeled_results = label_generator.to_label_model()
+    
+    # Generate summaries
+    labeled_results = label_generator.generate_summary(labeled_results)
     
     end_time = time.time()
     elapsed_time = end_time - start_time
