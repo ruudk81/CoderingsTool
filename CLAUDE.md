@@ -77,17 +77,10 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 ## Development Priorities
 
 ### Phase 1: Cache System ✓ COMPLETED
-- ✓ Analyzed pipeline.py CSV handling issues
-- ✓ Designed SQLite-based cache strategy
-- ✓ Created cache_config.py with configuration classes
-- ✓ Implemented cache_database.py for SQLite operations
-- ✓ Built cache_manager.py to replace csvHandler
-- ✓ Updated pipeline.py to use CacheManager
-- ✓ Added command-line arguments for cache control
+- ✓ Created SQLite-backed cache system
 - ✓ Fixed Windows file locking issues
-- ✓ Fixed cache directory location
-- ✓ Removed unnecessary migration code
-- ⏳ Create tests for cache system (deferred)
+- ✓ Added CLI options for cache control
+- ✓ Removed migration code (not needed)
 
 ### Phase 2: Clustering Improvements (CURRENT)
 
@@ -142,13 +135,9 @@ text preprocessing, quality filtering, embedding generation, clustering, and the
 - UI is set up but not connected to all pipeline functions
 - Focus should be on improving existing steps before adding new features
 
-## New Cache System Features
-- SQLite database for cache metadata tracking
-- Command-line arguments:
-  - `--force-recalculate`: Force recalculation of all steps
-  - `--force-step STEP_NAME`: Force specific step recalculation
-  - `--cleanup`: Clean up old cache files
-  - `--stats`: Show cache statistics
-- Automatic cache invalidation based on configuration changes
-- Atomic file writes to prevent corruption
-- Processing time tracking for performance monitoring
+## Current Focus: Automatic Clustering
+- Simplified config with only user-relevant options
+- Automatic parameter selection based on data size
+- Quality metrics for clustering evaluation
+- Default to description embeddings (user configurable)
+- Micro-clusters for outlier handling (Option C)
