@@ -300,9 +300,21 @@ class CacheManager:
             file_hash = self._calculate_file_hash(temp_file)
             file_size = temp_file.stat().st_size
             
-            # Atomic move to final location
+            # Move to final location - use platform-appropriate method
             if self.config.use_atomic_writes:
-                temp_file.replace(cache_path)
+                try:
+                    # Try atomic replace first
+                    temp_file.replace(cache_path)
+                except PermissionError:
+                    # On Windows, close the file and try shutil.move
+                    import platform
+                    if platform.system() == 'Windows':
+                        # Windows sometimes needs a moment to release file handles
+                        import time
+                        time.sleep(0.1)
+                        shutil.move(str(temp_file), str(cache_path))
+                    else:
+                        raise
             else:
                 shutil.move(str(temp_file), str(cache_path))
             
