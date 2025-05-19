@@ -480,9 +480,9 @@ python clusterer.py  # Test clustering standalone
 python labeller.py   # Test labeling standalone
 ```
 
-### Current TODO: Create Fresh Labeller from Scratch
+### Phase 4: Create Fresh Labeller from Scratch ✓ COMPLETED
 
-**Status: Redesigning labeller with optimized architecture**
+**Status: Successfully created hierarchical labeller with optimized architecture**
 
 #### Step 1: Aligned Objective and Output ✓ COMPLETED
 
@@ -699,6 +699,7 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 - Theme summaries explaining research question relevance
 - Robust error handling and retries
 - Progress tracking with tqdm
+- Code frequency counting in test output
 
 **Architecture Highlights**
 - Follows established patterns from other modules
@@ -708,12 +709,70 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 - Configurable settings
 - JSON response format for all LLM calls
 
-**Testing**
-Run the test script to validate:
-```bash
-cd /workspaces/CoderingsTool/src/modules/utils
-python test_labeller.py
-```
+**Test Results**
+Successfully reduced 52 original clusters to:
+- 6 themes
+- 9 topics
+- 19 unique codes
+
+Example theme: "Kwaliteit en Gezondheid van Maaltijden" with topics on health/nutrition and taste/quality.
+
+### Next TODO: Testing and Integration Improvements ✓ COMPLETED
+
+**Priority: Improve testing structure for the hierarchical labeller**
+
+1. **Move test_labeller into labeller.py test section** ✓ COMPLETED
+   - Followed the pattern from clusterer.py
+   - Integrated test code into `if __name__ == "__main__"` section of labeller.py
+   - Removed separate test_labeller.py file
+
+2. **Create test sections for each phase file** ✓ COMPLETED
+   - Added `if __name__ == "__main__"` sections to:
+     - phase1_labeller.py - Tests initial label generation
+     - phase2_merger.py - Tests cluster merging based on similarity
+     - phase3_organizer.py - Tests hierarchical organization creation
+     - phase4_summarizer.py - Tests theme summary generation
+   - Enabled independent testing of each phase
+   - Included sample data for phase-specific testing
+
+#### Testing Structure Summary
+- **Main labeller.py**: Tests the complete pipeline from cached cluster data
+- **phase1_labeller.py**: Tests initial cluster labeling with mock embeddings
+- **phase2_merger.py**: Tests similarity analysis and merge mapping
+- **phase3_organizer.py**: Tests hierarchical structure creation
+- **phase4_summarizer.py**: Tests theme summary generation
+
+Each test section includes:
+- Sample data generation
+- Async test execution
+- Result display and validation
+- JSON output file saving
+- Error handling and traceback printing
+
+### Next TODO: Retry Mechanisms and Robustness
+
+**Priority: Add retry mechanisms for LLM calls to improve reliability**
+
+1. **Enhance LLM retry logic**
+   - Implement exponential backoff
+   - Add specific error type handling (rate limits, network errors)
+   - Add circuit breaker pattern for persistent failures
+   - Log retry attempts with detailed error information
+
+2. **Add batch failure recovery**
+   - Store intermediate results to avoid full restarts
+   - Implement partial batch retry for failed items only
+   - Add checkpointing for long-running operations
+
+3. **Improve error reporting**
+   - Create structured error types for different failure modes
+   - Add error aggregation across phases
+   - Provide actionable error messages to users
+
+4. **Add timeout handling**
+   - Implement request-level timeouts
+   - Add phase-level timeouts
+   - Provide graceful degradation options
 
 ### Future Phases
 1. Phase 4: Complete labeller optimization (current priority)
