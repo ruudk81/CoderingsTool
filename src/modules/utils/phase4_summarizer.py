@@ -142,7 +142,11 @@ class Phase4Summarizer:
         
         for attempt in range(self.config.max_retries):
             try:
-                response = await self.client.chat.completions.create(
+                # Use regular OpenAI client for JSON response
+                from openai import AsyncOpenAI
+                openai_client = AsyncOpenAI(api_key=self.config.api_key)
+                
+                response = await openai_client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
                     temperature=0.3,
