@@ -749,6 +749,40 @@ Each test section includes:
 - JSON output file saving
 - Error handling and traceback printing
 
+### Current Work: Tuning Phase 2 Merger (Less Aggressive)
+
+**Issue**: Phase 2 merger is too aggressive, merging clusters that should remain separate.
+
+**Analysis Approach**
+1. **Enhanced Similarity Distribution Analysis**
+   - Track all cosine similarity scores from embeddings  
+   - Track all LLM similarity scores
+   - Show detailed distribution statistics (mean, median, percentiles)
+   - Create histogram visualizations
+
+2. **Adjustable Parameters**
+   - `similarity_threshold`: Currently 0.95 for auto-merge
+   - `merge_score_threshold`: Currently 0.7 for LLM merge
+   - Need to make these configurable via CLI
+   - Consider adding minimum cluster size constraints
+
+3. **Implementation Progress**
+   - ✓ Added similarity distribution analysis to phase2_merger.py
+   - ✓ Added cosine similarity logging for high-similarity pairs
+   - ✓ Added LLM similarity score logging
+   - ✓ Enhanced test section with detailed score analysis
+   - ✓ Added threshold recommendations based on percentiles
+   - ⏳ Making thresholds configurable via CLI
+   - ⏳ Creating parameter tuning mode
+
+4. **Test Section Enhancements**
+   - Separate analysis of auto-merge (cosine) and LLM similarity scores
+   - Top 20 scores from each method with merge status
+   - Distribution histograms for both score types
+   - Comparison of merge decisions between methods
+   - Percentile analysis for threshold recommendations
+   - Suggestions for adjusting thresholds to reduce aggressive merging
+
 ### Next TODO: Retry Mechanisms and Robustness
 
 **Priority: Add retry mechanisms for LLM calls to improve reliability**
