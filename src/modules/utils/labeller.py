@@ -334,9 +334,9 @@ class Labeller:
                                 code_embedding=segment.code_embedding,
                                 description_embedding=segment.description_embedding,
                                 mirco_cluster=segment.mirco_cluster,
-                                Theme={theme_id: theme_node.label} if theme_node else None,
-                                Topic={'.'.join(path_parts[:2]): topic_node.label} if topic_node else None,
-                                Code={path: code_node.label} if code_node else None
+                                Theme={int(theme_id): theme_node.label} if theme_node else None,
+                                Topic={hash('.'.join(path_parts[:2])) % 10000: topic_node.label} if topic_node else None,
+                                Code={hash(path) % 10000: code_node.label} if code_node else None
                             )
                             
                             label_segments.append(label_segment)
