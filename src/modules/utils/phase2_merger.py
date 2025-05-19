@@ -114,8 +114,10 @@ class Phase2Merger:
             'p99': np.percentile(all_similarities, 99)
         }
         
-        # Create histogram bins
-        bins = np.arange(0, 1.05, 0.05)
+        # Create histogram bins: 0.05 steps up to 0.9, then 0.01 steps from 0.9 to 1.0
+        bins_coarse = np.arange(0, 0.9, 0.05)
+        bins_fine = np.arange(0.9, 1.01, 0.01)
+        bins = np.concatenate([bins_coarse, bins_fine])
         hist, bin_edges = np.histogram(all_similarities, bins=bins)
         
         logger.info("\n=== Cosine Similarity Distribution Analysis ===")
@@ -137,7 +139,7 @@ class Phase2Merger:
             end = bin_edges[i+1]
             bar_length = int(40 * count / max_count) if max_count > 0 else 0
             bar = '█' * bar_length
-            logger.info(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+            logger.info(f"  {start:.3f}-{end:.3f}: {bar} ({count} pairs)")
         
         # Count pairs above certain thresholds
         thresholds = [0.9, 0.95, 0.98, 0.99]
@@ -676,7 +678,11 @@ if __name__ == "__main__":
                 
                 # Create histogram of auto-merge scores
                 auto_scores_only = [s['score'] for s in auto_merge_scores]
-                bins = np.arange(0, 1.05, 0.05)
+                
+                # Create bins: 0.05 steps up to 0.9, then 0.01 steps from 0.9 to 1.0
+                bins_coarse = np.arange(0, 0.9, 0.05)
+                bins_fine = np.arange(0.9, 1.01, 0.01)
+                bins = np.concatenate([bins_coarse, bins_fine])
                 hist, bin_edges = np.histogram(auto_scores_only, bins=bins)
                 
                 print("\nAuto-merge score distribution:")
@@ -686,7 +692,7 @@ if __name__ == "__main__":
                     end = bin_edges[i+1]
                     bar_length = int(40 * count / max_count) if max_count > 0 else 0
                     bar = '█' * bar_length
-                    print(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+                    print(f"  {start:.3f}-{end:.3f}: {bar} ({count} pairs)")
                 
                 # Now run full merge process to get LLM scores
                 print("\n=== FULL MERGE PROCESS (Including LLM Analysis) ===")
