@@ -37,6 +37,9 @@ class Phase2Merger:
         """Main method to identify and merge similar clusters"""
         logger.info("Phase 2: Analyzing cluster similarity and merging...")
         
+        # First, show similarity distribution analysis
+        self._show_similarity_distribution(cluster_data)
+        
         # Step 1: Auto-merge highly similar clusters based on embedding similarity
         auto_merge_groups = self._auto_merge_by_similarity(cluster_data)
         logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on embedding similarity")
@@ -79,6 +82,73 @@ class Phase2Merger:
         
         return merge_mapping
     
+    def _show_similarity_distribution(self, cluster_data: Dict[int, ClusterData]):
+        """Show distribution analysis of pairwise similarities"""
+        cluster_ids = list(cluster_data.keys())
+        if len(cluster_ids) <= 1:
+            return
+        
+        # Create centroid matrix
+        centroids = np.array([cluster_data[cid].centroid for cid in cluster_ids])
+        
+        # Calculate all pairwise similarities
+        similarities = cosine_similarity(centroids)
+        
+        # Extract upper triangle (excluding diagonal)
+        all_similarities = []
+        for i in range(len(cluster_ids)):
+            for j in range(i+1, len(cluster_ids)):
+                all_similarities.append(similarities[i, j])
+        
+        all_similarities = np.array(all_similarities)
+        
+        # Calculate statistics
+        stats = {
+            'min': np.min(all_similarities),
+            'max': np.max(all_similarities),
+            'mean': np.mean(all_similarities),
+            'median': np.median(all_similarities),
+            'std': np.std(all_similarities),
+            'p90': np.percentile(all_similarities, 90),
+            'p95': np.percentile(all_similarities, 95),
+            'p99': np.percentile(all_similarities, 99)
+        }
+        
+        # Create histogram bins
+        bins = np.arange(0, 1.05, 0.05)
+        hist, bin_edges = np.histogram(all_similarities, bins=bins)
+        
+        logger.info("\n=== Cosine Similarity Distribution Analysis ===")
+        logger.info(f"Total pairs analyzed: {len(all_similarities)}")
+        logger.info("\nStatistics:")
+        logger.info(f"  Min:    {stats['min']:.4f}")
+        logger.info(f"  Max:    {stats['max']:.4f}")
+        logger.info(f"  Mean:   {stats['mean']:.4f}")
+        logger.info(f"  Median: {stats['median']:.4f}")
+        logger.info(f"  Std:    {stats['std']:.4f}")
+        logger.info(f"  90th percentile: {stats['p90']:.4f}")
+        logger.info(f"  95th percentile: {stats['p95']:.4f}")
+        logger.info(f"  99th percentile: {stats['p99']:.4f}")
+        
+        logger.info("\nDistribution:")
+        max_count = max(hist)
+        for i, count in enumerate(hist):
+            start = bin_edges[i]
+            end = bin_edges[i+1]
+            bar_length = int(40 * count / max_count) if max_count > 0 else 0
+            bar = '█' * bar_length
+            logger.info(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+        
+        # Count pairs above certain thresholds
+        thresholds = [0.9, 0.95, 0.98, 0.99]
+        logger.info("\nPairs above thresholds:")
+        for threshold in thresholds:
+            count = np.sum(all_similarities > threshold)
+            percentage = 100 * count / len(all_similarities)
+            logger.info(f"  > {threshold}: {count} pairs ({percentage:.1f}%)")
+        
+        logger.info("=" * 50)
+    
     def _auto_merge_by_similarity(self, cluster_data: Dict[int, ClusterData]) -> List[List[int]]:
         """Auto-merge clusters with very high embedding similarity"""
         cluster_ids = list(cluster_data.keys())
@@ -91,9 +161,28 @@ class Phase2Merger:
         # Calculate pairwise similarities
         similarities = cosine_similarity(centroids)
         
+        # Log high similarity pairs
+        high_similarity_pairs = []
+        for i in range(len(cluster_ids)):
+            for j in range(i+1, len(cluster_ids)):
+                sim_score = similarities[i, j]
+                if sim_score > 0.9:  # Log pairs above 0.9 similarity
+                    high_similarity_pairs.append((cluster_ids[i], cluster_ids[j], sim_score))
+        
+        # Sort by similarity score
+        high_similarity_pairs.sort(key=lambda x: x[2], reverse=True)
+        
+        # Log the highest similarity pairs
+        logger.info("High cosine similarity pairs (>0.9):")
+        for i, (cid1, cid2, score) in enumerate(high_similarity_pairs[:10]):
+            logger.info(f"  Clusters {cid1} & {cid2}: {score:.4f}")
+        if len(high_similarity_pairs) > 10:
+            logger.info(f"  ... and {len(high_similarity_pairs) - 10} more pairs")
+        
         # Find groups to merge
         merged = set()
         merge_groups = []
+        merge_decisions = []  # Track merge decisions for logging
         
         for i, cid1 in enumerate(cluster_ids):
             if cid1 in merged:
@@ -106,11 +195,20 @@ class Phase2Merger:
                 if cid2 in merged:
                     continue
                 
-                if similarities[i, j] > self.config.similarity_threshold:
+                sim_score = similarities[i, j]
+                if sim_score > self.config.similarity_threshold:
                     group.append(cid2)
                     merged.add(cid2)
+                    merge_decisions.append((cid1, cid2, sim_score))
             
             merge_groups.append(group)
+        
+        # Log merge decisions
+        logger.info(f"\nAuto-merge decisions (threshold={self.config.similarity_threshold}):")
+        for cid1, cid2, score in merge_decisions[:10]:
+            logger.info(f"  Merging {cid1} & {cid2} (similarity: {score:.4f})")
+        if len(merge_decisions) > 10:
+            logger.info(f"  ... and {len(merge_decisions) - 10} more merges")
         
         # Add any remaining clusters as singleton groups
         for cid in cluster_ids:
@@ -174,6 +272,9 @@ class Phase2Merger:
                     if (score.cluster_id_1, score.cluster_id_2) in pairs or \
                        (score.cluster_id_2, score.cluster_id_1) in pairs:
                         valid_scores.append(score)
+                        # Log LLM scores
+                        if score.score > 0.5:  # Log scores above 0.5
+                            logger.info(f"LLM similarity: Clusters {score.cluster_id_1} & {score.cluster_id_2}: {score.score:.3f} - {score.reason[:50]}...")
                 
                 return valid_scores
                 
@@ -271,11 +372,26 @@ class Phase2Merger:
                                        scores: List[SimilarityScore],
                                        threshold: float) -> List[List[int]]:
         """Create merge groups from similarity scores"""
+        # First, show LLM score distribution
+        if scores:
+            all_llm_scores = [score.score for score in scores]
+            logger.info(f"\nLLM Similarity Score Summary (threshold={threshold}):")
+            logger.info(f"  Total scored pairs: {len(all_llm_scores)}")
+            logger.info(f"  Min score: {min(all_llm_scores):.3f}")
+            logger.info(f"  Max score: {max(all_llm_scores):.3f}")
+            logger.info(f"  Mean score: {np.mean(all_llm_scores):.3f}")
+            
+            # Count scores above threshold
+            above_threshold = sum(1 for s in all_llm_scores if s >= threshold)
+            logger.info(f"  Scores >= {threshold}: {above_threshold} ({100*above_threshold/len(all_llm_scores):.1f}%)")
+        
         # Build adjacency list
         adjacency = {}
+        merge_candidates = []
         for score in scores:
             if score.score >= threshold:
                 cid1, cid2 = score.cluster_id_1, score.cluster_id_2
+                merge_candidates.append((cid1, cid2, score.score))
                 
                 if cid1 not in adjacency:
                     adjacency[cid1] = set()
@@ -284,6 +400,14 @@ class Phase2Merger:
                 
                 adjacency[cid1].add(cid2)
                 adjacency[cid2].add(cid1)
+        
+        # Log LLM merge decisions
+        if merge_candidates:
+            logger.info(f"\nLLM merge decisions (showing first 10):")
+            for cid1, cid2, score in merge_candidates[:10]:
+                logger.info(f"  Merging {cid1} & {cid2} (LLM score: {score:.3f})")
+            if len(merge_candidates) > 10:
+                logger.info(f"  ... and {len(merge_candidates) - 10} more merges")
         
         # Find connected components
         visited = set()
@@ -514,15 +638,11 @@ if __name__ == "__main__":
             print(f"Number of clusters: {len(cluster_data)}")
             
             try:
-                # Test auto-merge first
-                auto_groups = phase2._auto_merge_by_similarity(cluster_data)
-                print(f"\nAuto-merge groups (showing groups with >1 clusters):")
-                multi_groups = [g for g in auto_groups if len(g) > 1]
-                print(f"  Found {len(multi_groups)} multi-cluster groups")
-                for i, group in enumerate(multi_groups[:5]):
-                    print(f"  Group {i}: {group}")
-                if len(multi_groups) > 5:
-                    print(f"  ... and {len(multi_groups) - 5} more")
+                # Set up logging for the test
+                import logging
+                logging.basicConfig(level=logging.INFO, format='%(message)s')
+                
+                print("\n=== Starting detailed merge analysis ===\n")
                 
                 # Run full merge process
                 merge_mapping = await phase2.merge_similar_clusters(
