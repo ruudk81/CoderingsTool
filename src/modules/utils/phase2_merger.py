@@ -35,8 +35,10 @@ class Phase2Merger:
         stop_words = self._get_stop_words()
         self.vectorizer_model = CountVectorizer(
             stop_words=stop_words,
-            ngram_range=(1, 3),
-            min_df=1
+            ngram_range=(1, 2),  # Use smaller ngrams for more specific matching
+            min_df=1,
+            max_df=0.8,  # Ignore terms that appear in more than 80% of clusters
+            token_pattern=r'\b\w+\b'  # Better token pattern
         )
     
     def _get_stop_words(self):
@@ -74,8 +76,11 @@ class Phase2Merger:
             cluster = cluster_data[cluster_id]
             # Combine descriptive codes and descriptions, filtering out NAs
             codes = [code.replace("_", " ").lower() for code in cluster.descriptive_codes if code.lower() != "na"]
-            descriptions = [desc for desc in cluster.code_descriptions if desc.lower() != "na"]
-            cluster_text = " ".join(codes + descriptions)
+            descriptions = [desc.lower() for desc in cluster.code_descriptions if desc.lower() != "na"]
+            
+            # Give more weight to codes by repeating them
+            weighted_codes = codes * 2  # Repeat codes to give them more weight
+            cluster_text = " ".join(weighted_codes + descriptions)
             cluster_texts.append(cluster_text)
         
         logger.info(f"Processing {len(cluster_ids)} clusters with TF-IDF")
@@ -121,10 +126,13 @@ class Phase2Merger:
         normalized_vectors = normalize(weighted_c_tf_idf.toarray())
         
         # Step 6: Use HDBSCAN to find groups of similar clusters
+        # Use more conservative parameters to prevent over-merging
         meta_clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=2,
-            metric='euclidean',  # Using euclidean as in working code
-            cluster_selection_method='eom'
+            min_cluster_size=4,  # Increased to be less aggressive
+            min_samples=3,  # Require more samples for core points
+            metric='cosine',  # Better for text similarity
+            cluster_selection_method='eom',
+            cluster_selection_epsilon=0.5  # Allow some flexibility
         )
         
         merge_labels = meta_clusterer.fit_predict(normalized_vectors)
