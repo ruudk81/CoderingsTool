@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import normalize
 from scipy.sparse import csr_matrix
 import hdbscan
 from typing import List, Dict, Set, Tuple
 import logging
+import spacy
 
 try:
     # When running as a script
@@ -30,13 +31,24 @@ class Phase2Merger:
         self.client = client  # Not needed for TF-IDF approach
         self.verbose = True
         
-        # Initialize TF-IDF vectorizer
-        self.vectorizer_model = TfidfVectorizer(
-            ngram_range=(1, 2),
-            stop_words=None,
-            min_df=1,
-            max_df=1.0
+        # Initialize vectorizer with specific parameters
+        stop_words = self._get_stop_words()
+        self.vectorizer_model = CountVectorizer(
+            stop_words=stop_words,
+            ngram_range=(1, 3),
+            min_df=1
         )
+    
+    def _get_stop_words(self):
+        """Get stop words based on language"""
+        if self.config.language == "nl":
+            try:
+                return list(spacy.load("nl_core_news_lg").Defaults.stop_words)
+            except:
+                logger.warning("Dutch language model not found. Using None.")
+                return None
+        else:
+            return 'english'
     
     async def merge_similar_clusters(self,
                                    cluster_data: Dict[int, ClusterData],
@@ -60,8 +72,10 @@ class Phase2Merger:
         
         for cluster_id in cluster_ids:
             cluster = cluster_data[cluster_id]
-            # Combine descriptive codes and descriptions for each cluster
-            cluster_text = " ".join(cluster.descriptive_codes + cluster.code_descriptions)
+            # Combine descriptive codes and descriptions, filtering out NAs
+            codes = [code.replace("_", " ").lower() for code in cluster.descriptive_codes if code.lower() != "na"]
+            descriptions = [desc for desc in cluster.code_descriptions if desc.lower() != "na"]
+            cluster_text = " ".join(codes + descriptions)
             cluster_texts.append(cluster_text)
         
         logger.info(f"Processing {len(cluster_ids)} clusters with TF-IDF")
@@ -70,7 +84,11 @@ class Phase2Merger:
         X = self.vectorizer_model.fit_transform(cluster_texts)
         words = self.vectorizer_model.get_feature_names_out()
         tf = X.toarray()
-        tf = np.divide(tf, tf.sum(axis=1).reshape(-1, 1) + 1e-10)  # Avoid division by zero
+        
+        # Normalize TF (avoid division by zero)
+        tf_sums = tf.sum(axis=1).reshape(-1, 1)
+        tf_sums[tf_sums == 0] = 1  # Avoid division by zero
+        tf = np.divide(tf, tf_sums)
         
         # Calculate IDF
         df = np.where(X.toarray() > 0, 1, 0).sum(axis=0)
@@ -91,7 +109,7 @@ class Phase2Merger:
         
         # Step 4: Weight keywords using embeddings
         weighted_clusters_dict = self._weight_keywords_with_embeddings(
-            clusters_dict, cluster_texts, c_tf_idf, words
+            clusters_dict, cluster_texts, c_tf_idf, words, cluster_data, cluster_ids
         )
         
         # Step 5: Apply weights to TF-IDF and create meta-clusters
@@ -105,7 +123,7 @@ class Phase2Merger:
         # Step 6: Use HDBSCAN to find groups of similar clusters
         meta_clusterer = hdbscan.HDBSCAN(
             min_cluster_size=2,
-            metric='cosine',  # Use cosine similarity
+            metric='euclidean',  # Using euclidean as in working code
             cluster_selection_method='eom'
         )
         
@@ -160,9 +178,10 @@ class Phase2Merger:
         
         return clusters_dict
     
-    def _weight_keywords_with_embeddings(self, clusters_dict, cluster_texts, c_tf_idf, words):
-        """Weight keywords using embeddings"""
-        # Get embeddings
+    def _weight_keywords_with_embeddings(self, clusters_dict, cluster_texts, c_tf_idf, words, 
+                                        cluster_data, cluster_ids):
+        """Weight keywords using embeddings - following working code logic"""
+        # Get embeddings using the proper import pattern
         try:
             from modules.utils import embedder
             get_embedding = embedder.Embedder()
@@ -174,32 +193,91 @@ class Phase2Merger:
                     return np.random.rand(len(texts), 768)
             get_embedding = MockEmbedder()
         
-        # Get embeddings for cluster texts
-        cluster_embeddings = get_embedding.embed_words(cluster_texts)
+        # Step 1: Get representative responses for each cluster
+        nr_repr_docs = 10
+        nr_candidate_words = 20
+        representative_responses = []
+        repr_resp_indices = []
+        start_idx = 0
+        
+        # Create a DataFrame-like structure for easier processing
+        cluster_responses_dict = {}
+        for cluster_idx, cluster_id in enumerate(cluster_ids):
+            cluster = cluster_data[cluster_id]
+            # Get actual responses from the cluster
+            responses = []
+            for code, desc in zip(cluster.descriptive_codes, cluster.code_descriptions):
+                if code.lower() != "na" and desc.lower() != "na":
+                    responses.append(f"{code.replace('_', ' ').lower()} {desc}")
+            cluster_responses_dict[cluster_idx] = responses
+        
+        # Get representative responses following the working code logic
+        for cluster_idx in sorted(clusters_dict.keys()):
+            cluster_responses = cluster_responses_dict.get(cluster_idx, [])
+            
+            if len(cluster_responses) > nr_candidate_words:
+                sampled_indices = np.random.choice(range(len(cluster_responses)), 
+                                                  size=nr_candidate_words, 
+                                                  replace=False)
+                cluster_responses = [cluster_responses[i] for i in sampled_indices]
+            
+            if len(cluster_responses) > nr_repr_docs:
+                resp_vectors = self.vectorizer_model.transform(cluster_responses)
+                # Use direct indexing as in the working code
+                cluster_vector = c_tf_idf[cluster_idx]
+                similarities = cosine_similarity(resp_vectors, cluster_vector)
+                # Note: The working code uses argsort()[nr_repr_docs:] to get top items
+                top_indices = np.argsort(similarities.flatten())[-nr_repr_docs:]
+                selected_responses = [cluster_responses[idx] for idx in top_indices]
+            else:
+                selected_responses = cluster_responses
+            
+            representative_responses.extend(selected_responses)
+            repr_resp_indices.append(list(range(start_idx, start_idx + len(selected_responses))))
+            start_idx += len(selected_responses)
+        
+        # Get embeddings for representative responses
+        if representative_responses:
+            repr_embeddings = get_embedding.embed_words(representative_responses)
+            temp_cluster_embeddings = []
+            for indices in repr_resp_indices:
+                if indices:  # Check if indices is not empty
+                    embeddings_slice = repr_embeddings[indices[0]:indices[-1] + 1]
+                    temp_cluster_embeddings.append(np.mean(embeddings_slice, axis=0))
+                else:
+                    # If no representative responses, use a zero vector
+                    temp_cluster_embeddings.append(np.zeros(768))
+            temp_cluster_embeddings = np.array(temp_cluster_embeddings)
+        else:
+            # Fallback if no representative responses
+            temp_cluster_embeddings = np.zeros((len(clusters_dict), 768))
         
         # Get unique words from all clusters
         vocab = list(set([word for words in clusters_dict.values() for word in words]))
-        word_embeddings = get_embedding.embed_words(vocab)
-        
-        # Calculate similarity between clusters and words
-        sim = cosine_similarity(cluster_embeddings, word_embeddings)
-        
-        # Create weighted keywords dictionary
-        updated_clusters_dict = {}
-        
-        for i, cluster_idx in enumerate(sorted(clusters_dict.keys())):
-            indices = [vocab.index(word) for word in clusters_dict[cluster_idx] if word in vocab]
-            if indices:
-                values = sim[i, indices]
-                sorted_indices = np.argsort(values)
-                word_indices = [indices[idx] for idx in sorted_indices]
-                scores = np.sort(values)
-                updated_clusters_dict[cluster_idx] = [
-                    (vocab[idx], score) for score, idx in 
-                    zip(scores[::-1], word_indices[::-1])
-                ]
-            else:
-                updated_clusters_dict[cluster_idx] = []
+        if vocab:
+            word_embeddings = get_embedding.embed_words(vocab)
+            
+            # Calculate similarity between clusters and words
+            sim = cosine_similarity(temp_cluster_embeddings, word_embeddings)
+            
+            # Create weighted keywords dictionary
+            updated_clusters_dict = {}
+            
+            for i, cluster_idx in enumerate(sorted(clusters_dict.keys())):
+                indices = [vocab.index(word) for word in clusters_dict[cluster_idx] if word in vocab]
+                if indices:
+                    values = sim[i, indices]
+                    sorted_indices = np.argsort(values)
+                    word_indices = [indices[idx] for idx in sorted_indices]
+                    scores = np.sort(values)
+                    updated_clusters_dict[cluster_idx] = [
+                        (vocab[idx], score) for score, idx in 
+                        zip(scores[::-1], word_indices[::-1])
+                    ]
+                else:
+                    updated_clusters_dict[cluster_idx] = []
+        else:
+            updated_clusters_dict = {idx: [] for idx in clusters_dict.keys()}
         
         return updated_clusters_dict
     
@@ -266,11 +344,13 @@ if __name__ == "__main__":
     import asyncio
     import json
     from pathlib import Path
+    import sys
+    sys.path.insert(0, r'C:\Users\rkn\Python_apps\Coderingstool\src')
     from cache_config import CacheConfig
     from cache_manager import CacheManager
     from config import OPENAI_API_KEY, DEFAULT_MODEL
     import models
-    from modules.utils import data_io
+    import data_io
     
     # Load test data
     cache_config = CacheConfig()
@@ -280,7 +360,7 @@ if __name__ == "__main__":
     var_name = "Q20"
     
     # Load clusters from cache
-    cluster_results = cache_manager.load_from_cache(filename, models.ClusterModel, "clusters")
+    cluster_results = cache_manager.load_from_cache(filename, "clusters", models.ClusterModel)
     phase1_labels = cache_manager.load_intermediate_data(filename, "phase1_labels")
     
     if cluster_results and phase1_labels:
@@ -359,7 +439,7 @@ if __name__ == "__main__":
                 print(f"  Reduction: {reduction:.1f}%")
                 
                 # Save to cache
-                cache_key = 'phase2_merge_mapping_tfidf'
+                cache_key = 'phase2_merge_mapping'
                 cache_data = {
                     'merge_mapping': merge_mapping,
                     'cluster_data': cluster_data,
