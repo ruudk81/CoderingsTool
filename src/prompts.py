@@ -280,4 +280,110 @@ Based on these representative examples and the survey question context, create a
 Write a clear, insightful summary that helps understand what this theme represents in relation to the survey question.
 """
 
+# New Labeller prompts for hierarchical labeling system
+
+INITIAL_LABEL_PROMPT = """
+You are analyzing survey responses to the question: "{var_lab}"
+
+Please label the following clusters based on their content. Each cluster shows the MOST REPRESENTATIVE items,
+selected using cosine similarity to the cluster centroid. These are the items that best capture the essence
+of each cluster.
+
+For each cluster, provide:
+1. A concise, descriptive label that captures the main theme
+2. 3-5 keywords that represent the cluster
+3. A confidence score (0.0-1.0)
+
+Focus on creating labels that directly answer or relate to the survey question. Base your labels primarily
+on the representative items shown, as they are the most characteristic of each cluster.
+
+Language: {language}
+
+{clusters}
+
+REQUIRED OUTPUT FORMAT:
+Return a JSON object with a single key "labels", containing an array of objects with these fields:
+- "cluster_id": The cluster ID
+- "label": A concise descriptive label
+- "keywords": An array of 3-5 keywords
+- "confidence": A confidence score between 0.0 and 1.0
+"""
+
+SIMILARITY_SCORING_PROMPT = """
+You are tasked with comparing clusters based on their labels and most representative 
+descriptive codes and code descriptions. Please give a score from 0 to 1 for how 
+similar they are from the point of view of addressing the research question.
+
+Research question: "{var_lab}"
+Language: {language}
+
+Scoring scale:
+- 0 = maximally differentiated (completely different themes)
+- 0.5 = pretty similar, probably sharing an overarching theme or response pattern
+- 1 = not positively differentiated at all, there is no difference or the difference 
+      does not help in any way to explain how respondents answered the research 
+      question differently
+
+For each pair of clusters, also indicate whether they should be merged (score >= 0.7).
+
+{cluster_pairs}
+
+REQUIRED OUTPUT FORMAT:
+Return a JSON object with a single key "scores", containing an array of objects with these fields:
+- "cluster_id_1": First cluster ID
+- "cluster_id_2": Second cluster ID  
+- "score": Similarity score between 0.0 and 1.0
+- "merge_suggested": Boolean indicating if merge is recommended (score >= 0.7)
+- "reason": Brief explanation of the similarity/difference
+"""
+
+HIERARCHY_CREATION_PROMPT = """
+You are organizing survey response clusters for the question: "{var_lab}"
+
+Your task is to group these clusters into {level}-level categories that represent major themes.
+Each {level} should:
+1. Represent a distinct, broad theme related to the survey question
+2. Contain clusters that share conceptual similarity
+3. Be meaningful and interpretable in the context of the survey
+
+Language: {language}
+
+Here are the clusters to organize:
+{clusters}
+
+Group these clusters into 3-7 {level} categories. Each cluster should belong to exactly one category.
+
+REQUIRED OUTPUT FORMAT:
+Return a JSON object with a single key "{level}s", containing an array of objects with these fields:
+- "label": A descriptive name for the {level}
+- "cluster_ids": An array of cluster IDs belonging to this {level}
+- "explanation": Brief explanation of what unifies these clusters
+"""
+
+HIERARCHICAL_THEME_SUMMARY_PROMPT = """
+You are summarizing a theme from survey responses to the question: "{var_lab}"
+
+Theme: {theme_label}
+
+This theme contains the following structure:
+{theme_structure}
+
+Your task is to:
+1. Write a comprehensive summary of this theme (2-3 paragraphs)
+2. Explain how this theme addresses the research question
+
+Focus on:
+- What respondents in this theme are expressing
+- Common patterns or perspectives
+- How these responses relate to the research question
+- Key insights or takeaways
+
+Language: {language}
+
+REQUIRED OUTPUT FORMAT:
+Return a JSON object with these fields:
+- "summary": A comprehensive 2-3 paragraph summary of the theme
+- "relevance": A 1-2 sentence explanation of how this theme addresses the research question
+"""
+
 
