@@ -761,7 +761,7 @@ Each test section includes:
    - Create histogram visualizations
 
 2. **Adjustable Parameters**
-   - `similarity_threshold`: Currently 0.95 for auto-merge
+   - `similarity_threshold`: Raised from 0.95 to 0.98 for auto-merge
    - `merge_score_threshold`: Currently 0.7 for LLM merge
    - Need to make these configurable via CLI
    - Consider adding minimum cluster size constraints
