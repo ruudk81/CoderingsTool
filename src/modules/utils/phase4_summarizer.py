@@ -3,9 +3,16 @@ from typing import List, Dict
 import logging
 from tqdm.asyncio import tqdm
 
-from .labeller import (
-    LabellerConfig, HierarchicalStructure, ThemeSummary
-)
+try:
+    # When running as a script
+    from labeller import (
+        LabellerConfig, HierarchicalStructure, ThemeSummary
+    )
+except ImportError:
+    # When imported as a module
+    from .labeller import (
+        LabellerConfig, HierarchicalStructure, ThemeSummary
+    )
 from prompts import HIERARCHICAL_THEME_SUMMARY_PROMPT
 
 logger = logging.getLogger(__name__)
