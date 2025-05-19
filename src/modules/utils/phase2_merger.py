@@ -644,10 +644,117 @@ if __name__ == "__main__":
                 
                 print("\n=== Starting detailed merge analysis ===\n")
                 
+                # First run auto-merge analysis separately to capture scores
+                print("=== AUTO-MERGE ANALYSIS (Cosine Similarity) ===")
+                
+                # Create centroid matrix
+                cluster_ids = list(cluster_data.keys())
+                centroids = np.array([cluster_data[cid].centroid for cid in cluster_ids])
+                
+                # Calculate pairwise similarities
+                similarities = cosine_similarity(centroids)
+                
+                # Capture all similarity scores
+                auto_merge_scores = []
+                for i in range(len(cluster_ids)):
+                    for j in range(i+1, len(cluster_ids)):
+                        sim_score = similarities[i, j]
+                        auto_merge_scores.append({
+                            'cluster1': cluster_ids[i],
+                            'cluster2': cluster_ids[j],
+                            'score': sim_score,
+                            'merged': sim_score > config.similarity_threshold
+                        })
+                
+                # Sort by score descending
+                auto_merge_scores.sort(key=lambda x: x['score'], reverse=True)
+                
+                print(f"\nTop 20 Auto-merge similarity scores (threshold={config.similarity_threshold}):")
+                for i, score_info in enumerate(auto_merge_scores[:20]):
+                    status = "MERGED" if score_info['merged'] else "not merged"
+                    print(f"  {i+1}. Clusters {score_info['cluster1']} & {score_info['cluster2']}: {score_info['score']:.4f} ({status})")
+                
+                # Create histogram of auto-merge scores
+                auto_scores_only = [s['score'] for s in auto_merge_scores]
+                bins = np.arange(0, 1.05, 0.05)
+                hist, bin_edges = np.histogram(auto_scores_only, bins=bins)
+                
+                print("\nAuto-merge score distribution:")
+                max_count = max(hist)
+                for i, count in enumerate(hist):
+                    start = bin_edges[i]
+                    end = bin_edges[i+1]
+                    bar_length = int(40 * count / max_count) if max_count > 0 else 0
+                    bar = '█' * bar_length
+                    print(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+                
+                # Now run full merge process to get LLM scores
+                print("\n=== FULL MERGE PROCESS (Including LLM Analysis) ===")
+                
+                # Temporarily store LLM scores for analysis
+                llm_scores = []
+                
+                # Monkey-patch the phase2 instance to capture LLM scores
+                original_score_batch = phase2._score_similarity_batch
+                
+                async def capture_scores(*args, **kwargs):
+                    result = await original_score_batch(*args, **kwargs)
+                    # Capture the scores for our analysis
+                    if hasattr(result, 'scores'):
+                        for score in result.scores:
+                            llm_scores.append({
+                                'cluster1': score.cluster_id_1,
+                                'cluster2': score.cluster_id_2,
+                                'score': score.score,
+                                'merged': score.score >= config.merge_score_threshold,
+                                'reason': score.reason
+                            })
+                    return result
+                
+                phase2._score_similarity_batch = capture_scores
+                
                 # Run full merge process
                 merge_mapping = await phase2.merge_similar_clusters(
                     cluster_data, initial_labels, var_lab
                 )
+                
+                # Restore original method
+                phase2._score_similarity_batch = original_score_batch
+                
+                # Analyze LLM scores
+                if llm_scores:
+                    llm_scores.sort(key=lambda x: x['score'], reverse=True)
+                    
+                    print(f"\nTop 20 LLM similarity scores (threshold={config.merge_score_threshold}):")
+                    for i, score_info in enumerate(llm_scores[:20]):
+                        status = "MERGED" if score_info['merged'] else "not merged"
+                        reason = score_info['reason'][:50] + "..." if len(score_info['reason']) > 50 else score_info['reason']
+                        print(f"  {i+1}. Clusters {score_info['cluster1']} & {score_info['cluster2']}: {score_info['score']:.3f} ({status}) - {reason}")
+                    
+                    # Create histogram of LLM scores
+                    llm_scores_only = [s['score'] for s in llm_scores]
+                    bins = np.arange(0, 1.05, 0.05)
+                    hist, bin_edges = np.histogram(llm_scores_only, bins=bins)
+                    
+                    print("\nLLM score distribution:")
+                    max_count = max(hist)
+                    for i, count in enumerate(hist):
+                        start = bin_edges[i]
+                        end = bin_edges[i+1]
+                        bar_length = int(40 * count / max_count) if max_count > 0 else 0
+                        bar = '█' * bar_length
+                        print(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+                    
+                    # Compare thresholds
+                    print(f"\nThreshold Analysis:")
+                    print(f"Auto-merge threshold: {config.similarity_threshold}")
+                    print(f"LLM merge threshold: {config.merge_score_threshold}")
+                    
+                    auto_merged_count = sum(1 for s in auto_merge_scores if s['merged'])
+                    llm_merged_count = sum(1 for s in llm_scores if s['merged'])
+                    
+                    print(f"Auto-merge would merge: {auto_merged_count} pairs")
+                    print(f"LLM merge would merge: {llm_merged_count} pairs")
                 
                 # Display results
                 print("\n=== Merge Results ===")
@@ -669,6 +776,33 @@ if __name__ == "__main__":
                 print(f"  Original clusters: {original_count}")
                 print(f"  Merged clusters: {merged_count}")
                 print(f"  Reduction: {reduction:.1f}%")
+                
+                # Provide threshold recommendations
+                print("\n=== THRESHOLD RECOMMENDATIONS ===")
+                
+                # Analyze auto-merge scores to suggest threshold
+                auto_scores_sorted = sorted([s['score'] for s in auto_merge_scores], reverse=True)
+                percentiles = np.percentile(auto_scores_sorted, [99, 98, 97, 96, 95])
+                
+                print("\nAuto-merge score percentiles:")
+                for i, (p, val) in enumerate(zip([99, 98, 97, 96, 95], percentiles)):
+                    print(f"  {p}th percentile: {val:.4f}")
+                
+                # Analyze LLM scores to suggest threshold
+                if llm_scores:
+                    llm_scores_sorted = sorted([s['score'] for s in llm_scores], reverse=True)
+                    llm_percentiles = np.percentile(llm_scores_sorted, [90, 85, 80, 75, 70])
+                    
+                    print("\nLLM score percentiles:")
+                    for i, (p, val) in enumerate(zip([90, 85, 80, 75, 70], llm_percentiles)):
+                        print(f"  {p}th percentile: {val:.3f}")
+                
+                print("\nSuggested adjustments to reduce merging:")
+                print(f"  Current auto-merge threshold: {config.similarity_threshold}")
+                print(f"  Consider raising to: {percentiles[1]:.4f} (98th percentile) or {percentiles[0]:.4f} (99th percentile)")
+                print(f"  Current LLM threshold: {config.merge_score_threshold}")
+                if llm_scores:
+                    print(f"  Consider raising to: {llm_percentiles[1]:.3f} (85th percentile) or {llm_percentiles[0]:.3f} (90th percentile)")
                 
                 # Save to cache for phase 3
                 cache_key = 'phase2_merge_mapping'
