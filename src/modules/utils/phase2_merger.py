@@ -120,110 +120,96 @@ class Phase2Merger:
         self.config = config
         self.semaphore = asyncio.Semaphore(config.max_concurrent_requests)
         self.client = client or AsyncOpenAI(api_key=config.api_key)
-        # Override similarity threshold to be more conservative
-        self.similarity_threshold = 0.98  # Higher threshold for auto-merging
-        self.max_merge_group_size = 5     # Maximum size for any merge group
+        self.max_merge_group_size = 5      # Maximum size for any merge group
+        self.min_similarity_threshold = 0.8  # Initial threshold for candidate filtering
+        self.learned_threshold = 0.8       # Dynamic threshold that will be updated based on LLM judgments
     
     async def merge_similar_clusters(self,
                                    cluster_data: Dict[int, ClusterData],
                                    initial_labels: Dict[int, InitialLabel],
                                    var_lab: str) -> MergeMapping:
-        """Main method to identify and merge similar clusters using a hierarchical approach"""
+        """Main method to identify and merge similar clusters with dynamic similarity threshold learning"""
         logger.info(f"Phase 2: Analyzing cluster similarity for research question: '{var_lab}'")
         
-        # Step 1: First identify very similar clusters by embedding cosine similarity (fast pre-filter)
-        auto_merge_groups = await self._identify_highly_similar_clusters(cluster_data)
-        logger.info(f"Auto-merged {len(auto_merge_groups)} groups based on embedding similarity > {self.similarity_threshold}")
+        # Calculate all pairwise similarities between clusters
+        similarities_dict = await self._calculate_all_similarities(cluster_data)
+        logger.info(f"Calculated similarities between all {len(cluster_data)} clusters")
+        logger.info(f"Starting with similarity threshold of {self.learned_threshold}")
         
-        # Step 2: Initialize merge groups from auto-merge results
-        merge_groups = self._initialize_merge_groups(auto_merge_groups, list(cluster_data.keys()))
-        logger.info(f"Starting with {len(merge_groups)} initial groups after auto-merging")
+        # Merge clusters using similarity-guided LLM decisions
+        merge_groups = await self._similarity_guided_merging(
+            list(cluster_data.keys()), 
+            similarities_dict, 
+            cluster_data, 
+            initial_labels, 
+            var_lab
+        )
         
-        # Step 3: Use hierarchical one-by-one approach with LLM binary decisions
-        final_merge_groups = await self._hierarchical_merging(merge_groups, cluster_data, initial_labels, var_lab)
-        logger.info(f"Final merge: {len(cluster_data)} clusters → {len(final_merge_groups)} groups")
+        logger.info(f"Final merge: {len(cluster_data)} clusters → {len(merge_groups)} groups")
+        logger.info(f"Final learned similarity threshold: {self.learned_threshold}")
         
-        # Step 4: Create final merge mapping
-        merge_mapping = self._create_merge_mapping(final_merge_groups, initial_labels)
+        # Create final merge mapping
+        merge_mapping = self._create_merge_mapping(merge_groups, initial_labels)
         
         return merge_mapping
     
-    async def _identify_highly_similar_clusters(self, cluster_data: Dict[int, ClusterData]) -> List[List[int]]:
-        """Identify clusters with very high embedding similarity for auto-merging"""
-        logger.info("Pre-filtering clusters based on embedding similarity...")
-        
+    async def _calculate_all_similarities(self, cluster_data: Dict[int, ClusterData]) -> Dict[Tuple[int, int], float]:
+        """Calculate all pairwise similarities between cluster centroids and store in a dictionary"""
         # Get all cluster IDs
         cluster_ids = list(cluster_data.keys())
         if len(cluster_ids) <= 1:
-            return [[cid] for cid in cluster_ids]
+            return {}
         
         # Calculate pairwise similarities between cluster centroids
         centroids = np.array([cluster_data[cid].centroid for cid in cluster_ids])
         similarities = cosine_similarity(centroids)
         
-        # Find clusters to merge based on high similarity
-        # Use the higher threshold from __init__ (0.98)
-        merge_pairs = []
+        # Create dictionary of similarities
+        similarity_dict = {}
         
+        # Print similarity distribution statistics
+        all_sim_values = []
         for i in range(len(cluster_ids)):
             for j in range(i+1, len(cluster_ids)):
                 sim_score = similarities[i, j]
-                if sim_score > self.similarity_threshold:
-                    merge_pairs.append((cluster_ids[i], cluster_ids[j]))
-                    logger.info(f"Auto-merge candidates: Clusters {cluster_ids[i]} & {cluster_ids[j]} (similarity: {sim_score:.4f})")
+                all_sim_values.append(sim_score)
+                # Store in dictionary with tuple of IDs as key
+                similarity_dict[(cluster_ids[i], cluster_ids[j])] = sim_score
         
-        # Use graph-based connected components to find groups
-        if not merge_pairs:
-            return []  # No highly similar clusters found
-            
-        G = nx.Graph()
-        G.add_nodes_from(cluster_ids)
-        G.add_edges_from(merge_pairs)
+        # Log similarity distribution
+        if all_sim_values:
+            all_sim_values = np.array(all_sim_values)
+            logger.info(f"Similarity statistics:")
+            logger.info(f"  Min: {np.min(all_sim_values):.4f}")
+            logger.info(f"  Max: {np.max(all_sim_values):.4f}")
+            logger.info(f"  Mean: {np.mean(all_sim_values):.4f}")
+            logger.info(f"  Median: {np.median(all_sim_values):.4f}")
+            logger.info(f"  Percentiles:")
+            for p in [50, 75, 90, 95, 99]:
+                logger.info(f"    {p}%: {np.percentile(all_sim_values, p):.4f}")
         
-        # Get connected components as merge groups and enforce maximum size
-        merge_groups = []
-        for comp in nx.connected_components(G):
-            if len(comp) > 1:
-                # Split large components if they exceed max size
-                comp_list = list(comp)
-                if len(comp_list) > self.max_merge_group_size:
-                    # Split into smaller groups of at most max_merge_group_size
-                    for i in range(0, len(comp_list), self.max_merge_group_size):
-                        group = comp_list[i:i + self.max_merge_group_size]
-                        merge_groups.append(group)
-                        logger.info(f"Split large auto-merge group, created group with {len(group)} clusters")
-                else:
-                    merge_groups.append(comp_list)
-        
-        return merge_groups
+        return similarity_dict
     
-    def _initialize_merge_groups(self, auto_merge_groups: List[List[int]], all_cluster_ids: List[int]) -> List[List[int]]:
-        """Initialize merge groups from auto-merge results and add singletons for remaining clusters"""
-        # Create a set of all clusters that are already in merge groups
-        merged_clusters = set()
-        for group in auto_merge_groups:
-            merged_clusters.update(group)
-        
-        # Add singleton groups for clusters not in any merge group
-        result_groups = list(auto_merge_groups)  # Make a copy
-        for cid in all_cluster_ids:
-            if cid not in merged_clusters:
-                result_groups.append([cid])
-        
-        return result_groups
+    def _get_similarity(self, cluster1: int, cluster2: int, similarities: Dict[Tuple[int, int], float]) -> float:
+        """Get similarity between two clusters from the similarities dictionary"""
+        # Check if pair exists in dictionary (in either order)
+        if (cluster1, cluster2) in similarities:
+            return similarities[(cluster1, cluster2)]
+        elif (cluster2, cluster1) in similarities:
+            return similarities[(cluster2, cluster1)]
+        else:
+            # Should not happen, but return 0 as fallback
+            logger.error(f"No similarity found for clusters {cluster1} and {cluster2}")
+            return 0.0
     
-    async def _hierarchical_merging(self,
-                              initial_groups: List[List[int]],
-                              cluster_data: Dict[int, ClusterData],
-                              initial_labels: Dict[int, InitialLabel],
-                              var_lab: str) -> List[List[int]]:
-        """Sequential cluster merging - more efficient than all-pairs comparison"""
-        logger.info(f"Starting sequential merging with {len(initial_groups)} initial groups...")
-        
-        # Flatten initial groups to get all cluster IDs
-        all_clusters = []
-        for group in initial_groups:
-            all_clusters.extend(group)
+    async def _similarity_guided_merging(self,
+                                     cluster_ids: List[int],
+                                     similarities: Dict[Tuple[int, int], float],
+                                     cluster_data: Dict[int, ClusterData],
+                                     initial_labels: Dict[int, InitialLabel],
+                                     var_lab: str) -> List[List[int]]:
+        """Merge clusters using similarity-guided LLM decisions with dynamic threshold learning"""
+        logger.info(f"Starting similarity-guided merging for {len(cluster_ids)} clusters...")
         
         # Set of clusters we've already processed
         processed_clusters = set()
@@ -232,7 +218,7 @@ class Phase2Merger:
         final_groups = []
         
         # Process each cluster sequentially
-        for current_cluster in all_clusters:
+        for current_cluster in cluster_ids:
             # Skip if already processed
             if current_cluster in processed_clusters:
                 continue
@@ -243,18 +229,37 @@ class Phase2Merger:
             new_group = [current_cluster]
             processed_clusters.add(current_cluster)
             
-            # Find similar clusters among remaining clusters
-            for compare_cluster in all_clusters:
+            # Find candidate clusters for comparison
+            candidates = []
+            for compare_cluster in cluster_ids:
                 # Skip if already processed or same as current cluster
                 if compare_cluster in processed_clusters:
                     continue
                 
+                # Get similarity
+                sim = self._get_similarity(current_cluster, compare_cluster, similarities)
+                
+                # Only consider candidates above learned threshold
+                if sim >= self.learned_threshold:
+                    candidates.append((compare_cluster, sim))
+            
+            # Sort candidates by similarity (highest first)
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            logger.info(f"Found {len(candidates)} candidates with similarity >= {self.learned_threshold:.4f}")
+            
+            # Process candidates in order of similarity
+            for compare_cluster, sim in candidates:
                 # Skip if would exceed max size
                 if len(new_group) >= self.max_merge_group_size:
                     logger.info(f"Group would exceed max size, stopping comparisons for cluster {current_cluster}")
                     break
                 
+                # Skip if already processed (could have been added in a previous iteration)
+                if compare_cluster in processed_clusters:
+                    continue
+                
                 # Check if these should be merged
+                logger.info(f"Checking clusters {current_cluster} and {compare_cluster} (similarity: {sim:.4f})...")
                 should_merge = await self._check_should_merge(
                     current_cluster, compare_cluster, cluster_data, initial_labels, var_lab)
                 
@@ -263,12 +268,19 @@ class Phase2Merger:
                     logger.info(f"Merging cluster {compare_cluster} into group with {current_cluster}")
                     new_group.append(compare_cluster)
                     processed_clusters.add(compare_cluster)
+                else:
+                    # Update learned threshold if this pair was more similar than our current threshold
+                    if sim > self.learned_threshold:
+                        logger.info(f"Updating learned threshold from {self.learned_threshold:.4f} to {sim:.4f}")
+                        self.learned_threshold = sim
             
             # Add the new group to final groups
             final_groups.append(new_group)
             logger.info(f"Created merge group with {len(new_group)} clusters")
         
         return final_groups
+    
+# Removed: _hierarchical_merging function is no longer needed - replaced by _similarity_guided_merging
     
     async def _check_should_merge(self, 
                                cluster_id_1: int, 
@@ -548,7 +560,52 @@ if __name__ == "__main__":
             logging.basicConfig(level=logging.INFO, format='%(message)s')
             
             try:
-                # Run merge process
+                # Create distribution histogram of similarity scores function
+                async def analyze_similarity_distribution(cluster_data):
+                    """Analyze the distribution of cluster similarities"""
+                    similarities_dict = await phase2._calculate_all_similarities(cluster_data)
+                    
+                    # Extract all similarity values
+                    all_similarities = list(similarities_dict.values())
+                    
+                    if not all_similarities:
+                        print("No similarities to analyze")
+                        return
+                    
+                    # Create histogram bins
+                    bins = np.arange(0, 1.01, 0.05)
+                    hist, bin_edges = np.histogram(all_similarities, bins=bins)
+                    
+                    # Print histogram
+                    print("\nSimilarity Distribution Histogram:")
+                    max_count = max(hist)
+                    for i, count in enumerate(hist):
+                        start = bin_edges[i]
+                        end = bin_edges[i+1]
+                        bar_length = int(50 * count / max_count) if max_count > 0 else 0
+                        bar = '█' * bar_length
+                        print(f"  {start:.2f}-{end:.2f}: {bar} ({count} pairs)")
+                    
+                    # Print statistics
+                    print(f"\nTotal pairs: {len(all_similarities)}")
+                    print(f"Min: {min(all_similarities):.4f}")
+                    print(f"Max: {max(all_similarities):.4f}")
+                    print(f"Mean: {np.mean(all_similarities):.4f}")
+                    print(f"Median: {np.median(all_similarities):.4f}")
+                    print(f"Std dev: {np.std(all_similarities):.4f}")
+                    
+                    # Print percentiles
+                    print("\nPercentiles:")
+                    for p in [25, 50, 75, 90, 95, 98, 99]:
+                        print(f"  {p}%: {np.percentile(all_similarities, p):.4f}")
+                    
+                    return similarities_dict
+                
+                # Analyze similarity distribution
+                print("\n=== Analyzing similarity distribution ===")
+                await analyze_similarity_distribution(cluster_data)
+                
+                # Run merge process with similarity-guided approach
                 merge_mapping = await phase2.merge_similar_clusters(
                     cluster_data, initial_labels, var_lab
                 )
