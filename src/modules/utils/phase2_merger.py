@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Dict, Set, Tuple, Any
+from typing import List, Dict, Set, Tuple, Any, Optional
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import AsyncOpenAI
@@ -9,6 +9,11 @@ import networkx as nx
 import sys
 import os
 from pathlib import Path
+
+# Disable HTTP request logging from OpenAI client
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Import nest_asyncio to allow nested event loops (for Spyder/IPython)
 try:
@@ -212,76 +217,58 @@ class Phase2Merger:
                               cluster_data: Dict[int, ClusterData],
                               initial_labels: Dict[int, InitialLabel],
                               var_lab: str) -> List[List[int]]:
-        """Hierarchically merge clusters using binary decisions from LLM"""
-        logger.info(f"Starting hierarchical merging of {len(initial_groups)} groups...")
+        """Sequential cluster merging - more efficient than all-pairs comparison"""
+        logger.info(f"Starting sequential merging with {len(initial_groups)} initial groups...")
         
-        # Make a copy of the initial groups to work with
-        current_groups = initial_groups.copy()
+        # Flatten initial groups to get all cluster IDs
+        all_clusters = []
+        for group in initial_groups:
+            all_clusters.extend(group)
         
-        # Set to track group pairs we've already compared
-        compared_pairs = set()
+        # Set of clusters we've already processed
+        processed_clusters = set()
         
-        # Keep iterating until we've compared all possible pairs
-        while True:
-            # Find a pair of groups to compare
-            pair_to_compare = self._find_next_pair(current_groups, compared_pairs)
-            
-            # If no more pairs to compare, we're done
-            if not pair_to_compare:
-                break
-                
-            group1_idx, group2_idx = pair_to_compare
-            group1 = current_groups[group1_idx]
-            group2 = current_groups[group2_idx]
-            
-            # Add to compared pairs set
-            compared_pairs.add((group1_idx, group2_idx))
-            
-            # Skip if either group would exceed max size if merged
-            if len(group1) + len(group2) > self.max_merge_group_size:
-                logger.info(f"Skipping comparison of groups {group1_idx} and {group2_idx} - would exceed max size")
+        # Final merge groups - we'll build this up as we go
+        final_groups = []
+        
+        # Process each cluster sequentially
+        for current_cluster in all_clusters:
+            # Skip if already processed
+            if current_cluster in processed_clusters:
                 continue
             
-            # Get representatives for each group
-            rep1 = group1[0]
-            rep2 = group2[0]
+            logger.info(f"Processing cluster {current_cluster}...")
             
-            # Check if these should be merged
-            should_merge = await self._check_should_merge(rep1, rep2, cluster_data, initial_labels, var_lab)
+            # Create a new group with just this cluster
+            new_group = [current_cluster]
+            processed_clusters.add(current_cluster)
             
-            if should_merge:
-                # Merge the groups
-                logger.info(f"Merging groups {group1_idx} and {group2_idx}")
+            # Find similar clusters among remaining clusters
+            for compare_cluster in all_clusters:
+                # Skip if already processed or same as current cluster
+                if compare_cluster in processed_clusters:
+                    continue
                 
-                # Create new merged group
-                merged_group = group1 + group2
+                # Skip if would exceed max size
+                if len(new_group) >= self.max_merge_group_size:
+                    logger.info(f"Group would exceed max size, stopping comparisons for cluster {current_cluster}")
+                    break
                 
-                # Remove the original groups
-                # We need to be careful about indices - remove higher index first
-                if group1_idx > group2_idx:
-                    current_groups.pop(group1_idx)
-                    current_groups.pop(group2_idx)
-                else:
-                    current_groups.pop(group2_idx)
-                    current_groups.pop(group1_idx)
+                # Check if these should be merged
+                should_merge = await self._check_should_merge(
+                    current_cluster, compare_cluster, cluster_data, initial_labels, var_lab)
                 
-                # Add the new merged group
-                current_groups.append(merged_group)
-                
-                # Reset compared_pairs since we've changed the group structure
-                # Indices have changed, so we need to start fresh
-                compared_pairs = set()
+                if should_merge:
+                    # Add to the current group and mark as processed
+                    logger.info(f"Merging cluster {compare_cluster} into group with {current_cluster}")
+                    new_group.append(compare_cluster)
+                    processed_clusters.add(compare_cluster)
+            
+            # Add the new group to final groups
+            final_groups.append(new_group)
+            logger.info(f"Created merge group with {len(new_group)} clusters")
         
-        # Return the final groups
-        return current_groups
-    
-    def _find_next_pair(self, groups: List[List[int]], compared_pairs: Set[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
-        """Find the next pair of groups to compare"""
-        for i in range(len(groups)):
-            for j in range(i+1, len(groups)):
-                if (i, j) not in compared_pairs:
-                    return (i, j)
-        return None
+        return final_groups
     
     async def _check_should_merge(self, 
                                cluster_id_1: int, 
@@ -539,8 +526,15 @@ if __name__ == "__main__":
             similarity_threshold=0.98  # For auto-merge by embedding similarity (will be overridden in init)
         )
         
-        # Initialize phase 2 merger
-        client = instructor.from_openai(AsyncOpenAI(api_key=config.api_key))
+        # Initialize phase 2 merger with quiet HTTP logging
+        openai_client = AsyncOpenAI(api_key=config.api_key)
+        client = instructor.from_openai(openai_client)
+        
+        # Ensure logging is disabled for HTTP requests
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        
         phase2 = Phase2Merger(config, client)
         
         async def run_test():
