@@ -68,6 +68,13 @@ The labeller will follow a multi-phase approach to create hierarchical labels:
    - Use LLM to determine which clusters should be merged based on their semantic similarity
    - Apply semantic merging of the clusters to create differentiated groups
    - Track cluster-to-group mappings throughout
+   
+   **Improvement to LLM Merge Decisions:**
+   - Focus the LLM on the research question (var_lab) as the primary context
+   - Present 5 most representative descriptive codes per cluster (based on cosine similarity to centroid)
+   - Frame the decision task explicitly: "Are these clusters meaningfully differentiated in how they answer the research question?"
+   - Batch multiple cluster pair evaluations for efficiency
+   - Structured prompt with clear decision criteria focused on the var_lab perspective
 
 2. **Phase 2: Initial Label Generation**
    - Extract descriptive codes and descriptions from merged clusters
