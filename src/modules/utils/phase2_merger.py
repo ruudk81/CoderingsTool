@@ -368,17 +368,14 @@ class Phase2Merger:
                                  var_lab: str) -> str:
         """Create prompt for binary merge decisions with support for multiple pairs
         
-        This updated version can handle batches of pairs in a single prompt, making
-        LLM API usage more efficient.
+        This updated version:
+        1. Can handle batches of pairs in a single prompt for efficiency
+        2. Selects the 5 most representative codes based on cosine similarity to centroid
+        3. Focuses explicitly on the research question context
+        4. Presents clear decision criteria based on meaningful differentiation
         """
         prompt = SIMILARITY_SCORING_PROMPT.replace("{var_lab}", var_lab)
         prompt = prompt.replace("{language}", self.config.language)
-        
-        # Add instructions for batch decision format
-        if len(pairs) > 1:
-            prompt += "\n\nYou will be analyzing multiple cluster pairs in this request. " \
-                      "For each pair, decide whether they should be merged or kept separate " \
-                      "based on how meaningfully differentiated they are."
         
         # Create cluster pair descriptions
         pair_descriptions = []
@@ -388,37 +385,37 @@ class Phase2Merger:
             cluster1 = cluster_data[cluster_id_1]
             label1 = initial_labels[cluster_id_1].label
             
-            # Get representative items for first cluster (codes and descriptions)
-            codes1 = cluster1.descriptive_codes[:3]  # Use top 3 codes to keep prompt shorter for batches
-            descriptions1 = cluster1.code_descriptions[:3]  # Use top 3 descriptions
+            # Get the 5 most representative items based on cosine similarity to centroid
+            representative_items1 = self._get_representative_items(cluster1, n=5)
             
             # Get data for second cluster
             cluster2 = cluster_data[cluster_id_2]
             label2 = initial_labels[cluster_id_2].label
             
-            # Get representative items for second cluster (codes and descriptions)
-            codes2 = cluster2.descriptive_codes[:3]  # Use top 3 codes
-            descriptions2 = cluster2.code_descriptions[:3]  # Use top 3 descriptions
+            # Get the 5 most representative items based on cosine similarity to centroid
+            representative_items2 = self._get_representative_items(cluster2, n=5)
             
             # Create pair description with a number for batches
             description = f"\n\nPAIR {idx+1}: Cluster {cluster_id_1} vs Cluster {cluster_id_2}\n"
+            
+            # First cluster
             description += f"\nCluster {cluster_id_1}:"
             description += f"\n- Label: {label1}"
-            description += f"\n- Representative codes:"
-            for i, code in enumerate(codes1):
-                description += f"\n  {i+1}. {code}"
-            description += f"\n- Code descriptions:"
-            for i, desc in enumerate(descriptions1):
-                description += f"\n  {i+1}. {desc}"
+            description += f"\n- Most representative responses (by similarity to cluster centroid):"
             
+            for i, item in enumerate(representative_items1):
+                description += f"\n  {i+1}. {item['code']}: {item['description']}"
+            
+            # Second cluster
             description += f"\n\nCluster {cluster_id_2}:"
             description += f"\n- Label: {label2}"
-            description += f"\n- Representative codes:"
-            for i, code in enumerate(codes2):
-                description += f"\n  {i+1}. {code}"
-            description += f"\n- Code descriptions:"
-            for i, desc in enumerate(descriptions2):
-                description += f"\n  {i+1}. {desc}"
+            description += f"\n- Most representative responses (by similarity to cluster centroid):"
+            
+            for i, item in enumerate(representative_items2):
+                description += f"\n  {i+1}. {item['code']}: {item['description']}"
+            
+            # Add explicit question about this pair
+            description += f"\n\nQuestion for this pair: Do these clusters represent meaningfully different responses to the research question \"{var_lab}\", or are they essentially saying the same thing?"
             
             pair_descriptions.append(description)
         
@@ -431,6 +428,34 @@ class Phase2Merger:
                       "along with your should_merge decision and reason. Ensure cluster IDs match exactly."
         
         return prompt
+    
+    def _get_representative_items(self, cluster: ClusterData, n: int = 5) -> List[Dict[str, str]]:
+        """Get most representative items from a cluster based on cosine similarity to centroid
+        
+        Args:
+            cluster: The cluster data containing embeddings, codes, and descriptions
+            n: Number of representative items to return (default: 5)
+            
+        Returns:
+            List of dictionaries with 'code' and 'description' keys for the most representative items
+        """
+        # Calculate similarity between each item's embedding and the cluster centroid
+        similarities = cosine_similarity([cluster.centroid], cluster.embeddings)[0]
+        
+        # Get indices of the top n most similar items
+        top_indices = np.argsort(similarities)[-n:][::-1]
+        
+        # Create list of representative items
+        representatives = []
+        for idx in top_indices:
+            if idx < len(cluster.descriptive_codes) and idx < len(cluster.code_descriptions):
+                representatives.append({
+                    'code': cluster.descriptive_codes[idx],
+                    'description': cluster.code_descriptions[idx],
+                    'similarity': similarities[idx]  # Include similarity score for reference
+                })
+        
+        return representatives
     
     async def _get_merge_decisions(self, prompt: str) -> BatchMergeDecisionResponse:
         """Get binary merge decisions from LLM"""
