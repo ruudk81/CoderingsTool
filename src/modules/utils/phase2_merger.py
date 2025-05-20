@@ -11,9 +11,22 @@ import os
 from pathlib import Path
 
 # Add the src directory to the path for imports
-src_dir = str(Path(__file__).resolve().parents[2])
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
+try:
+    # When running as a script
+    src_dir = str(Path(__file__).resolve().parents[2])
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+except (NameError, AttributeError):
+    # When running in interactive environment like Spyder
+    # where __file__ might not be defined
+    current_dir = os.getcwd()
+    if current_dir.endswith('utils'):
+        src_dir = str(Path(current_dir).parents[1])
+    else:
+        src_dir = os.path.abspath('src')
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    print(f"Added {src_dir} to path for imports")
 
 try:
     # Try direct import (from utils folder)
@@ -359,12 +372,44 @@ if __name__ == "__main__":
     import pickle
     import instructor
     
-    # Import from src
-    from src.config import OPENAI_API_KEY, DEFAULT_MODEL
-    from src.cache_manager import CacheManager
-    from src.cache_config import CacheConfig
-    from src.modules.utils import data_io
-    import src.models as models
+    # Try different import patterns for maximum compatibility
+    try:
+        # Direct imports (from src folder)
+        from config import OPENAI_API_KEY, DEFAULT_MODEL
+        from cache_manager import CacheManager
+        from cache_config import CacheConfig
+        from modules.utils import data_io
+        import models
+    except ImportError:
+        try:
+            # Absolute imports (with src prefix)
+            from src.config import OPENAI_API_KEY, DEFAULT_MODEL
+            from src.cache_manager import CacheManager
+            from src.cache_config import CacheConfig
+            from src.modules.utils import data_io
+            import src.models as models
+        except ImportError:
+            # In Spyder or interactive environments
+            print("Using sys.path manipulation for imports")
+            import sys
+            import os
+            from pathlib import Path
+            current_dir = os.getcwd()
+            if current_dir.endswith('utils'):
+                # If in utils folder, go up to src
+                src_dir = str(Path(current_dir).parents[1])
+            else:
+                # If elsewhere, try to find src
+                src_dir = os.path.abspath('src')
+            if src_dir not in sys.path:
+                sys.path.insert(0, src_dir)
+            
+            # Try imports again
+            from config import OPENAI_API_KEY, DEFAULT_MODEL
+            from cache_manager import CacheManager
+            from cache_config import CacheConfig
+            from modules.utils import data_io
+            import models
     
     # Initialize cache manager
     cache_config = CacheConfig()
