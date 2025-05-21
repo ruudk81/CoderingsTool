@@ -258,3 +258,5 @@ Based on examination of `segmentDescriber.py`, `embedder.py` and `models.py`:
 - Comprehensive progress tracking and statistics
 - Processing time measurement
 
+## Workflow Memories
+- You push and commit changes the the GitHub repository. And I run the test in Python.
