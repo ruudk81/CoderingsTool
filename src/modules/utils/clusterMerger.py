@@ -2,10 +2,12 @@ import asyncio
 from typing import List, Dict, Set, Tuple, Any, Optional
 from collections import defaultdict
 import numpy as np
+import numpy.typing as npt
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import AsyncOpenAI
 import logging
 from tqdm.asyncio import tqdm
+import models
 import networkx as nx
 import sys
 import os
@@ -42,6 +44,23 @@ except (NameError, AttributeError):
     print(f"Added {src_dir} to path for imports")
 
 from pydantic import BaseModel, Field, ConfigDict
+
+# Internal data model for merging
+class MergeResultMapper(BaseModel):
+    # Original cluster data
+    respondent_id: Any
+    segment_id: str
+    descriptive_code: str
+    code_description: str
+    code_embedding: npt.NDArray[np.float32]
+    description_embedding: npt.NDArray[np.float32]
+    
+    # Cluster data
+    original_cluster_id: Optional[int] = None
+    merged_cluster_id: Optional[int] = None
+    
+    # Config
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # for arrays with embeddings
 
 try:
     # Try direct import (from utils folder)
@@ -530,7 +549,9 @@ class ClusterMerger:
             var_lab: Variable label/research question
             
         Returns:
-            List of ClusterModel objects with merged clusters
+            Tuple containing:
+            - List of ClusterModel objects with merged clusters
+            - MergeMapping object with merge information (for caching)
         """
         # Update input data if provided
         if input_list is not None:
@@ -543,7 +564,10 @@ class ClusterMerger:
             raise ValueError("Input clusters and var_lab must be provided")
         
         # Run the actual merging process
-        return asyncio.run(self._merge_clusters_async())
+        merged_clusters = asyncio.run(self._merge_clusters_async())
+        
+        # Return both the merged clusters and the merge mapping for caching
+        return merged_clusters, self.merge_mapping
         
     async def _merge_clusters_async(self):
         """Async implementation of cluster merging"""
@@ -560,9 +584,9 @@ class ClusterMerger:
             self.cluster_data, self.initial_labels, self.var_lab
         )
         
-        # Apply merge mapping to original clusters
-        logger.info("Applying merge mapping to cluster results...")
-        merged_clusters = self._apply_merge_mapping(self.input_clusters, merge_mapping)
+        # Convert to ClusterModel using to_cluster_model
+        logger.info("Converting merged clusters to ClusterModel format...")
+        merged_clusters = self.to_cluster_model(merge_mapping)
         
         # Calculate and log statistics
         total_initial = len(self.cluster_data)
@@ -574,6 +598,9 @@ class ClusterMerger:
         logger.info(f"Merge groups: {len(merged_groups)}")
         logger.info(f"Final clusters after merging: {total_final}")
         logger.info(f"Reduction: {(1 - total_final/total_initial) * 100:.1f}%")
+        
+        # Store merge mapping for reference
+        self.merge_mapping = merge_mapping
         
         return merged_clusters
     
@@ -641,22 +668,107 @@ class ClusterMerger:
         
         return labels
     
-    def _apply_merge_mapping(self, cluster_results, merge_mapping):
-        """Apply merge mapping to cluster results"""
-        # Create a copy of the input to avoid modifying the original
-        import copy
-        merged_results = copy.deepcopy(cluster_results)
+    def _convert_to_mappers(self, merge_mapping):
+        """Convert input cluster data to internal MergeResultMapper objects"""
+        output_list = []
         
-        # Apply merge mapping to micro_clusters
-        for response in merged_results:
-            for segment in response.response_segment:
+        # Process each cluster result
+        for result in self.input_clusters:
+            for segment in result.response_segment:
                 if segment.mirco_cluster is not None:
                     old_cluster_id = list(segment.mirco_cluster.keys())[0]
+                    
+                    # Get the merged cluster ID
+                    merged_cluster_id = None
                     if old_cluster_id in merge_mapping.cluster_to_merged:
-                        new_cluster_id = merge_mapping.cluster_to_merged[old_cluster_id]
-                        segment.mirco_cluster = {new_cluster_id: ""}
+                        merged_cluster_id = merge_mapping.cluster_to_merged[old_cluster_id]
+                    
+                    # Create mapper object
+                    mapper = MergeResultMapper(
+                        respondent_id=result.respondent_id,
+                        segment_id=segment.segment_id,
+                        descriptive_code=segment.descriptive_code,
+                        code_description=segment.code_description,
+                        code_embedding=segment.code_embedding,
+                        description_embedding=segment.description_embedding,
+                        original_cluster_id=old_cluster_id,
+                        merged_cluster_id=merged_cluster_id
+                    )
+                    
+                    output_list.append(mapper)
         
-        return merged_results
+        return output_list
+    
+    def to_cluster_model(self, merge_mapping) -> List[models.ClusterModel]:
+        """Convert internal data to ClusterModel format
+        
+        Similar to ClusterGenerator.to_cluster_model, but handles merged clusters
+        """
+        # Convert input data to internal format
+        output_list = self._convert_to_mappers(merge_mapping)
+        
+        if not output_list:
+            raise ValueError("Output list is empty. Nothing to convert.")
+        
+        # Group by respondent ID
+        items_by_respondent = defaultdict(list)
+        for item in output_list:
+            items_by_respondent[item.respondent_id].append(item)
+        
+        # Create mapping of respondent_id to original response data
+        response_mapping = {}
+        segment_mapping = {}
+        for original_item in self.input_clusters:
+            response_mapping[original_item.respondent_id] = original_item.response
+            if original_item.response_segment:
+                for segment in original_item.response_segment:
+                    segment_key = (original_item.respondent_id, segment.segment_id)
+                    segment_mapping[segment_key] = segment.segment_response
+        
+        # Create ClusterModel instances
+        result_models = []
+        
+        for respondent_id, items in items_by_respondent.items():
+            # Get the original response from mapping
+            response = response_mapping.get(respondent_id, "")
+            
+            # Create submodels for each segment
+            submodels = []
+            for item in items:
+                # Get original segment response
+                segment_key = (respondent_id, item.segment_id)
+                segment_response = segment_mapping.get(segment_key, "")
+                
+                # Use merged cluster ID for micro_cluster
+                micro_cluster = None
+                if item.merged_cluster_id is not None:
+                    micro_cluster = {item.merged_cluster_id: ""}
+                
+                # Create submodel
+                submodel = models.ClusterSubmodel(
+                    segment_id=item.segment_id,
+                    segment_response=segment_response,
+                    descriptive_code=item.descriptive_code,
+                    code_description=item.code_description,
+                    code_embedding=item.code_embedding,
+                    description_embedding=item.description_embedding,
+                    meta_cluster=None,  # No meta clusters
+                    meso_cluster=None,  # No meso clusters
+                    mirco_cluster=micro_cluster  # Use merged cluster ID
+                )
+                
+                submodels.append(submodel)
+            
+            # Create ClusterModel
+            model = models.ClusterModel(
+                respondent_id=respondent_id,
+                response=response,
+                response_segment=submodels
+            )
+            
+            result_models.append(model)
+        
+        return result_models
 
 
 if __name__ == "__main__":
