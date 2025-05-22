@@ -9,7 +9,7 @@ sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
 
 import models
 from cache_manager import CacheManager
-from cache_config import CacheConfig
+from config import CacheConfig
 
 
 def load_and_analyze_labels(filename="M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav", 
