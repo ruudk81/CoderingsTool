@@ -12,7 +12,7 @@ from tqdm.asyncio import tqdm
 # Project imports
 import models
 from config import OPENAI_API_KEY, DEFAULT_MODEL, DEFAULT_LANGUAGE
-from modules.utils import qualityFilter
+from utils import qualityFilter
 
 
 logger = logging.getLogger(__name__)
@@ -388,7 +388,7 @@ if __name__ == "__main__":
     sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
     
     from cache_manager import CacheManager
-    from cache_config import CacheConfig
+    from config import CacheConfig
     import data_io
     
     # Initialize cache manager

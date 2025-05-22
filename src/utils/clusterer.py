@@ -440,7 +440,7 @@ class ClusterGenerator:
 if __name__ == "__main__":
     """Test the simple clusterer with actual embeddings"""
     from cache_manager import CacheManager
-    from cache_config import CacheConfig
+    from config import CacheConfig
     import models
     import data_io
     
