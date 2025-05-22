@@ -1,0 +1,13 @@
+# === FOLDERS TO IGNORE ===
+env/
+hunspell/
+run/
+
+# === SPECIFIC FILES TO IGNORE === 
+Coderingstool
+Technical description.docx
+
+# === IGNORE EVERYTHING IN data/, EXCEPT .sav FILES ===
+data/*
+data/**/
+!data/*.sav

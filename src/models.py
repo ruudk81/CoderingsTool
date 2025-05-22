@@ -38,8 +38,8 @@ class EmbeddingsModel(DescriptiveModel):
 class ClusterSubmodel(EmbeddingsSubmodel):
     #clusters with keywords
     meta_cluster: Optional[Dict[int, str]] = None 
-    meso_cluster: Optional[Dict[int, str]] = None
-    mirco_cluster: Optional[Dict[int, str]] = None
+    macro_cluster: Optional[Dict[int, str]] = None
+    micro_cluster: Optional[Dict[int, str]] = None
     
 class ClusterModel(EmbeddingsModel):
     response_segment: Optional[List[ClusterSubmodel]] = None
@@ -48,7 +48,7 @@ class LabelSubmodel(ClusterSubmodel):
     #clusters with labels
     Theme: Optional[Dict[int, str]] = None 
     Topic: Optional[Dict[int, str]] = None
-    Code: Optional[Dict[int, str]] = None
+    Keyword: Optional[Dict[int, str]] = None
 
 class LabelModel(ClusterModel):
     summary: Optional[str] = None
