@@ -1,58 +1,44 @@
 import asyncio
 import numpy as np
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict
 from pydantic import BaseModel, Field, ConfigDict
 import instructor
 from openai import AsyncOpenAI
-from sklearn.metrics.pairwise import cosine_similarity
 from collections import defaultdict
 import logging
-from tqdm.asyncio import tqdm
 
 # Project imports
 import models
 from config import OPENAI_API_KEY, DEFAULT_MODEL, DEFAULT_LANGUAGE
-from utils import qualityFilter
-
 
 logger = logging.getLogger(__name__)
 
-
-# Configuration
+# Models for structured data
 class LabellerConfig(BaseModel):
     """Configuration for the Labeller"""
     model: str = DEFAULT_MODEL
     api_key: str = OPENAI_API_KEY
     max_concurrent_requests: int = 10
     batch_size: int = 20
-    similarity_threshold: float = 0.95  # Auto-merge threshold
-    merge_score_threshold: float = 0.7  # LLM merge threshold
+    #similarity_threshold: float = 0.95  # Auto-merge threshold
+    #merge_score_threshold: float = 0.7  # LLM merge threshold
     max_retries: int = 3
     retry_delay: int = 2
     language: str = DEFAULT_LANGUAGE
 
-
-# Phase 1 Data Models
 class InitialLabel(BaseModel):
     """Initial label for a cluster"""
     cluster_id: int
     label: str
     keywords: List[str]
     confidence: float = Field(ge=0.0, le=1.0)
-    
     model_config = ConfigDict(from_attributes=True)
-
 
 class BatchLabelResponse(BaseModel):
     """Batch response for initial labeling"""
     labels: List[InitialLabel]
-    
     model_config = ConfigDict(from_attributes=True)
 
-
-
-
-# Phase 2 Data Models
 class HierarchyNode(BaseModel):
     """Node in the hierarchical structure"""
     node_id: str  # e.g., "1.2.3"
@@ -60,19 +46,14 @@ class HierarchyNode(BaseModel):
     label: str
     children: List['HierarchyNode'] = []
     cluster_ids: List[int]  # Original cluster IDs
-    
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
-
 
 class HierarchicalStructure(BaseModel):
     """Complete hierarchical structure"""
     themes: List[HierarchyNode]  # Level 1 nodes
     cluster_to_path: Dict[int, str]  # Cluster ID → Path (e.g., "1.2.3")
-    
     model_config = ConfigDict(from_attributes=True)
 
-
-# Phase 3 Data Models
 class ThemeSummary(BaseModel):
     """Summary for a theme"""
     theme_id: str
@@ -82,8 +63,6 @@ class ThemeSummary(BaseModel):
     
     model_config = ConfigDict(from_attributes=True)
 
-
-# Internal Data Models
 class ClusterData(BaseModel):
     """Internal representation of cluster with extracted data"""
     cluster_id: int
@@ -92,11 +71,7 @@ class ClusterData(BaseModel):
     embeddings: np.ndarray
     centroid: np.ndarray
     size: int
-    
     model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
-
-
-
 
 class Labeller:
     """Main labeller class to orchestrate the hierarchical labeling process"""
@@ -287,16 +262,13 @@ class Labeller:
 
 if __name__ == "__main__":
     """Test the labeller with cached cluster data"""
-    import sys
-    from pathlib import Path
-    from collections import defaultdict, Counter
-    
-    # Add project paths
-    sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
+    #import sys
+    #from pathlib import Path
+    from collections import  Counter #defaultdict
     
     from cache_manager import CacheManager
     from config import CacheConfig
-    import data_io
+    from utils import data_io
     
     # Initialize cache manager
     cache_config = CacheConfig()
