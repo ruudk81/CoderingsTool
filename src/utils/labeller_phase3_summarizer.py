@@ -9,8 +9,8 @@ from prompts import HIERARCHICAL_THEME_SUMMARY_PROMPT
 logger = logging.getLogger(__name__)
 
 
-class Phase4Summarizer:
-    """Phase 4: Generate summaries for themes"""
+class Phase3Summarizer:
+    """Phase 3: Generate summaries for themes"""
     
     def __init__(self, config: LabellerConfig, client):
         self.config = config
@@ -21,7 +21,7 @@ class Phase4Summarizer:
                                hierarchy: HierarchicalStructure,
                                var_lab: str) -> List[ThemeSummary]:
         """Generate summaries for each theme explaining how it addresses the research question"""
-        logger.info("Phase 4: Generating theme summaries...")
+        logger.info("Phase 3: Generating theme summaries...")
         
         # Create tasks for each theme
         tasks = []

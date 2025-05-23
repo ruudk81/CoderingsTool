@@ -3,32 +3,33 @@ from typing import List, Dict, Set
 import logging
 from collections import defaultdict
 
-from utils.labeller import (LabellerConfig, HierarchyNode, HierarchicalStructure)
+from utils.labeller import (LabellerConfig, HierarchyNode, HierarchicalStructure, ClusterData, InitialLabel)
 from prompts import HIERARCHY_CREATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
 
-class Phase3Organizer:
-    """Phase 3: Create hierarchical organization of clusters"""
+class Phase2Organizer:
+    """Phase 2: Create hierarchical organization of clusters"""
     
     def __init__(self, config: LabellerConfig, client):
         self.config = config
         self.client = client
     
     async def create_hierarchy(self,
-                             merged_clusters: Dict[int, MergedCluster],
+                             cluster_data: Dict[int, ClusterData],
+                             initial_labels: Dict[int, InitialLabel],
                              var_lab: str) -> HierarchicalStructure:
         """Create 3-level hierarchical structure"""
-        logger.info("Phase 3: Creating hierarchical structure...")
+        logger.info("Phase 2: Creating hierarchical structure...")
         
         # Create themes (level 1)
-        themes = await self._create_themes(merged_clusters, var_lab)
+        themes = await self._create_themes(cluster_data, initial_labels, var_lab)
         logger.info(f"Created {len(themes)} themes")
         
         # Create topics within themes (level 2)
         for theme in themes:
-            topics = await self._create_topics(theme, merged_clusters, var_lab)
+            topics = await self._create_topics(theme, cluster_data, initial_labels, var_lab)
             theme.children = topics
             logger.info(f"Created {len(topics)} topics for theme {theme.node_id}")
         
@@ -36,7 +37,7 @@ class Phase3Organizer:
         cluster_to_path = {}
         for theme in themes:
             for topic in theme.children:
-                codes = self._create_codes(topic, merged_clusters)
+                codes = self._create_codes(topic, cluster_data, initial_labels)
                 topic.children = codes
                 
                 # Track cluster to path mapping
@@ -49,16 +50,17 @@ class Phase3Organizer:
             cluster_to_path=cluster_to_path
         )
         
-        self._validate_hierarchy(hierarchy, merged_clusters)
+        self._validate_hierarchy(hierarchy, cluster_data)
         
         return hierarchy
     
     async def _create_themes(self,
-                           merged_clusters: Dict[int, MergedCluster],
+                           cluster_data: Dict[int, ClusterData],
+                           initial_labels: Dict[int, InitialLabel],
                            var_lab: str) -> List[HierarchyNode]:
         """Create theme-level groupings using LLM"""
         # Prepare cluster information for LLM
-        cluster_info = self._prepare_cluster_info(merged_clusters)
+        cluster_info = self._prepare_cluster_info(cluster_data, initial_labels)
         
         # Create prompt
         prompt = self._create_theme_prompt(cluster_info, var_lab)
@@ -84,7 +86,7 @@ class Phase3Organizer:
         for theme in themes:
             assigned_clusters.update(theme.cluster_ids)
         
-        unassigned = set(merged_clusters.keys()) - assigned_clusters
+        unassigned = set(cluster_data.keys()) - assigned_clusters
         if unassigned:
             # Create a theme for unassigned clusters
             other_theme = HierarchyNode(
@@ -100,7 +102,8 @@ class Phase3Organizer:
     
     async def _create_topics(self,
                            theme: HierarchyNode,
-                           merged_clusters: Dict[int, MergedCluster],
+                           cluster_data: Dict[int, ClusterData],
+                           initial_labels: Dict[int, InitialLabel],
                            var_lab: str) -> List[HierarchyNode]:
         """Create topic-level groupings within a theme"""
         # If theme has few clusters, create a single topic
@@ -115,8 +118,9 @@ class Phase3Organizer:
             return [topic]
         
         # Prepare cluster information for this theme
-        theme_clusters = {cid: merged_clusters[cid] for cid in theme.cluster_ids}
-        cluster_info = self._prepare_cluster_info(theme_clusters)
+        theme_clusters = {cid: cluster_data[cid] for cid in theme.cluster_ids}
+        theme_labels = {cid: initial_labels[cid] for cid in theme.cluster_ids if cid in initial_labels}
+        cluster_info = self._prepare_cluster_info(theme_clusters, theme_labels)
         
         # Create prompt
         prompt = self._create_topic_prompt(theme, cluster_info, var_lab)
@@ -157,26 +161,29 @@ class Phase3Organizer:
     
     def _create_codes(self,
                      topic: HierarchyNode,
-                     merged_clusters: Dict[int, MergedCluster]) -> List[HierarchyNode]:
+                     cluster_data: Dict[int, ClusterData],
+                     initial_labels: Dict[int, InitialLabel]) -> List[HierarchyNode]:
         """Create code-level nodes (one per cluster)"""
         codes = []
         
         for i, cluster_id in enumerate(sorted(topic.cluster_ids)):
             code_id = f"{topic.node_id}.{i + 1}"
-            cluster = merged_clusters[cluster_id]
+            
+            # Get label from initial labels or fallback
+            label = initial_labels[cluster_id].label if cluster_id in initial_labels else f"Cluster {cluster_id}"
             
             code = HierarchyNode(
                 node_id=code_id,
                 level="code",
-                label=cluster.label,
+                label=label,
                 children=[],
-                cluster_ids=cluster.original_ids  # Use original cluster IDs
+                cluster_ids=[cluster_id]  # Use current cluster ID
             )
             codes.append(code)
         
         return codes
     
-    def _prepare_cluster_info(self, clusters: Dict[int, MergedCluster]) -> List[Dict]:
+    def _prepare_cluster_info(self, clusters: Dict[int, ClusterData], labels: Dict[int, InitialLabel]) -> List[Dict]:
         """Prepare cluster information for LLM prompts"""
         cluster_info = []
         
@@ -194,9 +201,12 @@ class Phase3Organizer:
             top_codes = sorted(code_counts.items(), key=lambda x: x[1], reverse=True)[:5]
             top_descs = sorted(desc_counts.items(), key=lambda x: x[1], reverse=True)[:3]
             
+            # Get label from initial labels
+            label = labels[cluster_id].label if cluster_id in labels else f"Cluster {cluster_id}"
+            
             info = {
                 "cluster_id": cluster_id,
-                "label": cluster.label,
+                "label": label,
                 "size": len(cluster.descriptive_codes),
                 "top_codes": [code for code, _ in top_codes],
                 "top_descriptions": [desc for desc, _ in top_descs]
@@ -305,16 +315,13 @@ class Phase3Organizer:
     
     def _validate_hierarchy(self,
                           hierarchy: HierarchicalStructure,
-                          merged_clusters: Dict[int, MergedCluster]):
+                          cluster_data: Dict[int, ClusterData]):
         """Validate the hierarchy is complete and consistent"""
-        # Check all original clusters are mapped
-        all_original_clusters = set()
-        for cluster in merged_clusters.values():
-            all_original_clusters.update(cluster.original_ids)
-        
+        # Check all clusters are mapped
+        all_clusters = set(cluster_data.keys())
         mapped_clusters = set(hierarchy.cluster_to_path.keys())
         
-        unmapped = all_original_clusters - mapped_clusters
+        unmapped = all_clusters - mapped_clusters
         if unmapped:
             logger.warning(f"Unmapped clusters: {unmapped}")
         
@@ -327,9 +334,8 @@ class Phase3Organizer:
                     topic_clusters.update(code.cluster_ids)
                 theme_clusters.update(topic_clusters)
             
-            # Verify theme cluster_ids match children
-            # Note: theme.cluster_ids contains merged IDs, theme_clusters contains original IDs
-            # So we skip this validation for now as it's not directly comparable
+            # Basic validation that clusters are properly assigned
+            logger.info(f"Theme {theme.node_id} has {len(theme_clusters)} clusters mapped")
 
 
 if __name__ == "__main__":
