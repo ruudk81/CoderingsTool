@@ -114,7 +114,7 @@ else:
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-# #debug print
+#debug print
 # idx = 1 
 # for response in preprocessed_text[:10]:  # Limit debug output
 #     print(f"{idx}. {response.response}")
@@ -156,17 +156,17 @@ else:
         if text.quality_filter:
             print(text.response)
     
-# #debug print
-# random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
-# for result in random_encoded_text:
-#     print(f"\nRespondent ID: {result.respondent_id}")
-#     print(f"Response: {result.response}")
-#     print("Descriptive Codes:")
-#     codes = result.response_segment or []
-#     for code in codes:
-#         print(f"  - Segment: {code.segment_response}")
-#         print(f"    Code: {code.descriptive_code}")
-#         print(f"    Description: {code.code_description}")    
+#debug print
+random_encoded_text = random.sample(encoded_text, min(10, len(encoded_text)))
+for result in random_encoded_text:
+    print(f"\nRespondent ID: {result.respondent_id}")
+    print(f"Response: {result.response}")
+    print("Descriptive Codes:")
+    codes = result.response_segment or []
+    for code in codes:
+        print(f"  - Segment: {code.segment_response}")
+        print(f"    Code: {code.descriptive_code}")
+        print(f"    Description: {code.code_description}")    
 
 
 # === STEP 4 ========================================================================================================
@@ -193,18 +193,18 @@ else:
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
 
 #debug print 
-# for result in embedded_text[:1]:
-#     print(f"\nRespondent ID: {result.respondent_id}")
-#     print(f"Response: {result.response}")
-#     print("Descriptive Codes:")
-#     codes = result.response_segment or []
-#     for code in codes:
-#         print(f"  - Segment: {code.segment_response}")
-#         print(f"    Code: {code.descriptive_code}")
-#         print(f"    Description: {code.code_description}")
-#         print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
-#         print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
-#     print("\n")
+for result in embedded_text[:1]:
+    print(f"\nRespondent ID: {result.respondent_id}")
+    print(f"Response: {result.response}")
+    print("Descriptive Codes:")
+    codes = result.response_segment or []
+    for code in codes:
+        print(f"  - Segment: {code.segment_response}")
+        print(f"    Code: {code.descriptive_code}")
+        print(f"    Description: {code.code_description}")
+        print(f"    Code embedding shape: {code.code_embedding.shape if code.code_embedding is not None else None}")
+        print(f"    Description embedding shape: {code.description_embedding.shape if code.description_embedding is not None else None}")
+    print("\n")
 
 
 # === STEP 5 ========================================================================================================
@@ -282,14 +282,14 @@ for response_items in cluster_results:
             micro_cluster_codes[micro_id].append(segment_items.descriptive_code)
             micro_cluster_descriptions[micro_id].append(segment_items.code_description)
 
-# print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
-# for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
-#     print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
+print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
+for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters
+    print(f"\n🔬 Micro-cluster {micro_id}: {count} items")
     
-#     sample_size = min(3, len(micro_cluster_codes[micro_id]))
-#     for i in range(sample_size):
-#         #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
-#         print(f"  - {micro_cluster_descriptions[micro_id][i]}")
+    sample_size = min(3, len(micro_cluster_codes[micro_id]))
+    for i in range(sample_size):
+        #print(f"  - {micro_cluster_codes[micro_id][i]}: {micro_cluster_descriptions[micro_id][i][:50]}...")
+        print(f"  - {micro_cluster_descriptions[micro_id][i]}")
 
 
 # === STEP 6 ========================================================================================================
@@ -314,7 +314,7 @@ else:
     print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
 
 # debug print
-from collections import  Counter #defaultdict
+from collections import  Counter, defaultdict
 print("\n=== UNPACKING HIERARCHICAL LABELS ===")
 
 # Data structures to collect hierarchy
