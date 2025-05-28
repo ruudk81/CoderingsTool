@@ -562,7 +562,7 @@ class Labeller:
         async def _get_llm_response(self, prompt: str, response_type: str) -> Dict:
             """Get response from LLM with retry logic"""
             messages = [
-                {"role": "system", "content": "You are an expert in hierarchical organization and thematic analysis."},
+                {"role": "system", "content": "You are an expert in hierarchical organization and thematic analysis. Always respond in valid JSON format."},
                 {"role": "user", "content": prompt}
             ]
             
@@ -770,7 +770,7 @@ class Labeller:
         async def _get_llm_response(self, prompt: str) -> Dict:
             """Get response from LLM with retry logic"""
             messages = [
-                {"role": "system", "content": "You are an expert in qualitative data analysis and thematic summarization."},
+                {"role": "system", "content": "You are an expert in qualitative data analysis and thematic summarization. Always respond in valid JSON format."},
                 {"role": "user", "content": prompt}
             ]
             
@@ -921,6 +921,9 @@ class Labeller:
                     for i, topic in enumerate(theme.children):
                         topic.node_id = f"{theme.node_id}.{i + 1}"
         
+        # Create Phase2Organizer instance for code creation
+        phase2_instance = self.Phase2Organizer(self.config, self.client)
+        
         # Rebuild mappings
         hierarchy.cluster_to_path.clear()
         hierarchy.cluster_to_topic.clear()
@@ -933,7 +936,7 @@ class Labeller:
                 
                 # Ensure topic has children (codes)
                 if not topic.children:
-                    codes = phase2._create_codes(topic, cluster_data, initial_labels)
+                    codes = phase2_instance._create_codes(topic, cluster_data, initial_labels)
                     topic.children = codes
                 
                 for code in topic.children:
