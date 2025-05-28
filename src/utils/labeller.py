@@ -909,7 +909,12 @@ class Labeller:
                             if topic_node:
                                 code_node = next((c for c in topic_node.children if c.node_id == path), None)
                             
-                            # Create label submodel
+                            # Create label submodel with proper hierarchical IDs
+                            # Extract numeric IDs from hierarchical node_ids
+                            # For display purposes, we'll use the last numeric part of the hierarchical ID
+                            topic_id = int(path_parts[1]) if len(path_parts) > 1 else None
+                            code_id = int(path_parts[2]) if len(path_parts) > 2 else None
+                            
                             label_segment = models.LabelSubmodel(
                                 segment_id=segment.segment_id,
                                 segment_response=segment.segment_response,
@@ -919,8 +924,8 @@ class Labeller:
                                 description_embedding=segment.description_embedding,
                                 micro_cluster=segment.micro_cluster,
                                 Theme={int(theme_id): theme_node.label} if theme_node else None,
-                                Topic={hash('.'.join(path_parts[:2])) % 10000: topic_node.label} if topic_node else None,
-                                Keyword={hash(path) % 10000: code_node.label} if code_node else None
+                                Topic={topic_id: topic_node.label} if topic_node and topic_id is not None else None,
+                                Keyword={code_id: code_node.label} if code_node and code_id is not None else None
                             )
                             
                             label_segments.append(label_segment)
