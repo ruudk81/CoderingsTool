@@ -12,7 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Project imports
 import models
 from config import OPENAI_API_KEY, DEFAULT_MODEL, DEFAULT_LANGUAGE
-from prompts import INITIAL_LABEL_PROMPT, HIERARCHY_CREATION_PROMPT, HIERARCHICAL_THEME_SUMMARY_PROMPT
+from prompts import INITIAL_LABEL_PROMPT, TOPIC_CREATION_PROMPT, THEME_CREATION_PROMPT, HIERARCHICAL_THEME_SUMMARY_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -275,31 +275,18 @@ class Labeller:
                                  cluster_data: Dict[int, ClusterData],
                                  initial_labels: Dict[int, InitialLabel],
                                  var_lab: str) -> HierarchicalStructure:
-            """Create 3-level hierarchical structure"""
+            """Create 3-level hierarchical structure using two-step approach"""
             logger.info("Phase 2: Creating hierarchical structure...")
             
-            # Create themes (level 1)
-            themes = await self._create_themes(cluster_data, initial_labels, var_lab)
+            # Step 1: Create topics from all clusters
+            topics = await self._create_topics_from_clusters(cluster_data, initial_labels, var_lab)
+            logger.info(f"Created {len(topics)} topics")
+            
+            # Step 2: Create themes from topics
+            themes = await self._create_themes_from_topics(topics, var_lab)
             logger.info(f"Created {len(themes)} themes")
             
-            # Create topics within themes (level 2) - parallelized
-            topic_tasks = []
-            for theme in themes:
-                task = self._create_topics(theme, cluster_data, initial_labels, var_lab)
-                topic_tasks.append((theme, task))
-            
-            # Execute all topic creation tasks in parallel
-            with tqdm(total=len(topic_tasks), desc="Creating topics") as pbar:
-                # Properly await all tasks in parallel
-                topic_results = await asyncio.gather(*[task for _, task in topic_tasks])
-                
-                # Assign results to themes
-                for theme, topics in zip([theme for theme, _ in topic_tasks], topic_results):
-                    theme.children = topics
-                    pbar.update(1)
-                    logger.debug(f"Created {len(topics)} topics for theme {theme.node_id}")
-            
-            # Assign codes within topics (level 3)
+            # Step 3: Assign codes within topics (level 3)
             cluster_to_path = {}
             for theme in themes:
                 for topic in theme.children:
@@ -320,16 +307,68 @@ class Labeller:
             
             return hierarchy
         
-        async def _create_themes(self,
-                               cluster_data: Dict[int, ClusterData],
-                               initial_labels: Dict[int, InitialLabel],
-                               var_lab: str) -> List[HierarchyNode]:
-            """Create theme-level groupings using LLM"""
+        async def _create_topics_from_clusters(self,
+                                             cluster_data: Dict[int, ClusterData],
+                                             initial_labels: Dict[int, InitialLabel],
+                                             var_lab: str) -> List[HierarchyNode]:
+            """Step 1: Create topics from all clusters"""
             # Prepare cluster information for LLM
             cluster_info = self._prepare_cluster_info(cluster_data, initial_labels)
             
             # Create prompt
-            prompt = self._create_theme_prompt(cluster_info, var_lab)
+            prompt = self._create_topic_prompt(cluster_info, var_lab)
+            
+            # Get topic groupings from LLM
+            response = await self._get_llm_response(prompt, "topics")
+            
+            # Convert response to HierarchyNode objects
+            topics = []
+            for i, topic_data in enumerate(response.get("topics", [])):
+                topic_id = f"T{i + 1}"
+                topic = HierarchyNode(
+                    node_id=topic_id,
+                    level="topic",
+                    label=topic_data.get("label", f"Topic {topic_id}"),
+                    children=[],
+                    cluster_ids=topic_data.get("cluster_ids", [])
+                )
+                topics.append(topic)
+            
+            # Ensure all clusters are assigned to a topic
+            assigned_clusters = set()
+            for topic in topics:
+                assigned_clusters.update(topic.cluster_ids)
+            
+            unassigned = set(cluster_data.keys()) - assigned_clusters
+            if unassigned:
+                # Create a topic for unassigned clusters
+                other_topic = HierarchyNode(
+                    node_id=f"T{len(topics) + 1}",
+                    level="topic",
+                    label="Overige aspecten",
+                    children=[],
+                    cluster_ids=list(unassigned)
+                )
+                topics.append(other_topic)
+            
+            return topics
+        
+        async def _create_themes_from_topics(self,
+                                           topics: List[HierarchyNode],
+                                           var_lab: str) -> List[HierarchyNode]:
+            """Step 2: Create themes from topics"""
+            # Prepare topic information for LLM
+            topic_info = []
+            for topic in topics:
+                info = {
+                    "label": topic.label,
+                    "explanation": f"Contains {len(topic.cluster_ids)} clusters",
+                    "cluster_ids": topic.cluster_ids
+                }
+                topic_info.append(info)
+            
+            # Create prompt
+            prompt = self._create_theme_prompt(topic_info, var_lab)
             
             # Get theme groupings from LLM
             response = await self._get_llm_response(prompt, "themes")
@@ -343,87 +382,44 @@ class Labeller:
                     level="theme",
                     label=theme_data.get("label", f"Theme {theme_id}"),
                     children=[],
-                    cluster_ids=theme_data.get("cluster_ids", [])
+                    cluster_ids=[]
                 )
+                
+                # Find topics that belong to this theme and assign them as children
+                topic_labels = theme_data.get("topic_labels", [])
+                for topic in topics:
+                    if topic.label in topic_labels:
+                        # Update topic node_id to reflect theme hierarchy
+                        topic.node_id = f"{theme_id}.{len(theme.children) + 1}"
+                        theme.children.append(topic)
+                        theme.cluster_ids.extend(topic.cluster_ids)
+                
                 themes.append(theme)
             
-            # Ensure all clusters are assigned to a theme
-            assigned_clusters = set()
+            # Ensure all topics are assigned to a theme
+            assigned_topics = set()
             for theme in themes:
-                assigned_clusters.update(theme.cluster_ids)
+                for topic in theme.children:
+                    assigned_topics.add(topic.label)
             
-            unassigned = set(cluster_data.keys()) - assigned_clusters
-            if unassigned:
-                # Create a theme for unassigned clusters
+            unassigned_topics = [t for t in topics if t.label not in assigned_topics]
+            if unassigned_topics:
+                # Create a theme for unassigned topics
                 other_theme = HierarchyNode(
                     node_id=str(len(themes) + 1),
                     level="theme",
-                    label="Other",
+                    label="Overige thema's",
                     children=[],
-                    cluster_ids=list(unassigned)
+                    cluster_ids=[]
                 )
+                for topic in unassigned_topics:
+                    topic.node_id = f"{other_theme.node_id}.{len(other_theme.children) + 1}"
+                    other_theme.children.append(topic)
+                    other_theme.cluster_ids.extend(topic.cluster_ids)
                 themes.append(other_theme)
             
             return themes
         
-        async def _create_topics(self,
-                               theme: HierarchyNode,
-                               cluster_data: Dict[int, ClusterData],
-                               initial_labels: Dict[int, InitialLabel],
-                               var_lab: str) -> List[HierarchyNode]:
-            """Create topic-level groupings within a theme"""
-            # If theme has few clusters, create a single topic
-            if len(theme.cluster_ids) <= 3:
-                topic = HierarchyNode(
-                    node_id=f"{theme.node_id}.1",
-                    level="topic",
-                    label=f"{theme.label} - General",
-                    children=[],
-                    cluster_ids=theme.cluster_ids
-                )
-                return [topic]
-            
-            # Prepare cluster information for this theme
-            theme_clusters = {cid: cluster_data[cid] for cid in theme.cluster_ids}
-            theme_labels = {cid: initial_labels[cid] for cid in theme.cluster_ids if cid in initial_labels}
-            cluster_info = self._prepare_cluster_info(theme_clusters, theme_labels)
-            
-            # Create prompt
-            prompt = self._create_topic_prompt(theme, cluster_info, var_lab)
-            
-            # Get topic groupings from LLM
-            response = await self._get_llm_response(prompt, "topics")
-            
-            # Convert response to HierarchyNode objects
-            topics = []
-            for i, topic_data in enumerate(response.get("topics", [])):
-                topic_id = f"{theme.node_id}.{i + 1}"
-                topic = HierarchyNode(
-                    node_id=topic_id,
-                    level="topic",
-                    label=topic_data.get("label", f"Topic {topic_id}"),
-                    children=[],
-                    cluster_ids=topic_data.get("cluster_ids", [])
-                )
-                topics.append(topic)
-            
-            # Ensure all theme clusters are assigned to a topic
-            assigned_clusters = set()
-            for topic in topics:
-                assigned_clusters.update(topic.cluster_ids)
-            
-            unassigned = set(theme.cluster_ids) - assigned_clusters
-            if unassigned:
-                other_topic = HierarchyNode(
-                    node_id=f"{theme.node_id}.{len(topics) + 1}",
-                    level="topic",
-                    label="Other",
-                    children=[],
-                    cluster_ids=list(unassigned)
-                )
-                topics.append(other_topic)
-            
-            return topics
         
         def _create_codes(self,
                          topic: HierarchyNode,
@@ -481,37 +477,27 @@ class Labeller:
             
             return cluster_info
         
-        def _create_theme_prompt(self, cluster_info: List[Dict], var_lab: str) -> str:
-            """Create prompt for theme-level grouping"""
-            prompt = HIERARCHY_CREATION_PROMPT.replace("{var_lab}", var_lab)
-            prompt = prompt.replace("{level}", "theme")
+        def _create_theme_prompt(self, topic_info: List[Dict], var_lab: str) -> str:
+            """Create prompt for theme-level grouping using topics"""
+            prompt = THEME_CREATION_PROMPT.replace("{var_lab}", var_lab)
             prompt = prompt.replace("{language}", self.config.language)
             
-            # Add cluster information
-            clusters_text = []
-            for info in cluster_info:
-                cluster_text = f"\nCluster {info['cluster_id']}:"
-                cluster_text += f"\n- Label: {info['label']}"
-                cluster_text += f"\n- Size: {info['size']} items"
-                cluster_text += f"\n- Top codes: {', '.join(info['top_codes'][:3])}"
-                clusters_text.append(cluster_text)
+            # Add topic information
+            topics_text = []
+            for info in topic_info:
+                topic_text = f"\nTopic: {info['label']}"
+                topic_text += f"\n- Explanation: {info['explanation']}"
+                topic_text += f"\n- Contains clusters: {', '.join(map(str, info['cluster_ids']))}"
+                topics_text.append(topic_text)
             
-            prompt = prompt.replace("{clusters}", "\n".join(clusters_text))
+            prompt = prompt.replace("{topics}", "\n".join(topics_text))
             
             return prompt
         
-        def _create_topic_prompt(self,
-                               theme: HierarchyNode,
-                               cluster_info: List[Dict],
-                               var_lab: str) -> str:
-            """Create prompt for topic-level grouping within a theme"""
-            prompt = HIERARCHY_CREATION_PROMPT.replace("{var_lab}", var_lab)
-            prompt = prompt.replace("{level}", "topic")
+        def _create_topic_prompt(self, cluster_info: List[Dict], var_lab: str) -> str:
+            """Create prompt for topic-level grouping"""
+            prompt = TOPIC_CREATION_PROMPT.replace("{var_lab}", var_lab)
             prompt = prompt.replace("{language}", self.config.language)
-            
-            # Add theme context
-            theme_context = f"You are creating topics within the theme: '{theme.label}'"
-            prompt = prompt.replace("You are creating", theme_context)
             
             # Add cluster information
             clusters_text = []
