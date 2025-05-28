@@ -266,38 +266,50 @@ Input clusters:
 
 
 TOPIC_CREATION_PROMPT = """
-You are a {language} expert in organizing micro-cluster labels into **TOPICS** (Level 2 nodes).
-Each topic contains 1 or more micro-clusters that represent ideas that express different ideas, issues or concerns in light of this research question:
-"{var_lab}"
+You are a {language} expert organizing survey responses about ready-made meals (kant-en-klaar maaltijden).
+Research question: "{var_lab}"
 
-TASK:
-Group the provided cluster labels into topic categories that:
-- Are mutually exclusive
-- Represent a clear, specific area of concern or meaning
-- Can later be grouped under broader themes
+TASK: Group micro-clusters into 15-20 SPECIFIC topics (Level 2 nodes).
+
+CRITICAL RULES:
+1. Create AT LEAST 15 distinct topics from the clusters
+2. Each topic should be SPECIFIC and ACTIONABLE
+3. NO topic should contain more than 8% of total responses
+4. Absolutely NO generic catch-all topics like "Overige aspecten" or "Algemene kwaliteit"
+5. Topics must be mutually exclusive
+
+GOOD TOPIC EXAMPLES:
+✓ "Zoutgehalte verminderen" (specific nutritional aspect)
+✓ "Verpakking verduurzamen" (specific sustainability aspect)  
+✓ "Bereidingsinstructies verduidelijken" (specific usability aspect)
+✓ "Vegetarische opties uitbreiden" (specific product range aspect)
+✓ "Portiegrootte voor één persoon" (specific size aspect)
+
+BAD TOPIC EXAMPLES:
+✗ "Algemene kwaliteitsverbetering" (too vague)
+✗ "Overige wensen" (catch-all category)
+✗ "Gezondheid en voeding" (too broad - split into salt, sugar, fat, etc.)
+✗ "Product samenstelling" (too broad - split into specific aspects)
 
 OUTPUT FORMAT:
-Return a JSON object with the following structure:
-
 {
 "topics": [
 {
-"label": "Portie grootte aanpassingen",
-"cluster_ids": ["38", "15", "22"],
-"explanation": "These clusters deal with requests to modify portion sizes and offer portion variety options."
+"label": "Zoutgehalte verminderen",
+"cluster_ids": ["4", "15", "22"],
+"explanation": "Clusters specifically about reducing salt content in meals"
 },
 {
-"label": "Ingrediënt kwaliteit verbetering",
+"label": "Vegetarische varianten uitbreiden", 
 "cluster_ids": ["12", "29"],
-"explanation": "These responses focus on using fresher, higher quality ingredients in meal preparation."
+"explanation": "Clusters about adding more vegetarian meal options"
 }
+// ... AT LEAST 15 topics total ...
 ],
 "cluster_to_topic_mapping": {
-"38": "Portie grootte aanpassingen",
-"15": "Portie grootte aanpassingen",
-"22": "Portie grootte aanpassingen",
-"12": "Ingrediënt kwaliteit verbetering",
-"29": "Ingrediënt kwaliteit verbetering"
+"4": "Zoutgehalte verminderen",
+"15": "Zoutgehalte verminderen",
+// ... mapping for ALL clusters ...
 }
 }
 
@@ -308,44 +320,60 @@ Input cluster labels:
 """
 
 THEME_CREATION_PROMPT = """
-You are a {language} expert in grouping topics into THEMES (Level 1 nodes).
-Themes represent broad conceptual areas that organize topics into coherent, high-level insights related to the research question:
+You are a {language} expert grouping topics into HIGH-LEVEL THEMES for research question:
 "{var_lab}"
 
-TASK:
-Group the topics into themes that:
-- Each contain 2 or more topics
-- Reflect a distinct major dimension of the issue
-- Are clearly different from each other
-- Help interpret how respondents experience or approach the research question
+TASK: Group the 15-20 topics into 5-8 THEMES (Level 1 nodes).
+
+CRITICAL RULES:
+1. Create exactly 5-8 themes total
+2. Each theme MUST contain at least 2 topics (no single-topic themes!)
+3. NO theme should contain more than 25% of all topics
+4. NO generic themes like "Overige" - redistribute those topics to relevant themes
+5. Themes should represent major dimensions of consumer concerns
+
+GOOD THEME EXAMPLES:
+✓ "Nutritionele samenstelling" (groups: salt reduction, sugar reduction, fat content, additives)
+✓ "Duurzaamheid en milieu" (groups: packaging, local sourcing, waste reduction)
+✓ "Product diversiteit" (groups: vegetarian options, portion sizes, cuisine variety)
+✓ "Gebruiksgemak" (groups: preparation time, instructions, shelf life)
+
+BAD THEME EXAMPLES:
+✗ "Algemene verbeteringen" (too vague)
+✗ "Overige aspecten" (catch-all - redistribute!)
+✗ "Kwaliteit" (too broad - be specific about which quality aspects)
+
+REQUIRED STRUCTURE:
+- 5-8 themes total
+- Each theme has 2-5 topics
+- Clear conceptual boundaries between themes
+- Together they cover ALL major consumer concerns
 
 OUTPUT FORMAT:
-Return a JSON object with the following structure:
-
 {
 "themes": [
 {
-"label": "Product samenstelling en kwaliteit",
-"topic_labels": ["Portie grootte aanpassingen", "Ingrediënt kwaliteit verbetering"],
-"explanation": "This theme groups topics reflecting how respondents want producers to modify the physical composition and quality of ready-made meals."
+"label": "Nutritionele samenstelling",
+"topic_labels": ["Zoutgehalte verminderen", "Suikergehalte verlagen", "Vetgehalte beperken", "E-nummers vermijden"],
+"explanation": "Consumer concerns about specific nutritional content and additives in ready-made meals"
 },
 {
-"label": "Voedingswaarde en gezondheid",
-"topic_labels": ["Zout en suiker vermindering", "Gezonde ingrediënten toevoegen"],
-"explanation": "This theme centers on health-focused improvements that respondents want to see in nutritional content."
+"label": "Product diversiteit en keuze",
+"topic_labels": ["Vegetarische opties uitbreiden", "Veganistische varianten", "Internationale keukens", "Seizoensgebonden menu's"],
+"explanation": "Consumer demand for wider variety in meal types and dietary options"
 }
+// ... 5-8 themes total covering ALL topics ...
 ],
 "topic_to_theme_mapping": {
-"Portie grootte aanpassingen": "Product samenstelling en kwaliteit",
-"Ingrediënt kwaliteit verbetering": "Product samenstelling en kwaliteit",
-"Zout en suiker vermindering": "Voedingswaarde en gezondheid",
-"Gezonde ingrediënten toevoegen": "Voedingswaarde en gezondheid"
+"Zoutgehalte verminderen": "Nutritionele samenstelling",
+"Suikergehalte verlagen": "Nutritionele samenstelling",
+// ... mapping for ALL topics ...
 }
 }
 
 Language: {language}
 
-Input topic labels:
+Input topics to group:
 {topics}
 """
 

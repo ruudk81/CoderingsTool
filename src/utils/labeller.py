@@ -22,7 +22,7 @@ class LabellerConfig(BaseModel):
     model: str = DEFAULT_MODEL
     api_key: str = OPENAI_API_KEY
     max_concurrent_requests: int = 10   
-    batch_size: int = 5  # Reduced from 50 for better concurrency
+    batch_size: int = 15  # Increased for better context while maintaining concurrency
     max_retries: int = 3
     retry_delay: int = 2
     language: str = DEFAULT_LANGUAGE
@@ -366,6 +366,37 @@ class Labeller:
                     cluster_ids=list(unassigned)
                 )
                 topics.append(other_topic)
+            
+            return topics
+        
+        async def _create_topics_from_clusters_with_guidance(self,
+                                                           cluster_data: Dict[int, ClusterData],
+                                                           initial_labels: Dict[int, InitialLabel],
+                                                           var_lab: str,
+                                                           guidance: str) -> List[HierarchyNode]:
+            """Create topics with additional guidance for refinement"""
+            # Prepare cluster information for LLM
+            cluster_info = self._prepare_cluster_info(cluster_data, initial_labels)
+            
+            # Create prompt with guidance
+            prompt = self._create_topic_prompt(cluster_info, var_lab)
+            prompt = guidance + "\n\n" + prompt
+            
+            # Get topic groupings from LLM
+            response = await self._get_llm_response(prompt, "topics")
+            
+            # Convert response to HierarchyNode objects
+            topics = []
+            for i, topic_data in enumerate(response.get("topics", [])):
+                topic_id = f"T{i + 1}"
+                topic = HierarchyNode(
+                    node_id=topic_id,
+                    level="topic", 
+                    label=topic_data.get("label", f"Topic {topic_id}"),
+                    children=[],
+                    cluster_ids=topic_data.get("cluster_ids", [])
+                )
+                topics.append(topic)
             
             return topics
         
@@ -781,12 +812,144 @@ class Labeller:
                     "relevance": "Unable to analyze relevance"
                 }
     
+    # ===== VALIDATION METHODS =====
+    
+    def validate_hierarchy_quality(self, 
+                                 hierarchy: HierarchicalStructure,
+                                 cluster_data: Dict[int, ClusterData],
+                                 min_topics_per_theme: int = 2,
+                                 max_other_percentage: float = 0.10,
+                                 max_theme_percentage: float = 0.20) -> List[str]:
+        """Validate hierarchy meets quality standards"""
+        issues = []
+        
+        # Calculate total segments
+        total_segments = sum(cluster.size for cluster in cluster_data.values())
+        
+        # Check for sufficient topic diversity
+        single_topic_themes = [t for t in hierarchy.themes if len(t.children) == 1]
+        if len(single_topic_themes) > len(hierarchy.themes) * 0.5:
+            issues.append(f"Too many single-topic themes: {len(single_topic_themes)}/{len(hierarchy.themes)}")
+        
+        # Check for oversized themes
+        for theme in hierarchy.themes:
+            theme_size = sum(cluster_data[cid].size for cid in theme.cluster_ids if cid in cluster_data)
+            percentage = theme_size / total_segments
+            
+            # Check for oversized "other" categories
+            if any(word in theme.label.lower() for word in ["overige", "andere", "other", "rest"]):
+                if percentage > max_other_percentage:
+                    issues.append(f"Oversized catch-all '{theme.label}': {percentage:.1%} (max {max_other_percentage:.0%})")
+            
+            # Check for any oversized theme
+            elif percentage > max_theme_percentage:
+                issues.append(f"Oversized theme '{theme.label}': {percentage:.1%} (max {max_theme_percentage:.0%})")
+        
+        # Check topic distribution
+        topics_per_theme = [len(theme.children) for theme in hierarchy.themes]
+        avg_topics = sum(topics_per_theme) / len(topics_per_theme) if topics_per_theme else 0
+        if avg_topics < 1.5:
+            issues.append(f"Insufficient topic diversity: avg {avg_topics:.1f} topics/theme (need 2+)")
+        
+        # Check for duplicate topic names across themes
+        all_topic_names = []
+        for theme in hierarchy.themes:
+            for topic in theme.children:
+                all_topic_names.append(topic.label)
+        
+        duplicates = [name for name in set(all_topic_names) if all_topic_names.count(name) > 1]
+        if duplicates:
+            issues.append(f"Duplicate topic names: {', '.join(duplicates)}")
+        
+        return issues
+    
+    async def _refine_oversized_categories(self,
+                                         hierarchy: HierarchicalStructure,
+                                         cluster_data: Dict[int, ClusterData],
+                                         initial_labels: Dict[int, InitialLabel],
+                                         var_lab: str) -> HierarchicalStructure:
+        """Refine hierarchy by splitting oversized categories"""
+        logger.info("Refining oversized categories...")
+        
+        # Find oversized themes
+        total_segments = sum(cluster.size for cluster in cluster_data.values())
+        oversized_themes = []
+        
+        for theme in hierarchy.themes:
+            theme_size = sum(cluster_data[cid].size for cid in theme.cluster_ids if cid in cluster_data)
+            percentage = theme_size / total_segments
+            
+            # Check if it's oversized or a catch-all
+            is_catchall = any(word in theme.label.lower() for word in ["overige", "andere", "other", "rest"])
+            if (is_catchall and percentage > 0.10) or (percentage > 0.20):
+                oversized_themes.append((theme, percentage))
+                logger.info(f"Found oversized theme: '{theme.label}' ({percentage:.1%})")
+        
+        if not oversized_themes:
+            return hierarchy
+        
+        # For each oversized theme, try to split it
+        for theme, percentage in oversized_themes:
+            if len(theme.children) == 1:
+                # Single topic theme - try to split the topic into multiple topics
+                logger.info(f"Splitting single-topic theme: {theme.label}")
+                
+                # Get clusters in this theme
+                theme_clusters = theme.cluster_ids
+                theme_cluster_data = {cid: cluster_data[cid] for cid in theme_clusters if cid in cluster_data}
+                theme_initial_labels = {cid: initial_labels[cid] for cid in theme_clusters if cid in initial_labels}
+                
+                # Re-run topic creation with instruction to create more topics
+                refined_prompt = f"""
+                The following clusters were previously grouped into a single oversized topic.
+                Please split them into 3-5 more specific topics.
+                Avoid creating a single catch-all topic.
+                
+                Original theme: {theme.label} (containing {percentage:.0%} of all data)
+                """
+                
+                # Create new topics
+                phase2 = self.Phase2Organizer(self.config, self.client)
+                new_topics = await phase2._create_topics_from_clusters_with_guidance(
+                    theme_cluster_data, theme_initial_labels, var_lab, refined_prompt
+                )
+                
+                # Replace the single topic with multiple topics
+                if len(new_topics) > 1:
+                    theme.children = new_topics
+                    # Update node IDs
+                    for i, topic in enumerate(theme.children):
+                        topic.node_id = f"{theme.node_id}.{i + 1}"
+        
+        # Rebuild mappings
+        hierarchy.cluster_to_path.clear()
+        hierarchy.cluster_to_topic.clear()
+        hierarchy.cluster_to_theme.clear()
+        hierarchy.topic_to_theme.clear()
+        
+        for theme in hierarchy.themes:
+            for topic in theme.children:
+                hierarchy.topic_to_theme[topic.label] = theme.label
+                
+                # Ensure topic has children (codes)
+                if not topic.children:
+                    codes = phase2._create_codes(topic, cluster_data, initial_labels)
+                    topic.children = codes
+                
+                for code in topic.children:
+                    for cluster_id in code.cluster_ids:
+                        hierarchy.cluster_to_path[cluster_id] = code.node_id
+                        hierarchy.cluster_to_topic[cluster_id] = topic.label
+                        hierarchy.cluster_to_theme[cluster_id] = theme.label
+        
+        return hierarchy
+    
     # ===== MAIN WORKFLOW METHODS =====
     
     async def _create_hierarchical_labels_async(self, 
                                               cluster_results: List[models.ClusterModel], 
                                               var_lab: str) -> Tuple[List[models.LabelModel], List[ThemeSummary]]:
-        """Async implementation of the main workflow"""
+        """Async implementation of the main workflow with validation and refinement"""
         import time
         workflow_start = time.time()
         logger.info("Starting hierarchical labeling process...")
@@ -797,17 +960,43 @@ class Labeller:
         extract_time = time.time() - extract_start
         logger.info(f"Extracted data for {len(cluster_data)} clusters in {extract_time:.2f}s")
         
-        # Phase 1: Initial labels
-        phase1_start = time.time()
-        initial_labels = await self.phase1_initial_labels(cluster_data, var_lab)
-        phase1_time = time.time() - phase1_start
-        logger.info(f"Phase 1: Generated initial labels for {len(initial_labels)} clusters in {phase1_time:.2f}s")
+        # Iterative refinement loop
+        max_iterations = 3
+        hierarchy = None
+        summaries = None
         
-        # Phase 2: Create hierarchy (merger moved to step 5)
-        phase2_start = time.time()
-        hierarchy = await self.phase2_create_hierarchy(cluster_data, initial_labels, var_lab)
-        phase2_time = time.time() - phase2_start
-        logger.info(f"Phase 2: Created hierarchical structure in {phase2_time:.2f}s")
+        for iteration in range(max_iterations):
+            logger.info(f"\n=== Iteration {iteration + 1}/{max_iterations} ===")
+            
+            # Phase 1: Initial labels
+            phase1_start = time.time()
+            initial_labels = await self.phase1_initial_labels(cluster_data, var_lab)
+            phase1_time = time.time() - phase1_start
+            logger.info(f"Phase 1: Generated initial labels for {len(initial_labels)} clusters in {phase1_time:.2f}s")
+            
+            # Phase 2: Create hierarchy
+            phase2_start = time.time()
+            hierarchy = await self.phase2_create_hierarchy(cluster_data, initial_labels, var_lab)
+            phase2_time = time.time() - phase2_start
+            logger.info(f"Phase 2: Created hierarchical structure in {phase2_time:.2f}s")
+            
+            # Validate hierarchy quality
+            quality_issues = self.validate_hierarchy_quality(hierarchy, cluster_data)
+            
+            if not quality_issues:
+                logger.info("✅ Hierarchy passed all quality checks!")
+                break
+            else:
+                logger.warning(f"⚠️  Found {len(quality_issues)} quality issues:")
+                for issue in quality_issues:
+                    logger.warning(f"   - {issue}")
+                
+                if iteration < max_iterations - 1:
+                    # Try to refine the hierarchy
+                    logger.info("Attempting to refine hierarchy...")
+                    hierarchy = await self._refine_oversized_categories(hierarchy, cluster_data, initial_labels, var_lab)
+                else:
+                    logger.warning("Max iterations reached, proceeding with current hierarchy")
         
         # Phase 3: Generate summaries
         phase3_start = time.time()
@@ -815,14 +1004,13 @@ class Labeller:
         phase3_time = time.time() - phase3_start
         logger.info(f"Phase 3: Generated {len(summaries)} theme summaries in {phase3_time:.2f}s")
         
-        
         # Convert to output format
         convert_start = time.time()
         result = self.create_label_models(cluster_results, hierarchy, summaries)
         convert_time = time.time() - convert_start
         
         total_time = time.time() - workflow_start
-        logger.info(f"Total workflow time: {total_time:.2f}s (extract: {extract_time:.2f}s, phase1: {phase1_time:.2f}s, phase2: {phase2_time:.2f}s, phase3: {phase3_time:.2f}s, convert: {convert_time:.2f}s)")
+        logger.info(f"Total workflow time: {total_time:.2f}s")
         
         return result, summaries
     
