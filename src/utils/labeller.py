@@ -1,6 +1,6 @@
 import asyncio
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from pydantic import BaseModel, Field, ConfigDict
 import instructor
 from openai import AsyncOpenAI
@@ -85,7 +85,7 @@ class Labeller:
         
     def create_hierarchical_labels(self, 
                                  cluster_results: List[models.ClusterModel], 
-                                 var_lab: str) -> List[models.LabelModel]:
+                                 var_lab: str) -> Tuple[List[models.LabelModel], List[ThemeSummary]]:
         """Main method that orchestrates all phases"""
         return asyncio.run(self._create_hierarchical_labels_async(cluster_results, var_lab))
     
@@ -93,7 +93,8 @@ class Labeller:
                      cluster_results: List[models.ClusterModel], 
                      var_lab: str) -> List[models.LabelModel]:
         """Pipeline-compatible method name"""
-        return self.create_hierarchical_labels(cluster_results, var_lab)
+        labels, _ = self.create_hierarchical_labels(cluster_results, var_lab)
+        return labels
     
     # ===== NESTED PHASE CLASSES =====
     
@@ -622,13 +623,15 @@ class Labeller:
                 task = self._generate_theme_summary(theme, hierarchy, var_lab)
                 tasks.append(task)
             
-            # Execute all tasks with progress bar
-            summaries = []
+            # Execute all tasks with progress bar - maintain theme order
             with tqdm(total=len(tasks), desc="Generating summaries") as pbar:
-                for coro in asyncio.as_completed(tasks):
-                    summary = await coro
-                    summaries.append(summary)
-                    pbar.update(1)
+                # Use gather to maintain order corresponding to themes
+                summaries = await asyncio.gather(*tasks)
+                pbar.update(len(tasks))
+            
+            # Log summary generation for debugging
+            for summary in summaries:
+                logger.info(f"Generated summary for theme {summary.theme_id}: '{summary.theme_label}'")
             
             return summaries
         
@@ -773,7 +776,7 @@ class Labeller:
     
     async def _create_hierarchical_labels_async(self, 
                                               cluster_results: List[models.ClusterModel], 
-                                              var_lab: str) -> List[models.LabelModel]:
+                                              var_lab: str) -> Tuple[List[models.LabelModel], List[ThemeSummary]]:
         """Async implementation of the main workflow"""
         import time
         workflow_start = time.time()
@@ -803,6 +806,7 @@ class Labeller:
         phase3_time = time.time() - phase3_start
         logger.info(f"Phase 3: Generated {len(summaries)} theme summaries in {phase3_time:.2f}s")
         
+        
         # Convert to output format
         convert_start = time.time()
         result = self.create_label_models(cluster_results, hierarchy, summaries)
@@ -811,7 +815,7 @@ class Labeller:
         total_time = time.time() - workflow_start
         logger.info(f"Total workflow time: {total_time:.2f}s (extract: {extract_time:.2f}s, phase1: {phase1_time:.2f}s, phase2: {phase2_time:.2f}s, phase3: {phase3_time:.2f}s, convert: {convert_time:.2f}s)")
         
-        return result
+        return result, summaries
     
     def extract_cluster_data(self, cluster_results: List[models.ClusterModel]) -> Dict[int, ClusterData]:
         """Extract and organize cluster data from model results"""
@@ -1010,12 +1014,17 @@ if __name__ == "__main__":
         labeller = Labeller()
         
         # Run the pipeline
-        label_results = labeller.create_hierarchical_labels(cluster_results, var_lab)
+        label_results, theme_summaries = labeller.create_hierarchical_labels(cluster_results, var_lab)
         
-        # Save to cache
+        # Save both results to cache
         cache_key = 'labels_all'
         cache_manager.save_to_cache(label_results, filename, cache_key)
         print(f"\nSaved {len(label_results)} label results to cache with key '{cache_key}'")
+        
+        # Save summaries separately for easier access
+        summary_cache_key = 'theme_summaries'
+        cache_manager.save_to_cache(theme_summaries, filename, summary_cache_key)
+        print(f"Saved {len(theme_summaries)} theme summaries to cache with key '{summary_cache_key}'")
         
         # Unpack and analyze the results
         print("\n=== UNPACKING HIERARCHICAL LABELS ===")
@@ -1038,50 +1047,27 @@ if __name__ == "__main__":
                     theme_id, theme_label = list(segment.Theme.items())[0]
                     themes[theme_id] = theme_label
         
-        # Now extract summaries from the label_results
-        # We need to recreate the summary mapping logic from create_label_models
-        # Summaries are concatenated per respondent, so we need to parse them carefully
-        all_summaries = set()
+        # Load summaries directly from cache to avoid parsing concatenated text
+        cached_summaries = cache_manager.load_from_cache(filename, "theme_summaries", ThemeSummary)
         theme_summary_texts = {}
         
-        # Collect all unique summaries and debug their structure
-        for result in label_results:
-            if result.summary:
-                all_summaries.add(result.summary)
-        
-        
-        # Since summaries are concatenated with newlines for each respondent,
-        # we need to extract unique theme summaries more carefully
-        # The summaries are created in the same order as themes (by theme_id)
-        
-        # Try different approaches to extract summaries
-        for summary_text in all_summaries:
-            if summary_text and summary_text.strip():
-                # Split by double newline first (themes are often separated this way)
-                summary_blocks = summary_text.split('\n\n')
-                if not summary_blocks:
-                    summary_blocks = summary_text.split('\n')
-                
-                # Filter out empty blocks
-                summary_blocks = [block.strip() for block in summary_blocks if block.strip()]
-                
-                # If we have the right number of blocks for themes, assign them
-                if len(summary_blocks) == len(themes):
-                    for (theme_id, _), summary_block in zip(sorted(themes.items()), summary_blocks):
-                        if theme_id not in theme_summary_texts or len(summary_block) > len(theme_summary_texts.get(theme_id, '')):
-                            theme_summary_texts[theme_id] = summary_block
-                else:
-                    # Try to match by content
-                    for summary_block in summary_blocks:
-                        # Check each theme to see if this block belongs to it
-                        for theme_id, theme_label in themes.items():
-                            # More flexible matching: check if key words from theme appear in summary
-                            theme_words = [w.lower() for w in theme_label.split() if len(w) > 3]
-                            if any(word in summary_block.lower() for word in theme_words):
-                                if theme_id not in theme_summary_texts or len(summary_block) > len(theme_summary_texts.get(theme_id, '')):
-                                    theme_summary_texts[theme_id] = summary_block
-                                break
-        
+        if cached_summaries:
+            print(f"DEBUG: Found {len(cached_summaries)} cached theme summaries")
+            for summary in cached_summaries:
+                theme_summary_texts[int(summary.theme_id)] = summary.summary
+                print(f"DEBUG: Theme {summary.theme_id}: '{summary.theme_label}' -> Summary length: {len(summary.summary)}")
+        else:
+            # Fallback: try to extract from label results (but this is problematic due to concatenation)
+            print("DEBUG: No cached summaries found, attempting to parse from concatenated results...")
+            all_summaries = set()
+            for result in label_results:
+                if result.summary:
+                    all_summaries.add(result.summary)
+            
+            print(f"DEBUG: Found {len(all_summaries)} unique summary combinations in results")
+            for i, summary in enumerate(all_summaries):
+                print(f"DEBUG: Summary {i+1} length: {len(summary)} chars")
+                print(f"DEBUG: Summary {i+1} preview: {summary[:200]}...")
         
         # Store the extracted summaries
         theme_summaries = theme_summary_texts
