@@ -291,7 +291,14 @@ Return a JSON object with the following structure:
 "cluster_ids": ["12", "29"],
 "explanation": "These responses focus on using fresher, higher quality ingredients in meal preparation."
 }
-]
+],
+"cluster_to_topic_mapping": {
+"38": "Portie grootte aanpassingen",
+"15": "Portie grootte aanpassingen",
+"22": "Portie grootte aanpassingen",
+"12": "Ingrediënt kwaliteit verbetering",
+"29": "Ingrediënt kwaliteit verbetering"
+}
 }
 
 Language: {language}
@@ -327,7 +334,13 @@ Return a JSON object with the following structure:
 "topic_labels": ["Zout en suiker vermindering", "Gezonde ingrediënten toevoegen"],
 "explanation": "This theme centers on health-focused improvements that respondents want to see in nutritional content."
 }
-]
+],
+"topic_to_theme_mapping": {
+"Portie grootte aanpassingen": "Product samenstelling en kwaliteit",
+"Ingrediënt kwaliteit verbetering": "Product samenstelling en kwaliteit",
+"Zout en suiker vermindering": "Voedingswaarde en gezondheid",
+"Gezonde ingrediënten toevoegen": "Voedingswaarde en gezondheid"
+}
 }
 
 Language: {language}
