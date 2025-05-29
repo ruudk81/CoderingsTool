@@ -406,4 +406,166 @@ Return a JSON object with the following structure:
 Language: {language}
 """
 
+# MapReduce prompts for hierarchical labeller
+BATCH_SUMMARY_PROMPT = """
+You are a qualitative researcher performing thematic analysis.
+
+You are given a batch of micro-clusters (each cluster contains ~3-5 short statements with similar meaning). Your task is to analyze this batch and produce a hierarchical code structure.
+
+**Instructions:**
+- Identify Level 1 nodes (broad themes), Level 2 nodes (specific subthemes), and link each micro-cluster (Level 3) to its appropriate location.
+- Each node name must be no more than 4 words and semantically clear.
+- Do not rely on external knowledge — use only the given text.
+- Maintain semantic integrity: use only the meanings in the micro-cluster texts.
+
+**Output format:**
+Return a JSON object with this exact structure:
+{{
+  "batch_id": "{batch_id}",
+  "hierarchy": {{
+    "1": {{
+      "node": "Theme Name",
+      "subthemes": {{
+        "1.1": {{
+          "node": "Subtheme Name",
+          "micro_clusters": [0, 1]
+        }},
+        "1.2": {{
+          "node": "Another Subtheme",
+          "micro_clusters": [2]
+        }}
+      }}
+    }},
+    "2": {{
+      "node": "Another Theme",
+      "subthemes": {{
+        "2.1": {{
+          "node": "Subtheme Name",
+          "micro_clusters": [3, 4]
+        }}
+      }}
+    }}
+  }}
+}}
+
+Variable label/context: {var_lab}
+Language: {language}
+Batch ID: {batch_id}
+
+Micro-cluster batch:
+{batch_clusters}
+"""
+
+REDUCE_SUMMARY_PROMPT = """
+You are a qualitative researcher merging thematic structures from multiple batches into one unified codebook.
+
+Each structure contains a partial thematic hierarchy with Level 1 and Level 2 codes. Your task is to synthesize these into a single consistent hierarchy.
+
+**Instructions:**
+- Merge similar themes and subthemes where meanings clearly overlap.
+- Ensure Level 1 and Level 2 themes are **mutually exclusive**, **concise**, and **clearly distinguishable**.
+- Each node name must be no more than 4 words.
+- Adjust theme labels if needed to clarify differences.
+- Reassign Level 1 and Level 2 numbers to maintain proper hierarchy.
+- Preserve all micro-cluster assignments.
+
+**Output format:**
+Return a JSON object with this structure:
+{{
+  "unified_hierarchy": {{
+    "1": {{
+      "node": "Unified Theme Name",
+      "subthemes": {{
+        "1.1": {{
+          "node": "Subtheme Name",
+          "micro_clusters": [0, 1, 9]
+        }},
+        "1.2": {{
+          "node": "Another Subtheme",
+          "micro_clusters": [2, 15]
+        }}
+      }}
+    }},
+    "2": {{
+      "node": "Another Theme",
+      "subthemes": {{
+        "2.1": {{
+          "node": "Subtheme Name",
+          "micro_clusters": [3, 4, 10]
+        }}
+      }}
+    }}
+  }}
+}}
+
+Variable label/context: {var_lab}
+Language: {language}
+
+Input hierarchies to merge:
+{summaries}
+"""
+
+HIERARCHICAL_LABELING_PROMPT = """
+You are finalizing a hierarchical codebook for thematic analysis based on qualitative data.
+
+You are given:
+- A consolidated hierarchical structure from previous analysis
+- A list of all original micro-clusters for reference
+
+Your task is to:
+- Refine all node labels at Level 1 and Level 2 to make them mutually exclusive and unambiguous
+- Ensure all labels reflect the intent of the underlying micro-cluster data
+- Each node name must be no more than 4 words
+- Align labels with the research context: {var_lab}
+- Make sure no cluster is ambiguously assigned
+- Verify complete coverage of all micro-clusters
+
+**Output format:**
+Return a cleaned-up hierarchical structure in this exact JSON format:
+{{
+  "themes": [
+    {{
+      "id": "1",
+      "name": "Final Theme",
+      "description": "Brief description of this theme",
+      "topics": [
+        {{
+          "id": "1.1",
+          "name": "Refined Subtheme",
+          "description": "Brief description of this topic",
+          "micro_clusters": [2, 4]
+        }},
+        {{
+          "id": "1.2",
+          "name": "Another Subtheme",
+          "description": "Brief description",
+          "micro_clusters": [7, 12]
+        }}
+      ]
+    }},
+    {{
+      "id": "2",
+      "name": "Another Theme",
+      "description": "Theme description",
+      "topics": [
+        {{
+          "id": "2.1",
+          "name": "Subtheme Name",
+          "description": "Topic description",
+          "micro_clusters": [0, 3, 8]
+        }}
+      ]
+    }}
+  ]
+}}
+
+Language: {language}
+
+Consolidated hierarchy:
+{final_summary}
+
+All micro-clusters for reference:
+{micro_cluster_list}
+"""
+
 
