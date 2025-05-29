@@ -4,24 +4,26 @@
 
 CoderingsTool is a sophisticated text analysis pipeline for processing survey responses from SPSS files. The system performs text preprocessing, quality filtering, embedding generation, clustering, and hierarchical labeling of open-ended survey responses to identify themes and patterns.
 
-### ✅ Working Pipeline (Steps 1-6) 
-The core pipeline successfully processes data through 6 complete stages:
+### ✅ Working Pipeline (Steps 1-8) 
+The core pipeline successfully processes data through 5 complete stages:
 
 1. **✅ Data Loading** - SPSS (.sav) files → ResponseModel objects
 2. **✅ Preprocessing** - Text normalization, spell checking, finalization  
 3. **✅ Segmentation** - Quality filtering, descriptive code generation
 4. **✅ Embeddings** - OpenAI-based code and description embeddings
-5. **✅ Clustering** - Two-phase HDBSCAN clustering with LLM-based merging
-6. **✅ Hierarchical Labeling** - 3-phase LLM-based Theme→Topic→Keyword hierarchy
+5. **✅ Initial clustering** - Two-phase HDBSCAN clustering with LLM-based merging producing micro clusters
 
-### 🔧 Refinement Needed
-- **Step 6**: Refine code, investigate opportunities to improve performance in terms of speed, investigate opportunities to improve the quality of the prompts
+Work to be done/TODO:
+6. **📌 Hierarchical clustering** - node level 1,2,3 clustering by LLM microclusters. level 1= themes, level 2= topics and level 3= keywords
+7. **📌 Summarization** - LLM produced summary of each theme
+8. **📌 Visualization** - dendrogram and wordclouds based on c-tf-idf and mmr
+
 
 ## Project Structure
 
 ```
 CoderingsTool/
-├── data/                          # Input data files
+├── data/                          # Input data files and chache 
 ├── src/
 │   ├── __init__.py               # Package initialization
 │   ├── app.py                    # Streamlit web application
@@ -39,7 +41,6 @@ CoderingsTool/
 │       ├── csvHandler.py
 │       ├── data_io.py
 │       ├── embedder.py
-│       ├── labeller.py            
 │       ├── preprocessor.py
 │       ├── qualityFilter.py
 │       ├── segmentDescriber.py
@@ -47,6 +48,8 @@ CoderingsTool/
 │       ├── textFinalizer.py
 │       └── textNormalizer.py
 └── requirements.txt
+└── environment.yml
+
 ```
 
 ## Key Architecture Patterns (Unchanged)
@@ -89,9 +92,3 @@ cd src
 python pipeline.py
 ```
 
-### Configuration Usage
-All configuration is now centralized:
-```python
-from config import DEFAULT_CACHE_CONFIG, DEFAULT_PROCESSING_CONFIG, DEFAULT_CLUSTERING_CONFIG
-from config import CacheConfig, ProcessingConfig, ClusteringConfig, CacheDatabase
-```
