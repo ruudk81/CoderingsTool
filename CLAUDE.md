@@ -4,22 +4,26 @@
 
 CoderingsTool is a sophisticated text analysis pipeline for processing survey responses from SPSS files. The system performs text preprocessing, quality filtering, embedding generation, clustering, and hierarchical labeling of open-ended survey responses to identify themes and patterns.
 
-### ✅ Working Pipeline (Steps 1-8) 
-The core pipeline successfully processes data through 5 complete stages:
+### Pipeline Progress
 
+Steps 1-5: **✅ COMPLETE**
 1. **✅ Data Loading** - SPSS (.sav) files → ResponseModel objects
 2. **✅ Preprocessing** - Text normalization, spell checking, finalization  
 3. **✅ Segmentation** - Quality filtering, descriptive code generation
 4. **✅ Embeddings** - OpenAI-based code and description embeddings
 5. **✅ Initial clustering** - Two-phase HDBSCAN clustering with LLM-based merging producing micro clusters
 
+Step 6: **🔄 IN PROGRESS** - Hierarchical clustering implemented, needs refinement
+
 Work to be done/TODO:
 6. **📌 Hierarchical clustering** - node level 1,2,3 clustering by LLM microclusters. level 1= themes, level 2= topics and level 3= keywords
-   - ☐ Design MapReduce pipeline structure with LangChain
-   - ☐ Implement micro-cluster extraction with representative selection
-   - ☐ Create Map phase for batch summarization
-   - ☐ Create Reduce phase for hierarchical summarization
-   - ☐ Implement final hierarchy generation with constraints
+   - ☑ Design MapReduce pipeline structure with LangChain
+   - ☑ Implement micro-cluster extraction with representative selection
+   - ☑ Create Map phase for batch summarization
+   - ☑ Create Reduce phase for hierarchical summarization
+   - ☑ Implement final hierarchy generation with constraints
+   - ☑ Test labeller.py for the first time
+   - ☐ Improve and refine labeller based on user feedback after first test
 7. **📌 Summarization** - LLM produced summary of each theme
    - ☐ Implement theme summarization using LLM
 8. **📌 Visualization** - dendrogram and wordclouds based on c-tf-idf and mmr
@@ -50,6 +54,7 @@ CoderingsTool/
 │       ├── csvHandler.py
 │       ├── data_io.py
 │       ├── embedder.py
+│       ├── labeller.py            # **NEW** - Hierarchical labelling with MapReduce
 │       ├── preprocessor.py
 │       ├── qualityFilter.py
 │       ├── segmentDescriber.py
