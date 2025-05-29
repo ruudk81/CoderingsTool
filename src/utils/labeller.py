@@ -5,7 +5,7 @@ Processes micro-clusters into a 3-level hierarchy: Themes, Topics, Keywords
 
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import asyncio
 from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
@@ -80,6 +80,8 @@ class HierarchicalStructure(BaseModel):
 
 class MicroClusterInfo(BaseModel):
     """Information about a micro-cluster"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     cluster_id: int
     size: int
     representative_codes: List[Tuple[str, float]]  # (code, similarity_score)
