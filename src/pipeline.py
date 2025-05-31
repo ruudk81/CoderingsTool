@@ -44,7 +44,7 @@ EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
 
 # Initialize data loader and get variable label
-data_loader = data_io.DataLoader()
+data_loader = data_io.DataLoader(verbose=VERBOSE)
 var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
 # Display configuration
@@ -61,19 +61,29 @@ print("=" * 80)
 
 # === STEP 1 ========================================================================================================
 """get data"""
+from utils.verbose_reporter import VerboseReporter
+
 step_name = "data"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     raw_text_list = cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
     print(f"Loaded {len(raw_text_list)} items from cache for step: {step_name}")
-else:    
+else:
+    verbose_reporter = VerboseReporter(VERBOSE)
+    verbose_reporter.section_header("DATA LOADING PHASE")
+    
     start_time       = time.time()
     raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
     raw_unstructued  = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
     raw_text_list    = [models.ResponseModel(respondent_id=resp_id, response=resp if resp is not None else "" ) for resp_id, resp in raw_unstructued]
     end_time         = time.time()
     elapsed_time     = end_time - start_time
+    
+    verbose_reporter.summary("DATA LOADING SUMMARY", {
+        f"Total responses loaded: {len(raw_text_list)}": "",
+        f"Processing time: {elapsed_time:.1f} seconds": ""
+    })
     
     cache_manager.save_to_cache(raw_text_list, filename, step_name, processing_config, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
@@ -86,8 +96,6 @@ from utils.verbose_reporter import VerboseReporter
 
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-VERBOSE = False
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
@@ -164,14 +172,28 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
     print(f"Loaded {len(embedded_text)} items from cache for step: {step_name}")
 else:
+    verbose_reporter = VerboseReporter(VERBOSE)
+    verbose_reporter.section_header("EMBEDDINGS GENERATION PHASE")
+    
     start_time              = time.time()
-    get_embeddings          = embedder.Embedder()
+    get_embeddings          = embedder.Embedder(verbose=VERBOSE)
     input_data              = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
     code_embeddings         = get_embeddings.get_code_embeddings(input_data)
     description_embeddings  = get_embeddings.get_description_embeddings(input_data, var_lab)
     embedded_text           = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
     end_time                = time.time()
     elapsed_time            = end_time - start_time
+    
+    # Calculate total segments for summary
+    total_segments = sum(len(resp.response_segment) for resp in embedded_text if resp.response_segment)
+    
+    verbose_reporter.summary("EMBEDDINGS SUMMARY", {
+        f"Input: {len(encoded_text)} responses → Output: {len(embedded_text)} embedded responses": "",
+        f"Total segments embedded: {total_segments}": "",
+        f"Embedding model: {get_embeddings.embedding_model}": "",
+        f"Total processing time: {elapsed_time:.1f} seconds": "",
+        f"Average processing rate: {total_segments/elapsed_time:.1f} segments/second": ""
+    })
     
     cache_manager.save_to_cache(embedded_text, filename, step_name, processing_config, elapsed_time)
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")

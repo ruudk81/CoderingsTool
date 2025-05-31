@@ -1,9 +1,13 @@
 import os
 import pandas as pd
 import pyreadstat
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 class DataLoader:
-    def __init__(self, data_dir: str = None):
+    def __init__(self, data_dir: str = None, verbose: bool = False):
+        self.verbose = verbose
+        self.verbose_reporter = VerboseReporter(verbose)
+        self.stats = ProcessingStats()
         current_dir = os.getcwd()
         if data_dir is None:
             if os.path.basename(current_dir) == 'utils':
@@ -22,10 +26,29 @@ class DataLoader:
       
     def load_sav(self, filename: str):
         filepath = self.get_file_path(filename)
+        self.verbose_reporter.step_start("Loading SPSS Data")
+        
         try:
+            self.verbose_reporter.stat_line(f"Loading file: {os.path.basename(filepath)}")
+            self.verbose_reporter.stat_line(f"File size: {os.path.getsize(filepath) / 1024 / 1024:.1f} MB")
+            
             df, meta = pyreadstat.read_sav(filepath, apply_value_formats=True)
+            
+            self.verbose_reporter.stat_line(f"Rows loaded: {len(df):,}")
+            self.verbose_reporter.stat_line(f"Variables loaded: {len(df.columns)}")
+            self.verbose_reporter.stat_line(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
+            
+            # Sample variable info
+            var_examples = []
+            for i, (name, label) in enumerate(zip(meta.column_names[:5], meta.column_labels[:5])):
+                var_examples.append(f"{name}: {label}")
+            if var_examples:
+                self.verbose_reporter.sample_list("Sample variables", var_examples)
+            
+            self.verbose_reporter.step_complete("Data loading completed")
             return df, meta
         except Exception as e:
+            self.verbose_reporter.stat_line(f"ERROR: {str(e)}")
             raise ValueError(f"Error loading .sav file '{filepath}': {str(e)}")
     
     def list_variables(self, filename: str):
@@ -46,12 +69,34 @@ class DataLoader:
         return variable
     
     def get_variable_with_IDs(self, filename: str, id_column: str, var_name: str):
-        df, _ = self.load_sav(filename)
+        self.verbose_reporter.step_start("Extracting Variable Data")
+        
+        df, meta = self.load_sav(filename)
+        
         if var_name not in df.columns:
+            self.verbose_reporter.stat_line(f"ERROR: Variable '{var_name}' not found")
             raise ValueError(f"Variable '{var_name}' not found in file '{filename}'")
         if id_column not in df.columns:
+            self.verbose_reporter.stat_line(f"ERROR: ID column '{id_column}' not found")
             raise ValueError(f"ID column '{id_column}' not found in file '{filename}'")
+        
         variable = df[[id_column, var_name]]
+        
+        # Report statistics
+        var_label = meta.column_labels[meta.column_names.index(var_name)]
+        self.verbose_reporter.stat_line(f"Variable: {var_name}")
+        self.verbose_reporter.stat_line(f"Label: {var_label}")
+        self.verbose_reporter.stat_line(f"Non-null values: {variable[var_name].notna().sum():,}")
+        self.verbose_reporter.stat_line(f"Null values: {variable[var_name].isna().sum():,}")
+        self.verbose_reporter.stat_line(f"Unique values: {variable[var_name].nunique():,}")
+        
+        # Sample non-null values
+        non_null_values = variable[variable[var_name].notna()][var_name]
+        if len(non_null_values) > 0:
+            sample_values = non_null_values.head(5).tolist()
+            self.verbose_reporter.sample_list("Sample responses", sample_values)
+        
+        self.verbose_reporter.step_complete("Variable extraction completed")
         return variable
         
     def get_varlab(self, filename: str, var_name: str):
