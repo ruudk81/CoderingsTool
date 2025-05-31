@@ -64,7 +64,8 @@ class Grader:
                         max_retries=3,   
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens
+                        max_tokens=self.config.max_tokens,
+                        seed=42
                     )
                 )
                 return response

@@ -404,7 +404,8 @@ class ClusterMerger:
                     messages=messages,
                     response_model=BatchMergeDecisionResponse,
                     temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens
+                    max_tokens=self.config.max_tokens,
+                    seed=42
                 )
             )
         finally:

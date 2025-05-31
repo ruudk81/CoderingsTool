@@ -122,7 +122,8 @@ class HierarchicalLabeller:
             temperature=self.temperature,
             model=self.model,
             openai_api_key=self.api_key,
-            max_tokens=self.max_tokens
+            max_tokens=self.max_tokens,
+            model_kwargs={"seed": 42}
         )
         
         self.parser = JsonOutputParser()
