@@ -26,7 +26,7 @@ class DataLoader:
       
     def load_sav(self, filename: str):
         filepath = self.get_file_path(filename)
-        self.verbose_reporter.step_start("Loading SPSS Data")
+        self.verbose_reporter.step_start("Extracting Variable Data")
         
         try:
             self.verbose_reporter.stat_line(f"Loading file: {os.path.basename(filepath)}")
@@ -38,14 +38,7 @@ class DataLoader:
             self.verbose_reporter.stat_line(f"Variables loaded: {len(df.columns)}")
             self.verbose_reporter.stat_line(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
             
-            # Sample variable info
-            var_examples = []
-            for i, (name, label) in enumerate(zip(meta.column_names[:5], meta.column_labels[:5])):
-                var_examples.append(f"{name}: {label}")
-            if var_examples:
-                self.verbose_reporter.sample_list("Sample variables", var_examples)
-            
-            self.verbose_reporter.step_complete("Data loading completed")
+         
             return df, meta
         except Exception as e:
             self.verbose_reporter.stat_line(f"ERROR: {str(e)}")
@@ -69,8 +62,7 @@ class DataLoader:
         return variable
     
     def get_variable_with_IDs(self, filename: str, id_column: str, var_name: str):
-        self.verbose_reporter.step_start("Extracting Variable Data")
-        
+         
         df, meta = self.load_sav(filename)
         
         if var_name not in df.columns:
@@ -95,8 +87,7 @@ class DataLoader:
         if len(non_null_values) > 0:
             sample_values = non_null_values.head(5).tolist()
             self.verbose_reporter.sample_list("Sample responses", sample_values)
-        
-        self.verbose_reporter.step_complete("Variable extraction completed")
+       
         return variable
         
     def get_varlab(self, filename: str, var_name: str):

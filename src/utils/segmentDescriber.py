@@ -13,8 +13,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 
-from config import (OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,
-                    SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG)
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
