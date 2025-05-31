@@ -1,13 +1,6 @@
-"""
-Verbose output reporter for pipeline operations.
-Provides clean, formatted output with statistics and examples.
-"""
-
 import time
 import random
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
-
+from typing import List, Dict, Any, Tuple
 
 class VerboseReporter:
     """Handles formatted verbose output for pipeline operations."""
@@ -59,7 +52,7 @@ class VerboseReporter:
         if not self.enabled or not corrections:
             return
             
-        print(f"\n📋 Sample corrections:")
+        print("\n📋 Sample corrections:")
         display_corrections = random.sample(corrections, min(len(corrections), max_samples))
         for before, after in display_corrections:
             print(f'  "{before}" → "{after}"')
