@@ -304,14 +304,69 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name, proces
     print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    labeller_config = labeller.LabellerConfig()
-    label_generator = labeller.Labeller(config=labeller_config)
+    
+    # Create labeller config with deterministic settings
+    labeller_config = labeller.LabellerConfig(
+        temperature=0.0,  # Force deterministic
+        seed=42,  # Fixed seed
+        batch_size=8,  # Consistent batch size
+        max_retries=3,
+        use_sequential_processing=True,  # Process batches sequentially
+        validation_threshold=0.95  # Expect 95% coverage
+        )
+    
+    # Initialize labeller with cache manager
+    label_generator = labeller.Labeller(
+        config=labeller_config,
+        cache_manager=cache_manager,
+        filename=filename
+        )
+    
+    # Run pipeline with var_lab
     labeled_results = label_generator.run_pipeline(cluster_results, var_lab)
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
-    print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
+    # Validate results before caching
+    validation_passed = True
+    total_segments = 0
+    labeled_segments = 0
+    missing_labels = []
+    
+    for result in labeled_results:
+        if result.response_segment:
+            for segment in result.response_segment:
+                total_segments += 1
+                if segment.Theme and segment.Topic:
+                    labeled_segments += 1
+                else:
+                    missing_labels.append({
+                        'respondent_id': result.respondent_id,
+                        'segment': segment.segment_response[:50] + '...' if len(segment.segment_response) > 50 else segment.segment_response
+                    })
+    
+    coverage = labeled_segments / total_segments if total_segments > 0 else 0
+    
+    if coverage < labeller_config.validation_threshold:
+        print(f"⚠️ Warning: Only {labeled_segments}/{total_segments} segments were labeled ({coverage:.1%})")
+        print(f"Expected at least {labeller_config.validation_threshold:.1%} coverage")
+        
+        # Show some examples of missing labels
+        if missing_labels:
+            print("\nExamples of segments with missing labels:")
+            for i, missing in enumerate(missing_labels[:5]):
+                print(f"  {i+1}. ID {missing['respondent_id']}: {missing['segment']}")
+        
+        validation_passed = False
+    
+    if validation_passed:
+        cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
+        print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
+        print(f"✅ All segments labeled successfully ({coverage:.1%} coverage)")
+    else:
+        print("❌ Validation failed - results not cached. Please check the labeling process.")
+        print("Consider adjusting batch_size or checking your prompts.")
 
 # Count unique clusters for display
 unique_clusters = set()
@@ -322,11 +377,5 @@ if cluster_results:
                 cluster_id = list(segment.micro_cluster.keys())[0]
                 unique_clusters.add(cluster_id)
 
-# Load cached theme summaries if available for better display
-cached_theme_summaries = cache_manager.load_from_cache(filename, "theme_summaries", labeller.ThemeSummary)
-
 # Display results using the labeller's display function
-labeller.Labeller.display_hierarchical_results(labeled_results, cached_theme_summaries, len(unique_clusters))
-
-
-
+labeller.Labeller.display_hierarchical_results(labeled_results, None, len(unique_clusters))

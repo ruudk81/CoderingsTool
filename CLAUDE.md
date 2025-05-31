@@ -6,67 +6,16 @@ CoderingsTool is a sophisticated text analysis pipeline for processing survey re
 
 ### Pipeline Progress
 
-Steps 1-5: **✅ COMPLETE**
+Steps 1-5: 
 1. **✅ Data Loading** - SPSS (.sav) files → ResponseModel objects
 2. **✅ Preprocessing** - Text normalization, spell checking, finalization  
 3. **✅ Segmentation** - Quality filtering, descriptive code generation
 4. **✅ Embeddings** - OpenAI-based code and description embeddings
 5. **✅ Initial clustering** - Two-phase HDBSCAN clustering with LLM-based merging producing micro clusters
-
-Step 6: **🔄 IN PROGRESS** - Hierarchical clustering implemented, needs refinement
-
-Work to be done/TODO:
-6. **📌 Hierarchical clustering** - node level 1,2,3 clustering by LLM microclusters. level 1= themes, level 2= topics and level 3= keywords
-   - ☑ Design MapReduce pipeline structure with LangChain
-   - ☑ Implement micro-cluster extraction with representative selection
-   - ☑ Create Map phase for batch summarization
-   - ☑ Create Reduce phase for hierarchical summarization
-   - ☑ Implement final hierarchy generation with constraints
-   - ☑ Test labeller.py for the first time
-   - ☐ Improve and refine labeller based on user feedback after first test
-7. **📌 Summarization** - LLM produced summary of each theme
-   - ☐ Implement theme summarization using LLM
-8. **📌 Visualization** - dendrogram and wordclouds based on c-tf-idf and mmr
-   - ☐ Implement visualization: dendrograms for hierarchical structure
-   - ☐ Implement visualization: wordclouds based on C-TF-IDF
-   - ☐ Implement MMR (Maximal Marginal Relevance) for keyword selection
+6: **🔄 IN PROGRESS** - Hierarchical labbeling
 
 
-## Project Structure
-
-```
-CoderingsTool/
-├── data/                          # Input data files and chache 
-├── src/
-│   ├── __init__.py               # Package initialization
-│   ├── app.py                    # Streamlit web application
-│   ├── cache_manager.py          # Cache management system
-│   ├── config.py                 # **UNIFIED** configuration (all configs merged)
-│   ├── models.py                 # Pydantic data models
-│   ├── pipeline.py               # Main processing pipeline
-│   ├── prompts.py                # LLM prompts
-│   ├── ui_text.py                # UI text constants
-│   └── utils/                    # **MOVED** from modules/utils/
-│       ├── analyze_labels.py
-│       ├── clusterMerger.py      
-│       ├── cluster_quality.py     
-│       ├── clusterer.py
-│       ├── csvHandler.py
-│       ├── data_io.py
-│       ├── embedder.py
-│       ├── labeller.py            # **NEW** - Hierarchical labelling with MapReduce
-│       ├── preprocessor.py
-│       ├── qualityFilter.py
-│       ├── segmentDescriber.py
-│       ├── spellChecker.py
-│       ├── textFinalizer.py
-│       └── textNormalizer.py
-└── requirements.txt
-└── environment.yml
-
-```
-
-## Key Architecture Patterns (Unchanged)
+## Key Architecture Patterns  
 
 ### Data Models (Pydantic)
 - **Hierarchical inheritance**: ResponseModel → PreprocessModel → DescriptiveModel → EmbeddingsModel → ClusterModel → LabelModel

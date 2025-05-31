@@ -1,10 +1,10 @@
 # === FOLDERS TO IGNORE ===
+backup/
 env/
-hunspell/
-run/
 
 # === SPECIFIC FILES TO IGNORE === 
 Coderingstool
+Features.xlsx
 Technical description.docx
 
 # === IGNORE EVERYTHING IN data/, EXCEPT .sav FILES ===
