@@ -14,6 +14,7 @@ from collections import defaultdict
 from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
+from .verbose_reporter import VerboseReporter, ProcessingStats
 
 # Nederlands of Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -72,12 +73,13 @@ class HunspellSession:
   
 
 class SpellChecker:
-    def __init__(self, openai_api_key: Optional[str] = None, openai_model: str = DEFAULT_MODEL):
+    def __init__(self, openai_api_key: Optional[str] = None, openai_model: str = DEFAULT_MODEL, verbose: bool = False):
         self.openai_api_key = OPENAI_API_KEY
         self.openai_model = DEFAULT_MODEL
         self.client = instructor.patch(OpenAI(api_key=self.openai_api_key))
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH 
+        self.verbose_reporter = VerboseReporter(verbose)
         if not self.check_hunspell_installation():
             print("Hunspell is not properly installed or configured.")
     
@@ -401,9 +403,15 @@ class SpellChecker:
         return corrected_sentences_dict    
     
     async def spell_check_async(self, responses: List[SpellCheckModel], var_lab: str) -> List[SpellCheckModel]:
+        stats = ProcessingStats()
+        stats.start_timing()
+        stats.input_count = len(responses)
+        
+        self.verbose_reporter.step_start("Spell Checking")
         sentences_list = [response.original_response for response in responses]
     
         # Step 1: Identify OOV words  
+        self.verbose_reporter.stat_line(f"Analyzing {len(responses)} responses for misspellings...")
         oov_words = []
         docs_with_oov = 0
         
@@ -418,7 +426,6 @@ class SpellChecker:
                         word = token.text
                         output = oov_identification_session.check_word(word)
                         if output and output.startswith(('&', '#')):
-                            #print(f"Hunspell flag: '{word}'")
                             oov_words.append(word)
                             doc_flagged = True
              
@@ -427,7 +434,9 @@ class SpellChecker:
         finally:
             oov_identification_session.close()
             
-        print(f"Total OOV words identified: {len(oov_words)}\n")
+        unique_oov_words = len(set(oov_words))
+        self.verbose_reporter.stat_line(f"OOV words identified: {unique_oov_words} unique terms")
+        self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
     
         # Step 2: Correct OOV words 
         if oov_words:
@@ -438,8 +447,10 @@ class SpellChecker:
             corrected_sentences_dict = {}
         
         # Step 3: Update sentences with tracked respondent IDs
-        idx = 0
+        corrections_made = 0
+        correction_examples = []
         updated_responses = []
+        
         for response in responses:
             corrected_response = corrected_sentences_dict.get(response.original_response, response.original_response)
             updated_response = SpellCheckModel(
@@ -448,41 +459,58 @@ class SpellChecker:
                 corrected_response = corrected_response)
             updated_responses.append(updated_response)
            
-            # step 4: Print original and corrected responses
-            
+            # Track corrections for verbose output
             if response.original_response != corrected_response:
                 original_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in response.original_response.split()])
                 corrected_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in corrected_response.split()])
                 
                 if original_normalized != corrected_normalized:
+                    corrections_made += 1
                     
-                    idx += 1
+                    # Store example for verbose output
+                    if len(correction_examples) < 10:  # Collect examples for display
+                        correction_examples.append((response.original_response, corrected_response))
                     
-                    highlighted_original = []
-                    for word in response.original_response.split():
-                        # Remove punctuation for comparison
-                        clean_word = word.strip('.,!?;:"\'()[]{}')
-                        if clean_word in oov_words:
-                            highlighted_original.append(f"<{word}>")
-                        else:
-                            highlighted_original.append(word)
-                   
-                    original_words = response.original_response.split()
-                    corrected_words = corrected_response.split()
-                    
-                    original_set = set(w.lower().strip('.,!?;:"\'()[]{}') for w in original_words)
-                    highlighted_corrected = []
-                    for word in corrected_words:
-                        clean_word = word.lower().strip('.,!?;:"\'()[]{}')
-                        if clean_word not in original_set:
-                            highlighted_corrected.append(f"<{word}>")
-                        else:
-                            highlighted_corrected.append(word)
-                    
-                    print(f"Original: {' '.join(highlighted_original)}")
-                    print(f"Corrected: {' '.join(highlighted_corrected)}\n")
+                    # Only show detailed output in non-verbose mode for debugging
+                    if not self.verbose_reporter.enabled:
+                        highlighted_original = []
+                        for word in response.original_response.split():
+                            clean_word = word.strip('.,!?;:"\'()[]{}')
+                            if clean_word in oov_words:
+                                highlighted_original.append(f"<{word}>")
+                            else:
+                                highlighted_original.append(word)
+                       
+                        original_words = response.original_response.split()
+                        corrected_words = corrected_response.split()
+                        
+                        original_set = set(w.lower().strip('.,!?;:"\'()[]{}') for w in original_words)
+                        highlighted_corrected = []
+                        for word in corrected_words:
+                            clean_word = word.lower().strip('.,!?;:"\'()[]{}')
+                            if clean_word not in original_set:
+                                highlighted_corrected.append(f"<{word}>")
+                            else:
+                                highlighted_corrected.append(word)
+                        
+                        print(f"Original: {' '.join(highlighted_original)}")
+                        print(f"Corrected: {' '.join(highlighted_corrected)}\n")
 
-        print(f"Total {idx} responses corrected")
+        stats.end_timing()
+        stats.output_count = len(updated_responses)
+        
+        # Report final statistics
+        self.verbose_reporter.stat_line(f"Corrections applied: {corrections_made} changes")
+        
+        # Show correction examples in verbose mode
+        if correction_examples:
+            self.verbose_reporter.correction_samples(correction_examples)
+        
+        self.verbose_reporter.step_complete("Spell checking completed")
+        
+        # Only print old-style output in non-verbose mode
+        if not self.verbose_reporter.enabled:
+            print(f"Total {corrections_made} responses corrected")
 
         processed_responses = [models.PreprocessModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
