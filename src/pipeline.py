@@ -1,12 +1,16 @@
-"""start in src"""
+"""
+CoderingsTool Pipeline
+=====================
+Main processing pipeline for analyzing open-ended survey responses.
+
+To run: python pipeline.py (from src directory)
+
+Configuration: Modify the PIPELINE CONFIGURATION section below
+"""
 
 # ===  MODULES ========================================================================================================
-#import sys
-#import os
 import time
 import random
-import argparse
-#import logging
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -16,7 +20,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from utils import data_io
-from cache_manager import CacheManager
+from utils.cache_manager import CacheManager
 from config import CacheConfig, ProcessingConfig
 
 # Initialize cache manager
@@ -24,53 +28,43 @@ cache_config = CacheConfig()
 processing_config = ProcessingConfig()
 cache_manager = CacheManager(cache_config)
 
-# Pipeline configuration
-filename             = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column            = "DLNMID"
-var_name             = "Q20"
-data_loader          = data_io.DataLoader()
-var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
+# === PIPELINE CONFIGURATION ========================================================================================
+# Test data configuration
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+id_column = "DLNMID"
+var_name = "Q20"
 
+# Pipeline behavior flags
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = None  # Set to step name (e.g., "embeddings") to recalculate specific step
+VERBOSE = True  # Enable verbose output for debugging in Spyder
 
-# === COMMAND LINE ARGUMENTS ========================================================================================
-parser = argparse.ArgumentParser(description='CoderingsTool Pipeline')
-parser.add_argument('--force-recalculate', action='store_true', help='Force recalculation of all steps')
-parser.add_argument('--force-step', type=str, help='Force recalculation of specific step')
-parser.add_argument('--cleanup', action='store_true', help='Clean up old cache files')
-parser.add_argument('--stats', action='store_true', help='Show cache statistics')
-parser.add_argument('--show-metrics', action='store_true', help='Show clustering quality metrics')
+# Clustering parameters
+EMBEDDING_TYPE = "description"  # Options: "description" or "code"
+LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
+MIN_QUALITY_SCORE = 0.3  # Minimum acceptable clustering quality (currently not used)
+MAX_NOISE_RATIO = 0.5  # Maximum noise ratio before micro-clustering (currently not used)
 
-# General pipeline arguments
-parser.add_argument('--verbose', 
-                   action='store_true',
-                   default=True,  # Set to True by default for Spyder 
-                   help='Enable verbose logging for debugging')
+# Initialize data loader and get variable label
+data_loader = data_io.DataLoader()
+var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
-# Clustering specific arguments
-parser.add_argument('--embedding-type', 
-                   choices=['description', 'code'], 
-                   default='description',
-                   help='Type of embeddings to use for clustering (default: description)')
-parser.add_argument('--language', 
-                   choices=['nl', 'en'], 
-                   default='nl',
-                   help='Language for clustering (default: nl)')
-parser.add_argument('--min-quality-score', 
-                   type=float, 
-                   default=0.3,
-                   help='Minimum acceptable clustering quality (default: 0.3)')
-parser.add_argument('--max-noise-ratio', 
-                   type=float, 
-                   default=0.5,
-                   help='Maximum noise ratio before micro-clustering (default: 0.5)')
-
-args = parser.parse_args()
+# Display configuration
+print("=" * 80)
+print("CODERINGSTOOL PIPELINE")
+print("=" * 80)
+print(f"📊 Data file: {filename}")
+print(f"📌 Variable: {var_name} - {var_lab}")
+print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
+print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
+print(f"💬 Verbose mode: {VERBOSE}")
+print("=" * 80)
 
 
 # === STEP 1 ========================================================================================================
 """get data"""
 step_name = "data"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     raw_text_list = cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
@@ -92,7 +86,7 @@ else:
 from utils import textNormalizer, spellChecker, textFinalizer
 
 step_name = "preprocessed"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
@@ -126,7 +120,7 @@ else:
 from utils import qualityFilter, segmentDescriber
 
 step_name = "segmented_descriptions"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
@@ -174,7 +168,7 @@ for result in random_encoded_text:
 from utils import embedder  
 
 step_name = "embeddings"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
@@ -212,19 +206,19 @@ for result in embedded_text[:1]:
 from utils import clusterer, clusterMerger
 
 step_name = "clusters"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
     print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    print(f"\nClustering with embedding_type={args.embedding_type}")
+    print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
-        embedding_type=args.embedding_type,
-        verbose=True )
+        embedding_type=EMBEDDING_TYPE,
+        verbose=VERBOSE )
     cluster_gen.run_pipeline()
     initial_clusters = cluster_gen.to_cluster_model()
     print("\nInitial clustering completed successfully")
@@ -297,76 +291,21 @@ for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 cl
 from utils import labeller
 
 step_name = "labels"
-force_recalc = args.force_recalculate or args.force_step == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
     print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
 else:
     start_time = time.time()
-    
-    # Create labeller config with deterministic settings
-    labeller_config = labeller.LabellerConfig(
-        temperature=0.0,  # Force deterministic
-        seed=42,  # Fixed seed
-        batch_size=8,  # Consistent batch size
-        max_retries=3,
-        use_sequential_processing=True,  # Process batches sequentially
-        validation_threshold=0.95  # Expect 95% coverage
-        )
-    
-    # Initialize labeller with cache manager
-    label_generator = labeller.Labeller(
-        config=labeller_config,
-        cache_manager=cache_manager,
-        filename=filename
-        )
-    
-    # Run pipeline with var_lab
+    labeller_config = labeller.LabellerConfig()
+    label_generator = labeller.Labeller(config=labeller_config)
     labeled_results = label_generator.run_pipeline(cluster_results, var_lab)
-    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Validate results before caching
-    validation_passed = True
-    total_segments = 0
-    labeled_segments = 0
-    missing_labels = []
-    
-    for result in labeled_results:
-        if result.response_segment:
-            for segment in result.response_segment:
-                total_segments += 1
-                if segment.Theme and segment.Topic:
-                    labeled_segments += 1
-                else:
-                    missing_labels.append({
-                        'respondent_id': result.respondent_id,
-                        'segment': segment.segment_response[:50] + '...' if len(segment.segment_response) > 50 else segment.segment_response
-                    })
-    
-    coverage = labeled_segments / total_segments if total_segments > 0 else 0
-    
-    if coverage < labeller_config.validation_threshold:
-        print(f"⚠️ Warning: Only {labeled_segments}/{total_segments} segments were labeled ({coverage:.1%})")
-        print(f"Expected at least {labeller_config.validation_threshold:.1%} coverage")
-        
-        # Show some examples of missing labels
-        if missing_labels:
-            print("\nExamples of segments with missing labels:")
-            for i, missing in enumerate(missing_labels[:5]):
-                print(f"  {i+1}. ID {missing['respondent_id']}: {missing['segment']}")
-        
-        validation_passed = False
-    
-    if validation_passed:
-        cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
-        print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
-        print(f"✅ All segments labeled successfully ({coverage:.1%} coverage)")
-    else:
-        print("❌ Validation failed - results not cached. Please check the labeling process.")
-        print("Consider adjusting batch_size or checking your prompts.")
+    cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
+    print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
 
 # Count unique clusters for display
 unique_clusters = set()
@@ -377,5 +316,11 @@ if cluster_results:
                 cluster_id = list(segment.micro_cluster.keys())[0]
                 unique_clusters.add(cluster_id)
 
+# Load cached theme summaries if available for better display
+cached_theme_summaries = cache_manager.load_from_cache(filename, "theme_summaries", labeller.ThemeSummary)
+
 # Display results using the labeller's display function
-labeller.Labeller.display_hierarchical_results(labeled_results, None, len(unique_clusters))
+labeller.Labeller.display_hierarchical_results(labeled_results, cached_theme_summaries, len(unique_clusters))
+
+
+
