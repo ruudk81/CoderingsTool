@@ -295,6 +295,9 @@ class SpellCheckConfig:
     repeated_char_threshold: int = 5  # Characters repeated 5+ times
     max_correction_examples: int = 10  # For verbose output
     seed: int = 42
+    context_chars: int = 20  # Characters of context for spell checking
+    spell_check_threshold: float = 0.7  # Confidence threshold for corrections
+    max_concurrent_requests: int = 5  # For API rate limiting
 
 
 @dataclass
@@ -308,6 +311,8 @@ class QualityFilterConfig:
     high_quality_threshold: float = 0.7
     medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5  # For verbose output
+    model: str = "gpt-4o-mini"  # Model for quality assessment
+    max_concurrent_requests: int = 5  # For API rate limiting
 
 
 @dataclass
@@ -322,6 +327,9 @@ class SegmentationConfig:
     umap_n_jobs: int = 1
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
+    model: str = "gpt-4o-mini"  # Model for segmentation
+    temperature: float = 0.0  # Temperature for generation
+    max_concurrent_requests: int = 5  # For API rate limiting
 
 
 @dataclass
