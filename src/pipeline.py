@@ -161,10 +161,12 @@ else:
   
     # Show segmentation summary
     if VERBOSE:
+        # Calculate filtering rate from the summary
+        filtering_rate = 100 - grading_summary['meaningful_percentage']
         verbose_reporter.summary("SEGMENTATION SUMMARY", {
             f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "",
             f"Total processing time: {elapsed_time:.1f} seconds": "",
-            f"Filtering rate: {grading_summary['meaningless_percentage']:.1f}%": ""
+            f"Filtering rate: {filtering_rate:.1f}%": ""
         })
     
     cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)

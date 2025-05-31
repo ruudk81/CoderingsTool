@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import instructor
 from openai import OpenAI
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig
 from prompts import GRADER_INSTRUCTIONS
 import models
 from .verbose_reporter import VerboseReporter, ProcessingStats
@@ -37,7 +37,8 @@ class Grader:
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.DescriptiveModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
-        self._stats = ProcessingStats() 
+        self._stats = ProcessingStats()
+        self.model_config = ModelConfig()  # For accessing seed 
 
     def _batch(self) -> List[List[tuple]]:
         indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses)]
@@ -69,7 +70,7 @@ class Grader:
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
                         max_tokens=self.config.max_tokens,
-                        seed=42
+                        seed=self.model_config.seed
                     )
                 )
                 return response
