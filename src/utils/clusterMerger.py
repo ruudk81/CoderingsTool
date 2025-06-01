@@ -30,8 +30,8 @@ class MergerConfig(BaseModel):
 class ClusterData(BaseModel):
     """Internal representation of cluster with extracted data"""
     cluster_id: int
-    descriptive_codes: List[str]
-    code_descriptions: List[str]
+    segment_labels: List[str]
+    segment_descriptions: List[str]
     cluster_embeddings: np.ndarray
     centroid: np.ndarray
     size: int
@@ -42,8 +42,8 @@ class ResultMapper(BaseModel):
     """Internal representation of cluster with extracted data"""
     respondent_id: Any
     segment_id: str
-    descriptive_code: str
-    code_description: str
+    segment_label: str
+    segment_description: str
     code_embedding: npt.NDArray[np.float32]
     description_embedding: npt.NDArray[np.float32]
     original_cluster_id: Optional[int] = None
@@ -114,8 +114,8 @@ class ClusterMerger:
             print("Populating cluster data from input models...")
   
         input_data = defaultdict(lambda: {
-            'descriptive_codes': [],
-            'code_descriptions': [],
+            'segment_labels': [],
+            'segment_descriptions': [],
             'cluster_embeddings': []
         })
      
@@ -123,8 +123,8 @@ class ClusterMerger:
             for segment in response_item.response_segment:
                 if segment.micro_cluster is not None:
                     cluster_id = list(segment.micro_cluster.keys())[0]
-                    input_data[cluster_id]['descriptive_codes'].append(segment.descriptive_code)
-                    input_data[cluster_id]['code_descriptions'].append(segment.code_description)
+                    input_data[cluster_id]['segment_labels'].append(segment.segment_label)
+                    input_data[cluster_id]['segment_descriptions'].append(segment.segment_description)
                     input_data[cluster_id]['cluster_embeddings'].append(segment.description_embedding)
         
         cluster_data = {}
@@ -134,11 +134,11 @@ class ClusterMerger:
             
             cluster_data[cluster_id] = ClusterData(
                 cluster_id=cluster_id,
-                descriptive_codes=data['descriptive_codes'],
-                code_descriptions=data['code_descriptions'],
+                segment_labels=data['segment_labels'],
+                segment_descriptions=data['segment_descriptions'],
                 cluster_embeddings=embeddings_array,
                 centroid=centroid,
-                size=len(data['descriptive_codes'])
+                size=len(data['segment_labels'])
             )
             
         self.cluster_data = cluster_data
@@ -489,14 +489,14 @@ class ClusterMerger:
             description += "\n- Most representative responses (by similarity to cluster centroid):"
             
             for i, item in enumerate(representative_items1):
-                description += f"\n  {i+1}. {item['code']}: {item['description']}"
+                description += f"\n  {i+1}. {item['label']}: {item['description']}"
             
             # Second cluster
             description += f"\n\nCluster {cluster_id_2}:"
             description += "\n- Most representative responses (by similarity to cluster centroid):"
             
             for i, item in enumerate(representative_items2):
-                description += f"\n  {i+1}. {item['code']}: {item['description']}"
+                description += f"\n  {i+1}. {item['label']}: {item['description']}"
             
             description += f"\n\nQuestion for this pair: Do these clusters represent meaningfully different responses to the research question \"{var_lab}\", or are they essentially saying the same thing?"
             
@@ -517,10 +517,10 @@ class ClusterMerger:
             
         representatives = []
         for idx in top_indices:
-            if idx < len(cluster.descriptive_codes) and idx < len(cluster.code_descriptions):
+            if idx < len(cluster.segment_labels) and idx < len(cluster.segment_descriptions):
                 representatives.append({
-                    'code': cluster.descriptive_codes[idx],
-                    'description': cluster.code_descriptions[idx],
+                    'label': cluster.segment_labels[idx],
+                    'description': cluster.segment_descriptions[idx],
                     'similarity': similarities[idx]
                 })
         
@@ -627,8 +627,8 @@ class ClusterMerger:
                     mapper = ResultMapper(
                         respondent_id=result.respondent_id,
                         segment_id=segment.segment_id,
-                        descriptive_code=segment.descriptive_code,
-                        code_description=segment.code_description,
+                        segment_label=segment.segment_label,
+                        segment_description=segment.segment_description,
                         code_embedding=segment.code_embedding,
                         description_embedding=segment.description_embedding,
                         original_cluster_id=old_cluster_id,
@@ -678,8 +678,8 @@ class ClusterMerger:
                 submodel = models.ClusterSubmodel(
                     segment_id=item.segment_id,
                     segment_response=segment_response,
-                    descriptive_code=item.descriptive_code,
-                    code_description=item.code_description,
+                    segment_label=item.segment_label,
+                    segment_description=item.segment_description,
                     code_embedding=item.code_embedding,
                     description_embedding=item.description_embedding,
                     meta_cluster=None,

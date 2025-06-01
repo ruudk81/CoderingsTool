@@ -258,8 +258,8 @@ for response_items in cluster_results:
         if segment_items.micro_cluster is not None:
             micro_id = list(segment_items.micro_cluster.keys())[0]  # Get the micro-cluster ID
             micro_cluster_counts[micro_id] += 1
-            micro_cluster_codes[micro_id].append(segment_items.descriptive_code)
-            micro_cluster_descriptions[micro_id].append(segment_items.code_description)
+            micro_cluster_codes[micro_id].append(segment_items.segment_label)
+            micro_cluster_descriptions[micro_id].append(segment_items.segment_description)
 
 print(f"Found {len(micro_cluster_counts)} micro-clusters in results")
 for micro_id, count in sorted(micro_cluster_counts.items()):  # Show first 10 clusters

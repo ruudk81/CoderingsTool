@@ -137,12 +137,12 @@ Each segment is a standalone sentence or clause extracted from a full response.
 
 # For Each Segment, You Will:
 1. Keep the original segment_id and segment_response
-2. Add a descriptive_code (a thematic label)
-3. Add a code_description (a clarification of the label)
+2. Add a segment_label (a thematic label)
+3. Add a segment_description (a clarification of the label)
 
 # Field Requirements
 
-## descriptive_code
+## segment_label
 - A concise label of up to 5 words total, using ONLY ADJECTIVES AND NOUNS in {language}, that captures the CENTRAL MEANING of the segment
 - ONLY return labels that reflect ONE idea, topic, concern, issue, or theme in response to the question: "{var_lab}"
 - NEVER return multi-headed labels or combinations of multiple ideas
@@ -151,7 +151,7 @@ Each segment is a standalone sentence or clause extracted from a full response.
 - Language: {language}
 
 
-## code_description
+## segment_description
 - Rewrite the segment as a natural-sounding **first-person response** to the question: "{var_lab}"
 - Make sure it sounds like something a person would actually say when answering the question
 - Use a direct, conversational or instructional tone:
@@ -163,8 +163,8 @@ Each segment is a standalone sentence or clause extracted from a full response.
 
 # Special Cases
 For meaningless responses (e.g., "?", "Don't know"):
-- descriptive_code: "NA"
-- code_description: "NA"
+- segment_label: "NA"
+- segment_description: "NA"
 
 # Segments to code:
 {segments}
@@ -173,8 +173,8 @@ For meaningless responses (e.g., "?", "Don't know"):
 Return a valid JSON array with these fields for each segment:
 - "segment_id": The original segment ID
 - "segment_response": The original segment text
-- "descriptive_code": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
-- "code_description": Your clarifying description
+- "segment_label": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
+- "segment_description": Your clarifying description
 
 Ensure all output is written in {language}, unless the code is "NA".
 """

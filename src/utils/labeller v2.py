@@ -147,7 +147,7 @@ class ThematicLabeller:
         for segment in cluster.response_segment:
             if segment.description_embedding is not None:
                 embeddings.append(segment.description_embedding)
-                descriptions.append(segment.code_description)
+                descriptions.append(segment.segment_description)
         
         if not embeddings:
             return []
@@ -181,10 +181,10 @@ class ThematicLabeller:
                                 'codes': []
                             }
                         
-                        micro_clusters[cluster_id]['descriptions'].append(segment.code_description)
+                        micro_clusters[cluster_id]['descriptions'].append(segment.segment_description)
                         if segment.description_embedding is not None:
                             micro_clusters[cluster_id]['embeddings'].append(segment.description_embedding)
-                        micro_clusters[cluster_id]['codes'].append(segment.descriptive_code)
+                        micro_clusters[cluster_id]['codes'].append(segment.segment_label)
         
         return micro_clusters
     

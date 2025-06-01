@@ -83,8 +83,8 @@ class LangChainPipeline :
                    {
                        "segment_id": segment.get("segment_id", "") if isinstance(segment, dict) else "",
                        "segment_response": segment.get("segment_response", "") if isinstance(segment, dict) else "",
-                       "descriptive_code": segment.get("descriptive_code", "") if isinstance(segment, dict) else "",
-                       "code_description": segment.get("code_description", "") if isinstance(segment, dict) else ""
+                       "segment_label": segment.get("segment_label", "") if isinstance(segment, dict) else "",
+                       "segment_description": segment.get("segment_description", "") if isinstance(segment, dict) else ""
                    } 
                    for segment in self._safe_extract_segments(inputs)
                ],
@@ -270,8 +270,8 @@ class SegmentDescriber:
                         models.DescriptiveSubmodel(
                             segment_id="1",
                             segment_response=response_text,
-                            descriptive_code="NA",
-                            code_description="NA"
+                            segment_label="NA",
+                            segment_description="NA"
                             )])
        
     async def process_batch(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
@@ -317,8 +317,8 @@ class SegmentDescriber:
                         models.DescriptiveSubmodel(
                             segment_id="1",
                             segment_response=response_text,
-                            descriptive_code="PROCESSING_ERROR",
-                            code_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
+                            segment_label="PROCESSING_ERROR",
+                            segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
                         )
                     ]
                 ))
@@ -391,15 +391,15 @@ class SegmentDescriber:
                     multi_code_responses += 1
                     
                 for segment in resp.response_segment:
-                    if segment.descriptive_code and segment.descriptive_code not in ["NA", "PROCESSING_ERROR"]:
-                        unique_codes.add(segment.descriptive_code)
-                        code_words = segment.descriptive_code.split()
+                    if segment.segment_label and segment.segment_label not in ["NA", "PROCESSING_ERROR"]:
+                        unique_codes.add(segment.segment_label)
+                        code_words = segment.segment_label.split()
                         total_code_length += len(code_words)
                         code_count += 1
                         
                         # Collect examples
                         if len(code_examples) < self.config.max_code_examples and segment.segment_response:
-                            code_examples.append(f'"{segment.segment_response}" → "{segment.descriptive_code}"')
+                            code_examples.append(f'"{segment.segment_response}" → "{segment.segment_label}"')
         
         avg_code_length = total_code_length / code_count if code_count > 0 else 0
         
@@ -464,6 +464,6 @@ if __name__ == "__main__":
         codes = result.response_segment or []
         for code in codes:
             print(f"  - Segment: {code.segment_response}")
-            print(f"    Code: {code.descriptive_code}")
-            print(f"    Description: {code.code_description}")
+            print(f"    Code: {code.segment_label}")
+            print(f"    Description: {code.segment_description}")
         print("\n")

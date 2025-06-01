@@ -256,8 +256,8 @@ class HierarchicalLabeller:
                 for segment in model.response_segment:
                     if segment.micro_cluster:
                         for cluster_id, cluster_desc in segment.micro_cluster.items():
-                            micro_clusters[cluster_id]['codes'].append(segment.descriptive_code)
-                            micro_clusters[cluster_id]['descriptions'].append(segment.code_description)
+                            micro_clusters[cluster_id]['codes'].append(segment.segment_label)
+                            micro_clusters[cluster_id]['descriptions'].append(segment.segment_description)
                             if segment.code_embedding is not None:
                                 micro_clusters[cluster_id]['embeddings'].append(segment.code_embedding)
         
