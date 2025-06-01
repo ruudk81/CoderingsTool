@@ -28,7 +28,7 @@ except (NameError, AttributeError):
 
 # config
 import models
-from config import DEFAULT_LANGUAGE
+from config import DEFAULT_LANGUAGE, ClusteringConfig, DEFAULT_CLUSTERING_CONFIG
 from utils.cluster_quality import ClusterQualityAnalyzer
 import warnings  # hard coded warning in umap about hidden stat
 warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
@@ -60,58 +60,80 @@ class ClusterGenerator:
         dim_reduction_model=None,
         cluster_model=None,
         vectorizer_model=None,
-        embedding_type: str = "description",  # Can be "code" OR "description" 
-        verbose: bool = True):
+        config: ClusteringConfig = None,
+        embedding_type: str = None,  # Can be "code" OR "description" 
+        verbose: bool = None):
+        
+        # Initialize configuration
+        self.config = config or DEFAULT_CLUSTERING_CONFIG
         
         self.var_lab = var_lab if var_lab else ""
-        self.embedding_type = embedding_type
+        self.embedding_type = embedding_type or self.config.embedding_type
         self.output_list: List[ResultMapper] = []
-        self.verbose = verbose
+        self.verbose = verbose if verbose is not None else self.config.verbose
         # Store the original input list to preserve response data
         self.original_input_list = input_list if input_list else []
        
         if input_list:
             self.populate_from_input_list(input_list)
         
-        # Initialize dimensionality reduction model with original hardcoded parameters
+        # Initialize dimensionality reduction model
         if dim_reduction_model is None:
+            umap_config = self.config.umap
             self.dim_reduction_model = UMAP(
-                n_neighbors=5,            
-                n_components=10,          
-                min_dist=0.0,            
-                metric="cosine",
-                random_state=42,
-                n_jobs=1,
-                low_memory=True,         
-                transform_seed=42)
+                n_neighbors=umap_config.n_neighbors,
+                n_components=umap_config.n_components,
+                min_dist=umap_config.min_dist,
+                metric=umap_config.metric,
+                random_state=umap_config.random_state,
+                n_jobs=umap_config.n_jobs,
+                low_memory=umap_config.low_memory,
+                transform_seed=umap_config.transform_seed)
             if self.verbose:
-                print("Using default dimensionality reduction: UMAP")
+                print("Using configured UMAP dimensionality reduction")
         else:
             self.dim_reduction_model = dim_reduction_model
             
-        # Initialize clustering model with original hardcoded parameters
+        # Initialize clustering model
         if cluster_model is None:
-            self.cluster_model = hdbscan.HDBSCAN(
-                #min_cluster_size=10,  # Uncomment and set if needed
-                metric="euclidean",
-                cluster_selection_method="eom",
-                prediction_data=False,
-                approx_min_span_tree=False,
-                gen_min_span_tree=True)  
+            hdbscan_config = self.config.hdbscan
+            hdbscan_params = {
+                'metric': hdbscan_config.metric,
+                'cluster_selection_method': hdbscan_config.cluster_selection_method,
+                'prediction_data': hdbscan_config.prediction_data,
+                'approx_min_span_tree': hdbscan_config.approx_min_span_tree,
+                'gen_min_span_tree': hdbscan_config.gen_min_span_tree
+            }
+            # Add optional parameters if configured
+            if hdbscan_config.min_cluster_size is not None:
+                hdbscan_params['min_cluster_size'] = hdbscan_config.min_cluster_size
+            if hdbscan_config.min_samples is not None:
+                hdbscan_params['min_samples'] = hdbscan_config.min_samples
+                
+            self.cluster_model = hdbscan.HDBSCAN(**hdbscan_params)
             if self.verbose:
-                print("Using default clustering: HDBSCAN")
+                print("Using configured HDBSCAN clustering")
         else:
             self.cluster_model = cluster_model
         
         # Initialize vectorizer model
         if vectorizer_model is None:
-            stop_words = self._get_stop_words()
-            self.vectorizer_model = CountVectorizer(
-                stop_words=stop_words,
-                ngram_range=(1, 3),
-                min_df=1)    
+            vectorizer_config = self.config.vectorizer
+            stop_words = self._get_stop_words() if vectorizer_config.use_language_stop_words else None
+            
+            vectorizer_params = {
+                'ngram_range': vectorizer_config.ngram_range,
+                'min_df': vectorizer_config.min_df,
+                'max_df': vectorizer_config.max_df
+            }
+            if stop_words is not None:
+                vectorizer_params['stop_words'] = stop_words
+            if vectorizer_config.max_features is not None:
+                vectorizer_params['max_features'] = vectorizer_config.max_features
+                
+            self.vectorizer_model = CountVectorizer(**vectorizer_params)
             if self.verbose:
-                print("Using default vectorizing: SCIKIT-LEARN")
+                print("Using configured CountVectorizer")
         else:
             self.vectorizer_model = vectorizer_model
 
@@ -338,15 +360,24 @@ class ClusterGenerator:
             print("\n🔍 STEP 2: Initial Clustering")
         self.add_initial_clusters()
         
-        # Step 3: Calculate and display quality metrics (informational only)
-        if self.verbose:
-            print("\n📈 STEP 3: Quality Assessment")
-        self.calculate_and_display_quality_metrics()
+        # Step 3: Calculate and display quality metrics (if enabled)
+        if self.config.enable_quality_metrics:
+            if self.verbose:
+                print("\n📈 STEP 3: Quality Assessment")
+            self.calculate_and_display_quality_metrics()
         
-        # Step 4: Filter NA items and remap clusters
-        if self.verbose:
-            print("\n🧹 STEP 4: Filter and Remap")
-        self.filter_and_remap_clusters()
+        # Step 4: Filter NA items and remap clusters (if enabled)
+        if self.config.filter_na_items or self.config.remap_cluster_ids:
+            if self.verbose:
+                print("\n🧹 STEP 4: Filter and Remap")
+            if self.config.filter_na_items and self.config.remap_cluster_ids:
+                self.filter_and_remap_clusters()
+            elif self.config.filter_na_items:
+                # Just filter, don't remap
+                pass  # TODO: Implement filter-only method if needed
+            elif self.config.remap_cluster_ids:
+                # Just remap, don't filter
+                pass  # TODO: Implement remap-only method if needed
         
         if self.verbose:
             print("\n✅ Pipeline completed successfully")

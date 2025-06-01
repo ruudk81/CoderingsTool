@@ -216,7 +216,8 @@ else:
     print("\nMerging similar clusters...")
     merger = clusterMerger.ClusterMerger(
         input_list=initial_clusters, 
-        var_lab=var_lab)
+        var_lab=var_lab,
+        config=cluster_gen.config)  # Use same config as ClusterGenerator
     cluster_results, merge_mapping = merger.merge_clusters()
     print("\nCluster merging completed successfully")
     

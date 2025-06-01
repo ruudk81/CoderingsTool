@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
 # =============================================================================
@@ -241,6 +241,81 @@ class EmbeddingConfig:
 
 
 # =============================================================================
+# CLUSTERING CONFIGURATION
+# =============================================================================
+
+@dataclass
+class UMAPConfig:
+    """Configuration for UMAP dimensionality reduction"""
+    n_neighbors: int = 5
+    n_components: int = 10
+    min_dist: float = 0.0
+    metric: str = "cosine"
+    random_state: int = 42
+    n_jobs: int = 1
+    low_memory: bool = True
+    transform_seed: int = 42
+
+
+@dataclass
+class HDBSCANConfig:
+    """Configuration for HDBSCAN clustering"""
+    min_cluster_size: Optional[int] = None  # Use algorithm default if None
+    min_samples: Optional[int] = None  # Use algorithm default if None
+    metric: str = "euclidean"
+    cluster_selection_method: str = "eom"
+    prediction_data: bool = False
+    approx_min_span_tree: bool = False
+    gen_min_span_tree: bool = True
+
+
+@dataclass
+class VectorizerConfig:
+    """Configuration for CountVectorizer"""
+    ngram_range: Tuple[int, int] = (1, 3)
+    min_df: int = 1
+    max_df: float = 1.0
+    max_features: Optional[int] = None
+    use_language_stop_words: bool = True  # Use spacy stop words based on DEFAULT_LANGUAGE
+
+
+@dataclass
+class ClusterMergerConfig:
+    """Configuration for cluster merging step"""
+    model: str = DEFAULT_MODEL
+    max_concurrent_requests: int = 5
+    batch_size: int = 5
+    similarity_threshold: float = 0.95
+    max_retries: int = 3
+    retry_delay: int = 2
+    temperature: float = 0.3
+    max_tokens: int = 4000
+    language: str = DEFAULT_LANGUAGE
+    verbose: bool = True
+
+
+@dataclass
+class ClusteringConfig:
+    """Master configuration for clustering step (Step 5)"""
+    # Embedding selection
+    embedding_type: str = "description"  # Options: "description" or "code"
+    
+    # Sub-configurations for different models
+    umap: UMAPConfig = field(default_factory=UMAPConfig)
+    hdbscan: HDBSCANConfig = field(default_factory=HDBSCANConfig)
+    vectorizer: VectorizerConfig = field(default_factory=VectorizerConfig)
+    merger: ClusterMergerConfig = field(default_factory=ClusterMergerConfig)
+    
+    # Quality and filtering settings
+    enable_quality_metrics: bool = True
+    filter_na_items: bool = True
+    remap_cluster_ids: bool = True
+    
+    # General settings
+    verbose: bool = True
+
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -252,4 +327,5 @@ DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
+DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 
