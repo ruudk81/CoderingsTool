@@ -279,6 +279,9 @@ class ThematicLabeller:
         print("\n✅ Applying hierarchy to responses...")
         result = self._apply_hierarchy_to_responses(cluster_models, final_labels, codebook)
         
+        # Print diagnostics for missing clusters
+        self._print_assignment_diagnostics(final_labels, micro_clusters)
+        
         print("\n🎉 Hierarchical labeling complete!")
         self._print_summary(codebook)
         
@@ -729,21 +732,27 @@ class ThematicLabeller:
                                 assignments: List[ThemeAssignment], 
                                 codebook: Codebook) -> Dict[int, Dict]:
         """Phase 4: Refine and finalize labels"""
-        # For now, we'll use a simple approach
-        # In future, this could involve an LLM call to refine labels
-        
         final_labels = {}
         
         # Create lookup dictionaries
         cluster_lookup = {c.cluster_id: c for c in labeled_clusters}
         assignment_lookup = {a.cluster_id: a for a in assignments}
         
-        # Process each cluster
+        # Process each cluster to create initial assignments
         for cluster_id in cluster_lookup:
             cluster = cluster_lookup[cluster_id]
             assignment = assignment_lookup.get(cluster_id)
             
             if not assignment:
+                # Handle missing assignments - assign to 'other'
+                print(f"    ⚠️  No assignment found for cluster {cluster_id}, assigning to 'other'")
+                final_labels[cluster_id] = {
+                    'label': cluster.label,
+                    'description': cluster.description,
+                    'theme': ('other', 0.0),
+                    'topic': ('other', 0.0),
+                    'subject': ('other', 0.0)
+                }
                 continue
             
             # Get best assignments
@@ -758,6 +767,55 @@ class ThematicLabeller:
                 'topic': (topic_id, topic_prob),
                 'subject': (subject_id, subject_prob)
             }
+        
+        # Optional LLM-based refinement
+        if self.config.use_llm_refinement:
+            print("    🔄 Performing LLM-based label refinement...")
+            refined_labels = await self._llm_refinement(final_labels, codebook)
+            return refined_labels
+        else:
+            print("    📝 Using direct assignments (LLM refinement disabled)")
+        
+        return final_labels
+    
+    async def _llm_refinement(self, final_labels: Dict[int, Dict], codebook: Codebook) -> Dict[int, Dict]:
+        """Optional LLM-based refinement of labels"""
+        from prompts import PHASE4_REFINEMENT_PROMPT
+        
+        # Create summary of current assignments for LLM review
+        assignment_summary = []
+        for cluster_id, labels in sorted(final_labels.items()):
+            summary = f"Cluster {cluster_id}: {labels['label']}\n"
+            summary += f"  Theme: {labels['theme'][0]} (prob: {labels['theme'][1]:.2f})\n"
+            summary += f"  Topic: {labels['topic'][0]} (prob: {labels['topic'][1]:.2f})"
+            assignment_summary.append(summary)
+        
+        prompt = PHASE4_REFINEMENT_PROMPT.format(
+            survey_question=self.survey_question,
+            language=self.config.language,
+            assignments="\n\n".join(assignment_summary),
+            codebook=self._format_codebook_for_prompt(codebook)
+        )
+        
+        try:
+            result = await self._invoke_with_retries(prompt, RefinementResponse)
+            
+            # Apply refinements if any
+            if result.refined_labels:
+                print(f"    ✨ Applied {len(result.refined_labels)} label refinements")
+                for cluster_id_str, refinements in result.refined_labels.items():
+                    cluster_id = int(cluster_id_str)
+                    if cluster_id in final_labels:
+                        if 'label' in refinements:
+                            final_labels[cluster_id]['label'] = refinements['label']
+                        if 'description' in refinements:
+                            final_labels[cluster_id]['description'] = refinements['description']
+            
+            if result.quality_issues:
+                print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
+        
+        except Exception as e:
+            print(f"    ❌ LLM refinement failed: {str(e)}")
         
         return final_labels
     
@@ -819,11 +877,11 @@ class ThematicLabeller:
                             elif theme_id_str == "other":
                                 segment.Theme = {999: "Other: Unclassified"}
                             
-                            # Apply Topic (Dict[float, str]) - keeping as float
+                            # Apply Topic (Dict[float, str]) - ensure float conversion
                             topic_id_str, topic_prob = labels['topic']
                             if topic_id_str in topic_str_lookup:
                                 topic = topic_str_lookup[topic_id_str]
-                                topic_id_float = topic.numeric_id  # e.g., 1.1, 1.2, 2.1
+                                topic_id_float = float(topic.numeric_id)  # Ensure it's float, not int
                                 segment.Topic = {topic_id_float: f"{topic.label}: {topic.description}"}
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}
@@ -898,6 +956,31 @@ class ThematicLabeller:
                                 print(f"         Clusters: {subject.direct_clusters}")
         
         print("\n" + "="*80)
+    
+    def _print_assignment_diagnostics(self, final_labels: Dict[int, Dict], micro_clusters: Dict[int, Dict]):
+        """Print diagnostics about cluster assignments"""
+        print("\n🔍 Assignment Diagnostics:")
+        
+        # Find all cluster IDs
+        all_cluster_ids = set(micro_clusters.keys())
+        assigned_cluster_ids = set(final_labels.keys())
+        missing_cluster_ids = all_cluster_ids - assigned_cluster_ids
+        
+        print(f"  - Total clusters found: {len(all_cluster_ids)}")
+        print(f"  - Clusters assigned: {len(assigned_cluster_ids)}")
+        
+        if missing_cluster_ids:
+            print(f"  - Missing clusters: {sorted(missing_cluster_ids)}")
+            print("  ⚠️  Some clusters were not assigned in Phase 3")
+        else:
+            print("  ✅ All clusters were assigned")
+        
+        # Count assignment types
+        theme_other = sum(1 for labels in final_labels.values() if labels['theme'][0] == 'other')
+        topic_other = sum(1 for labels in final_labels.values() if labels['topic'][0] == 'other')
+        
+        if theme_other > 0 or topic_other > 0:
+            print(f"  - Clusters assigned to 'other': {theme_other} themes, {topic_other} topics")
 
 
 # =============================================================================
