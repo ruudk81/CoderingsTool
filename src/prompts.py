@@ -472,7 +472,7 @@ Input clusters:
 
 
 PHASE1_FAMILIARIZATION_PROMPT = """
-You are analyzing a cluster of survey responses to understand its thematic content.
+You are a {language} expert analyzing survey response clusters for thematic content.
 
 Survey Question: {survey_question}
 
@@ -480,79 +480,98 @@ Cluster Information:
 - Cluster ID: {cluster_id}
 - Number of responses: {cluster_size}
 
-Most representative response descriptions (with similarity to cluster center):
+Most representative response descriptions (ordered by similarity to cluster center):
 {representatives}
 
 Your task:
-1. Create a concise thematic label (maximum 4 words) that captures the central idea
-2. Write a clear description explaining what this cluster represents
-3. The label should express ONE concrete concept, concern, or issue
-4. Use {language} for all output
+1. Analyze the representative responses to understand the core theme
+2. Create a concise thematic label (maximum 4 words) that captures the central idea
+3. Write a clear, specific description explaining what this cluster represents
+4. The label must express ONE concrete concept, concern, or issue - avoid compound ideas
+5. Base your analysis ONLY on what respondents are saying, not interpretations
+
+Labeling guidelines:
+- Use concrete, specific language (avoid generic terms like "various issues")
+- Focus on the most prominent shared characteristic across responses
+- If responses seem unrelated to the survey question, note this in the description
 
 Output format (JSON):
 {{
-  "label": "CONCISE_LABEL",
-  "description": "Clear explanation of what responses in this cluster are expressing"
+  "label": "Concise thematic label",
+  "description": "Clear explanation of what responses in this cluster are expressing, including why they belong together"
 }}
 
-Focus on what respondents are actually saying, not interpretations.
+Language: All output must be in {language}
 """
 
 PHASE2_DISCOVERY_SINGLE_PROMPT = """
-You are conducting thematic analysis to create a hierarchical codebook from survey response clusters.
+You are a {language} qualitative researcher creating a hierarchical codebook from survey response clusters.
 
 Survey Question: {survey_question}
 
-You have analyzed {all_cluster_ids} clusters. Here are their labels and descriptions:
+Total clusters to organize: {all_cluster_ids}
 
+Cluster summaries:
 {cluster_summaries}
 
-Your task is to organize these clusters into a 3-level hierarchy:
-- Level 1 (Themes): Broad overarching themes
-- Level 2 (Topics): More specific topics within themes  
-- Level 3 (Subjects): Narrow subjects within topics
+Your task: Create a 3-level hierarchical codebook that organizes ALL clusters into meaningful themes.
 
-IMPORTANT RULES:
-1. Some themes may be simple and have clusters assigned directly (no sub-levels needed)
-2. Other themes naturally divide into topics and subjects
-3. Every cluster ID must be assigned to exactly ONE place in the hierarchy
-4. Labels must be maximum 4 words and express ONE idea
-5. Create "Other" categories as needed for clusters that don't fit elsewhere
+Hierarchy Structure:
+- Level 1 (Themes): Broad conceptual categories that group related concerns/ideas
+- Level 2 (Topics): Specific aspects or dimensions within themes
+- Level 3 (Subjects): Granular subjects mapped to original cluster IDs
 
-Output format (JSON):
+CRITICAL REQUIREMENTS:
+1. EVERY cluster ID from {all_cluster_ids} MUST appear exactly ONCE in the hierarchy
+2. Flexible structure based on data:
+   - Simple themes: Can have clusters assigned directly (no topics/subjects needed)
+   - Complex themes: Naturally divide into topics, which may have subjects
+   - Mixed approach: Some clusters direct to theme, others through topics/subjects
+3. Each label must be maximum 4 words and express ONE clear idea
+4. Avoid compound labels with "and", "&", or multiple concepts
+5. Create an "Other" theme for clusters that don't fit main themes
+
+Output format (JSON - NO COMMENTS):
 {{
   "themes": [
     {{
       "id": "1",
-      "label": "Theme Name",
-      "description": "What this theme represents",
-      "direct_clusters": [5, 8],  // For simple themes
+      "label": "Clear Theme Name",
+      "description": "What this theme encompasses",
+      "direct_clusters": [5, 8],
       "topics": [
         {{
-          "id": "1.1", 
-          "label": "Topic Name",
+          "id": "1.1",
+          "label": "Specific Topic",
           "description": "What this topic covers",
-          "direct_clusters": [12],  // For topics without subjects
+          "direct_clusters": [12],
           "subjects": [
             {{
               "id": "1.1.1",
-              "label": "Subject Name", 
-              "description": "Specific subject",
-              "micro_clusters": [3, 7, 9]
+              "label": "Narrow Subject",
+              "description": "Specific aspect",
+              "micro_clusters": [3, 7]
             }}
           ]
         }}
       ]
+    }},
+    {{
+      "id": "2",
+      "label": "Another Theme",
+      "description": "Description",
+      "direct_clusters": [15, 19, 23]
     }}
   ]
 }}
 
 Language: {language}
-All cluster IDs that MUST appear: {all_cluster_ids}
+Remember: All clusters from {all_cluster_ids} must appear in your output!
 """
 
 PHASE2_DISCOVERY_MAP_PROMPT = """
-You are analyzing a batch of survey response clusters as part of thematic analysis.
+You are a {language} qualitative researcher analyzing a batch of survey response clusters.
+This is the MAP phase of a MapReduce operation for large-scale thematic analysis.
 
 Survey Question: {survey_question}
 Batch ID: {batch_id}
@@ -560,64 +579,124 @@ Batch ID: {batch_id}
 Cluster summaries from this batch:
 {batch_clusters}
 
-Organize these clusters into themes and sub-themes. You may create:
-- Simple themes with clusters assigned directly
-- Complex themes with topics and subjects
+Your task: Create a partial hierarchy for ONLY the clusters in this batch.
 
-Output format (JSON):
+Guidelines:
+1. Create themes that naturally emerge from THIS batch's clusters
+2. Use temporary IDs (temp_1, temp_1.1, etc.) - these will be renumbered later
+3. Some themes may be simple (clusters assigned directly)
+4. Others may need topics or even subjects for better organization
+5. Focus on semantic coherence within this batch
+6. Each label: maximum 4 words, ONE clear concept
+
+IMPORTANT: Every cluster ID mentioned in the batch MUST appear in exactly one place in your output.
+
+Output format (JSON - NO COMMENTS):
 {{
   "themes": [
     {{
       "id": "temp_1",
-      "label": "Theme Name",
-      "description": "Description",
+      "label": "Emergent Theme",
+      "description": "What unifies these clusters",
       "direct_clusters": [1, 2]
+    }},
+    {{
+      "id": "temp_2",
+      "label": "Another Theme",
+      "description": "Description",
+      "direct_clusters": []
     }}
   ],
   "topics": [
     {{
-      "id": "temp_1.1",
-      "label": "Topic Name", 
-      "description": "Description",
-      "parent_id": "temp_1",
+      "id": "temp_2.1",
+      "label": "Specific Topic",
+      "description": "What this covers",
+      "parent_id": "temp_2",
       "direct_clusters": [3]
     }}
   ],
   "subjects": [
     {{
-      "id": "temp_1.1.1",
-      "label": "Subject Name",
-      "description": "Description", 
-      "parent_id": "temp_1.1",
+      "id": "temp_2.1.1",
+      "label": "Narrow Subject",
+      "description": "Specific aspect",
+      "parent_id": "temp_2.1",
       "direct_clusters": [4, 5]
     }}
   ]
 }}
 
 Language: {language}
+Remember: Include ALL clusters from this batch in your hierarchy.
 """
 
 PHASE2_DISCOVERY_REDUCE_PROMPT = """
-You are merging multiple partial hierarchies into a unified codebook.
+You are a {language} qualitative researcher completing the REDUCE phase of thematic analysis.
+Your task: Merge multiple partial hierarchies into one unified, coherent codebook.
 
 Survey Question: {survey_question}
 
-Partial hierarchies to merge:
+Partial hierarchies from different batches:
 {hierarchies}
 
-Your task:
-1. Identify similar themes/topics/subjects across hierarchies and merge them
-2. Preserve ALL cluster assignments - every cluster ID must appear in the output
-3. Create a coherent unified structure
-4. Renumber themes/topics/subjects for consistency (1, 1.1, 1.1.1, etc.)
+Merging Guidelines:
+1. **Identify Semantic Overlap**: Find themes/topics that represent the same concept across batches
+2. **Merge Intelligently**: 
+   - Combine similar themes into unified themes
+   - Preserve nuanced differences as separate topics within themes
+   - Don't force unrelated concepts together
+3. **Preserve ALL Data**: Every cluster ID from every batch MUST appear in the final output
+4. **Create Coherent Structure**:
+   - Renumber everything consistently (1, 1.1, 1.1.1, 2, 2.1, etc.)
+   - Ensure the final hierarchy makes sense as a whole
+   - Add an "Other" theme if needed for outliers
+5. **Quality Checks**:
+   - No duplicate cluster IDs
+   - No missing cluster IDs
+   - Clear parent-child relationships
 
-Output the same JSON structure as the input hierarchies, but unified and renumbered.
+Merging Strategy:
+- If themes are clearly the same concept → merge them
+- If themes are related but distinct → make them topics under a broader theme
+- If themes are unrelated → keep them as separate themes
+
+Output format (JSON - NO COMMENTS):
+{{
+  "themes": [
+    {{
+      "id": "1",
+      "label": "Unified Theme",
+      "description": "Merged description",
+      "direct_clusters": [1, 2, 15]
+    }}
+  ],
+  "topics": [
+    {{
+      "id": "1.1",
+      "label": "Merged Topic",
+      "description": "Combined description",
+      "parent_id": "1",
+      "direct_clusters": [3, 18]
+    }}
+  ],
+  "subjects": [
+    {{
+      "id": "1.1.1",
+      "label": "Specific Subject",
+      "description": "Description",
+      "parent_id": "1.1",
+      "direct_clusters": [4, 5, 22]
+    }}
+  ]
+}}
 
 Language: {language}
+CRITICAL: Verify all cluster IDs from input appear exactly once in output!
 """
 
 PHASE3_ASSIGNMENT_PROMPT = """
-You are assigning a survey response cluster to the appropriate place in a hierarchical codebook.
+You are a {language} expert assigning survey response clusters to a hierarchical codebook.
 
 Survey Question: {survey_question}
 
@@ -625,19 +704,27 @@ Cluster to assign:
 - ID: {cluster_id}
 - Label: {cluster_label}
 - Description: {cluster_description}
-- Example responses:
+- Representative responses:
 {representatives}
 
 Hierarchical Codebook:
 {codebook}
 
-Assign probability scores (0.0 to 1.0) for how well this cluster fits each theme, topic, and subject.
-Probabilities at each level should sum to approximately 1.0.
+Your task: Assign probability scores (0.0 to 1.0) indicating how well this cluster fits each level of the hierarchy.
 
-Consider:
-- Semantic similarity between cluster and codebook entries
-- Hierarchical consistency (if assigned to subject 1.1.1, should also score high for topic 1.1 and theme 1)
-- If cluster doesn't fit well anywhere, assign high probability to "other"
+Assignment Rules:
+1. Probabilities at each level should sum to approximately 1.0
+2. Maintain hierarchical consistency:
+   - If a cluster strongly fits subject 1.1.1, it should also score high for topic 1.1 and theme 1
+   - Don't assign high probability to a topic if its parent theme has low probability
+3. Consider semantic meaning, not just keyword matching
+4. If the cluster doesn't fit well anywhere, assign high probability to "other"
+5. Be decisive - avoid spreading probabilities too thinly
+
+Decision criteria:
+- Does the cluster's core concept align with the theme/topic/subject?
+- Do the representative responses support this placement?
+- Is this the BEST fit compared to other options?
 
 Output format (JSON):
 {{
@@ -657,40 +744,66 @@ Output format (JSON):
   }}
 }}
 
+Note: Only include IDs that exist in the codebook. Include "other" if confidence is low.
 Language: {language}
 """
 
 PHASE4_REFINEMENT_PROMPT = """
-You are refining the final labels in a hierarchical codebook to ensure clarity and consistency.
+You are a {language} expert conducting final quality review of a hierarchical codebook for survey analysis.
 
 Survey Question: {survey_question}
 
-Current hierarchy with assignments:
+Current hierarchy with cluster assignments:
 {hierarchy_with_assignments}
 
-Review and refine all labels to ensure:
-1. Labels are maximum 4 words
-2. Each label expresses exactly ONE idea
-3. Labels are mutually exclusive within their level
-4. Labels clearly communicate the concept in context of the survey question
-5. Consistent terminology across the hierarchy
+Your task: Review and refine all labels to ensure maximum clarity, consistency, and analytical value.
+
+Refinement Criteria:
+1. **Clarity**: Each label clearly communicates its concept in 4 words or less
+2. **Uniqueness**: Labels are mutually exclusive within their level (no overlapping concepts)
+3. **Consistency**: Similar concepts use consistent terminology throughout
+4. **Hierarchy**: Child labels logically relate to their parent labels
+5. **Completeness**: Labels fully capture the essence of their assigned clusters
+
+Specific checks:
+- Remove redundant words (e.g., "Issues with X" → "X problems")
+- Ensure no compound concepts (no "and", "&", or multiple ideas)
+- Verify labels answer the survey question appropriately
+- Check that "Other" categories are clearly defined
+- Ensure terminology matches the language and context of respondents
+
+Analysis approach:
+1. First, identify any problematic labels that violate the criteria
+2. Then propose refined versions that better capture the concept
+3. Ensure refined labels maintain the meaning of assigned clusters
 
 Output format (JSON):
 {{
+  "quality_issues": [
+    {{
+      "id": "1.2",
+      "current_label": "Current problematic label",
+      "issue": "Brief explanation of the problem",
+      "refined_label": "Improved label"
+    }}
+  ],
   "refined_labels": {{
     "themes": {{
-      "1": "Refined Theme Name",
-      "2": "Another Theme"
+      "1": "Final Theme Name",
+      "2": "Another Theme",
+      "999": "Other Concerns"
     }},
     "topics": {{
-      "1.1": "Refined Topic",
-      "1.2": "Another Topic"
+      "1.1": "Final Topic Name",
+      "1.2": "Another Topic",
+      "99.9": "Other Topics"
     }},
     "subjects": {{
-      "1.1.1": "Refined Subject"
+      "1.1.1": "Final Subject"
     }}
   }}
 }}
 
 Language: {language}
+Note: Return ALL labels, not just the ones that changed.
 """
