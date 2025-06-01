@@ -171,9 +171,9 @@ class CacheConfig:
 class LabellerConfig:
     """Configuration for hierarchical labelling"""
     # Model settings
-    model: str = "gpt-4o-mini"  # Primary model for labelling
+    model: str = "gpt-4o"  # Primary model for labelling - upgraded for better quality
     temperature: float = 0.1  # Lower for more consistent output
-    max_tokens: int = 4000
+    max_tokens: int = 8000  # Increased for gpt-4o's higher capacity
     seed: int = 42  # For reproducibility
     api_key: Optional[str] = None  # Will use env var if not provided
     
