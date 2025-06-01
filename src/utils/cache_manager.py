@@ -13,7 +13,7 @@ from typing import Type, TypeVar, List, Optional, Dict, get_type_hints, get_orig
 from pydantic import BaseModel
 import numpy as np
 
-from config import CacheConfig, ProcessingConfig
+from config import CacheConfig
 
 
 logger = logging.getLogger(__name__)
@@ -391,11 +391,9 @@ class CacheManager:
     
     def is_cache_valid(self, 
                       filename: str, 
-                      step: str,
-                      processing_config: ProcessingConfig = None) -> bool:
+                      step: str) -> bool:
         """Check if cached data exists and is valid"""
-        config_hash = processing_config.get_hash() if processing_config else None
-        return self.db.is_cache_valid(filename, step, config_hash=config_hash)
+        return self.db.is_cache_valid(filename, step)
     
     def load_from_cache(self, 
                        filename: str, 
@@ -498,7 +496,6 @@ class CacheManager:
                      data: List[T], 
                      filename: str, 
                      step: str,
-                     processing_config: ProcessingConfig = None,
                      processing_time: float = None) -> bool:
         """Save data to cache with atomic write"""
         if not data:
@@ -587,15 +584,13 @@ class CacheManager:
                 file_size = cache_path.stat().st_size
                 
                 # Record in database
-                config_hash = processing_config.get_hash() if processing_config else None
                 self.db.record_cache_entry(
                     filename=filename,
                     step_name=step,
                     cache_path=str(cache_path),
                     file_hash=file_hash,
                     file_size=file_size,
-                    processing_time=processing_time,
-                    config_hash=config_hash
+                    processing_time=processing_time
                 )
                 
                 logger.info(f"Saved {len(data)} items to cache for {filename} at step {step}")
@@ -710,15 +705,13 @@ class CacheManager:
                 shutil.move(str(temp_file), str(cache_path))
             
             # Record in database
-            config_hash = processing_config.get_hash() if processing_config else None
             self.db.record_cache_entry(
                 filename=filename,
                 step_name=step,
                 cache_path=str(cache_path),
                 file_hash=file_hash,
                 file_size=file_size,
-                processing_time=processing_time,
-                config_hash=config_hash
+                processing_time=processing_time
             )
             
             logger.info(f"Saved {len(data)} items to cache for {filename} at step {step}")

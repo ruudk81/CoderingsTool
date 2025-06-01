@@ -16,11 +16,10 @@ import models
 # === CONFIG ========================================================================================================
 from utils import data_io
 from utils.cache_manager import CacheManager
-from config import CacheConfig, ProcessingConfig
+from config import CacheConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
-processing_config = ProcessingConfig()
 cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
@@ -60,7 +59,7 @@ from utils.verbose_reporter import VerboseReporter
 step_name = "data"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     raw_text_list = cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
     print(f"Loaded {len(raw_text_list)} items from cache for step: {step_name}")
 else:
@@ -76,7 +75,7 @@ else:
     end_time         = time.time()
     elapsed_time     = end_time - start_time
     
-    cache_manager.save_to_cache(raw_text_list, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
 
 
@@ -88,7 +87,7 @@ from utils.verbose_reporter import VerboseReporter
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
     print(f"Loaded {len(preprocessed_text)} items from cache for step: {step_name}")
 else: 
@@ -113,7 +112,7 @@ else:
     #         f"Total processing time: {elapsed_time:.1f} seconds": "",
     #         f"Overall success rate: {(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%": ""})
     
-    cache_manager.save_to_cache(preprocessed_text, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(preprocessed_text, filename, step_name, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
 
@@ -124,7 +123,7 @@ from utils import qualityFilter, segmentDescriber
 step_name = "segmented_descriptions"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
     print(f"Loaded {len(encoded_text)} items from cache for step: {step_name}")
 else: 
@@ -147,7 +146,7 @@ else:
     #             f"Total processing time: {elapsed_time:.1f} seconds": "",
     #             f"Filtering rate: {filtering_rate:.1f}%": ""})
     
-    cache_manager.save_to_cache(encoded_text, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
 
 
@@ -158,7 +157,7 @@ from utils import embedder
 step_name = "embeddings"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
     print(f"Loaded {len(embedded_text)} items from cache for step: {step_name}")
 else:
@@ -184,7 +183,7 @@ else:
     #     f"Average processing rate: {total_segments/elapsed_time:.1f} segments/second": ""
     # })
     
-    cache_manager.save_to_cache(embedded_text, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(embedded_text, filename, step_name, elapsed_time)
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
 
 # === STEP 5 ========================================================================================================
@@ -194,7 +193,7 @@ from utils import clusterer, clusterMerger
 step_name = "clusters"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
     print(f"Loaded {len(cluster_results)} items from cache for step: {step_name}")
 else:
@@ -244,7 +243,7 @@ else:
     elapsed_time = end_time - start_time
     
     # Save clustering results to cache
-    cache_manager.save_to_cache(cluster_results, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(cluster_results, filename, step_name, elapsed_time)
     
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
@@ -279,7 +278,7 @@ from utils import labeller
 step_name = "labels"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, processing_config):
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
     print(f"Loaded {len(labeled_results)} items from cache for step: {step_name}")
 else:
@@ -290,7 +289,7 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    cache_manager.save_to_cache(labeled_results, filename, step_name, processing_config, elapsed_time)
+    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
     print(f"\n'Get labels' completed in {elapsed_time:.2f} seconds.")
 
 # Count unique clusters for display
