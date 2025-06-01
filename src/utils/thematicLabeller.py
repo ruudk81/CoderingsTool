@@ -792,11 +792,13 @@ class ThematicLabeller:
             summary += f"  Topic: {labels['topic'][0]} (prob: {labels['topic'][1]:.2f})"
             assignment_summary.append(summary)
         
+        # Create combined hierarchy with assignments as expected by the prompt
+        hierarchy_with_assignments = f"CURRENT ASSIGNMENTS:\n{chr(10).join(assignment_summary)}\n\nCODEBOOK STRUCTURE:\n{self._format_codebook_for_prompt(codebook)}"
+        
         prompt = PHASE4_REFINEMENT_PROMPT.format(
             survey_question=self.survey_question,
             language=self.config.language,
-            assignments="\n\n".join(assignment_summary),
-            codebook=self._format_codebook_for_prompt(codebook)
+            hierarchy_with_assignments=hierarchy_with_assignments
         )
         
         try:
