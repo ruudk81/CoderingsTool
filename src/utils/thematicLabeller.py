@@ -504,8 +504,8 @@ class ThematicLabeller:
     
     def _parse_codebook(self, result: Dict, labeled_clusters: List[ClusterLabel]) -> Codebook:
         """Parse JSON result into Codebook structure with proper numeric IDs"""
-        # Create cluster label lookup for subjects
-        cluster_label_lookup = {c.cluster_id: c.label for c in labeled_clusters}
+        # Note: labeled_clusters kept for signature compatibility but not currently used
+        # as subjects now use thematic labels from LLM instead of cluster labels
         themes = []
         topics = []
         subjects = []
@@ -553,28 +553,34 @@ class ThematicLabeller:
                 )
                 topics.append(topic)
             
-            # Process subjects - use individual cluster labels
+            # Process subjects
             for subject_data in result['subjects']:
-                # For subjects, the direct_clusters contain the actual micro-cluster IDs
-                for cluster_id in subject_data.get('direct_clusters', []):
-                    # Find parent topic
-                    parent_id = subject_data.get('parent_id', '')
-                    parent_numeric_str = parent_id.replace('temp_', '')
-                    parent_numeric_id = float(parent_numeric_str) if parent_numeric_str else None
-                    
-                    # Use the actual cluster label from Phase 1, not the group label
-                    cluster_label = cluster_label_lookup.get(cluster_id, f"Cluster {cluster_id}")
-                    subject = CodebookEntry(
-                        id=str(cluster_id),
-                        numeric_id=float(cluster_id),
-                        level=3,
-                        label=cluster_label,  # Use individual cluster label!
-                        description=subject_data.get('description', ''),
-                        parent_id=parent_numeric_str if parent_numeric_str else None,
-                        parent_numeric_id=parent_numeric_id,
-                        direct_clusters=[cluster_id]
-                    )
-                    subjects.append(subject)
+                subject_id = subject_data['id']
+                # Extract numeric ID (e.g., temp_2.1.1 -> 2.1.1)
+                numeric_str = subject_id.replace('temp_', '')
+                # Convert to float for numeric_id (e.g., 2.1.1 -> 2.11)
+                parts = numeric_str.split('.')
+                if len(parts) >= 3:
+                    subject_numeric_id = float(f"{parts[0]}.{parts[1]}{parts[2]}")
+                else:
+                    subject_numeric_id = float(numeric_str.replace('.', ''))
+                
+                # Find parent topic
+                parent_id = subject_data.get('parent_id', '')
+                parent_numeric_str = parent_id.replace('temp_', '')
+                parent_numeric_id = float(parent_numeric_str) if parent_numeric_str else None
+                
+                subject = CodebookEntry(
+                    id=numeric_str,  # Keep as "1.1.1", "1.1.2", etc.
+                    numeric_id=subject_numeric_id,
+                    level=3,
+                    label=subject_data['label'],  # Use the subject label from LLM!
+                    description=subject_data.get('description', ''),
+                    parent_id=parent_numeric_str if parent_numeric_str else None,
+                    parent_numeric_id=parent_numeric_id,
+                    direct_clusters=subject_data.get('direct_clusters', [])
+                )
+                subjects.append(subject)
         
         # Handle single-call format (nested structure)
         elif 'themes' in result:
@@ -612,24 +618,24 @@ class ThematicLabeller:
                         )
                         topics.append(topic)
                         
-                        # Extract subjects (keywords) - use individual cluster labels, not group labels
+                        # Extract subjects (keywords)
                         if 'subjects' in topic_data:
-                            for subject_data in topic_data['subjects']:
-                                # Subjects map to micro_clusters directly
-                                for cluster_id in subject_data.get('micro_clusters', []):
-                                    # Use the actual cluster label from Phase 1, not the group label
-                                    cluster_label = cluster_label_lookup.get(cluster_id, f"Cluster {cluster_id}")
-                                    subject = CodebookEntry(
-                                        id=str(cluster_id),
-                                        numeric_id=float(cluster_id),
-                                        level=3,
-                                        label=cluster_label,  # Use individual cluster label!
-                                        description=subject_data.get('description', ''),
-                                        parent_id=topic_id,
-                                        parent_numeric_id=topic_numeric_id,
-                                        direct_clusters=[cluster_id]
-                                    )
-                                    subjects.append(subject)
+                            for subject_idx, subject_data in enumerate(topic_data['subjects'], 1):
+                                # Use hierarchical IDs for subjects (e.g., 1.1.1, 1.1.2)
+                                subject_id = f"{topic_id}.{subject_idx}"
+                                subject_numeric_id = float(f"{topic_id}{subject_idx}")  # e.g., 1.11, 1.12
+                                
+                                subject = CodebookEntry(
+                                    id=subject_id,
+                                    numeric_id=subject_numeric_id,
+                                    level=3,
+                                    label=subject_data['label'],  # Use the subject label from LLM!
+                                    description=subject_data.get('description', ''),
+                                    parent_id=topic_id,
+                                    parent_numeric_id=topic_numeric_id,
+                                    direct_clusters=subject_data.get('micro_clusters', [])
+                                )
+                                subjects.append(subject)
         
         # Remove duplicates and clean up hierarchy
         themes = self._remove_duplicate_entries(themes, "themes")
@@ -759,7 +765,7 @@ class ThematicLabeller:
                     if subject.description:
                         lines.append(f"      Description: {subject.description}")
                     if subject.direct_clusters:
-                        lines.append(f"      Clusters: {subject.direct_clusters}")
+                        lines.append(f"      Micro-clusters: {subject.direct_clusters}")
         
         return "\n".join(lines)
     
@@ -1054,7 +1060,7 @@ class ThematicLabeller:
                             if subject.description:
                                 print(f"         Description: {subject.description}")
                             if subject.direct_clusters:
-                                print(f"         Clusters: {subject.direct_clusters}")
+                                print(f"         Micro-clusters: {subject.direct_clusters}")
         
         print("\n" + "="*80)
     
