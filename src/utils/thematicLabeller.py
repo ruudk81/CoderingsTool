@@ -386,11 +386,56 @@ class ThematicLabeller:
             )
             
             result = await self._invoke_with_retries(prompt, MapDiscoveryResponse)
+            
+            # Parse themes with proper numeric IDs and levels
+            themes = []
+            for t in result.themes:
+                themes.append(CodebookEntry(
+                    id=t['id'],
+                    numeric_id=float(t['id'].replace('temp_', '')),  # Convert temp_1 to 1.0
+                    level=1,
+                    label=t['label'],
+                    description=t.get('description', ''),
+                    direct_clusters=t.get('direct_clusters', [])
+                ))
+            
+            # Parse topics
+            topics = []
+            for t in result.topics:
+                # Extract numeric ID from temp_1.1 format
+                numeric_parts = t['id'].replace('temp_', '').split('.')
+                numeric_id = float('.'.join(numeric_parts))
+                topics.append(CodebookEntry(
+                    id=t['id'],
+                    numeric_id=numeric_id,
+                    level=2,
+                    label=t['label'],
+                    description=t.get('description', ''),
+                    parent_id=t.get('parent_id'),
+                    parent_numeric_id=float(t.get('parent_id', '').replace('temp_', '')) if t.get('parent_id') else None,
+                    direct_clusters=t.get('direct_clusters', [])
+                ))
+            
+            # Parse subjects
+            subjects = []
+            for s in result.subjects:
+                # For subjects, use the cluster IDs directly as numeric IDs
+                subjects.append(CodebookEntry(
+                    id=s['id'],
+                    numeric_id=float(s['id'].replace('temp_', '').replace('.', '')),
+                    level=3,
+                    label=s['label'],
+                    description=s.get('description', ''),
+                    parent_id=s.get('parent_id'),
+                    parent_numeric_id=float('.'.join(s.get('parent_id', '').replace('temp_', '').split('.')[:2])) if s.get('parent_id') else None,
+                    direct_clusters=s.get('direct_clusters', [])
+                ))
+            
             batch_hierarchies.append(BatchHierarchy(
                 batch_id=f"batch_{batch_idx:03d}",
-                themes=[CodebookEntry(**t) for t in result.themes],
-                topics=[CodebookEntry(**t) for t in result.topics],
-                subjects=[CodebookEntry(**s) for s in result.subjects]
+                themes=themes,
+                topics=topics,
+                subjects=subjects
             ))
         
         # Reduce phase
@@ -422,8 +467,72 @@ class ThematicLabeller:
         topics = []
         subjects = []
         
-        # Handle different possible structures in the result
-        if 'themes' in result:
+        # Check if this is from MapReduce (has separate theme/topic/subject lists)
+        if 'themes' in result and 'topics' in result and 'subjects' in result:
+            # Handle MapReduce format
+            for theme_data in result['themes']:
+                theme_id = theme_data['id']
+                # Extract numeric ID (handle both "1" and "temp_1" formats)
+                numeric_str = theme_id.replace('temp_', '')
+                theme_numeric_id = float(numeric_str)
+                
+                theme = CodebookEntry(
+                    id=str(int(theme_numeric_id)),  # Normalize to "1", "2", etc.
+                    numeric_id=theme_numeric_id,
+                    level=1,
+                    label=theme_data['label'],
+                    description=theme_data.get('description', ''),
+                    direct_clusters=theme_data.get('direct_clusters', [])
+                )
+                themes.append(theme)
+            
+            # Process topics
+            for topic_data in result['topics']:
+                topic_id = topic_data['id']
+                # Extract numeric ID
+                numeric_str = topic_id.replace('temp_', '')
+                topic_numeric_id = float(numeric_str)
+                
+                # Find parent theme numeric ID
+                parent_id = topic_data.get('parent_id', '')
+                parent_numeric_str = parent_id.replace('temp_', '')
+                parent_numeric_id = float(parent_numeric_str) if parent_numeric_str else None
+                
+                topic = CodebookEntry(
+                    id=numeric_str,  # Keep as "1.1", "1.2", etc.
+                    numeric_id=topic_numeric_id,
+                    level=2,
+                    label=topic_data['label'],
+                    description=topic_data.get('description', ''),
+                    parent_id=str(int(parent_numeric_id)) if parent_numeric_id else None,
+                    parent_numeric_id=parent_numeric_id,
+                    direct_clusters=topic_data.get('direct_clusters', [])
+                )
+                topics.append(topic)
+            
+            # Process subjects
+            for subject_data in result['subjects']:
+                # For subjects, the direct_clusters contain the actual micro-cluster IDs
+                for cluster_id in subject_data.get('direct_clusters', []):
+                    # Find parent topic
+                    parent_id = subject_data.get('parent_id', '')
+                    parent_numeric_str = parent_id.replace('temp_', '')
+                    parent_numeric_id = float(parent_numeric_str) if parent_numeric_str else None
+                    
+                    subject = CodebookEntry(
+                        id=str(cluster_id),
+                        numeric_id=float(cluster_id),
+                        level=3,
+                        label=subject_data['label'],
+                        description=subject_data.get('description', ''),
+                        parent_id=parent_numeric_str if parent_numeric_str else None,
+                        parent_numeric_id=parent_numeric_id,
+                        direct_clusters=[cluster_id]
+                    )
+                    subjects.append(subject)
+        
+        # Handle single-call format (nested structure)
+        elif 'themes' in result:
             for theme_idx, theme_data in enumerate(result['themes'], 1):
                 # Use integer IDs for themes
                 theme_id = str(theme_idx)
