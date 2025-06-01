@@ -859,6 +859,45 @@ class ThematicLabeller:
             total_clusters.update(subject.direct_clusters)
         
         print(f"  - {len(total_clusters)} clusters assigned")
+        
+        # Print the full codebook
+        self._display_full_codebook(codebook)
+    
+    def _display_full_codebook(self, codebook: Codebook):
+        """Display the full hierarchical codebook with all labels"""
+        print("\n" + "="*80)
+        print("📚 FULL CODEBOOK HIERARCHY")
+        print("="*80)
+        
+        # Display themes
+        for theme in sorted(codebook.themes, key=lambda x: x.numeric_id):
+            print(f"\n🎯 THEME {theme.id}: {theme.label}")
+            if theme.description:
+                print(f"   Description: {theme.description}")
+            if theme.direct_clusters:
+                print(f"   Direct clusters: {theme.direct_clusters}")
+            
+            # Find related topics
+            related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
+            if related_topics:
+                for topic in sorted(related_topics, key=lambda x: x.numeric_id):
+                    print(f"\n   📍 TOPIC {topic.id}: {topic.label}")
+                    if topic.description:
+                        print(f"      Description: {topic.description}")
+                    if topic.direct_clusters:
+                        print(f"      Direct clusters: {topic.direct_clusters}")
+                    
+                    # Find related subjects
+                    related_subjects = [s for s in codebook.subjects if s.parent_id == topic.id]
+                    if related_subjects:
+                        for subject in sorted(related_subjects, key=lambda x: x.numeric_id):
+                            print(f"\n      🔸 SUBJECT {subject.id}: {subject.label}")
+                            if subject.description:
+                                print(f"         Description: {subject.description}")
+                            if subject.direct_clusters:
+                                print(f"         Clusters: {subject.direct_clusters}")
+        
+        print("\n" + "="*80)
 
 
 # =============================================================================
