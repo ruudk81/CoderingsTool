@@ -24,8 +24,10 @@ dependencies:
   # Async support
   - nest-asyncio=1.6.0
   
-  # Progress bars
+  # Progress bars and widgets
   - tqdm=4.67.0
+  - ipywidgets=8.1.5
+  - jupyter=1.1.1
   
   # Build tools
   - pip
