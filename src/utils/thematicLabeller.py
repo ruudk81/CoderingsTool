@@ -268,10 +268,23 @@ class ThematicLabeller:
         
         # Phase 4: Refinement
         print("\n✨ Phase 4: Refinement - Finalizing labels...")
+        
+        # Print codebook BEFORE Phase 4 refinement
+        print("\n" + "="*80)
+        print("📚 CODEBOOK BEFORE PHASE 4 REFINEMENT")
+        print("="*80)
+        self._display_full_codebook(codebook)
+        
         phase4_start = time.time()
         final_labels = await self._phase4_refinement(labeled_clusters, assignments, codebook)
         phase4_time = time.time() - phase4_start
         print(f"  ✓ Phase 4 completed in {phase4_time:.1f} seconds")
+        
+        # Print codebook AFTER Phase 4 refinement
+        print("\n" + "="*80)
+        print("📚 CODEBOOK AFTER PHASE 4 REFINEMENT")
+        print("="*80)
+        self._display_full_codebook(codebook)
         
         # Save final labels for analysis
         self.final_labels = final_labels
@@ -850,6 +863,11 @@ class ThematicLabeller:
         try:
             result = await self._invoke_with_retries(prompt, RefinementResponse)
             
+            # Debug: Print raw refinement response
+            print(f"\n    🔍 DEBUG: Refinement response received:")
+            print(f"    - Quality issues: {len(result.quality_issues) if result.quality_issues else 0}")
+            print(f"    - Refined labels: {result.refined_labels}")
+            
             # Apply refinements safely - only modify labels, not structure
             if result.refined_labels:
                 refinement_count = 0
@@ -858,6 +876,12 @@ class ThematicLabeller:
                 theme_lookup = {t.id: t for t in codebook.themes}
                 topic_lookup = {t.id: t for t in codebook.topics}
                 subject_lookup = {s.id: s for s in codebook.subjects}
+                
+                # Debug: Print lookup keys
+                print(f"\n    🔍 DEBUG: Available IDs in codebook:")
+                print(f"    - Theme IDs: {list(theme_lookup.keys())}")
+                print(f"    - Topic IDs: {list(topic_lookup.keys())[:10]}..." if len(topic_lookup) > 10 else f"    - Topic IDs: {list(topic_lookup.keys())}")
+                print(f"    - Subject IDs: {list(subject_lookup.keys())[:10]}..." if len(subject_lookup) > 10 else f"    - Subject IDs: {list(subject_lookup.keys())}")
                 
                 # Apply theme label refinements
                 if 'themes' in result.refined_labels:
@@ -896,6 +920,16 @@ class ThematicLabeller:
                             continue
                 
                 print(f"    ✨ Applied {refinement_count} label refinements")
+                
+                # Print summary of what was refined
+                if refinement_count > 0:
+                    print("\n    📝 Summary of refinements applied:")
+                    if 'themes' in result.refined_labels and result.refined_labels['themes']:
+                        print("    - Themes refined:", list(result.refined_labels['themes'].keys()))
+                    if 'topics' in result.refined_labels and result.refined_labels['topics']:
+                        print("    - Topics refined:", list(result.refined_labels['topics'].keys()))
+                    if 'subjects' in result.refined_labels and result.refined_labels['subjects']:
+                        print("    - Subjects refined:", list(result.refined_labels['subjects'].keys())[:10], "..." if len(result.refined_labels['subjects']) > 10 else "")
             
             if result.quality_issues:
                 print(f"    📋 Identified {len(result.quality_issues)} quality issues for review:")
