@@ -749,61 +749,82 @@ Language: {language}
 """
 
 PHASE4_REFINEMENT_PROMPT = """
-You are a {language} expert conducting final quality review of a hierarchical codebook for survey analysis.
+You are a {language} expert conducting AGGRESSIVE quality review of a hierarchical codebook for survey analysis.
 
 Survey Question: {survey_question}
 
 Current hierarchy with cluster assignments:
 {hierarchy_with_assignments}
 
-Your task: Review and refine all labels to ensure maximum clarity, consistency, and analytical value.
+🚨 CRITICAL REQUIREMENTS - EVERY LABEL MUST PASS ALL CRITERIA:
 
-Refinement Criteria:
-1. **Clarity**: Each label clearly communicates its concept in 4 words or less
-2. **Uniqueness**: Labels are mutually exclusive within their level (no overlapping concepts)
-3. **Consistency**: Similar concepts use consistent terminology throughout
-4. **Hierarchy**: Child labels logically relate to their parent labels
-5. **Completeness**: Labels fully capture the essence of their assigned clusters
+1. **SINGLE CONCEPT ONLY**: Each label must express ONE idea/concept ONLY
+   - ❌ FORBIDDEN: "Gezondheid Voedingswaarde" (2 concepts mashed together)
+   - ✅ CORRECT: "Gezondheid" OR "Voedingswaarde" (choose the primary concept)
+   - ❌ FORBIDDEN: Any labels with "and", "en", "&", or multiple concepts
+   - ❌ FORBIDDEN: Compound labels like "Prijs Betaalbaarheid" → Choose "Prijs" OR "Betaalbaarheid"
 
-Specific checks:
-- Remove redundant words (e.g., "Issues with X" → "X problems")
-- Ensure no compound concepts (no "and", "&", or multiple ideas)
-- Verify labels answer the survey question appropriately
-- Check that "Other" categories are clearly defined
-- Ensure terminology matches the language and context of respondents
+2. **MUTUALLY EXCLUSIVE**: Labels within each level must be completely distinct
+   - ❌ FORBIDDEN: Duplicate subjects like "Verse en Natuurlijke Ingrediënten" appearing twice
+   - ✅ REQUIRED: Each label covers different aspect/cluster content
 
-Analysis approach:
-1. First, identify any problematic labels that violate the criteria
-2. Then propose refined versions that better capture the concept
-3. Ensure refined labels maintain the meaning of assigned clusters
+3. **MAXIMUM 3 WORDS**: Labels must be concise and specific
+   - ❌ FORBIDDEN: "Ingrediënten en Samenstelling" (4+ words, compound)
+   - ✅ CORRECT: "Ingrediënten" (1 word, clear)
+
+4. **HIERARCHICAL LOGIC**: Child labels must be proper subcategories of parents
+   - Topics must be logical subdivisions of their theme
+   - Subjects must be specific instances under their topic
+
+MANDATORY FIXES REQUIRED:
+- Fix ALL compound labels (those containing multiple concepts)
+- Eliminate ALL duplicate subjects/topics  
+- Ensure each cluster maps to exactly ONE unique path through the hierarchy
+- Replace vague labels with specific, actionable ones
+
+Your task: COMPLETELY REWRITE the labels to meet these strict criteria. Be ruthless - reject any label that violates the rules.
 
 Output format (JSON):
 {{
   "quality_issues": [
     {{
-      "id": "1.2",
-      "current_label": "Current problematic label",
-      "issue": "Brief explanation of the problem",
-      "refined_label": "Improved label"
+      "id": "1",
+      "current_label": "Gezondheid Voedingswaarde", 
+      "issue": "Compound label combining two concepts - violates single concept rule",
+      "refined_label": "Gezondheid"
+    }},
+    {{
+      "id": "2",
+      "current_label": "Prijs Betaalbaarheid",
+      "issue": "Compound label - choose primary concept", 
+      "refined_label": "Prijs"
     }}
   ],
   "refined_labels": {{
     "themes": {{
-      "1": "Final Theme Name",
-      "2": "Another Theme",
-      "999": "Other Concerns"
+      "1": "Gezondheid",
+      "2": "Prijs", 
+      "3": "Portiegrootte",
+      "4": "Verpakking",
+      "5": "Smaak",
+      "6": "Bereiding",
+      "7": "Transparantie", 
+      "8": "Presentatie"
     }},
     "topics": {{
-      "1.1": "Final Topic Name",
-      "1.2": "Another Topic",
-      "99.9": "Other Topics"
+      "1.1": "Ingrediënten",
+      "3.1": "Dieetopties",
+      "5.1": "Kruiden"
     }},
     "subjects": {{
-      "1.1.1": "Final Subject"
+      "22": "Verse Ingrediënten",
+      "33": "Natuurlijke Ingrediënten", 
+      "23": "Plantaardige Opties",
+      "31": "Vlees Opties"
     }}
   }}
 }}
 
 Language: {language}
-Note: Return ALL labels, not just the ones that changed.
+CRITICAL: Every label in refined_labels must be a single, clear concept. NO exceptions.
 """
