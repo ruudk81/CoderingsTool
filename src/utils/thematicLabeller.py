@@ -381,8 +381,28 @@ class ThematicLabeller:
         
         result = await self._invoke_with_retries(prompt, SingleDiscoveryResponse)
         
+        # Debug: Print what the LLM actually returned
+        print(f"\n🔍 DEBUG: Phase 2 LLM response structure:")
+        result_dict = result.model_dump()
+        print(f"  - Top-level keys: {list(result_dict.keys())}")
+        if 'themes' in result_dict:
+            print(f"  - Number of themes: {len(result_dict['themes'])}")
+            for i, theme in enumerate(result_dict['themes'][:2]):  # Show first 2 themes
+                print(f"  - Theme {i+1} keys: {list(theme.keys())}")
+                if 'topics' in theme:
+                    print(f"    - Topics in theme {i+1}: {len(theme['topics'])}")
+                    for j, topic in enumerate(theme['topics'][:2]):  # Show first 2 topics
+                        print(f"    - Topic {j+1} keys: {list(topic.keys())}")
+                        if 'subjects' in topic:
+                            print(f"      - Subjects in topic {j+1}: {len(topic['subjects'])}")
+                            if topic['subjects']:
+                                subject = topic['subjects'][0]
+                                print(f"      - Sample subject keys: {list(subject.keys())}")
+                                if 'micro_clusters' in subject:
+                                    print(f"      - Sample subject clusters: {subject.get('micro_clusters', [])}")
+        
         # Parse result into Codebook - pass labeled_clusters for proper subject labels
-        return self._parse_codebook(result.model_dump(), labeled_clusters)
+        return self._parse_codebook(result_dict, labeled_clusters)
     
     async def _phase2_discovery_mapreduce(self, labeled_clusters: List[ClusterLabel]) -> Codebook:
         """Phase 2: MapReduce for theme discovery"""
