@@ -6,7 +6,6 @@ Creates Theme → Topic → Keyword hierarchy from survey response clusters.
 """
 
 import asyncio
-import hashlib
 import json
 from typing import List, Tuple, Optional, Dict, Any
 import numpy as np
@@ -17,7 +16,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 # Import from existing codebase
-from config import DEFAULT_LABELLER_CONFIG, LabellerConfig
+from config import LabellerConfig
 import models
 
 
@@ -101,10 +100,8 @@ class RefinementResponse(BaseModel):
 class ThematicLabeller:
     """Main orchestrator for thematic analysis using instructor"""
     
-    def __init__(self, config: LabellerConfig = None, cache_manager=None, filename: str = None):
-        # Force fresh config to avoid caching issues
+    def __init__(self, config: LabellerConfig = None, filename: str = None):
         self.config = config or LabellerConfig()
-        self.cache_manager = cache_manager  # Only kept for compatibility with test section
         self.filename = filename or "unknown"
         self.survey_question = ""
         
@@ -195,10 +192,6 @@ class ThematicLabeller:
         
         raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {str(last_error)}")
     
-    def _generate_cache_key(self, data: Any) -> str:
-        """Generate deterministic cache key"""
-        data_str = json.dumps(data, sort_keys=True, default=str)
-        return hashlib.md5(data_str.encode()).hexdigest()[:12]
     
     async def process_hierarchy_async(self, cluster_models: List[models.ClusterModel], survey_question: str) -> List[models.LabelModel]:
         """Main async processing method"""
@@ -219,42 +212,24 @@ class ThematicLabeller:
         print(f"  ✓ Phase 1 completed in {phase1_time:.1f} seconds")
         print(f"  Generated {len(labeled_clusters)} cluster labels")
         
-        # Check cache for Phase 2
-        cache_key = f"codebook_{self._generate_cache_key(labeled_clusters)}"
-        cached_codebook = None
-        if self.cache_manager:
-            cached_codebook = self.cache_manager.load_intermediate_data(
-                self.filename, cache_key, expected_type=dict
-            )
+        # Phase 2: Theme Discovery
+        print("\n🔍 Phase 2: Theme Discovery - Building codebook...")
+        phase2_start = time.time()
         
-        if cached_codebook:
-            print("📦 Using cached codebook")
-            codebook = Codebook(**cached_codebook)
+        # For discovery, we want to see ALL clusters together for context
+        # Only use MapReduce for very large datasets (>100 clusters)
+        use_single_call_threshold = 100  # Increased from 30
+        
+        if len(labeled_clusters) <= use_single_call_threshold:
+            print(f"  Using single call to see all {len(labeled_clusters)} clusters together")
+            print(f"  This ensures the LLM has full context for creating coherent themes")
+            codebook = await self._phase2_discovery_single(labeled_clusters)
         else:
-            # Phase 2: Theme Discovery
-            print("\n🔍 Phase 2: Theme Discovery - Building codebook...")
-            phase2_start = time.time()
-            
-            # For discovery, we want to see ALL clusters together for context
-            # Only use MapReduce for very large datasets (>100 clusters)
-            use_single_call_threshold = 100  # Increased from 30
-            
-            if len(labeled_clusters) <= use_single_call_threshold:
-                print(f"  Using single call to see all {len(labeled_clusters)} clusters together")
-                print(f"  This ensures the LLM has full context for creating coherent themes")
-                codebook = await self._phase2_discovery_single(labeled_clusters)
-            else:
-                print(f"  Using MapReduce for {len(labeled_clusters)} clusters (>{use_single_call_threshold})")
-                print(f"  Warning: This may result in less coherent themes due to limited context")
-                codebook = await self._phase2_discovery_mapreduce(labeled_clusters)
-            phase2_time = time.time() - phase2_start
-            print(f"  ✓ Phase 2 completed in {phase2_time:.1f} seconds")
-            
-            # Cache codebook
-            if self.cache_manager:
-                self.cache_manager.cache_intermediate_data(
-                    codebook.model_dump(), self.filename, cache_key
-                )
+            print(f"  Using MapReduce for {len(labeled_clusters)} clusters (>{use_single_call_threshold})")
+            print(f"  Warning: This may result in less coherent themes due to limited context")
+            codebook = await self._phase2_discovery_mapreduce(labeled_clusters)
+        phase2_time = time.time() - phase2_start
+        print(f"  ✓ Phase 2 completed in {phase2_time:.1f} seconds")
         
         # Phase 3: Assignment
         print("\n🎯 Phase 3: Assignment - Assigning themes to clusters...")
@@ -1119,7 +1094,7 @@ if __name__ == "__main__":
     
     from utils.cacheManager import CacheManager
     from utils import dataLoader
-    from config import CacheConfig, DEFAULT_LABELLER_CONFIG
+    from config import CacheConfig, LabellerConfig
     import models
     
     # Initialize cache manager
@@ -1165,7 +1140,6 @@ if __name__ == "__main__":
         print(f"🔧 Config check: use_llm_refinement = {fresh_config.use_llm_refinement}")
         labeller = ThematicLabeller(
             config=fresh_config,
-            cache_manager=cache_manager,
             filename=filename
         )
         
