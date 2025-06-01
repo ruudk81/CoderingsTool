@@ -262,6 +262,9 @@ class ThematicLabeller:
         phase3_time = time.time() - phase3_start
         print(f"  ✓ Phase 3 completed in {phase3_time:.1f} seconds")
         
+        # Save codebook state before Phase 4 for analysis
+        self.codebook_before_phase4 = codebook
+        
         # Phase 4: Refinement
         print("\n✨ Phase 4: Refinement - Finalizing labels...")
         phase4_start = time.time()
@@ -269,12 +272,18 @@ class ThematicLabeller:
         phase4_time = time.time() - phase4_start
         print(f"  ✓ Phase 4 completed in {phase4_time:.1f} seconds")
         
+        # Save final labels for analysis
+        self.final_labels = final_labels
+        
         # Apply to original cluster models
         print("\n✅ Applying hierarchy to responses...")
         result = self._apply_hierarchy_to_responses(cluster_models, final_labels, codebook)
         
         print("\n🎉 Hierarchical labeling complete!")
         self._print_summary(codebook)
+        
+        # Save final codebook for analysis
+        self.codebook = codebook
         
         return result
     
