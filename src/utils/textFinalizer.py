@@ -1,7 +1,7 @@
 import re
 from typing import List, Union
 import models
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 class TextFinalizer:
     

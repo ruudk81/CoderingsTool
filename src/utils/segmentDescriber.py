@@ -16,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 class LangChainPipeline :
     def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
@@ -438,7 +438,7 @@ class SegmentDescriber:
 # Example usage
 if __name__ == "__main__":
     
-    from utils import data_io, csvHandler
+    from utils import dataLoader, csvHandler
     import random
     
     filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
@@ -447,7 +447,7 @@ if __name__ == "__main__":
 
     csv_handler          = csvHandler.CsvHandler()
     filepath             = csv_handler.get_filepath(filename, 'preprocessed')
-    data_loader          = data_io.DataLoader()
+    data_loader          = dataLoader.DataLoader()
     var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
 
     preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)

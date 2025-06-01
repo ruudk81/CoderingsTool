@@ -8,7 +8,7 @@ from typing import List, Dict
 sys.path.append(str(Path(__file__).parents[2]))  # Add src directory
 
 import models
-from utils.cache_manager import CacheManager
+from utils.cacheManager import CacheManager
 from config import CacheConfig
 
 

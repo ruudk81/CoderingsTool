@@ -10,7 +10,7 @@ from config import (DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig
                     QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG)
 from prompts import GRADER_INSTRUCTIONS
 import models
-from .verbose_reporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter, ProcessingStats
 
 # Patch OpenAI client with instructor for structured output
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY)) 
@@ -171,7 +171,7 @@ class Grader:
 # example/test section
 if __name__ == "__main__":
     
-    from utils import data_io, csvHandler
+    from utils import dataLoader, csvHandler
     
     filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column    = "DLNMID"
@@ -179,7 +179,7 @@ if __name__ == "__main__":
 
     csv_handler          = csvHandler.CsvHandler()
     filepath             = csv_handler.get_filepath(filename, 'preprocessed')
-    data_loader          = data_io.DataLoader()
+    data_loader          = dataLoader.DataLoader()
     var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
 
     preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
