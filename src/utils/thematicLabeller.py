@@ -804,19 +804,46 @@ class ThematicLabeller:
         try:
             result = await self._invoke_with_retries(prompt, RefinementResponse)
             
-            # Apply refinements if any
+            # Apply refinements if any - handle nested structure from prompt
             if result.refined_labels:
-                print(f"    ✨ Applied {len(result.refined_labels)} label refinements")
-                for cluster_id_str, refinements in result.refined_labels.items():
-                    try:
-                        cluster_id = int(cluster_id_str)
-                        if cluster_id in final_labels:
-                            if 'label' in refinements:
-                                final_labels[cluster_id]['label'] = refinements['label']
-                            if 'description' in refinements:
-                                final_labels[cluster_id]['description'] = refinements['description']
-                    except ValueError:
-                        print(f"    ⚠️  Skipping invalid cluster ID in refinements: '{cluster_id_str}'")
+                refinement_count = 0
+                
+                # The refined_labels comes in the format: {"themes": {...}, "topics": {...}, "subjects": {...}}
+                # We need to map this back to our cluster assignments
+                
+                # Create reverse lookups from the codebook
+                theme_label_lookup = {t.id: t for t in codebook.themes}
+                topic_label_lookup = {t.id: t for t in codebook.topics}
+                
+                # Apply theme refinements
+                if 'themes' in result.refined_labels:
+                    for theme_id, refined_theme_label in result.refined_labels['themes'].items():
+                        if theme_id in theme_label_lookup:
+                            # Update the codebook entry
+                            theme_label_lookup[theme_id].label = refined_theme_label
+                            refinement_count += 1
+                
+                # Apply topic refinements
+                if 'topics' in result.refined_labels:
+                    for topic_id, refined_topic_label in result.refined_labels['topics'].items():
+                        if topic_id in topic_label_lookup:
+                            # Update the codebook entry
+                            topic_label_lookup[topic_id].label = refined_topic_label
+                            refinement_count += 1
+                
+                # Subject refinements would apply to individual cluster labels
+                if 'subjects' in result.refined_labels:
+                    for subject_id, refined_subject_label in result.refined_labels['subjects'].items():
+                        try:
+                            cluster_id = int(subject_id)
+                            if cluster_id in final_labels:
+                                final_labels[cluster_id]['label'] = refined_subject_label
+                                refinement_count += 1
+                        except ValueError:
+                            # Skip non-numeric subject IDs
+                            continue
+                
+                print(f"    ✨ Applied {refinement_count} label refinements to hierarchy")
             
             if result.quality_issues:
                 print(f"    ⚠️  Found {len(result.quality_issues)} quality issues to review")
