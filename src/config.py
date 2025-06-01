@@ -191,7 +191,7 @@ class LabellerConfig:
     
     # Retry and concurrency settings
     max_retries: int = 3
-    concurrent_requests: int = 5
+    concurrent_requests: int = 10  # Increased for better performance
     retry_delay: int = 2  # Seconds between retries
 
 @dataclass
