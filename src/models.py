@@ -48,13 +48,53 @@ class LabelSubmodel(ClusterSubmodel):
     #clusters with labels
     Theme: Optional[Dict[int, str]] = None 
     Topic: Optional[Dict[float, str]] = None  # Float keys for topic IDs like 1.1, 1.2, etc.
-    Keyword: Optional[Dict[int, str]] = None
+    Code: Optional[Dict[float, str]] = None  # Float keys for code IDs like 1.1.1
     
     model_config = ConfigDict(arbitrary_types_allowed=True)  # Force model rebuild
+
+class HierarchicalCode(BaseModel):
+    """Represents a single code in the hierarchical structure"""
+    code_id: str  # e.g., "1.1.1"
+    numeric_id: float  # e.g., 1.11
+    label: str
+    description: str
+    parent_id: str  # e.g., "1.1"
+    level: int  # 3 for codes
+    
+class HierarchicalTopic(BaseModel):
+    """Represents a single topic in the hierarchical structure"""
+    topic_id: str  # e.g., "1.1"
+    numeric_id: float  # e.g., 1.1
+    label: str
+    description: str
+    parent_id: str  # e.g., "1"
+    level: int  # 2 for topics
+    codes: List[HierarchicalCode] = []
+    
+class HierarchicalTheme(BaseModel):
+    """Represents a single theme in the hierarchical structure"""
+    theme_id: str  # e.g., "1"
+    numeric_id: float  # e.g., 1.0
+    label: str
+    description: str
+    level: int  # 1 for themes
+    topics: List[HierarchicalTopic] = []
+    
+class ClusterMapping(BaseModel):
+    """Maps clusters to the hierarchical structure"""
+    cluster_id: int
+    cluster_label: str
+    theme_id: str
+    topic_id: str
+    code_id: str
+    confidence: float = 1.0
 
 class LabelModel(ClusterModel):
     summary: Optional[str] = None
     response_segment: Optional[List[LabelSubmodel]] = None
+    # Hierarchical structure data
+    themes: Optional[List[HierarchicalTheme]] = None
+    cluster_mappings: Optional[List[ClusterMapping]] = None
 
 # conversion    
 def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':

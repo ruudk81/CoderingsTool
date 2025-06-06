@@ -961,6 +961,66 @@ class ThematicLabeller:
         # Create string ID lookups for assignment matching
         theme_str_lookup = {t.id: t for t in codebook.themes}
         topic_str_lookup = {t.id: t for t in codebook.topics}
+        code_str_lookup = {c.id: c for c in codebook.codes}
+        
+        # Build hierarchical structure for the LabelModel
+        hierarchical_themes = []
+        for theme in codebook.themes:
+            hier_theme = models.HierarchicalTheme(
+                theme_id=theme.id,
+                numeric_id=theme.numeric_id,
+                label=theme.label,
+                description=theme.description,
+                level=theme.level,
+                topics=[]
+            )
+            
+            # Add topics to theme
+            for topic in codebook.topics:
+                if topic.parent_id == theme.id:
+                    hier_topic = models.HierarchicalTopic(
+                        topic_id=topic.id,
+                        numeric_id=topic.numeric_id,
+                        label=topic.label,
+                        description=topic.description,
+                        parent_id=topic.parent_id,
+                        level=topic.level,
+                        codes=[]
+                    )
+                    
+                    # Add codes to topic
+                    for code in codebook.codes:
+                        if code.parent_id == topic.id:
+                            hier_code = models.HierarchicalCode(
+                                code_id=code.id,
+                                numeric_id=code.numeric_id,
+                                label=code.label,
+                                description=code.description,
+                                parent_id=code.parent_id,
+                                level=code.level
+                            )
+                            hier_topic.codes.append(hier_code)
+                    
+                    hier_theme.topics.append(hier_topic)
+            
+            hierarchical_themes.append(hier_theme)
+        
+        # Build cluster mappings
+        cluster_mappings = []
+        for cluster_id, labels in final_labels.items():
+            theme_id_str, confidence = labels['theme']
+            topic_id_str, _ = labels['topic']
+            code_id_str, _ = labels['code']
+            
+            mapping = models.ClusterMapping(
+                cluster_id=cluster_id,
+                cluster_label=labels['label'],
+                theme_id=theme_id_str,
+                topic_id=topic_id_str,
+                code_id=code_id_str,
+                confidence=confidence
+            )
+            cluster_mappings.append(mapping)
         
         label_models = []
         
@@ -971,6 +1031,10 @@ class ThematicLabeller:
             # Force rebuild model to clear any cached schema
             if hasattr(label_model, 'model_rebuild'):
                 label_model.model_rebuild()
+            
+            # Add hierarchical structure data (same for all models as it's survey-level)
+            label_model.themes = hierarchical_themes
+            label_model.cluster_mappings = cluster_mappings
             
             # Generate a summary for the model (optional)
             segment_count = len(label_model.response_segment) if label_model.response_segment else 0
@@ -1003,15 +1067,19 @@ class ThematicLabeller:
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}
                             
-                            # Apply Keyword (Dict[int, str]) - use cluster label
-                            cluster_label = labels['label']
-                            segment.Keyword = {cluster_id: cluster_label}
+                            # Apply Code (Dict[float, str])
+                            code_id_str, _ = labels['code']
+                            if code_id_str in code_str_lookup:
+                                code = code_str_lookup[code_id_str]
+                                code_id_float = code.numeric_id
+                                segment.Code = {code_id_float: f"{code.label}: {code.description}"}
+                            elif code_id_str == "99.1.1":
+                                segment.Code = {99.11: "Other: Unclassified"}
                         else:
                             # Handle unmapped clusters
                             segment.Theme = {999: "Other: Unmapped cluster"}
                             segment.Topic = {99.9: "Other: Unmapped cluster"}
-                            # For unmapped clusters, just use the cluster ID
-                            segment.Keyword = {cluster_id: f"Cluster {cluster_id}"}
+                            segment.Code = {99.11: "Other: Unmapped cluster"}
             
             label_models.append(label_model)
         
@@ -1173,15 +1241,15 @@ if __name__ == "__main__":
                 if segment.Topic:
                     topic_id, topic_label = list(segment.Topic.items())[0]
                     print(f"  Topic: {topic_id} - {topic_label}")
-                if segment.Keyword:
-                    keyword_id, keyword_label = list(segment.Keyword.items())[0]
-                    print(f"  Keyword: {keyword_id} - {keyword_label}")
+                if segment.Code:
+                    code_id, code_label = list(segment.Code.items())[0]
+                    print(f"  Code: {code_id} - {code_label}")
     
     # Print hierarchy statistics
     print("\n=== Hierarchy Statistics ===")
     theme_counts = {}
     topic_counts = {}
-    keyword_counts = {}
+    code_counts = {}
     
     for result in labeled_results:
         if result.response_segment:
@@ -1192,14 +1260,14 @@ if __name__ == "__main__":
                 if segment.Topic:
                     for topic_id in segment.Topic:
                         topic_counts[topic_id] = topic_counts.get(topic_id, 0) + 1
-                if segment.Keyword:
-                    for keyword_id in segment.Keyword:
-                        keyword_counts[keyword_id] = keyword_counts.get(keyword_id, 0) + 1
+                if segment.Code:
+                    for code_id in segment.Code:
+                        code_counts[code_id] = code_counts.get(code_id, 0) + 1
     
     print("📊 Final hierarchy:")
     print(f"   - {len(theme_counts)} Themes")
     print(f"   - {len(topic_counts)} Topics") 
-    print(f"   - {len(keyword_counts)} Keywords")
+    print(f"   - {len(code_counts)} Codes")
     
     print("\n🏆 Top 5 themes by frequency:")
     for theme_id, count in sorted(theme_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
