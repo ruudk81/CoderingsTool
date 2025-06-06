@@ -1049,6 +1049,9 @@ class ThematicLabeller:
                         if cluster_id in final_labels:
                             labels = final_labels[cluster_id]
                             
+                            # Update micro_cluster with the cluster label from phase 1
+                            segment.micro_cluster[cluster_id] = labels['label']
+                            
                             # Apply Theme (Dict[int, str])
                             theme_id_str, _ = labels['theme']
                             if theme_id_str in theme_str_lookup:
@@ -1076,7 +1079,9 @@ class ThematicLabeller:
                             elif code_id_str == "99.1.1":
                                 segment.Code = {99.11: "Other: Unclassified"}
                         else:
-                            # Handle unmapped clusters
+                            # Handle unmapped clusters - keep original empty label or set fallback
+                            if not segment.micro_cluster[cluster_id]:
+                                segment.micro_cluster[cluster_id] = f"Cluster {cluster_id}"
                             segment.Theme = {999: "Other: Unmapped cluster"}
                             segment.Topic = {99.9: "Other: Unmapped cluster"}
                             segment.Code = {99.11: "Other: Unmapped cluster"}
