@@ -222,28 +222,40 @@ else:
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
 
-thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
-labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
-
 step_name = "labels"
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    themes = set()
-    topics = set()
-    keywords = set()
-    for result in labeled_results:
-        if result.response_segment:
-            for segment in result.response_segment:
-                if segment.Theme:
-                    themes.update(segment.Theme.keys())
-                if segment.Topic:
-                    topics.update(segment.Topic.keys())
-                if segment.Keyword:
-                    keywords.update(segment.Keyword.keys())
-    verbose_reporter.summary("HIERARCHICAL LABELS FROM CACHE", {"Input": f"{len(cluster_results)} clustered responses",  "Output": f"{len(labeled_results)} labeled responses","Hierarchy": f"{len(themes)} themes, {len(topics)} topics, {len(keywords)} keywords"})
+    if labeled_results and labeled_results[0].themes:
+        # Get complete hierarchical structure from first result (same for all)
+        first_result = labeled_results[0]
+
+        # Count themes, topics, and codes from hierarchical structure
+        theme_count = len(first_result.themes)
+        topic_count = sum(len(theme.topics) for theme in first_result.themes)
+        code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
+
+        # Get cluster mappings
+        cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
+
+        verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
+            "Themes": theme_count,
+            "Topics": topic_count,
+            "Codes": code_count,
+            "Mapped Clusters": cluster_count
+            })
+
+        print("\nExample Theme Structure:")
+        for theme in first_result.themes:  
+            print(f"Theme {theme.theme_id}: {theme.label}")
+            for topic in theme.topics: 
+                print(f"  Topic {topic.topic_id}: {topic.label}")
+                for code in topic.codes: 
+                    print(f"    Code {code.code_id}: {code.label}")
+    
+    
 else:
     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     
