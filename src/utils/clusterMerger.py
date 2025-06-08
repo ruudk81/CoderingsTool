@@ -329,8 +329,7 @@ class ClusterMerger:
                     "var_lab": var_lab,
                     "language": self.config.language,
                     "similarity_threshold": self.similarity_threshold,
-                    "batch_size": len(pairs_for_prompt),
-                    "total_pairs": sum(len(b) for b in merge_batches)
+                    "batch_size": len(pairs_for_prompt)
                 }
             )
             self._first_prompt_captured = True
