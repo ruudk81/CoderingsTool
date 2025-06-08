@@ -222,7 +222,7 @@ class SegmentationConfig:
     max_sample_responses: int = 3  # For verbose output
     model: str = "gpt-4o-mini"  # Model for segmentation
     temperature: float = 0.0  # Temperature for generation
-    max_concurrent_requests: int = 3  # Conservative for OpenAI token limits (200K TPM)
+    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
 
 # =============================================================================
 # EMBEDDING CONFIGURATION

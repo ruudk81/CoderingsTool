@@ -53,6 +53,15 @@ class SegmentDescriber:
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
+        
+        # Initialize reusable LLM client (Fix 1: Avoid creating new client every call)
+        self.llm = ChatOpenAI(
+            temperature=self.config.temperature,
+            model=self.openai_model,
+            openai_api_key=self.openai_api_key,
+            seed=self.model_config.seed
+        )
+        self.parser = JsonOutputParser()
 
         if not self.openai_api_key:
             raise ValueError("API key is required")
@@ -177,13 +186,16 @@ class SegmentDescriber:
             coding_result = await self._call_coding_stage(refined_text, var_lab, max_retries)
             
             # Convert results back to DescriptiveModel objects
+            # Fix 3: Pre-build lookup dict for O(1) response lookup
+            response_lookup = {str(r.respondent_id): r.response for r in batch}
+            
             processed_results = []
             for result_item in coding_result:
                 respondent_id = result_item.get("respondent_id")
                 segments = result_item.get("segments", [])
                 
-                # Find original response text
-                original_response = next((r.response for r in batch if str(r.respondent_id) == str(respondent_id)), "")
+                # Fast O(1) lookup instead of O(n) search
+                original_response = response_lookup.get(str(respondent_id), "")
                 
                 processed_results.append(models.DescriptiveModel(
                     respondent_id=respondent_id,
@@ -266,16 +278,9 @@ class SegmentDescriber:
         retries = 0
         while retries <= max_retries:
             try:
-                llm = ChatOpenAI(
-                    temperature=self.config.temperature,
-                    model=self.openai_model,
-                    openai_api_key=self.openai_api_key,
-                    seed=self.model_config.seed
-                )
-                
-                parser = JsonOutputParser()
-                result = await llm.ainvoke(prompt)
-                return parser.parse(result.content)
+                # Fix 1: Use reusable client instead of creating new one
+                result = await self.llm.ainvoke(prompt)
+                return self.parser.parse(result.content)
                 
             except Exception as e:
                 print(f"LLM call failed on attempt {retries + 1}/{max_retries + 1}: {str(e)}")
