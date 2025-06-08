@@ -89,7 +89,7 @@ from utils.promptPrinter import promptPrinter
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
@@ -327,5 +327,22 @@ print(f"Total clusters assigned: {total_sources}")
     
 #     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
 #     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
+
+
+# === PROMPT SUMMARY ========================================================================================================
+"""Print all captured prompts after pipeline completion"""
+if PROMPT_PRINTER and prompt_printer:
+    print("\n" + "="*80)
+    print("PIPELINE COMPLETE - PROMPT SUMMARY")
+    print("="*80)
+    
+    # Print summary statistics
+    prompt_printer.print_summary()
+    
+    # Print all prompts again for review
+    prompt_printer.print_all_prompts()
+    
+    # Optional: Save prompts to file
+    # prompt_printer.save_prompts("pipeline_prompts.json")
 
 
