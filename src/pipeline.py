@@ -285,52 +285,57 @@ print(f"Total clusters assigned: {total_sources}")
 
 ###############
 
-# step_name = "labels"
-# verbose_reporter = VerboseReporter(VERBOSE)
-# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+# === STEP 6 ========================================================================================================
+"""hierarchical labeling"""
+from utils.thematicLabeller import ThematicLabeller
+from config import DEFAULT_LABELLER_CONFIG
 
-# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-#     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-#     if labeled_results and labeled_results[0].themes:
-#         # Get complete hierarchical structure from first result (same for all)
-#         first_result = labeled_results[0]
+step_name = "labels"
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-#         # Count themes, topics, and codes from hierarchical structure
-#         theme_count = len(first_result.themes)
-#         topic_count = sum(len(theme.topics) for theme in first_result.themes)
-#         code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
+    if labeled_results and labeled_results[0].themes:
+        # Get complete hierarchical structure from first result (same for all)
+        first_result = labeled_results[0]
 
-#         # Get cluster mappings
-#         cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
+        # Count themes, topics, and codes from hierarchical structure
+        theme_count = len(first_result.themes)
+        topic_count = sum(len(theme.topics) for theme in first_result.themes)
+        code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
 
-#         verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
-#             "Themes": theme_count,
-#             "Topics": topic_count,
-#             "Codes": code_count,
-#             "Mapped Clusters": cluster_count
-#             })
+        # Get cluster mappings
+        cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
 
-#         print("\nExample Theme Structure:")
-#         for theme in first_result.themes:  
-#             print(f"Theme {theme.theme_id}: {theme.label}")
-#             for topic in theme.topics: 
-#                 print(f"  Topic {topic.topic_id}: {topic.label}")
-#                 for code in topic.codes: 
-#                     print(f"    Code {code.code_id}: {code.label}")
+        verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
+            "Themes": theme_count,
+            "Topics": topic_count,
+            "Codes": code_count,
+            "Mapped Clusters": cluster_count
+            })
+
+        print("\nExample Theme Structure:")
+        for theme in first_result.themes:  
+            print(f"Theme {theme.theme_id}: {theme.label}")
+            for topic in theme.topics: 
+                print(f"  Topic {topic.topic_id}: {topic.label}")
+                for code in topic.codes: 
+                    print(f"    Code {code.code_id}: {code.label}")
     
     
-# else:
-#     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
+else:
+    verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     
-#     start_time = time.time()
-#     prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-#     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-#     labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
-#     end_time = time.time()
-#     elapsed_time = end_time - start_time
+    start_time = time.time()
+    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+    labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
     
-#     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-#     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
+    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
+    verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
 # === PROMPT SUMMARY ========================================================================================================
