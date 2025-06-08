@@ -231,7 +231,9 @@ class LangChainPipeline :
                 result = await self.chain.ainvoke(inputs)
                 return result
             except Exception as e:
-                print(f"Retry {retries + 1}: Error in LangChain chain execution: {str(e)}")
+                import traceback
+                print(f"Retry {retries + 1}: Error in LangChain chain execution: {type(e).__name__}: {str(e)}")
+                print(f"Full traceback:\n{traceback.format_exc()}")
                 retries += 1
                 await asyncio.sleep(self.retry_delay * retries)
 
@@ -404,7 +406,9 @@ class SegmentDescriber:
                 return results
             
             except Exception as e:
-                print(f"Error in LangChain pipeline: {str(e)}")
+                import traceback
+                print(f"Error in LangChain pipeline: {type(e).__name__}: {str(e)}")
+                print(f"Full traceback:\n{traceback.format_exc()}")
                 # Return fallback results for all responses
                 results = []
                 for resp_data in responses_data:
