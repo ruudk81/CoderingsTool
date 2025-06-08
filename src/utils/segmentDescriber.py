@@ -148,6 +148,23 @@ class SegmentDescriber:
             len(encoding.encode(base_coding))
         )
 
+    def _format_responses_for_prompt(self, responses: List[models.DescriptiveModel]) -> str:
+        """Format multiple responses for batch processing"""
+        formatted_responses = []
+        for response in responses:
+            formatted_responses.append(f"Response {len(formatted_responses) + 1} (ID: {response.respondent_id}): \"{response.response}\"")
+        return "\n".join(formatted_responses)
+    
+    def _format_segments_for_refinement(self, segmented_results: List[Dict]) -> str:
+        """Format segmented results for refinement stage"""
+        import json
+        return json.dumps(segmented_results, ensure_ascii=False, indent=2)
+    
+    def _format_segments_for_coding(self, refined_results: List[Dict]) -> str:
+        """Format refined results for coding stage"""
+        import json
+        return json.dumps(refined_results, ensure_ascii=False, indent=2)
+
     async def process_batch_multi_response(self, batch: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
         """Process a batch of responses using multi-response 3-stage approach"""
         try:
