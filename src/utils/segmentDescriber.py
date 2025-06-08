@@ -59,6 +59,36 @@ class LangChainPipeline :
         elif isinstance(inputs, list):
             return inputs
         return []
+    
+    def _format_responses_for_prompt(self, responses: List[Dict]) -> str:
+        """Format responses as clean numbered list for LLM readability"""
+        formatted_lines = []
+        for i, response in enumerate(responses, 1):
+            respondent_id = response.get('respondent_id', 'Unknown')
+            response_text = response.get('response', '')
+            formatted_lines.append(f"{i}. Respondent ID: {respondent_id}\n   Response: \"{response_text}\"")
+        return "\n\n".join(formatted_lines)
+    
+    def _format_segments_for_prompt(self, segments_data: List[Dict]) -> str:
+        """Format segments as clean numbered list for LLM readability"""
+        formatted_lines = []
+        counter = 1
+        
+        for response_data in segments_data:
+            respondent_id = response_data.get('respondent_id', 'Unknown')
+            segments = response_data.get('segments', [])
+            
+            formatted_lines.append(f"{counter}. Respondent ID: {respondent_id}")
+            if segments:
+                for segment in segments:
+                    segment_id = segment.get('segment_id', '')
+                    segment_response = segment.get('segment_response', '')
+                    formatted_lines.append(f"   - Segment {segment_id}: \"{segment_response}\"")
+            else:
+                formatted_lines.append("   - No segments")
+            counter += 1
+            
+        return "\n\n".join(formatted_lines)
 
     def build_chain(self):
         
@@ -72,8 +102,10 @@ class LangChainPipeline :
         # Prompt capture functions
         def capture_segmentation_prompt(inputs):
             if self.prompt_printer and not self.captured_segmentation:
+                # Format responses as clean text
+                responses_text = self._format_responses_for_prompt(inputs.get("responses", []))
                 formatted_prompt = SEGMENTATION_PROMPT.format(
-                    responses=inputs.get("responses", []),
+                    responses=responses_text,
                     var_lab=inputs.get("var_lab", ""),
                     language=inputs.get("language", "")
                 )
@@ -94,8 +126,11 @@ class LangChainPipeline :
             
         def capture_refinement_prompt(inputs):
             if self.prompt_printer and not self.captured_refinement:
+                # inputs here is the JSON output from segmentation, format it as clean text
+                segments_data = inputs if isinstance(inputs, list) else []
+                segments_text = self._format_segments_for_prompt(segments_data)
                 formatted_prompt = REFINEMENT_PROMPT.format(
-                    segments=inputs.get("segments", []),
+                    segments=segments_text,
                     var_lab=self.var_lab,
                     language=self.language
                 )
@@ -116,8 +151,11 @@ class LangChainPipeline :
             
         def capture_coding_prompt(inputs):
             if self.prompt_printer and not self.captured_coding:
+                # inputs here is the JSON output from refinement, format it as clean text
+                segments_data = inputs if isinstance(inputs, list) else []
+                segments_text = self._format_segments_for_prompt(segments_data)
                 formatted_prompt = CODING_PROMPT.format(
-                    segments=inputs.get("segments", []),
+                    segments=segments_text,
                     var_lab=self.var_lab,
                     language=self.language
                 )
@@ -136,6 +174,31 @@ class LangChainPipeline :
                 self.captured_coding = True
             return inputs
     
+        def format_for_segmentation(inputs):
+            return {
+                "responses": self._format_responses_for_prompt(inputs["responses"]),
+                "var_lab": inputs["var_lab"],
+                "language": inputs["language"]
+            }
+            
+        def format_for_refinement(inputs):
+            # inputs here is the JSON output from segmentation
+            segments_data = inputs if isinstance(inputs, list) else []
+            return {
+                "segments": self._format_segments_for_prompt(segments_data),
+                "var_lab": self.var_lab,
+                "language": self.language
+            }
+            
+        def format_for_coding(inputs):
+            # inputs here is the JSON output from refinement
+            segments_data = inputs if isinstance(inputs, list) else []
+            return {
+                "segments": self._format_segments_for_prompt(segments_data),
+                "var_lab": self.var_lab,
+                "language": self.language
+            }
+        
         chain = (
            {
                "responses": lambda x: x["responses"],
@@ -143,24 +206,17 @@ class LangChainPipeline :
                "language": lambda x: x["language"]
            }
            | RunnableLambda(capture_segmentation_prompt)
+           | RunnableLambda(format_for_segmentation)
            | segmentation_prompt
            | self.llm
            | self.parser
-           | RunnableLambda(lambda inputs: {
-               "segments": inputs if isinstance(inputs, list) else [],
-               "var_lab": self.var_lab,
-               "language": self.language
-           })
            | RunnableLambda(capture_refinement_prompt)
+           | RunnableLambda(format_for_refinement)
            | refinement_prompt
            | self.llm
            | self.parser
-           | RunnableLambda(lambda inputs: {
-               "segments": inputs if isinstance(inputs, list) else [],
-               "var_lab": self.var_lab,
-               "language": self.language
-           })
            | RunnableLambda(capture_coding_prompt)
+           | RunnableLambda(format_for_coding)
            | coding_prompt
            | self.llm
            | self.parser
