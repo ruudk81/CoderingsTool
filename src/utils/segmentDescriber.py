@@ -1,13 +1,11 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-from typing import List, Dict, Union, Any
-from pydantic import BaseModel, Field
+from typing import List, Dict
 import instructor
 import openai
 import tiktoken
 import asyncio
 import nest_asyncio
-import json
 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI
@@ -16,10 +14,8 @@ from langchain_openai import ChatOpenAI
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
-from .verboseReporter import VerboseReporter, ProcessingStats
+from utils.verboseReporter import VerboseReporter, ProcessingStats
 
-
-# Removed CodingBatch class - now using List[models.DescriptiveModel] directly
 
 class SegmentDescriber:
     def __init__(
@@ -248,6 +244,7 @@ class SegmentDescriber:
     async def _call_refinement_stage(self, segments_text: str, var_lab: str, max_retries: int) -> List[Dict]:
         """Call refinement stage with multiple segmented responses"""
         prompt = REFINEMENT_PROMPT.format(
+            language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             segments=segments_text
         )
