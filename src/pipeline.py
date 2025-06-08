@@ -180,6 +180,7 @@ from utils import clusterer, clusterMerger
 
 step_name        = "clusters"
 verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -205,7 +206,8 @@ else:
         input_list=initial_clusters, 
         var_lab=var_lab,
         config=cluster_gen.config,  # Use same config as ClusterGenerator
-        verbose=VERBOSE)
+        verbose=VERBOSE,
+        prompt_printer=prompt_printer)
     cluster_results, merge_mapping = merger.merge_clusters()
     print("\nCluster merging completed successfully")
 
