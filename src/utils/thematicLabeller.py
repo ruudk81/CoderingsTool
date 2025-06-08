@@ -98,11 +98,17 @@ class ThemeDiscoveryPipeline:
     """LangChain pipeline for three-step theme discovery"""
     
     def __init__(self, model_name: str, api_key: str, language: str, survey_question: str,
-                 temperature: float = 0.0, config: LabellerConfig = None):
+                 temperature: float = 0.0, config: LabellerConfig = None, prompt_printer = None):
         self.language = language
         self.survey_question = survey_question
         self.config = config or LabellerConfig()
         self.codes_text = ""  # Store for use across steps
+        self.prompt_printer = prompt_printer
+        
+        # Track which Phase 2 sub-prompts have been captured
+        self.captured_phase2_extract = False
+        self.captured_phase2_group = False
+        self.captured_phase2_create = False
         
         self.llm = ChatOpenAI(
             temperature=temperature,
@@ -164,6 +170,77 @@ class ThemeDiscoveryPipeline:
         group_topics_prompt = PromptTemplate.from_template(PHASE2_GROUP_TOPICS_PROMPT)
         create_codebook_prompt = PromptTemplate.from_template(PHASE2_CREATE_CODEBOOK_PROMPT)
         
+        # Prompt capture functions
+        def capture_extract_themes_prompt(inputs):
+            if self.prompt_printer and not self.captured_phase2_extract:
+                formatted_prompt = PHASE2_EXTRACT_THEMES_PROMPT.format(
+                    survey_question=inputs.get("survey_question", ""),
+                    codes=inputs.get("codes", ""),
+                    language=inputs.get("language", "")
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=formatted_prompt,
+                    prompt_type="phase2a_extract_themes",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "survey_question": inputs.get("survey_question", ""),
+                        "language": inputs.get("language", ""),
+                        "phase": "2a/6 - Extract Themes"
+                    }
+                )
+                self.captured_phase2_extract = True
+            return inputs
+            
+        def capture_group_topics_prompt(inputs):
+            if self.prompt_printer and not self.captured_phase2_group:
+                themes_formatted = inputs.get("themes", "")
+                formatted_prompt = PHASE2_GROUP_TOPICS_PROMPT.format(
+                    themes=themes_formatted,
+                    codes=inputs.get("codes", ""),
+                    survey_question=inputs.get("survey_question", ""),
+                    language=inputs.get("language", "")
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=formatted_prompt,
+                    prompt_type="phase2b_group_topics",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "survey_question": inputs.get("survey_question", ""),
+                        "language": inputs.get("language", ""),
+                        "phase": "2b/6 - Group Topics"
+                    }
+                )
+                self.captured_phase2_group = True
+            return inputs
+            
+        def capture_create_codebook_prompt(inputs):
+            if self.prompt_printer and not self.captured_phase2_create:
+                structure_formatted = inputs.get("structure", "")
+                formatted_prompt = PHASE2_CREATE_CODEBOOK_PROMPT.format(
+                    structure=structure_formatted,
+                    codes=inputs.get("codes", ""),
+                    survey_question=inputs.get("survey_question", ""),
+                    language=inputs.get("language", "")
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=formatted_prompt,
+                    prompt_type="phase2c_create_codebook",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "survey_question": inputs.get("survey_question", ""),
+                        "language": inputs.get("language", ""),
+                        "phase": "2c/6 - Create Codebook"
+                    }
+                )
+                self.captured_phase2_create = True
+            return inputs
+        
         # Build the chain
         chain = (
             # Step 1: Extract themes
@@ -172,16 +249,19 @@ class ThemeDiscoveryPipeline:
                 "codes": lambda x: x["codes"],
                 "language": lambda x: x["language"]
             }
+            | RunnableLambda(capture_extract_themes_prompt)
             | extract_themes_prompt
             | self.llm
             | self.parser
             # Step 2: Group into topics
             | RunnableLambda(self._format_themes_for_topics)
+            | RunnableLambda(capture_group_topics_prompt)
             | group_topics_prompt
             | self.llm
             | self.parser
             # Step 3: Create full codebook
             | RunnableLambda(self._format_structure_for_codebook)
+            | RunnableLambda(capture_create_codebook_prompt)
             | create_codebook_prompt
             | self.llm
             | self.parser
@@ -213,13 +293,22 @@ class ThemeDiscoveryPipeline:
 class ThematicLabeller:
     """Orchestrator for thematic analysis"""
     
-    def __init__(self, config: LabellerConfig = None, verbose: bool = False): 
+    def __init__(self, config: LabellerConfig = None, verbose: bool = False, prompt_printer = None): 
         self.config = config or LabellerConfig()
         self.survey_question = ""
         self.client = instructor.from_openai(AsyncOpenAI(api_key=self.config.api_key or None), mode=instructor.Mode.JSON)
         self.batch_size = self.config.batch_size
         self.max_rediscovery_attempts = 3  # Maximum attempts for theme discovery
         self.verbose_reporter = VerboseReporter(verbose)
+        self.prompt_printer = prompt_printer
+        
+        # Track which phase prompts have been captured (only capture first prompt per phase)
+        self.captured_phase1 = False
+        self.captured_phase2 = False
+        self.captured_phase3 = False
+        self.captured_phase4 = False
+        self.captured_phase5 = False
+        self.captured_phase6 = False
         
     def _get_representatives(self, cluster: models.ClusterModel) -> List[Tuple[str, float]]:
         """Get top N representative descriptions with similarity scores"""
@@ -431,6 +520,23 @@ class ThematicLabeller:
                 representatives=reps_text,
                 language=self.config.language)
             
+            # Capture prompt only for the first cluster
+            if self.prompt_printer and not self.captured_phase1:
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=prompt,
+                    prompt_type="phase1_descriptive_coding",
+                    metadata={
+                        "model": self.config.model,
+                        "survey_question": self.survey_question,
+                        "language": self.config.language,
+                        "phase": "1/6 - Descriptive Coding",
+                        "cluster_id": cluster_id
+                    }
+                )
+                self.captured_phase1 = True
+            
             task = self._invoke_with_retries(prompt, DescriptiveCodingResponse)
             tasks.append((cluster_id, representatives, task))
         
@@ -471,7 +577,8 @@ class ThematicLabeller:
             language=self.config.language,
             survey_question=self.survey_question,
             temperature=self.config.temperature,
-            config=self.config)
+            config=self.config,
+            prompt_printer=self.prompt_printer)
         
         self.verbose_reporter.stat_line("Running 3-step theme discovery...")
             
@@ -512,6 +619,22 @@ class ThematicLabeller:
             codebook=codebook_text,
             unused_codes=unused_codes_text,
             language=self.config.language)
+        
+        # Capture Phase 3 prompt
+        if self.prompt_printer and not self.captured_phase3:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase3_theme_judger",
+                metadata={
+                    "model": self.config.model,
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "3/6 - Theme Judger"
+                }
+            )
+            self.captured_phase3 = True
         
         try:
             result = await self._invoke_with_retries(prompt, ThemeJudgmentResponse)
@@ -559,6 +682,22 @@ class ThematicLabeller:
             language=self.config.language
         )
         
+        # Capture Phase 4 prompt
+        if self.prompt_printer and not self.captured_phase4:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase4_theme_review",
+                metadata={
+                    "model": self.config.model,
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "4/6 - Theme Review"
+                }
+            )
+            self.captured_phase4 = True
+        
         result = await self._invoke_with_retries(prompt, ThemeReviewResponse)
         improved_codebook = self._parse_codebook(result.model_dump())
         
@@ -574,6 +713,22 @@ class ThematicLabeller:
             survey_question=self.survey_question,
             codebook=codebook_text,
             language=self.config.language)
+        
+        # Capture Phase 5 prompt
+        if self.prompt_printer and not self.captured_phase5:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase5_label_refinement",
+                metadata={
+                    "model": self.config.model,
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "5/6 - Label Refinement"
+                }
+            )
+            self.captured_phase5 = True
         
         try:
             result = await self._invoke_with_retries(prompt, LabelRefinementResponse)
@@ -688,6 +843,23 @@ class ThematicLabeller:
                 cluster_representatives=representatives,
                 codebook=codebook_text,
                 language=self.config.language)
+            
+            # Capture Phase 6 prompt only for the first cluster
+            if self.prompt_printer and not self.captured_phase6:
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=prompt,
+                    prompt_type="phase6_assignment",
+                    metadata={
+                        "model": self.config.model,
+                        "survey_question": self.survey_question,
+                        "language": self.config.language,
+                        "phase": "6/6 - Assignment",
+                        "cluster_id": cluster.cluster_id
+                    }
+                )
+                self.captured_phase6 = True
             
             task = self._invoke_with_retries(prompt, AssignmentResponse)
             tasks.append((cluster, task))
