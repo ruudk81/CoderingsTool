@@ -1,34 +1,29 @@
 SPELLCHECK_INSTRUCTIONS = """
 You are a {language} language expert specializing in correcting misspelled words in open-ended survey responses.
+Your task is to process correction tasks for responses that contain placeholder tokens indicating spelling mistakes.
 
-=========================
-INSTRUCTIONS
-=========================
-Your need to correct responses that contain placeholder tokens indicating spelling mistakes.
+First, here is the survey question that the responses are answering:
+<survey_question>
+{var_lab}
+</survey_question>
 
-You will receive input. This input contains correction tasks:
-- A sentence with one or more <oov_word> placeholders.
-- A list of misspelled words, in the same order as the placeholders.
-- A list of suggested corrections, in the same order.
+For each correction task, you will receive:
+- A sentence with one or more <oov_word> placeholders
+- A list of misspelled words, in the same order as the placeholders
+- A list of suggested corrections, in the same order
 
-For each correction task:
-- Replace every <oov_word> placeholder with the best possible correction of the corresponding misspelled word, taking into account the meaning and context of the survey question.
-- If a better correction exists than the ones provided, prefer that.
-- You may split a misspelled word into two words **only if** the split preserves the intended meaning and fits grammatically.
-- If no suitable correction is possible, return "[NO RESPONSE]" as the corrected sentence for that task.
+Follow these rules when making corrections:
+1. Replace each <oov_word> placeholder with the best possible correction of the corresponding misspelled word.
+2. Consider the meaning and context of the survey question when choosing corrections.
+3. If a better correction exists than the ones provided, use that instead.
+4. You may split a misspelled word into two words only if the split preserves the intended meaning and fits grammatically.
+5. If no suitable correction is possible, use "[NO RESPONSE]" as the corrected sentence for that task.
 
-=========================
-INPUT
-=========================
-Survey Question:
-"{var_lab}"
-
-Below are the tasks to process:
+Here are the correction tasks to process:
+<correction_tasks>
 {tasks}
+</correction_tasks>
 
-=========================
-REQUIRED OUTPUT FORMAT:
-=========================
 After processing all tasks, provide your output in the following JSON format:
 {{
   "corrections": [
@@ -40,57 +35,96 @@ After processing all tasks, provide your output in the following JSON format:
   ]
 }}
 
-Ensure that your output is a valid JSON object with a single key "corrections", whose value is an array of objects. 
-Each object in the "corrections" array must have exactly these fields:
+Ensure that your output is a valid JSON object with a single key "corrections", whose value is an array of objects. Each object in the "corrections" array must have exactly these fields:
 - "respondent_id": "ID_FROM_TASK"
 - "corrected_response": "The fully corrected response"
-=========================
+
+Additional guidelines:
+- Pay close attention to the context and meaning of each response when making corrections.
+- Ensure that your corrections maintain the original intent of the respondent.
+- If a suggested correction doesn't fit the context, consider alternative corrections that preserve the meaning.
+- Double-check that your JSON output is properly formatted and includes all corrected responses.
+
+Begin processing the correction tasks now, and provide your output in the specified JSON format.
 """
 
-
 GRADER_INSTRUCTIONS = """
-You are a {language} grader evaluating open-ended survey responses.
+You are a {language} language grader evaluating open-ended survey responses. 
+Your task is to determine whether each response is meaningless according to specific criteria.
 
-=========================
-TASK
-=========================
-Your task is to determine whether each response is **meaningless**.
+Task Description:
+Analyze each response and decide if it should be classified as meaningless based on the following criteria:
 
-=========================
-DECISION CRITERIA
-=========================
-A response should be considered **meaningless** only if:
-- It only expresses uncertainty or lack of knowledge (e.g., “I don’t know”, “N/A”, “Not applicable”).
-- It simply repeats the question without adding any new content.
-- It consists of random characters, gibberish, or filler text with no semantic meaning (e.g., “asdfkj”, “lorem ipsum”).
+Decision Criteria:
+A response is considered meaningless if it:
+1. Only expresses uncertainty or lack of knowledge (e.g., "I don't know", "N/A", "Not applicable")
+2. Simply repeats the question without adding any new content
+3. Consists of random characters, gibberish, or filler text with no semantic meaning (e.g., "asdfkj", "lorem ipsum")
 
-=========================
-INPUT
-=========================
+Input:
+You will be provided with a survey question and a list of responses to evaluate.
+
 Survey question:
-"{var_lab}"
+<survey_question>
+{var_lab}
+</survey_question>
 
-Responses to evaluate:
+Here are the responses you need to evaluate:
+<responses>
 {responses}
+</responses>
 
-=========================
-REQUIRED OUTPUT FORMAT:
-=========================
-Return a **JSON array**. Each object in the array must contain exactly:
-- `"respondent_id"`: (string or number) The respondent's ID
-- `"response"`: (string) The exact response text
-- `"quality_filter"`: (boolean) `true` if the response is meaningless, `false` otherwise
-=========================
+Your output should be a JSON array. Each object in the array must contain exactly:
+- "respondent_id": (string or number) The respondent's ID
+- "response": (string) The exact response text
+- "quality_filter": (boolean) true if the response is meaningless, false otherwise
+
+Follow these steps for each response:
+1. Read the response carefully.
+2. Determine if the response meets any of the criteria for being meaningless.
+3. If the response is meaningless, set quality_filter to true. Otherwise, set it to false.
+4. Create a JSON object with the respondent_id, response, and quality_filter.
+5. Add this object to your JSON array.
+
+After processing all responses, return the complete JSON array.
+
+Remember to use the exact format specified. Here's an example of how two entries in your output should look:
+[
+  {{
+    "respondent_id": "1",
+    "response": "I don't know",
+    "quality_filter": true
+  }},
+  {{
+    "respondent_id": "2",
+    "response": "The product is easy to use and has great features.",
+    "quality_filter": false
+  }},
+  {{
+    "respondent_id": "3",
+    "response": "asdfghjkl",
+    "quality_filter": true
+  }}
+]
+
+Ensure that your entire output is a valid JSON array containing all evaluated responses.
 """
 
 SEGMENTATION_PROMPT = """
-You are a helpful {language} expert in analyzing survey responses. 
-You are taked with segmenting free-text responses into distinct, standalone ideas.
+You are a helpful {language} language expert in analyzing survey responses. 
+Your task is to segment free-text survey responses into distinct, standalone segments. 
 
-=========================
-INSTRUCTION
-=========================
-Break each response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
+First, here is the survey question:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Now, here is the response you need to segment:
+<response>
+{response}
+</response>
+
+Your task is to break the response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
 - Opinion
 - Preference
 - Issue
@@ -98,9 +132,7 @@ Break each response into the smallest meaningful standalone units, where each se
 - Idea
 - Response pattern
 
-=========================
-SEGMENTATION RULES
-=========================
+Follow these segmentation rules:
 1. Split at conjunctions (and, or, but, also) when they connect DIFFERENT ideas or topics
 2. Split listed items into separate segments (e.g., "milk and sugar" → "milk", "sugar")
 3. When items share context, preserve that context in each segment:
@@ -110,110 +142,106 @@ SEGMENTATION RULES
 4. Use the respondent's exact words - do not paraphrase or correct
 5. Keep meaningless responses (e.g., "Don't know", "?") as a single segment
 
-=========================
-INPUT
-=========================
-Survey question:
-"{var_lab}"
-
-Response to segment:
-{response}
-
-=========================
-OUTPUT
-=========================
-Return a JSON array with these fields for each segment:
+Your output should be a JSON array with these fields for each segment:
 - "segment_id": A sequential number as string ("1", "2", etc.)
 - "segment_response": The exact segmented text with necessary context preserved
-=========================
+
+Here's an example of how two entries in your output should look:
+[
+{{
+"segment_id": "1",
+"segment_response": "Minder verpakking."
+}}
+]
+
+Before providing your final output, think through the segmentation process. 
+Consider how many segments the response should be divided into and how to apply the segmentation rules.
+
+After your analysis, provide the final segmented output formatted as a JSON array as specified above.
 """
 
 REFINEMENT_PROMPT = """
-You are a {language} expert in semantic segmentation of survey responses.
+You are a {language} language expert in semantic segmentation of survey responses. 
+Your task is to review and refine response segments derived from responses to this survey question: 
+"{var_lab}"
 
-=========================
-TASK
-=========================
-Review and refine response segments derived from responses to this survey question: "{var_lab}"
-
-=========================
-INSTRUCTIONS
-=========================
-1. Ensure tha each segment contains ONLY ONE standalone idea or response segment
-2. Split any segment that still contains multiple distinct ideas or response segments
-3. Preserve necessary context when splitting compound statements
-
-=========================
-REFINEMENT RULES
-=========================
-- Split segments that contain multiple distinct ideas or response segments (connected by conjunctions like "and", "or")
-- When splitting, duplicate any necessary context to make each segment meaningful:
-  * For example: "I like milk and sugar in my coffee" should become two segments:
-    - "I like milk in my coffee"
-    - "I like sugar in my coffee"
-- Only duplicate words that appear in the original response
-- Never merge segments
-- Keep meaningless responses intact (e.g., "Don't know")
-
-=========================
-INPUT
-=========================
-Segments to refine:
+Here are the segments to refine:
+<segments_to_refine>
 {segments}
+</segments_to_refine>
 
-=========================
-OUTPUT FORMAT
-=========================
-Return a JSON array with these fields for each refined segment:
-- "segment_id": A sequential number as string ("1", "2", etc.)
-- "segment_response": The properly segmented text using ONLY words from the original response
+Follow these refinement rules:
+1. Ensure that each segment contains ONLY ONE standalone idea or response segment.
+2. Split any segment that still contains multiple distinct ideas or response segments.
+3. Preserve necessary context when splitting compound statements.
+4. Split segments that contain multiple distinct ideas or response segments (connected by conjunctions like "en", "of").
+5. When splitting, duplicate any necessary context to make each segment meaningful.
+6. Only duplicate words that appear in the original response.
+7. Never merge segments.
+8. Keep meaningless responses intact (e.g., "Weet niet").
+
+Process the segments as follows:
+1. Read each segment carefully.
+2. Identify if the segment contains multiple ideas or response segments.
+3. If it does, split the segment according to the refinement rules.
+4. Ensure each resulting segment is meaningful and contains only one idea.
+5. Assign new segment IDs to split segments, continuing the sequence from the original segment ID.
+
+Provide your output in the following JSON format:
+[
+  {{
+    "segment_id": "1",
+    "segment_response": "Refined segment text"
+  }},
+  {{
+    "segment_id": "2",
+    "segment_response": "Another refined segment text"
+  }}
+]    
+    
+Here are two examples to guide you:
 
 Example 1: Multiple ideas with shared context
-Input: {{"segment_id": "1", "segment_response": "I like milk and sugar in my coffee"}}
+Input: {{"segment_id": "1", "segment_response": "Ik wil minder zout en meer kruiden in de maaltijden"}}
 Output: [
-  {{"segment_id": "1", "segment_response": "I like milk in my coffee"}},
-  {{"segment_id": "2", "segment_response": "I like sugar in my coffee"}}
+  {{"segment_id": "1", "segment_response": "Ik wil minder zout in de maaltijden"}},
+  {{"segment_id": "2", "segment_response": "Ik wil meer kruiden in de maaltijden"}}
 ]
 
 Example 2: Multiple ideas without shared context
-Input: {{"segment_id": "1", "segment_response": "The price is too high and the quality is low"}}
+Input: {{"segment_id": "1", "segment_response": "De prijs is te hoog en de kwaliteit is laag"}}
 Output: [
-  {{"segment_id": "1", "segment_response": "The price is too high"}},
-  {{"segment_id": "2", "segment_response": "the quality is low"}}
+  {{"segment_id": "1", "segment_response": "De prijs is te hoog"}},
+  {{"segment_id": "2", "segment_response": "de kwaliteit is laag"}}
 ]
-=========================
+
+Now, please process the provided segments and return the refined segments in the specified JSON format.
 """
 
 CODING_PROMPT = """
-You are a {language} expert in thematic analysis of survey responses.
+You are a {language} language expert in thematic analysis of survey responses. 
+Your task is to code segments from responses to the survey question: "{var_lab}"
 
-=========================
-TASK
-=========================
-Code each segment from responses to this survey question: "{var_lab}"
-Each segment is a standalone sentence or clause extracted from a full response.
+Here are the segments you need to code:
+<segments>
+{segments}
+</segments>
 
-=========================
-INSTRUCTIONS
-=========================
-For Each Segment, You Will:
+For each segment, you will:
 1. Keep the original segment_id and segment_response
 2. Add a segment_label (a thematic label)
 3. Add a segment_description (a clarification of the label)
 
-=========================
-REQUIREMENTS
-=========================
-For segment Labels:
-- A concise label of up to 5 words total, using ONLY ADJECTIVES AND NOUNS in {language}, that captures the CENTRAL MEANING of the segment
-- ONLY return labels that reflect ONE idea, topic, concern, issue, or theme in response to the question: "{var_lab}"
+Requirements for segment labels:
+- Create a concise label of up to 5 words total, using ONLY ADJECTIVES AND NOUNS in Dutch, that captures the CENTRAL MEANING of the segment
+- ONLY return labels that reflect ONE idea, topic, concern, issue, or theme in response to the survey question
 - NEVER return multi-headed labels or combinations of multiple ideas
 - Format: ALL_CAPS_WITH_UNDERSCORES
-- Examples: "PRODUCT_QUALITY", "MORE_OPTIONS", "UNNECESSARY_COMPLEXITY"
+- Examples: "ONBETROUWBARE_DIENSTREGELING", "ONGEMAKKELIJKE_OVERSTAPPEN", "ONVEILIGHEID_GEVOEL"
 - Language: {language}
 
-For segment descriptions:
-- Rewrite the segment as a natural-sounding **first-person response** to the question: "{var_lab}"
+Requirements for segment descriptions:
+- Rewrite the segment as a natural-sounding first-person response to the survey question
 - Make sure it sounds like something a person would actually say when answering the question
 - Use a direct, conversational or instructional tone:
   - If the segment is a suggestion: use an imperative tone (e.g., "Maak...", "Laat...")
@@ -222,20 +250,12 @@ For segment descriptions:
 - CRITICAL: Do NOT add interpretations beyond what's in the original segment
 - Language: {language}
 
-**Special Cases**
+Special cases:
 For meaningless responses (e.g., "?", "Don't know"):
 - segment_label: "NA"
 - segment_description: "NA"
 
-=========================
-INPUT
-=========================
-Segments to code:
-{segments}
-
-=========================
-OUTPUT FORMAT
-=========================
+Output format:
 Return a valid JSON array with these fields for each segment:
 - "segment_id": The original segment ID
 - "segment_response": The original segment text
@@ -243,7 +263,22 @@ Return a valid JSON array with these fields for each segment:
 - "segment_description": Your clarifying description
 
 Ensure all output is written in {language}, unless the code is "NA".
-=========================
+
+Here's an example of correct output:
+[
+  {{
+  "segment_id": "1",
+  "segment_response": "Betere interactie met de docent.",
+  "segment_label": "DOCENTCONTACT",
+  "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
+  }},
+  {{
+    "segment_id": "2",
+    "segment_response": "?",
+    "segment_label": "NA",
+    "segment_description": "NA"
+  }}
+]
 """
 
 MERGE_PROMPT = """
