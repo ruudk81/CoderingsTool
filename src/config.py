@@ -211,7 +211,9 @@ class SegmentationConfig:
     """Configuration for segmentation and description step"""
     max_tokens: int = 16000
     completion_reserve: int = 1000
-    max_batch_size: int = 5
+    min_batch_size: int = 5  # Minimum responses per batch for efficiency
+    max_batch_size: int = 20  # Maximum responses per batch for manageability
+    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
     retry_delay: int = 2
     max_retries: int = 3
     spacy_batch_size: int = 32
@@ -220,7 +222,7 @@ class SegmentationConfig:
     max_sample_responses: int = 3  # For verbose output
     model: str = "gpt-4o-mini"  # Model for segmentation
     temperature: float = 0.0  # Temperature for generation
-    max_concurrent_requests: int = 5  # For API rate limiting
+    max_concurrent_requests: int = 3  # Conservative for OpenAI token limits (200K TPM)
 
 # =============================================================================
 # EMBEDDING CONFIGURATION
