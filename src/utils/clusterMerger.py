@@ -66,7 +66,8 @@ class ClusterMerger:
         var_lab: str = None, 
         config: ClusteringConfig = None, 
         client = None, 
-        verbose: bool = None):
+        verbose: bool = None,
+        prompt_printer = None):
         
         # Use ClusteringConfig and extract merger config
         self.clustering_config = config or DEFAULT_CLUSTERING_CONFIG
@@ -78,6 +79,8 @@ class ClusterMerger:
         self.cluster_data: Dict[int, ClusterData] = {}
         self.input_clusters: List[models.ClusterModel] = []
         self.merge_mapping: Optional[MergeMap] = None
+        self.prompt_printer = prompt_printer
+        self._first_prompt_captured = False
         
         # Initialize verbose reporter
         self.verbose_reporter = VerboseReporter(self.verbose)
@@ -313,6 +316,24 @@ class ClusterMerger:
         # Extract just the pair tuples for prompt creation
         pairs_for_prompt = [(c1, c2) for c1, c2, _ in batch_pairs]
         prompt = self._create_merge_decision_prompt(pairs_for_prompt, cluster_data, var_lab)
+        
+        # Capture prompt only for the first batch
+        if self.prompt_printer and not self._first_prompt_captured:
+            self.prompt_printer.capture_prompt(
+                step_name="clustering",
+                utility_name="ClusterMerger",
+                prompt_content=prompt,
+                prompt_type="merge_decision",
+                metadata={
+                    "model": self.config.model,
+                    "var_lab": var_lab,
+                    "language": self.config.language,
+                    "similarity_threshold": self.similarity_threshold,
+                    "batch_size": len(pairs_for_prompt),
+                    "total_pairs": sum(len(b) for b in merge_batches)
+                }
+            )
+            self._first_prompt_captured = True
         
         # Retry logic similar to Grader._call_openai_api
         tries = 0
