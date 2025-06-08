@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field
 from config import LabellerConfig
 import models
 from utils.verboseReporter import VerboseReporter
+from difflib import SequenceMatcher
+
+from langchain_core.runnables import RunnableLambda
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI
 
 # Models for structured data
 class CodebookEntry(BaseModel):
@@ -19,8 +25,7 @@ class CodebookEntry(BaseModel):
     description: str = Field(description="Clear description")
     parent_id: Optional[str] = Field(default=None, description="ID of parent")
     parent_numeric_id: Optional[float] = Field(default=None, description="Numeric ID of parent")
-    direct_clusters: List[int] = Field(default_factory=list, description="Clusters assigned directly to this level")
-
+    source_codes: List[int] = Field(default_factory=list, description="For codes: original cluster IDs from Phase 1. For themes/topics: empty")
 
 class Codebook(BaseModel):
     """Complete hierarchical codebook from Phase 2"""
@@ -33,17 +38,15 @@ class Codebook(BaseModel):
 class ClusterLabel(BaseModel):
     """Initial cluster label from Phase 1"""
     cluster_id: int
-    label: str = Field(description="Concise label (max 4 words)")
-    #description: str = Field(description="Detailed description of cluster theme")
+    label: str = Field(description="Concise label (max 5 words)")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
 
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
-    label: str = Field(description="Concise thematic label (max 4 words)")
-    #description: str = Field(description="Clear explanation of cluster theme")
+    label: str = Field(description="Concise thematic label (max 5 words)")
     
-    
+
 class DiscoveryResponse(BaseModel):
     """Response from Phase 2  discovery"""
     themes: List[Dict[str, Any]] = Field(description="List of themes with their structure")
@@ -90,6 +93,121 @@ class ThemeAssignment(BaseModel):
     code_id: str   
     confidence: float = 1.0
     alternative_assignments: Optional[List[Dict]] = None
+
+class ThemeDiscoveryPipeline:
+    """LangChain pipeline for three-step theme discovery"""
+    
+    def __init__(self, model_name: str, api_key: str, language: str, survey_question: str,
+                 temperature: float = 0.0, config: LabellerConfig = None):
+        self.language = language
+        self.survey_question = survey_question
+        self.config = config or LabellerConfig()
+        self.codes_text = ""  # Store for use across steps
+        
+        self.llm = ChatOpenAI(
+            temperature=temperature,
+            model=model_name,
+            openai_api_key=api_key,
+            seed=self.config.seed if hasattr(self.config, 'seed') else 42
+        )
+        
+        self.parser = JsonOutputParser()
+        self.retry_delay = self.config.retry_delay
+        self.max_retries = self.config.max_retries
+        
+        self.chain = self.build_chain()
+    
+    def _format_themes_for_topics(self, themes_result):
+        """Format themes result for the topics step"""
+        themes = themes_result.get("themes", [])
+        # Format as a list for the prompt
+        themes_formatted = "\n".join([f"- {theme}" for theme in themes])
+        
+        return {
+            "themes": themes_formatted,
+            "codes": self.codes_text,
+            "survey_question": self.survey_question,
+            "language": self.language
+            }
+
+    
+    def _format_structure_for_codebook(self, topics_result):
+        """Format structure result for the final codebook step"""
+        structure = topics_result.get("structure", [])
+        
+        # Format structure for display
+        formatted_lines = []
+        for item in structure:
+            theme = item.get("theme", "Unknown Theme")
+            topics = item.get("topics", [])
+            formatted_lines.append(f"Theme: {theme}")
+            for topic in topics:
+                formatted_lines.append(f"  - Topic: {topic}")
+        
+        structure_formatted = "\n".join(formatted_lines)
+        
+        return {
+            "structure": structure_formatted,
+            "codes": self.codes_text,
+            "survey_question": self.survey_question,
+            "language": self.language
+            }
+    
+    def build_chain(self):
+        # Import prompts
+        from prompts import (PHASE2_EXTRACT_THEMES_PROMPT, 
+                           PHASE2_GROUP_TOPICS_PROMPT, 
+                           PHASE2_CREATE_CODEBOOK_PROMPT)
+        
+        # Create prompt templates
+        extract_themes_prompt = PromptTemplate.from_template(PHASE2_EXTRACT_THEMES_PROMPT)
+        group_topics_prompt = PromptTemplate.from_template(PHASE2_GROUP_TOPICS_PROMPT)
+        create_codebook_prompt = PromptTemplate.from_template(PHASE2_CREATE_CODEBOOK_PROMPT)
+        
+        # Build the chain
+        chain = (
+            # Step 1: Extract themes
+            {
+                "survey_question": lambda x: x["survey_question"],
+                "codes": lambda x: x["codes"],
+                "language": lambda x: x["language"]
+            }
+            | extract_themes_prompt
+            | self.llm
+            | self.parser
+            # Step 2: Group into topics
+            | RunnableLambda(self._format_themes_for_topics)
+            | group_topics_prompt
+            | self.llm
+            | self.parser
+            # Step 3: Create full codebook
+            | RunnableLambda(self._format_structure_for_codebook)
+            | create_codebook_prompt
+            | self.llm
+            | self.parser
+        )
+        
+        return chain
+    
+    async def invoke_with_retries(self, inputs: dict):
+        # Store codes for use in formatting functions
+        self.codes_text = inputs.get("codes", "")
+        
+        retries = 0
+        last_error = None
+        
+        while retries <= self.max_retries:
+            try:
+                result = await self.chain.ainvoke(inputs)
+                return result
+            except Exception as e:
+                last_error = e
+                print(f"Retry {retries + 1}: Error in theme discovery chain: {str(e)}")
+                retries += 1
+                if retries <= self.max_retries:
+                    await asyncio.sleep(self.retry_delay * retries)
+        
+        raise RuntimeError(f"Theme discovery pipeline failed after {self.max_retries} retries. Last error: {str(last_error)}")
 
 
 class ThematicLabeller:
@@ -209,7 +327,7 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete("Codebook structure created")
             
         # =============================================================================
-        # Phase 3 and 4: Theme Review  
+        # Phase 3: Theme Review  
         # =============================================================================
           
         review_attempt = 0
@@ -234,15 +352,11 @@ class ThematicLabeller:
                         self.verbose_reporter.stat_line(f"- {issue}", bullet="  ")
                 
                 if judgment.actions:
-                    actions_text = []
+                    self.verbose_reporter.stat_line("Required actions:")
                     for action in judgment.actions:
                         action_type = action.get('type', 'UNKNOWN')
                         details = action.get('details', 'No details')
-                        actions_text.append(f"- {action_type}: {details}")
-                    actions_text = "\n".join(actions_text) if actions_text else "No specific actions provided"
-                    self.verbose_reporter.stat_line("Required actions:")
-                    for action in judgment.actions: 
-                        self.verbose_reporter.stat_line(actions_text, bullet="  ")
+                        self.verbose_reporter.stat_line(f"- {action_type}: {details}", bullet="  ")
                 
                 # Phase 4: Review and improve structure
                 self.verbose_reporter.step_start("Phase 4: Theme Review", emoji="🔄")
@@ -344,29 +458,41 @@ class ThematicLabeller:
         
         return labeled_clusters
     
-    async def _phase2_discovery(self, labeled_clusters: List[ClusterLabel], improvement_instructions: Optional[str] = None) -> Codebook:
-        """Phase 2: Single call for theme discovery with optional improvement instructions"""
-        from prompts import PHASE2_DISCOVERY_PROMPT
+    async def _phase2_discovery(self, labeled_clusters: List[ClusterLabel]) -> Codebook:
+        """Phase 2: Theme discovery using three-step LangChain approach"""
         
-        # Format clusters for prompt
-        cluster_summaries = []
-        idx = 1
-        for cluster in sorted(labeled_clusters, key=lambda x: x.cluster_id):
-            summary = f"{idx}) {cluster.label}\n"
-            cluster_summaries.append(summary)
-            idx =+ 1
-             
-        prompt = PHASE2_DISCOVERY_PROMPT.format(
-            survey_question=self.survey_question,
+        # Format codes for the pipeline
+        codes_text = "\n".join([f"[source ID: {c.cluster_id:2d}] {c.label}" for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)])
+        
+        # Initialize the LangChain pipeline
+        self.theme_pipeline = ThemeDiscoveryPipeline(
+            model_name=self.config.model,
+            api_key=self.config.api_key,
             language=self.config.language,
-            cluster_summaries="\n".join(cluster_summaries),
-            )
+            survey_question=self.survey_question,
+            temperature=self.config.temperature,
+            config=self.config)
         
-        result = await self._invoke_with_retries(prompt, DiscoveryResponse)
-        result_dict = result.model_dump()
+        self.verbose_reporter.stat_line("Running 3-step theme discovery...")
+            
+        result = await self.theme_pipeline.invoke_with_retries({
+            "codes": codes_text,
+            "survey_question": self.survey_question,
+            "language": self.config.language})
+        
+        # Validate result structure
+        if not isinstance(result, dict) or 'themes' not in result:
+            raise ValueError("Invalid result structure from theme discovery")
         
         # Parse result into Codebook
-        return self._parse_codebook(result_dict)
+        codebook = self._parse_codebook(result)
+        
+        # Report discovery statistics
+        self.verbose_reporter.stat_line(f"Discovered {len(codebook.themes)} themes")
+        self.verbose_reporter.stat_line(f"Organized into {len(codebook.topics)} topics")
+        self.verbose_reporter.stat_line(f"Containing {len(codebook.codes)} codes")
+        
+        return codebook    
     
     async def _phase3_theme_judger(self, codebook: Codebook) -> ThemeJudgmentResponse:
         """Phase 3: Judge the quality of the theme structure"""
@@ -374,9 +500,17 @@ class ThematicLabeller:
        
         codebook_text = self.format_codebook_prompt(codebook)
         
+        # Find unused source codes
+        unused_codes = self._find_unused_source_codes(codebook)
+        unused_codes_text = self._format_unused_source_codes(unused_codes)
+        
+        #debug
+        self.unused_codes_text = unused_codes_text 
+        
         prompt = PHASE3_THEME_JUDGER_PROMPT.format(
             survey_question=self.survey_question,
             codebook=codebook_text,
+            unused_codes=unused_codes_text,
             language=self.config.language)
         
         try:
@@ -390,16 +524,22 @@ class ThematicLabeller:
                 summary="Judgment failed, proceeding with current structure",
                 issues=[],
                 actions=[]
-            )
+                )
     
     async def _phase4_theme_review(self, codebook: Codebook, judgment: ThemeJudgmentResponse) -> Codebook:
         """Phase 4: Theme Review - Improve codebook based on feedback"""
         from prompts import PHASE4_THEME_REVIEW_PROMPT
-       
-        codebook_text = self.format_codebook_prompt(codebook)
+        
+        # Format codebook WITH source information
+        codebook_text = self.format_codebook_prompt(codebook, include_sources=True)
+        
+        # Also provide the original cluster summaries for context
+        cluster_summaries = "\n".join([
+            f"[source ID: {c.cluster_id:2d}] {c.label}"
+            for c in sorted(self.labeled_clusters, key=lambda x: x.cluster_id)
+        ])
         
         issues_text = "\n".join([f"- {issue}" for issue in judgment.issues])
-        #actions_text = "\n".join([f"- {action}" for action in judgment.actions])
         
         actions_text = []
         for action in judgment.actions:
@@ -407,20 +547,21 @@ class ThematicLabeller:
             details = action.get('details', 'No details')
             actions_text.append(f"- {action_type}: {details}")
         actions_text = "\n".join(actions_text) if actions_text else "No specific actions provided"
-                
-             
+        
+        # Update the prompt to include cluster summaries
         prompt = PHASE4_THEME_REVIEW_PROMPT.format(
             survey_question=self.survey_question,
             current_codebook=codebook_text,
-            summary = judgment.summary,
+            cluster_summaries=cluster_summaries,  # Add this
+            summary=judgment.summary,
             issues=issues_text,
-            actions =actions_text,
+            actions=actions_text,
             language=self.config.language
         )
         
         result = await self._invoke_with_retries(prompt, ThemeReviewResponse)
         improved_codebook = self._parse_codebook(result.model_dump())
-      
+        
         return improved_codebook
     
     async def _phase5_label_refinement(self, codebook: Codebook) -> None:
@@ -613,14 +754,12 @@ class ThematicLabeller:
         
         return asyncio.run(self.process_hierarchy_async(cluster_models, survey_question))
 
-    
     def _parse_codebook(self, result: Dict) -> Codebook:
-        """Parse JSON result into Codebook structure without cluster assignments"""
+        """Parse JSON result into Codebook structure with cluster assignments from Phase 2"""
         themes = []
         topics = []
         codes = []
-        
-        # Handle single-call format (nested structure)
+ 
         if 'themes' in result:
             for theme_idx, theme_data in enumerate(result['themes'], 1):
                 theme_id = str(theme_idx)
@@ -632,11 +771,10 @@ class ThematicLabeller:
                     level=1,
                     label=theme_data['label'],
                     description=theme_data.get('description', ''),
-                    direct_clusters=[]  # Always empty - no assignments yet
+                    source_codes=[]  # Themes don't have source codes
                 )
                 themes.append(theme)
                 
-                # Extract topics
                 if 'topics' in theme_data:
                     for topic_idx, topic_data in enumerate(theme_data['topics'], 1):
                         topic_id = f"{theme_idx}.{topic_idx}"
@@ -650,15 +788,16 @@ class ThematicLabeller:
                             description=topic_data.get('description', ''),
                             parent_id=theme_id,
                             parent_numeric_id=theme_numeric_id,
-                            direct_clusters=[]  # Always empty - no assignments yet
+                            source_codes=[]  # Topics don't have source codes
                         )
                         topics.append(topic)
                         
-                        # Extract codes
-                        if 'codes' in topic_data:  # Changed from 'codes '
+                        if 'codes' in topic_data:
                             for code_idx, code_data in enumerate(topic_data['codes'], 1):
                                 code_id = f"{topic_id}.{code_idx}"
                                 code_numeric_id = float(f"{topic_id}{code_idx}")
+                                
+                                source_codes = code_data.get('source_codes', [])
                                 
                                 code = CodebookEntry(
                                     id=code_id,
@@ -667,20 +806,25 @@ class ThematicLabeller:
                                     label=code_data['label'],
                                     description=code_data.get('description', ''),
                                     parent_id=topic_id,
-                                    parent_numeric_id=topic_numeric_id,
-                                    direct_clusters=[]  # Empty - will be filled in Phase 5
+                                    parent_numeric_id=topic_numeric_id,  # Fixed: was hardcoded as 1
+                                    source_codes=source_codes   
                                 )
                                 codes.append(code)
-                    
+                        
         return Codebook(
             survey_question=self.survey_question,
             themes=themes,
             topics=topics,
             codes=codes)
     
-    def format_codebook_prompt(self, codebook: Codebook) -> str:
-        """Format Pydantic codebook for readable prompt"""
+    def format_codebook_prompt(self, codebook: Codebook, include_sources: bool = True) -> str:
+        """Format Pydantic codebook for readable prompt with clear ID/label distinction"""
         formatted = []
+        formatted.append("HIERARCHICAL CODEBOOK")
+        formatted.append("=" * 80)
+        formatted.append("Format: [ID] LABEL → Description")
+        formatted.append("Note: Focus on LABEL meanings, not ID numbers!")
+        formatted.append("=" * 80)
         
         # Group topics and codes by parent
         topics_by_theme = {}
@@ -696,26 +840,84 @@ class ThematicLabeller:
                 codes_by_topic[code.parent_id] = []
             codes_by_topic[code.parent_id].append(code)
         
-        # Build formatted string
+        # Build formatted string with clear visual separation
         for theme in codebook.themes:
-            formatted.append(f"\nTHEME {theme.id}: {theme.label}")
-            formatted.append(f"Description: {theme.description}")
+            formatted.append(f"\n{'='*60}")
+            formatted.append(f"THEME [ID: {theme.id}] → \"{theme.label}\"")
+            formatted.append(f"   Description: {theme.description}")
+            formatted.append(f"{'='*60}")
             
             for topic in topics_by_theme.get(theme.id, []):
-                formatted.append(f"\n  TOPIC {topic.id}: {topic.label}")
-                formatted.append(f"  Description: {topic.description}")
+                formatted.append(f"\n   TOPIC [ID: {topic.id}] → \"{topic.label}\"")
+                formatted.append(f"      Description: {topic.description}")
+                formatted.append(f"   {'-'*50}")
                 
                 for code in codes_by_topic.get(topic.id, []):
-                    formatted.append(f"    CODE {code.id}: {code.label}")
-                    formatted.append(f"    Description: {code.description}")
+                    formatted.append(f"      CODE [ID: {code.id}] → \"{code.label}\"")
+                    formatted.append(f"         Description: {code.description}")
+                    
+                    if include_sources and code.source_codes:
+                        # Include which clusters this code represents
+                        source_labels = []
+                        for cluster_id in code.source_codes:
+                            if hasattr(self, 'labeled_clusters'):
+                                cluster = next((c for c in self.labeled_clusters if c.cluster_id == cluster_id), None)
+                                if cluster:
+                                    source_labels.append(f"source_code {cluster_id}: \"{cluster.label}\"")
+                                else:
+                                    source_labels.append(f"source_code {cluster_id}")
+                        
+                        if source_labels:
+                            formatted.append(f"         Source data: {' | '.join(source_labels)}")
+                            if len(code.source_codes) > 5:
+                                formatted.append(f"                      ... and {len(code.source_codes) - 5} more clusters")
+                    formatted.append("")
+        
+        formatted.append("\n" + "="*80)
+        formatted.append("REMINDER: Evaluate based on LABEL meanings, not ID numbers!")
+        formatted.append("="*80)
         
         return "\n".join(formatted)
+    
+    def _find_unused_source_codes(self, codebook: Codebook) -> List[ClusterLabel]:
+        """Find clusters from Phase 1 that aren't in the Phase 2 codebook"""
+        
+        # Get all cluster IDs that were assigned in the codebook
+        assigned_cluster_ids = set()
+        for code in codebook.codes:
+            assigned_cluster_ids.update(code.source_codes)
+        
+        # Find unused clusters
+        unused_clusters = []
+        for cluster in self.labeled_clusters:
+            if cluster.cluster_id not in assigned_cluster_ids:
+                unused_clusters.append(cluster)
+        
+        return unused_clusters
+
+    def _format_unused_source_codes(self, unused_clusters: List[ClusterLabel]) -> str:
+        """Format unused source codes for the prompt"""
+        if not unused_clusters:
+            return "All codes from Phase 1 are already incorporated in the codebook."
+        
+        formatted_lines = []
+        formatted_lines.append(f"The following {len(unused_clusters)} codes from Phase 1 were not included:")
+        formatted_lines.append("")
+        
+        for cluster in sorted(unused_clusters, key=lambda x: x.cluster_id):
+            formatted_lines.append(f"- {cluster.label} (source_code: {cluster.cluster_id})")
+        
+        formatted_lines.append("")
+        formatted_lines.append("Each of these codes must be incorporated into the hierarchy.")
+        
+        return "\n".join(formatted_lines)
+ 
     
     def _update_codebook_with_direct_assignments(self, codebook: Codebook, assignments: List[ThemeAssignment]):
         """Update codebook with direct cluster assignments"""
         # Clear existing assignments
         for code in codebook.codes:  # Changed
-            code.direct_clusters = []
+            code.source_codes = []
         
         # Track assignments
         assigned_clusters = set()
@@ -727,7 +929,7 @@ class ThematicLabeller:
             # Find and update the assigned code
             for code in codebook.codes:   
                 if code.id == assignment.code_id:  
-                    code.direct_clusters.append(cluster_id)
+                    code.source_codes.append(cluster_id)
                     assigned_clusters.add(cluster_id)
                     break
             
@@ -738,7 +940,7 @@ class ThematicLabeller:
                     if alt.get('confidence', 0) >= self.config.assignment_threshold:
                         for code in codebook.codes:   
                             if code.id == alt['code_id']:   
-                                code.direct_clusters.append(cluster_id)
+                                code.source_codes.append(cluster_id)
                                 alternatives_used.append(alt['code_id'])  
                                 break
                 
@@ -750,120 +952,120 @@ class ThematicLabeller:
         if multi_assignments > 0:
             print(f"    ✓ {multi_assignments} clusters assigned to multiple codes via alternatives")  
     
-    def _format_cluster_descriptions(self) -> str:
-        """Format cluster descriptions for the review prompt"""
-        lines = []
-        lines.append("Cluster ID | Label | Description")
-        lines.append("-" * 80)
+    # def _format_cluster_descriptions(self) -> str:
+    #     """Format cluster descriptions for the review prompt"""
+    #     lines = []
+    #     lines.append("Cluster ID | Label | Description")
+    #     lines.append("-" * 80)
         
-        if hasattr(self, 'labeled_clusters') and self.labeled_clusters:
-            for cluster in sorted(self.labeled_clusters, key=lambda x: x.cluster_id):
-                # Truncate long descriptions to fit nicely
-                desc = cluster.description[:60] + "..." if len(cluster.description) > 60 else cluster.description
-                lines.append(f"{cluster.cluster_id:3d} | {cluster.label:30s} | {desc}")
-        else:
-            lines.append("No cluster descriptions available")
+    #     if hasattr(self, 'labeled_clusters') and self.labeled_clusters:
+    #         for cluster in sorted(self.labeled_clusters, key=lambda x: x.cluster_id):
+    #             # Truncate long descriptions to fit nicely
+    #             desc = cluster.description[:60] + "..." if len(cluster.description) > 60 else cluster.description
+    #             lines.append(f"{cluster.cluster_id:3d} | {cluster.label:30s} | {desc}")
+    #     else:
+    #         lines.append("No cluster descriptions available")
         
-        return "\n".join(lines)
+    #     return "\n".join(lines)
     
     
-    def _get_all_cluster_ids(self, codebook: Codebook) -> set:
-        """Get all cluster IDs from a codebook"""
-        all_clusters = set()
-        for code in codebook.codes:
-            all_clusters.update(code.direct_clusters)
-        return all_clusters
     
-    def _add_missing_clusters_to_other(self, codebook: Codebook, missing_clusters: set):
-        """Add missing clusters to an 'other' category"""
-        other_code = self._get_or_create_other_code(codebook)
-        other_code.direct_clusters.extend(list(missing_clusters))
     
-    def _get_or_create_other_code(self, codebook: Codebook) -> CodebookEntry:
-        """Get or create an 'other' code for unclassified clusters"""
-        # Look for existing "other" theme
-        other_theme = None
-        for theme in codebook.themes:
-            if theme.label.lower() in ["other", "anders", "overig"]:
-                other_theme = theme
-                break
+    # def _get_all_cluster_ids(self, codebook: Codebook) -> set:
+    #     """Get all cluster IDs from a codebook"""
+    #     all_clusters = set()
+    #     for code in codebook.codes:
+    #         all_clusters.update(code.source_codes)
+    #     return all_clusters
+    
+    # def _add_missing_clusters_to_other(self, codebook: Codebook, missing_clusters: set):
+    #     """Add missing clusters to an 'other' category"""
+    #     other_code = self._get_or_create_other_code(codebook)
+    #     other_code.source_codes.extend(list(missing_clusters))
+    
+    # def _get_or_create_other_code(self, codebook: Codebook) -> CodebookEntry:
+    #     """Get or create an 'other' code for unclassified clusters"""
+    #     # Look for existing "other" theme
+    #     other_theme = None
+    #     for theme in codebook.themes:
+    #         if theme.label.lower() in ["other", "anders", "overig"]:
+    #             other_theme = theme
+    #             break
              
-        if not other_theme:
-            # Create "other" theme
-            other_theme = CodebookEntry(
-                id="99",
-                numeric_id=99.0,
-                level=1,
-                label="Other",
-                description="Responses that don't fit other categories",
-                direct_clusters=[]
-            )
-            codebook.themes.append(other_theme)
+    #     if not other_theme:
+    #         # Create "other" theme
+    #         other_theme = CodebookEntry(
+    #             id="99",
+    #             numeric_id=99.0,
+    #             level=1,
+    #             label="Other",
+    #             description="Responses that don't fit other categories",
+    #             source_codes=[]
+    #         )
+    #         codebook.themes.append(other_theme)
         
-        # Look for "other" topic under this theme
-        other_topic = None
-        for topic in codebook.topics:
-            if topic.parent_id == other_theme.id:
-                other_topic = topic
-                break
+    #     # Look for "other" topic under this theme
+    #     other_topic = None
+    #     for topic in codebook.topics:
+    #         if topic.parent_id == other_theme.id:
+    #             other_topic = topic
+    #             break
         
-        if not other_topic:
-            # Create "other" topic
-            other_topic = CodebookEntry(
-                id="99.1",
-                numeric_id=99.1,
-                level=2,
-                label="Miscellaneous",
-                description="Various other responses",
-                parent_id=other_theme.id,
-                parent_numeric_id=other_theme.numeric_id,
-                direct_clusters=[]
-            )
-            codebook.topics.append(other_topic)
+    #     if not other_topic:
+    #         # Create "other" topic
+    #         other_topic = CodebookEntry(
+    #             id="99.1",
+    #             numeric_id=99.1,
+    #             level=2,
+    #             label="Miscellaneous",
+    #             description="Various other responses",
+    #             parent_id=other_theme.id,
+    #             parent_numeric_id=other_theme.numeric_id,
+    #             source_codes=[]
+    #         )
+    #         codebook.topics.append(other_topic)
         
-        # Look for "other" codes
-        other_code = None
-        for code in codebook.codes:  
-            if code.parent_id == other_topic.id:
-                other_code = code
-                break
+    #     # Look for "other" codes
+    #     other_code = None
+    #     for code in codebook.codes:  
+    #         if code.parent_id == other_topic.id:
+    #             other_code = code
+    #             break
         
-        if not other_code:
-            # Create "other" code
-            other_code = CodebookEntry(
-                id="99.1.1",
-                numeric_id=99.11,
-                level=3,
-                label="Unclassified",
-                description="Responses not fitting other categories",
-                parent_id=other_topic.id,
-                parent_numeric_id=other_topic.numeric_id,
-                direct_clusters=[]
-            )
-            codebook.codes.append(other_code)  
+    #     if not other_code:
+    #         # Create "other" code
+    #         other_code = CodebookEntry(
+    #             id="99.1.1",
+    #             numeric_id=99.11,
+    #             level=3,
+    #             label="Unclassified",
+    #             description="Responses not fitting other categories",
+    #             parent_id=other_topic.id,
+    #             parent_numeric_id=other_topic.numeric_id,
+    #             source_codes=[]
+    #         )
+    #         codebook.codes.append(other_code)  
         
-        return other_code
+    #     return other_code
     
     def _remove_empty_codes(self, codebook: Codebook) -> None:
        """Remove codes that have no clusters assigned"""
-       # Find codes with clusters
        codes_with_clusters = []
        codes_removed = []
        
-       for code in codebook.codes:  # Changed
-           if code.direct_clusters:
+       for code in codebook.codes:  
+           if code.source_codes:
                codes_with_clusters.append(code)
            else:
                codes_removed.append(code)
-       
-       # Update the codebook
-       codebook.codes = codes_with_clusters  # Changed
+
+       codebook.codes = codes_with_clusters   
        
        # Also clean up empty topics (topics with no codes)
        topics_with_codes = []
        for topic in codebook.topics:
            # Check if any code has this topic as parent
-           has_codes = any(c.parent_id == topic.id for c in codebook.codes)  # Changed
+           has_codes = any(c.parent_id == topic.id for c in codebook.codes)  
            if has_codes:
                topics_with_codes.append(topic)
   
@@ -907,7 +1109,7 @@ class ThematicLabeller:
                 print(f"    ⚠️  No assignment found for cluster {cluster_id}, assigning to 'other'")
                 final_labels[cluster_id] = {
                     'label': cluster.label,
-                    'description': cluster.description,
+                    #'description': cluster.description,
                     'theme': ('99', 0.0),
                     'topic': ('99.1', 0.0),
                     'code': ('99.1.1', 0.0)
@@ -1096,7 +1298,7 @@ class ThematicLabeller:
             "Themes": len(codebook.themes),
             "Topics": len(codebook.topics),
             "Codes": len(codebook.codes),
-            "Clusters assigned": len(set(cluster for code in codebook.codes for cluster in code.direct_clusters))
+            "Clusters assigned": len(set(cluster for code in codebook.codes for cluster in code.source_codes))
         }, emoji="📊")
         
     def _display_full_codebook(self, codebook: Codebook):
@@ -1120,14 +1322,14 @@ class ThematicLabeller:
                         self.verbose_reporter.stat_line(f"Description: {topic.description}\n", bullet="      ")
                     
                     related_codes = [c for c in codebook.codes if c.parent_id == topic.id]   
-                    if related_codes:  # Changed
+                    if related_codes:   
                         for code in sorted(related_codes, key=lambda x: x.numeric_id):  
                             self.verbose_reporter.stat_line(f"🔸 CODE {code.id}: {code.label}", bullet="       " )  
                             if code.description:
                                 self.verbose_reporter.stat_line(f"Description: {code.description}", bullet="         " )  
                                 
-                            if code.direct_clusters:
-                                self.verbose_reporter.stat_line(f"Micro-clusters: {code.direct_clusters}\n", bullet="         " )  
+                            if code.source_codes:
+                                self.verbose_reporter.stat_line(f"Micro-clusters: {code.source_codes}\n", bullet="         " )  
         
         print("\n" + "="*80)
     
