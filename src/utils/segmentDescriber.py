@@ -397,9 +397,21 @@ class SegmentDescriber:
                 # Convert result back to DescriptiveModels
                 results = []
                 for resp_result in result:
+                    # Find the original response text - handle type mismatches between string/int
+                    resp_id = str(resp_result["respondent_id"])
+                    original_response = None
+                    for r in formatted_responses:
+                        if str(r["respondent_id"]) == resp_id:
+                            original_response = r["response"]
+                            break
+                    
+                    if original_response is None:
+                        print(f"Warning: Could not find original response for respondent_id {resp_id}")
+                        original_response = ""
+                    
                     results.append(models.DescriptiveModel(
                         respondent_id=resp_result["respondent_id"],
-                        response=next(r["response"] for r in formatted_responses if r["respondent_id"] == resp_result["respondent_id"]),
+                        response=original_response,
                         quality_filter=None,
                         response_segment=[models.DescriptiveSubmodel(**seg) for seg in resp_result["segments"]]
                     ))
