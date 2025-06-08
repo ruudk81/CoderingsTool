@@ -124,7 +124,8 @@ class SegmentDescriber:
         base_url: str = None,
         var_lab : str = "",
         verbose: bool = False,
-        model_config: ModelConfig = None):
+        model_config: ModelConfig = None,
+        prompt_printer = None):
         
         # Use provided config or create default
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
@@ -141,6 +142,8 @@ class SegmentDescriber:
         self.varlab = var_lab
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
+        self.prompt_printer = prompt_printer
+        self._first_prompt_captured = False
         
         self.langchain_pipeline = LangChainPipeline(
             model_name=self.openai_model,
@@ -244,6 +247,30 @@ class SegmentDescriber:
 
     async def process_response(self, respondent_id, response_text, var_lab, max_retries=3):
         """Process a single response with two-step approach"""
+        
+        # Capture the first prompt only once
+        if self.prompt_printer and not self._first_prompt_captured:
+            # Create a sample prompt similar to what would be sent to the LLM
+            sample_prompt = SEGMENTATION_PROMPT.format(
+                response=response_text,
+                var_lab=var_lab,
+                language=DEFAULT_LANGUAGE
+            )
+            
+            self.prompt_printer.capture_prompt(
+                step_name="segmentation",
+                utility_name="SegmentDescriber",
+                prompt_content=sample_prompt,
+                prompt_type="segmentation",
+                metadata={
+                    "model": self.openai_model,
+                    "var_lab": var_lab,
+                    "language": DEFAULT_LANGUAGE,
+                    "pipeline_stages": "segmentation -> refinement -> coding"
+                }
+            )
+            self._first_prompt_captured = True
+        
         retries = 0
         while retries <= max_retries:
             try:
