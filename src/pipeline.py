@@ -119,6 +119,7 @@ from utils import qualityFilter, segmentDescriber
 
 step_name        = "segmented_descriptions"
 verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 
@@ -131,11 +132,11 @@ else:
     verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
     
     start_time            = time.time()
-    grader                = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE)
+    grader                = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE, prompt_printer=prompt_printer)
     graded_text           = grader.grade()
     grading_summary       = grader.summary()
     filtered_text         = grader.filter()
-    encoder               = segmentDescriber.SegmentDescriber(verbose=VERBOSE)
+    encoder               = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer)
     encoded_text          = encoder.generate_codes(filtered_text, var_lab)
     end_time              = time.time()
     elapsed_time          = end_time - start_time

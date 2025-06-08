@@ -23,7 +23,8 @@ class Grader:
         responses: List[models.DescriptiveModel], 
         var_lab: str,
         config: Optional[QualityFilterConfig] = None,
-        verbose: bool = False):
+        verbose: bool = False,
+        prompt_printer = None):
         
         self.responses = responses
         self.question = var_lab
@@ -33,7 +34,8 @@ class Grader:
         self._results: List[models.DescriptiveModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
-        self.model_config = ModelConfig()  # For accessing seed 
+        self.model_config = ModelConfig()  # For accessing seed
+        self.prompt_printer = prompt_printer 
 
     def _batch(self) -> List[List[tuple]]:
         indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses)]
@@ -81,8 +83,25 @@ class Grader:
                 await asyncio.sleep(2 ** tries)
                 continue
 
-    async def _grade_batch(self, batch: List[tuple]) -> List[models.DescriptiveModel]:
+    async def _grade_batch(self, batch: List[tuple], batch_index: int) -> List[models.DescriptiveModel]:
         prompt = self._build_prompt(self.question, batch)
+        
+        # Capture prompt only for the first batch
+        if self.prompt_printer and batch_index == 0:
+            self.prompt_printer.capture_prompt(
+                step_name="segmentation",
+                utility_name="QualityFilter",
+                prompt_content=prompt,
+                prompt_type="quality_assessment",
+                metadata={
+                    "model": self.config.model,
+                    "var_lab": self.question,
+                    "language": DEFAULT_LANGUAGE,
+                    "batch_size": len(batch),
+                    "batch_number": batch_index + 1
+                }
+            )
+        
         response_data = await self._call_openai_api(prompt)
         return response_data
 
@@ -90,7 +109,7 @@ class Grader:
         batches = self._batch()
         self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
         
-        tasks = [self._grade_batch(batch) for batch in batches]
+        tasks = [self._grade_batch(batch, i) for i, batch in enumerate(batches)]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         total_failures = 0
