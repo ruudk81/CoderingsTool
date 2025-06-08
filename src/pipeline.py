@@ -29,7 +29,7 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 
@@ -222,86 +222,106 @@ else:
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
 
-step_name = "labels"
-verbose_reporter = VerboseReporter(VERBOSE)
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    if labeled_results and labeled_results[0].themes:
-        # Get complete hierarchical structure from first result (same for all)
-        first_result = labeled_results[0]
-
-        # Count themes, topics, and codes from hierarchical structure
-        theme_count = len(first_result.themes)
-        topic_count = sum(len(theme.topics) for theme in first_result.themes)
-        code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
-
-        # Get cluster mappings
-        cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
-
-        verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
-            "Themes": theme_count,
-            "Topics": topic_count,
-            "Codes": code_count,
-            "Mapped Clusters": cluster_count
-            })
-
-        print("\nExample Theme Structure:")
-        for theme in first_result.themes:  
-            print(f"Theme {theme.theme_id}: {theme.label}")
-            for topic in theme.topics: 
-                print(f"  Topic {topic.topic_id}: {topic.label}")
-                for code in topic.codes: 
-                    print(f"    Code {code.code_id}: {code.label}")
-    
-    
-else:
-    verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
-    
-    start_time = time.time()
-    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    
-    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-    verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
-
-
 #debug
-# idx = 1
-# for cluster in thematic_labeller.labeled_clusters:
-#      print(f"{idx}) {cluster.label}")
-#      idx += 1
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
 
-# codebook = thematic_labeller.initial_codebook
-# lines = []
-# for theme in codebook.themes:
-#     lines.append(f"\n{theme.id}. {theme.label.upper()}")
+# print(thematic_labeller.unused_codes_text)
+
+# cluster_summaries = []
+# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+#         cluster_summaries.append(summary)
+# cluster_summaries_text = "\n".join(cluster_summaries)
+# print(cluster_summaries_text)
+
+codebook_initial = thematic_labeller.initial_codebook
+lines_initial = []
+for theme in codebook_initial.themes:
+    lines_initial.append(f"{theme.id}. {theme.label.upper()}")
     
-#     related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
-#     for topic in related_topics:
-#         lines.append(f"\n   {topic.id} {topic.label}")
+    related_topics = [t for t in codebook_initial.topics if t.parent_id == theme.id]
+    for topic in related_topics:
+        lines_initial.append(f"   {topic.id} {topic.label}")
         
-#         related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
-#         for code in related_codes:
-#             lines.append(f"      {code.id} {code.label}")
-# print("\n".join(lines))
+        related_codes = [c for c in codebook_initial.codes if c.parent_id == topic.id]
+        for code in related_codes:
+            # Include source_codes in the display
+            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+            lines_initial.append(f"      {code.id} {code.label}{source_info}")
 
-# codebook = thematic_labeller.codebook
-# lines = []
-# for theme in codebook.themes:
-#     lines.append(f"\n{theme.id}. {theme.label.upper()}")
+codebook_final = thematic_labeller.codebook
+lines_final = []
+for theme in codebook_final.themes:
+    lines_final.append(f"{theme.id}. {theme.label.upper()}")
     
-#     related_topics = [t for t in codebook.topics if t.parent_id == theme.id]
-#     for topic in related_topics:
-#         lines.append(f"\n   {topic.id} {topic.label}")
+    related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
+    for topic in related_topics:
+        lines_final.append(f"   {topic.id} {topic.label}")
         
-#         related_codes = [c for c in codebook.codes if c.parent_id == topic.id]
-#         for code in related_codes:
-#             lines.append(f"      {code.id} {code.label}")
+        related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
+        for code in related_codes:
+            # Include source_codes in the display
+            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+            lines_final.append(f"      {code.id} {code.label}{source_info}")
+    
+print("\n=== INITIAL CODEBOOK (Phase 2) ===")
+print("\n".join(lines_initial))
+total_sources = sum(len(code.source_codes) for code in codebook_initial.codes)
+print(f"Total clusters assigned: {total_sources}")
 
-# print("\n".join(lines))
+            
+print("\n==== FINAL CODEBOOK (After all phases) ===")    
+print("\n".join(lines_final))
+total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
+print(f"Total clusters assigned: {total_sources}")
+
+###############
+
+# step_name = "labels"
+# verbose_reporter = VerboseReporter(VERBOSE)
+# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+#     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
+#     if labeled_results and labeled_results[0].themes:
+#         # Get complete hierarchical structure from first result (same for all)
+#         first_result = labeled_results[0]
+
+#         # Count themes, topics, and codes from hierarchical structure
+#         theme_count = len(first_result.themes)
+#         topic_count = sum(len(theme.topics) for theme in first_result.themes)
+#         code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
+
+#         # Get cluster mappings
+#         cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
+
+#         verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
+#             "Themes": theme_count,
+#             "Topics": topic_count,
+#             "Codes": code_count,
+#             "Mapped Clusters": cluster_count
+#             })
+
+#         print("\nExample Theme Structure:")
+#         for theme in first_result.themes:  
+#             print(f"Theme {theme.theme_id}: {theme.label}")
+#             for topic in theme.topics: 
+#                 print(f"  Topic {topic.topic_id}: {topic.label}")
+#                 for code in topic.codes: 
+#                     print(f"    Code {code.code_id}: {code.label}")
+    
+    
+# else:
+#     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
+    
+#     start_time = time.time()
+#     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+#     labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
+    
+#     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
+#     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
