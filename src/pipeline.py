@@ -5,7 +5,6 @@ import time
 import nest_asyncio
 nest_asyncio.apply()
 
-
 # === MODELS ========================================================================================================
 import models
 
@@ -25,8 +24,8 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "data"  # Set to step name (e.g., "embeddings") to recalculate specific step
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = "labels"  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
@@ -220,66 +219,6 @@ else:
     cache_manager.save_to_cache(cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
-# === STEP 6 ========================================================================================================
-"""get labels"""
-from utils.thematicLabeller import ThematicLabeller
-from config import DEFAULT_LABELLER_CONFIG
-
-#debug
-thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
-labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
-
-# print(thematic_labeller.unused_codes_text)
-
-# cluster_summaries = []
-# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         cluster_summaries.append(summary)
-# cluster_summaries_text = "\n".join(cluster_summaries)
-# print(cluster_summaries_text)
-
-codebook_initial = thematic_labeller.initial_codebook
-lines_initial = []
-for theme in codebook_initial.themes:
-    lines_initial.append(f"{theme.id}. {theme.label.upper()}")
-    
-    related_topics = [t for t in codebook_initial.topics if t.parent_id == theme.id]
-    for topic in related_topics:
-        lines_initial.append(f"   {topic.id} {topic.label}")
-        
-        related_codes = [c for c in codebook_initial.codes if c.parent_id == topic.id]
-        for code in related_codes:
-            # Include source_codes in the display
-            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-            lines_initial.append(f"      {code.id} {code.label}{source_info}")
-
-codebook_final = thematic_labeller.codebook
-lines_final = []
-for theme in codebook_final.themes:
-    lines_final.append(f"{theme.id}. {theme.label.upper()}")
-    
-    related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
-    for topic in related_topics:
-        lines_final.append(f"   {topic.id} {topic.label}")
-        
-        related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
-        for code in related_codes:
-            # Include source_codes in the display
-            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-            lines_final.append(f"      {code.id} {code.label}{source_info}")
-    
-print("\n=== INITIAL CODEBOOK (Phase 2) ===")
-print("\n".join(lines_initial))
-total_sources = sum(len(code.source_codes) for code in codebook_initial.codes)
-print(f"Total clusters assigned: {total_sources}")
-
-            
-print("\n==== FINAL CODEBOOK (After all phases) ===")    
-print("\n".join(lines_final))
-total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
-print(f"Total clusters assigned: {total_sources}")
-
-###############
 
 # === STEP 6 ========================================================================================================
 """hierarchical labeling"""
@@ -350,4 +289,64 @@ if PROMPT_PRINTER and prompt_printer:
     # Optional: Save prompts to file
     # prompt_printer.save_prompts("pipeline_prompts.json")
 
+###
+# === STEP 6 ========================================================================================================
+"""get labels"""
+from utils.thematicLabeller import ThematicLabeller
+from config import DEFAULT_LABELLER_CONFIG
 
+#debug
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+
+# print(thematic_labeller.unused_codes_text)
+
+# cluster_summaries = []
+# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+#         cluster_summaries.append(summary)
+# cluster_summaries_text = "\n".join(cluster_summaries)
+# print(cluster_summaries_text)
+
+codebook_initial = thematic_labeller.initial_codebook
+lines_initial = []
+for theme in codebook_initial.themes:
+    lines_initial.append(f"{theme.id}. {theme.label.upper()}")
+    
+    related_topics = [t for t in codebook_initial.topics if t.parent_id == theme.id]
+    for topic in related_topics:
+        lines_initial.append(f"   {topic.id} {topic.label}")
+        
+        related_codes = [c for c in codebook_initial.codes if c.parent_id == topic.id]
+        for code in related_codes:
+            # Include source_codes in the display
+            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+            lines_initial.append(f"      {code.id} {code.label}{source_info}")
+
+codebook_final = thematic_labeller.codebook
+lines_final = []
+for theme in codebook_final.themes:
+    lines_final.append(f"{theme.id}. {theme.label.upper()}")
+    
+    related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
+    for topic in related_topics:
+        lines_final.append(f"   {topic.id} {topic.label}")
+        
+        related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
+        for code in related_codes:
+            # Include source_codes in the display
+            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+            lines_final.append(f"      {code.id} {code.label}{source_info}")
+    
+print("\n=== INITIAL CODEBOOK (Phase 2) ===")
+print("\n".join(lines_initial))
+total_sources = sum(len(code.source_codes) for code in codebook_initial.codes)
+print(f"Total clusters assigned: {total_sources}")
+
+            
+print("\n==== FINAL CODEBOOK (After all phases) ===")    
+print("\n".join(lines_final))
+total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
+print(f"Total clusters assigned: {total_sources}")
+
+###############
