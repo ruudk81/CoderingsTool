@@ -267,11 +267,11 @@ class SegmentDescriber:
             return []
         
         # Calculate average tokens per response for adaptive batching
-        # Since we process in groups of 10, we need to account for that in token calculation
+        # Since we process in groups of 3, we need to account for that in token calculation
         avg_tokens_per_response = sum(len(encoding.encode(r.response)) for r in responses) / max(1, len(responses))
-        # Estimate tokens for a group of 10 responses (with some overhead for JSON formatting)
-        tokens_per_group = avg_tokens_per_response * 10 * 1.2  # 20% overhead for formatting
-        adaptive_max_batch_size = min(self.max_batch_size, max(10, int(token_budget / max(1, tokens_per_group)) * 10))
+        # Estimate tokens for a group of 3 responses (with some overhead for JSON formatting)
+        tokens_per_group = avg_tokens_per_response * 3 * 1.2  # 20% overhead for formatting
+        adaptive_max_batch_size = min(self.max_batch_size, max(3, int(token_budget / max(1, tokens_per_group)) * 3))
         
         #print(f"estimated number of tokens= {prompt_length + avg_tokens_per_response}")
         
@@ -285,14 +285,14 @@ class SegmentDescriber:
             respondent_id = response.respondent_id
             response_text = response.response
             
-            # Estimate tokens for this response when part of a group of 10
+            # Estimate tokens for this response when part of a group of 3
             # Include some overhead for JSON formatting
             task_text = f"Respondent ID: {respondent_id}\nResponse: \"{response_text}\""
             task_tokens = len(encoding.encode(task_text)) * 1.1  # 10% overhead
             
             # Handle oversized individual responses
-            if task_tokens > token_budget / 10 and not current_batch_tasks:
-                print(f"Warning: Response from respondent {respondent_id} exceeds token budget per response ({task_tokens} > {token_budget / 10}). Processing as single item batch.")
+            if task_tokens > token_budget / 3 and not current_batch_tasks:
+                print(f"Warning: Response from respondent {respondent_id} exceeds token budget per response ({task_tokens} > {token_budget / 3}). Processing as single item batch.")
                 batches.append(CodingBatch(tasks=[response.model_dump()]))  # Convert to dict for Pydantic v2
                 continue
                 
@@ -382,8 +382,8 @@ class SegmentDescriber:
                 'response': task.response
             })
         
-        # Split into groups of 10 for processing
-        group_size = 10
+        # Split into groups of 3 for processing
+        group_size = 3
         all_results = []
         
         for i in range(0, len(responses_data), group_size):
