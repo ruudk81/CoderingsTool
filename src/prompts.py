@@ -282,188 +282,220 @@ Here's an example of correct output:
 """
 
 MERGE_PROMPT = """
-You are evaluating whether clusters of survey responses represent meaningfully different answers to this survey question:
-"var_lab}"
+You are an AI assistant tasked with evaluating whether clusters of survey responses represent meaningfully different answers to a specific survey question. 
+Your goal is to determine whether each pair of response clusters should be merged or remain separate.
 
-=========================
-INSTRUCTIONS
-=========================
-You need to determine whether each pair of response clusters should be merged or remain separate.
-The key question for each comparison is: "Do these clusters represent meaningfully different responses to the research question, or are they essentially saying the same thing?"
+The survey question you will be working with is:
+<survey_question>
+"{var_lab}"
+</survey_question>
 
-Language: {language}
+You will be provided with pairs of clusters, each containing representative responses.
+Your task is to analyze these pairs and decide whether they should be merged or kept separate based on the following criteria:
 
-=========================
-DECISION CRITERIA
-=========================
-YES (merge) ONLY IF:
+Merge clusters (YES) ONLY IF:
 - Both clusters express essentially the same response pattern in light of the survey question.
-- The differences between them are minimal or irrelevant to the survey question
-- A survey analyst would reasonably group these responses together as the same type of answer
+- The differences between them are minimal or irrelevant to the survey question.
+- A survey analyst would reasonably group these responses together as the same type of answer.
 
-NO (don't merge) IF:
-- The clusters represent distinct response pattersn, viewpoints, suggestions, ideas or concerns
-- They focus on different aspects in addressing the survey question
-- They provide unique or complementary feedback or information
-- They represent different topics even within the same broad theme
-- There is ANY meaningful differentiation relevant to understanding survey responses
+Keep clusters separate (NO) IF:
+- The clusters represent distinct response patterns, viewpoints, suggestions, ideas, or concerns.
+- They focus on different aspects in addressing the survey question.
+- They provide unique or complementary feedback or information.
+- They represent different topics even within the same broad theme.
+- There is ANY meaningful differentiation relevant to understanding survey responses.
 
-Important Guidelines:
-- Focus SPECIFICALLY on the survey question context
-- Base decisions on the MOST REPRESENTATIVE responses in each cluster (shown by cosine similarity to centroid)
-- Be conservative - when in doubt, keep clusters separate
-- Consider semantic meaning, not just surface-level wording
+Important guidelines:
+- Focus SPECIFICALLY on the survey question context.
+- Base decisions on the MOST REPRESENTATIVE responses in each cluster (shown by cosine similarity to centroid).
+- Be conservative - when in doubt, keep clusters separate.
+- Consider semantic meaning, not just surface-level wording.
+- The responses are in Dutch, so make sure to understand the meaning in that language.
 
-=========================
-INPUT
-=========================
-{cluster_pairs}
+Your output should be a JSON object with a single key "decisions", containing an array of objects with these fields:
+- "cluster_id_1": First cluster ID
+- "cluster_id_2": Second cluster ID  
+- "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
+- "reason": Brief explanation of your decision (1-2 sentences maximum)
 
-=========================
-REQUIRED OUTPUT FORMAT:
-=========================
+Follow these steps for each cluster pair:
+1. Read the representative responses for both clusters carefully.
+2. Consider how these responses relate to the survey question.
+3. Determine if the responses in both clusters are essentially saying the same thing or if they represent meaningfully different answers.
+4. Make a decision on whether to merge the clusters or keep them separate.
+5. Provide a brief reason for your decision.
+6. Format your decision as a JSON object as specified above.
+
 Return a JSON object with a single key "decisions", containing an array of objects with these fields:
 - "cluster_id_1": First cluster ID
 - "cluster_id_2": Second cluster ID  
 - "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
 - "reason": Brief explanation of your decision (1-2 sentences maximum)
-=========================
+
+Here's an example of how your output should be structured:
+{
+  "decisions": [
+    {
+      "cluster_id_1": "13",
+      "cluster_id_2": "2",
+      "should_merge": true,
+      "reason": "Both clusters consistently express the desire for less salt in meals. There is no meaningful differentiation between the responses."
+    },
+    {
+      "cluster_id_1": "17",
+      "cluster_id_2": "2",
+      "should_merge": true,
+      "reason": "All responses in both clusters uniformly request less salt in meals. The clusters are semantically identical."
+    }
+  ]
+}
+
+Now, analyze the following cluster pairs:
+{cluster_pairs}
+
+Provide your decisions in the required JSON format.
 """
 
 
 PHASE1_DESCRIPTIVE_CODING_PROMPT = """
 You are an expert in descriptive coding working in {language}.
+Your task is to perform descriptive coding on segments from open-ended survey responses. 
+You will provide one concise label that captures what respondents are expressing in these segments.
 
-=========================
-TASK
-=========================
-You are performing descriptive coding on segments from open-ended survey responses.
-Provide one concise label that captures what respondents are expressing in these segments.
+Here are the coding principles you must follow:
+1. Stay close to the data: Use respondents' own concepts
+2. Be descriptive: Capture what is said, not why
+3. Be specific: Focus on the distinct pattern in these segments
+4. Be concise: Maximum 5 words
+5. Use Title Case for labels
 
-=========================
-CODING PRINCIPLES
-=========================
-- Stay close to the data: Use respondents' own concepts
-- Be descriptive: Capture what is said, not why
-- Be specific: Focus on the distinct pattern in these segments
-- Be concise: Maximum 5 words
-- Use Title Case for labels
-
-=========================
-RULES
-=========================
+Rules to adhere to:
 - Describe only what is explicitly stated
 - No interpretation or inference beyond the text
 - No evaluation or judgment
 - Focus on a single coherent idea
 - If segments express multiple ideas, identify the primary pattern
 
-=========================
-OUTPUT FORMAT
-=========================
+The output format should be:
 {{
   "label": "Descriptive Label Here"
 }}
 
-Output the label in **{language}**.
+You must output the label in {language}.
 
-=========================
-INPUT
-=========================
-Survey question: {survey_question}
+Now, here is the input you will work with:
 
-Segment ID: {cluster_id}
+Survey question: 
+<survey_question>
+{survey_question}
+</survey_question>
+
+Segment ID: 
+<cluster_id>
+{cluster_id}
+</cluster_id>
 
 Representative segments:
+<representatives>
 {representatives}
-=========================
+</representatives>
+
+Follow these steps to complete the task:
+
+1. Carefully read the survey question and all representative segments.
+2. Identify the main theme or idea expressed across the segments.
+3. Create a concise label (maximum 5 words) that captures this main idea.
+4. Ensure your label adheres to all coding principles and rules mentioned above.
+5. Double-check that your label is in Title Case and in the correct language ({language}).
+6. Format your output according to the specified JSON format.
+
+Remember, your goal is to provide a single, concise label that accurately represents the content of the segments without interpretation or judgment. Output your final answer within the specified JSON format tags.
 """
 
 PHASE2_EXTRACT_THEMES_PROMPT = """
-You are an expert in thematic analysis working in {language}.
+You are an expert in thematic analysis working in {LANGUAGE}. 
+Your task is to extract themes from initial codes of survey responses to an open-ended survey question. 
+These themes will be used for a codebook, but you only need to discover the themes themselves.
 
-=========================
-TASK
-=========================
-You are tasked with extracting themes from initial codes of survey responses to an open-ended survey question.
-These themes will be used for a codebook with the following structure:
-- **Themes (Level 1)** – A broad and coherent pattern in the data that addresses the research question. 
-- **Topics (Level 2)** – A specific facet or dimension of a theme. 
-- **Codes (Level 3)** – A short descriptive label grounded in data capturing the essence of responses for a segment of the data.
+Here is the survey question:
+<survey_question>
+{survey_question}
+</survey_question>
 
-You ONLY need to discover the themes.
-
-=========================
-INSTRUCTIONS
-=========================
-Each theme must be underpinned by a central organizing concept or a singular latent idea that makes semantic sense in light of the survey question.
-
-Additionally, each theme must be:
-- **Semantically meaningful**: The theme is meaningful in light of the survey question
-- **Thematically coherent**: The label reflects a central organizing concept or singular latent idea
-- **Conceptually clear**: The meaning of the theme is clear and unambiguous
-
-The number of themes should be:
-- **Large enough** to ensure collective exhaustion of all initial codes (every code should naturally fit under a theme)
-- **Small enough** to maintain meaningful distinctions and allow for topic-level organization
-- **Balanced** to avoid themes that are too broad (becoming meaningless) or too narrow (preventing proper topic grouping)
-
-=========================
-OUTPUT
-=========================
-Return a JSON object with a single key "themes" containing an array of theme names.
-Each theme name should be 1-4 words, capturing the essence of a major pattern.
-
-{{"themes": ["Theme Name 1", "Theme Name 2", "Theme Name 3", ...]}}
-
-Language: {language}
-
-=========================
-INPUT
-=========================
-Survey question: {survey_question}
-
-Extract themes from these initial codes:
+Now, carefully review these initial codes:
+<initial_codes>
 {codes}
-=========================
+</initial_codes>
+
+Extract themes from these initial codes following these guidelines:
+
+1. Each theme must be underpinned by a central organizing concept or a singular latent idea that makes semantic sense in light of the survey question.
+2. Ensure each theme is:
+   - Semantically meaningful: The theme is meaningful in light of the survey question
+   - Thematically coherent: The label reflects a central organizing concept or singular latent idea
+   - Conceptually clear: The meaning of the theme is clear and unambiguous
+3. The number of themes should be:
+   - Large enough to ensure collective exhaustion of all initial codes (every code should naturally fit under a theme)
+   - Small enough to maintain meaningful distinctions and allow for topic-level organization
+   - Balanced to avoid themes that are too broad (becoming meaningless) or too narrow (preventing proper topic grouping)
+
+After careful consideration, provide your output in the following JSON format:
+{{
+  "themes": ["Theme Name 1", "Theme Name 2", "Theme Name 3", ...]
+}}
+
+Each theme name should be 1-4 words, capturing the essence of a major pattern.
+Remember to conduct this analysis and provide your response in {LANGUAGE}.
 """
 
 PHASE2_GROUP_TOPICS_PROMPT = """
-You are an expert in thematic analysis working in {language}.
+You are an expert in thematic analysis working in {LANGUAGE}. 
+Your task is to organize initial codes into topics under provided themes. 
 
-=========================
-TASK
-=========================
-You are tasked with organizing initial codes into topics under the provided themes.
 These will be used for a codebook with the following structure:
-- **Themes (Level 1)** – A broad and coherent pattern in the data that addresses the research question. 
-- **Topics (Level 2)** – A specific facet or dimension of a theme. 
-- **Codes (Level 3)** – A short descriptive label grounded in data capturing the essence of responses for a segment of the data.
+- Themes (Level 1): Broad and coherent patterns in the data that address the research question.
+- Topics (Level 2): Specific facets or dimensions of a theme.
+- Codes (Level 3): Short descriptive labels grounded in data capturing the essence of responses for a segment of the data.
 
-You ONLY need to create and assign topics under each theme.
+Your primary focus is to create and assign topics under each theme.
 
-=========================
-INSTRUCTIONS
-=========================
-Each topic must group codes with shared meaning and help organize nuance and complexity within a theme.
+Here is the context for your analysis:
 
-Additionally, each topic must be:
-- **Semantically meaningful**: The topic is meaningful in light of the theme it is positioned under
-- **Topically coherent**: A topic must reflect a unified concept
-- **Conceptually clear**: The meaning of the topic is clear and unambiguous
+Survey question:
+<survey_question>
+{survey_question}
+</survey_question>
 
-The number of topics per theme should be:
-- **Sufficient** to capture the distinct dimensions and facets within each theme
-- **Parsimonious** to avoid artificial subdivisions that fragment related codes
-- **Comprehensive** to ensure every code has a natural home within the topic structure
-- **Balanced** such that topics represent meaningful distinctions without becoming too granular or too broad
+Themes identified:
+<themes>
+{themes}
+</themes>
 
-=========================
-OUTPUT
-=========================
-Return a JSON object with theme-topic structure.
-Topic names should be 1-4 words each.
+Initial codes to organize into topics:
+<codes>
+{codes}
+</codes>
 
+Instructions for creating topics:
+1. Group codes with shared meaning to help organize nuance and complexity within each theme.
+2. Ensure each topic is:
+   a) Semantically meaningful: The topic is meaningful in light of the theme it is positioned under.
+   b) Topically coherent: A topic must reflect a unified concept.
+   c) Conceptually clear: The meaning of the topic is clear and unambiguous.
+3. The number of topics per theme should be:
+   a) Sufficient to capture the distinct dimensions and facets within each theme.
+   b) Parsimonious to avoid artificial subdivisions that fragment related codes.
+   c) Comprehensive to ensure every code has a natural home within the topic structure.
+   d) Balanced such that topics represent meaningful distinctions without becoming too granular or too broad.
+
+When creating your topics, consider the following guidelines:
+1. Analyze the codes carefully to identify common threads or patterns.
+2. Think about how the codes relate to the overarching theme and to each other.
+3. Create topic names that are concise (1-4 words) yet descriptive of the grouped codes.
+4. Ensure that all codes are accounted for in your topic structure.
+5. Avoid creating too many or too few topics; aim for a balanced and meaningful organization.
+
+Your output should be a JSON object with the following structure:
 {{
   "structure": [
     {{
@@ -477,51 +509,51 @@ Topic names should be 1-4 words each.
   ]
 }}
 
-Language: {language}
-=========================
-INPUT
-=========================
-Survey question: {survey_question}
+Remember:
+- Topic names should be 1-4 words each.
+- Ensure all themes are included in the structure.
+- All codes should be accounted for in your topic organization, even if not explicitly mentioned in the output.
+- The analysis and output should be in {LANGUAGE}.
 
-Themes identified:
-{themes}
-
-Organize these initial codes into topics:
-{codes}
-=========================
+Provide your response in the specified JSON format.
 """
 
 PHASE2_CREATE_CODEBOOK_PROMPT = """
-You are an expert in thematic analysis working in {language}.
+You are an expert in thematic analysis working in {LANGUAGE}. 
+Your task is to create a codebook that organizes initial codes representing segments of survey responses to an open-ended survey question.
 
-=========================
-TASK
-=========================
-You are tasked with creating a codebook that organizes initial codes representing segments of survey responses to an open-ended survey question.
+Here are the input variables you will be working with:
+
+<survey_question>
+{survey_question}
+</survey_question>
+
+<structure>
+{structure}
+</structure>
+
+<codes>
+{codes}
+</codes>
+
 The codebook has the following structure:
-- **Themes (Level 1)** – A broad and coherent pattern in the data that addresses the research question. 
-- **Topics (Level 2)** – A specific facet or dimension of a theme. 
-- **Codes (Level 3)** – A short descriptive label grounded in data capturing the essence of responses for a segment of the data.
+- Themes (Level 1): A broad and coherent pattern in the data that addresses the research question.
+- Topics (Level 2): A specific facet or dimension of a theme.
+- Codes (Level 3): A short descriptive label grounded in data capturing the essence of responses for a segment of the data.
 
-=========================
-INSTRUCTIONS
-=========================
-The codebook needs to consist of Themes, Topics and Codes that are:
-- **Semantically meaningful**: The labels of the Themes, Topics and Codes need to be semantically meaningful in light of the survey question
-- **Thematically coherent**: All codes and topics within a theme need to reflect a unified idea
-- **Internally consistent**: There are no contradictory or unrelated codes in a topic or theme
-- **Conceptually clear**: The meaning of the labels for each theme, topic and code is clear and unambiguous
+To create the codebook, follow these steps:
+1. Use the provided theme-topic structure as the foundation.
+2. Assign EVERY initial code to the most appropriate topic.
+3. Include the numeric ID from [source ID: X] in the source_codes array for each code.
+4. Create meaningful descriptions for all levels (themes, topics, and codes).
 
-Create a complete hierarchical codebook by:
-1. Using the provided theme-topic structure
-2. Assigning EVERY initial code to the most appropriate topic
-3. Including the numeric ID from [source ID: X] in the source_codes array
-4. Creating meaningful descriptions for all levels
+Ensure that the codebook meets these criteria:
+- Semantically meaningful: The labels of the Themes, Topics, and Codes should be semantically meaningful in light of the survey question.
+- Thematically coherent: All codes and topics within a theme should reflect a unified idea.
+- Internally consistent: There should be no contradictory or unrelated codes in a topic or theme.
+- Conceptually clear: The meaning of the labels for each theme, topic, and code should be clear and unambiguous.
 
-=========================
-OUTPUT
-=========================
-Return as JSON with this exact structure:
+Present your codebook in the following JSON format:
 {{
   "themes": [
     {{
@@ -547,72 +579,65 @@ Return as JSON with this exact structure:
   ]
 }}
 
-Language: {language}
-
-=========================
-INPUT
-=========================
-Survey question: {survey_question}
-
-Theme-topic structure:
-{structure}
-
-Assign these initial codes to the structure:
-{codes}
-=========================
+Ensure that your response is in {LANGUAGE}.
 """
 
 PHASE3_THEME_JUDGER_PROMPT = """
-You are an expert in qualitative research and thematic analysis working in {language}.
+You are an expert in qualitative research and thematic analysis. 
+Your task is to audit a codebook for open-ended survey responses. 
 
-You are tasked with auditing a codebook.
-This codebook has the following structure for organizing open-ended survey responses:
-- **Themes (Level 1)** – A theme is underpinned by a central organizing concept and provides meaningful insight beyond surface-level observations.
-- **Topics (Level 2)** – Topics group codes with shared meaning and help organize nuance and complexity within a theme.
-- **Codes (Level 3)** – Codes reflect response segments with similar meaning and represent the smallest unit of meaning in this hierarchy.
+The codebook is structured as follows:
+- Themes (Level 1): Underpinned by a central organizing concept, providing meaningful insight beyond surface-level observations.
+- Topics (Level 2): Group codes with shared meaning, organizing nuance and complexity within a theme.
+- Codes (Level 3): Reflect response segments with similar meaning, representing the smallest unit of meaning in this hierarchy.
   - Each code contains source_codes (numeric IDs from initial clustering)
 
-=========================
-INSTRUCTIONS
-=========================
-CRITICAL: Focus on the MEANING of labels, not their IDs or position in the hierarchy. 
-Read the label of a Theme, Topic or Code and ask "Does this semantically belong here (Theme -> Topic -> Code)?"
+Here is the input you will be working with:
 
-Evaluate if the codebook is:
-- **Semantically coherent**: each code needs to semantically fit the full path it is placed under: Theme -> Topic -> Code.
-- **Internally consistent**: No codes that semantically contradict the meaning of a topic, and no topics that semantically contradict the meaning of a theme.
-- **Collectively exhaustive**: No unused source codes.
+Survey question:
+<survey_question>
+"{survey_question}"
+</survey_question>
 
-=========================
-REVISION RECOMMENDATIONS
-=========================
-If all criteria are met:
-    - set needs_revision: false 
+Current codebook:
+<codebook>
+{codebook}
+</codebook>
 
-Otherwise:
-    - set needs_revision: true
-   
-=========================
-REVISION ACTIONS (needs_revision: true)
-=========================
-First, incorporate unused codes WHERE THEY SEMANTICALLY BELONG:
-- Read the LABEL of the unused code (ignore the ID number)
-- Ask: "What is this code actually about based on its label?"
-- Match semantic meaning of the code's label with Themes and Topics in the following order: Themes -> Topics
-- If SAME MEANING as existing code:
-  **ADD**: Add source_codes from unused code to an existing code that shares its meaning
-- If genuinely DIFFERENT meaning but fits existing topic semantically:
-  **ADD**: Add new code with a label and source_codes to a Theme and Topic WHERE THE LABEL MEANINGS MATCH
-- If no semantically appropriate topic exists based on label meanings:
-  **CREATE**: Create new topic under appropriate theme, or create new theme if needed
+Codes not yet in the codebook:
+<unused_codes>
+{unused_codes}
+</unused_codes>
 
-Second, fix semantic misplacements and structural issues:
-- If codes are in wrong semantic locations:
-  **RESTRUCTURE**: Move codes to themes and topics where they semantically belong in the following order: Themes -> Topics
-- If not Thematically coherent:
-  **CREATE**: Create new topic with a label under a SEMANTICALLY APPROPRIATE theme - or create a new Theme, if needed
-- If not Internally consistent:
-  **CLARIFY**: Split a topic containing semantically diverse codes into distinct topics or themes -> Topics
+
+Your task is to evaluate if the codebook is:
+1. Semantically coherent: Each code must semantically fit the full path it is placed under (Theme -> Topic -> Code).
+2. Internally consistent: No codes that semantically contradict the meaning of a topic, and no topics that semantically contradict the meaning of a theme.
+3. Collectively exhaustive: No unused source codes.
+
+CRITICAL: Focus on the MEANING of labels, not their IDs or position in the hierarchy. Read the label of a Theme, Topic or Code and ask "Does this semantically belong here (Theme -> Topic -> Code)?"
+
+If all criteria are met, set needs_revision to false. Otherwise, set it to true.
+If revision is needed, follow these steps:
+
+1. Incorporate unused codes WHERE THEY SEMANTICALLY BELONG:
+   - Read the LABEL of the unused code (ignore the ID number)
+   - Ask: "What is this code actually about based on its label?"
+   - Match semantic meaning of the code's label with Themes and Topics in the following order: Themes -> Topics
+   - If SAME MEANING as existing code:
+     ADD: Add source_codes from unused code to an existing code that shares its meaning
+   - If genuinely DIFFERENT meaning but fits existing topic semantically:
+     ADD: Add new code with a label and source_codes to a Theme and Topic WHERE THE LABEL MEANINGS MATCH
+   - If no semantically appropriate topic exists based on label meanings:
+     CREATE: Create new topic under appropriate theme, or create new theme if needed
+
+2. Fix semantic misplacements and structural issues:
+   - If codes are in wrong semantic locations:
+     RESTRUCTURE: Move codes to themes and topics where they semantically belong in the following order: Themes -> Topics
+   - If not Thematically coherent:
+     CREATE: Create new topic with a label under a SEMANTICALLY APPROPRIATE theme - or create a new Theme, if needed
+   - If not Internally consistent:
+     CLARIFY: Split a topic containing semantically diverse codes into distinct topics or themes -> Topics
 
 FORBIDDEN: 
 - Placing codes in themes where they don't semantically belong or placing codes in Topics they don't semantically belong
@@ -621,9 +646,7 @@ FORBIDDEN:
 IMPORTANT: Every action MUST specify the complete path and ALL affected codes with their source_codes.
 EXAMPLE OF A PATH: Theme 1, Topic 1.1, Code 1.1.1 with source_codes [ID 1, ID 2] (replace placeholders of source_code ID's with actual ID's)
 
-=========================
-OUTPUT FORMAT
-=========================
+Provide your output in the following format:
 {{
   "needs_revision": true/false,
   "summary": "One sentence describing the main issue or confirming quality",
@@ -638,57 +661,49 @@ OUTPUT FORMAT
   ]
 }}
 
-=========================
-INPUT
-=========================
-Survey question: "{survey_question}"
-
-Current codebook:
-{codebook}
-
-Codes not yet in the codebook:
-{unused_codes}
-=========================
+Remember to focus on semantic meaning and coherence throughout your analysis and recommendations.
 """
 
 PHASE4_THEME_REVIEW_PROMPT = """
-You are an expert in qualitative research and thematic analysis working in {language}.
+You are an expert in qualitative research and thematic analysis working in {language}. 
+Your task is to revise a hierarchical codebook based on feedback from a quality review.
 
-=========================
-TASK
-=========================
-You are revising a hierarchical codebook based on feedback from a quality review.
+First, carefully review the current codebook:
 
-=========================
-CODEBOOK STRUCTURE
-=========================
-- **Themes (Level 1)** – Broad patterns with central organizing concepts
-- **Topics (Level 2)** – Specific facets that group codes with shared meaning
-- **Codes (Level 3)** – Short descriptive labels for distinct response patterns
-  - Each code references the "source_codes" of the original data (the initial codes)
+<current_codebook>
+{current_codebook}
+</current_codebook>
 
-=========================
-REVISION INSTRUCTIONS
-=========================
-You must stricly follow the instructions specified in the feedback.
-Instructions include:
-- **RESTRUCTURE**: Move codes to where their LABEL meaning fits in the following order: Theme -> Topic
-- **CREATE**: Add new themes/topics when no existing LABELS match the semantic meaning of orphaned codes
-- **CONSOLIDATE**: Merge ONLY when topic LABELS represent the same concept
-- **CLARIFY**: Split topics whose LABEL doesn't accurately represent the diverse codes within
-- **ADD**: Add codes only to topics whose LABEL is semantically compatible
+Now, review the feedback for revision:
 
-=========================
-RULES
-=========================
-- Return a complete codebook with ALL codes in semantically appropriate places
-- Maintain numbering (themes: 1,2,3... topics: X.1,X.2... codes: X.Y.1,X.Y.2...)
-- PRESERVE all source_codes arrays from the input
-- Output all labels and descriptions in **{language}**
+<feedback>
+- Summary: 
+{summary}
 
-=========================
-OUTPUT FORMAT
-=========================
+- Issues identified:
+{issues}
+
+- Required actions:
+{actions}
+</feedback>
+
+To revise the codebook, follow these instructions:
+
+1. Carefully analyze the feedback and identify all required changes.
+2. Make the specified revisions to the codebook structure, including:
+   - Creating new themes or topics as instructed
+   - Moving codes to semantically appropriate locations
+   - Adding new codes to existing or new topics
+3. Ensure all changes align with the feedback and maintain the overall semantic structure of the codebook.
+
+Rules for maintaining codebook structure:
+- Preserve the hierarchical structure: Themes > Topics > Codes
+- Maintain consistent numbering (themes: 1,2,3... topics: X.1,X.2... codes: X.Y.1,X.Y.2...)
+- Keep all existing source_codes arrays intact
+- Ensure all labels and descriptions are in Dutch
+
+Output the revised codebook in the following JSON format:
+
 {{
   "themes": [
     {{
@@ -713,67 +728,54 @@ OUTPUT FORMAT
     }}
   ]
 }}
-
-=========================
-INPUT
-=========================
-Survey question: "{survey_question}"
-
-Initial codes for reference:
-{cluster_summaries}
-
-Current codebook to improve:
-{current_codebook}
-
-Feedback for revision:
-- Summary: 
-{summary}
-
-- Issues identified:
-{issues}
-
-- Required actions:
-{actions}
-=========================
 """
 
 PHASE5_LABEL_REFINEMENT_PROMPT = """
-You are an expert in qualitative coding and codebook design working in {language}.
+You are an expert in qualitative coding and codebook design working in {language}. 
+Your goal is to refine labels and descriptions in a hierarchical codebook to ensure they are clear, precise, and conceptually meaningful.
 
-=========================
-TASK
-=========================
-You are refining labels and descriptions in a hierarchical codebook to ensure they are clear, precise, and conceptually meaningful.
+Here's an overview of the codebook structure:
+- Themes (Level 1): Broad patterns with central organizing concepts
+- Topics (Level 2): Specific facets that group codes with shared meaning
+- Codes (Level 3): Short descriptive labels for distinct response patterns
 
-=========================
-CODEBOOK STRUCTURE
-=========================
-- **Themes (Level 1)** – Broad patterns with central organizing concepts
-- **Topics (Level 2)** – Specific facets that group codes with shared meaning
-- **Codes (Level 3)** – Short descriptive labels for distinct response patterns
-
-=========================
-LABEL PRINCIPLES
-=========================
+When refining labels, follow these principles:
 - Maximum 4 words
 - Capture the underlying concept, not surface features
 - Use precise, meaningful terms
 - Avoid compound labels (X and Y and Z)
 - Express a single coherent idea
 
-=========================
-DESCRIPTION PRINCIPLES
-=========================
+When refining descriptions, adhere to these guidelines:
 - Maximum 20 words
 - Add insight beyond what's in the label
 - Explain the significance or meaning
 - Use clear, active language
 - Focus on why this grouping matters
 
-=========================
-OUTPUT FORMAT
-=========================
-Return ONLY entries that need improvement:
+You will be provided with a survey question and the current codebook. 
+Your task is to review and refine the codebook entries that need improvement. 
+You should only output the refined entries, not the entire codebook.
+
+Here's the survey question:
+<survey_question>
+"{survey_question}"
+</survey_question>
+
+And here's the current codebook:
+<codebook>
+{codebook}
+</codebook>
+
+Follow these steps to refine the codebook:
+
+1. Carefully review each theme, topic, and code in the codebook.
+2. For each entry, evaluate if the label and description meet the principles outlined above.
+3. If an entry needs improvement, refine the label and/or description according to the principles.
+4. Ensure all refinements are in {language}.
+5. Only include entries that you have refined in your output.
+
+Format your output in JSON as follows:
 {{
   "refined_themes": {{
     "1": {{
@@ -795,46 +797,40 @@ Return ONLY entries that need improvement:
   }}
 }}
 
-Output all refined labels and descriptions in **{language}**.
-
-=========================
-INPUT
-=========================
-Survey question: "{survey_question}"
-
-Current codebook:
-{codebook}
-=========================
+Remember to only include entries that you have refined. If no refinements are necessary, output an empty JSON object. 
+Ensure all labels and descriptions are in {language}.
 """
 
 PHASE6_ASSIGNMENT_PROMPT = """
-You are a {language} coder assigning a cluster to the existing codebook.
+You are a {language} language coder tasked with assigning a cluster to an existing codebook. 
+Your goal is to choose the most appropriate path (Theme → Topic → Code) for the given cluster based on the provided codebook.
 
-=========================
-INSTRUCTIONS
-=========================
-1. Choose exactly ONE path (Theme → Topic → Code).  
-2. Provide a confidence score 0–1.  
-3. If confidence < 0.60, assign to Theme 99 → Topic 99.1 → Code 99.1.1 (“Other”).  
-4. Add a one-sentence note explaining your choice.
+First, review the survey question:
+<survey_question>
+{survey_question}
+</survey_question>
 
-=========================
-INPUT
-=========================
-Survey Question: {survey_question}
-
-Cluster to assign:
+Next, examine the cluster to be assigned:
+<cluster_to_assign>
 - ID          : {cluster_id}
 - Label       : {cluster_label}
 - Examples    :
 {cluster_representatives}
+</cluster_to_assign>
 
+Now, carefully review the codebook:
+<codebook>
 Codebook
 {codebook}
+</codebook>
 
-=========================
-Output format (JSON):
-=========================
+To assign the cluster, follow these steps:
+1. Analyze the cluster label and examples.
+2. Compare them with the themes, topics, and codes in the codebook.
+3. Choose exactly ONE path (Theme → Topic → Code) that best matches the cluster.
+4. Determine your confidence in this assignment on a scale of 0 to 1.
+
+Provide your assignment in the following JSON format:
 {{
   "primary_assignment": {{
     "theme_id": "1",
@@ -852,8 +848,8 @@ Output format (JSON):
   ]
 }}
 
-Note: Ensure all IDs exist in the provided codebook structure.
-Language: {language}
+Important: If your confidence is less than 0.60, assign the cluster to Theme 99 → Topic 99.1 → Code 99.1.1 ("Other").
+Remember to focus on the meanings of the labels rather than the ID numbers when making your assignment.
 """
 
 

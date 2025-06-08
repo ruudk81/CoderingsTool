@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from config import LabellerConfig
 import models
 from utils.verboseReporter import VerboseReporter
-from difflib import SequenceMatcher
+
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.output_parsers import JsonOutputParser
