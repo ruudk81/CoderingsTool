@@ -321,7 +321,8 @@ print(f"Total clusters assigned: {total_sources}")
 #     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     
 #     start_time = time.time()
-#     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+#     prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+#     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
 #     labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
 #     end_time = time.time()
 #     elapsed_time = end_time - start_time
