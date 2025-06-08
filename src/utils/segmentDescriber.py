@@ -398,21 +398,29 @@ class SegmentDescriber:
 # Example usage
 if __name__ == "__main__":
     
-    from utils import dataLoader, csvHandler
+    from utils import dataLoader
+    from utils.cacheManager import CacheManager
+    from config import CacheConfig
     import random
     
-    filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column    = "DLNMID"
-    var_name     = "Q20"
+    # Initialize cache manager
+    cache_config = CacheConfig()
+    cache_manager = CacheManager(cache_config)
+    
+    # Configuration
+    step_name = "preprocessed"
+    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    id_column = "DLNMID"
+    var_name = "Q20"
+    
+    # Load data using cache manager
+    data_loader = dataLoader.DataLoader(verbose=False)
+    var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
-    csv_handler          = csvHandler.CsvHandler()
-    filepath             = csv_handler.get_filepath(filename, 'preprocessed')
-    data_loader          = dataLoader.DataLoader()
-    var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
-
-    preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
-    input_data            = [item.to_model(models.DescriptiveModel) for item in preprocessed_text]
-
+    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
+    input_data = [item.to_model(models.DescriptiveModel) for item in preprocessed_text]
+    
+    # Process with SegmentDescriber
     coder = SegmentDescriber()
     results = coder.generate_codes(input_data, var_lab)
     
