@@ -32,6 +32,7 @@ var_name = "Q20"
 FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -50,6 +51,7 @@ print(f"📌 Variable: {var_name} - {var_lab}")
 print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
 print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
 print(f"💬 Verbose mode: {VERBOSE}")
+print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
 print("=" * 80)
 
 
@@ -82,10 +84,12 @@ else:
 """preprocess data"""
 from utils import textNormalizer, spellChecker, textFinalizer
 from utils.verboseReporter import VerboseReporter
+from utils.promptPrinter import promptPrinter
 
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
@@ -94,7 +98,7 @@ else:
     verbose_reporter.section_header("PREPROCESSING PHASE")
   
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
-    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE)
+    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE, prompt_printer=prompt_printer)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
   
     start_time            = time.time()

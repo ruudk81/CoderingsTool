@@ -75,13 +75,14 @@ class HunspellSession:
 
 class SpellChecker:
     def __init__(self, config: SpellCheckConfig = None, openai_api_key: Optional[str] = None, 
-                 openai_model: str = None, verbose: bool = False):
+                 openai_model: str = None, verbose: bool = False, prompt_printer = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.openai_model = openai_model or DEFAULT_MODEL
         self.client = instructor.patch(OpenAI(api_key=self.openai_api_key))
         self.hunspell_path = HUNSPELL_PATH
-        self.dict_path = DICT_PATH 
+        self.dict_path = DICT_PATH
+        self.prompt_printer = prompt_printer 
         self.verbose_reporter = VerboseReporter(verbose)
         if not self.check_hunspell_installation():
             print("Hunspell is not properly installed or configured.")
@@ -246,15 +247,11 @@ class SpellChecker:
         async def process_word(word):
             unsplit_suggestions = await self.run_hunspell_word_async(word)
             left_part, right_part = await self.find_best_split_for_spellcheck(word)
-            
+            split_suggestion = " ".join(filter(None, [left_part, right_part]))
             unsplit_suggestion = (
                 min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
-                if unsplit_suggestions else None)
-           
-            split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
-            
+                if unsplit_suggestions else "OOV")
             return word, unsplit_suggestion, split_suggestion
-
 
         results = await asyncio.gather(*(process_word(word) for word in sorted_oov_words))
         
@@ -275,40 +272,54 @@ class SpellChecker:
         
         max_batch_size = self.config.max_batch_size
         
-        for task in tasks:
-            correction_task = SpellCorrectionTask(
-                respondent_id=task['respondent_id'],
-                original_response=task['response'],
-                response_with_oov_placeholders=task['response_with_placeholders'],
-                oov_words=task['oov_words'],
-                suggestions=task['suggestions']
-                )
-            
-            task_text = (
-                f"Task:\n"
-                f"Respondent ID: {task['respondent_id']}\n"
-                f"Response: \"{task['response_with_placeholders']}\"\n"
-                f"Misspelled words: {task['oov_words']}\n"
-                f"Suggested corrections: {task['suggestions']}\n\n"
-                )
-            
-            task_tokens = len(encoding.encode(task_text))
-            
-            if (current_batch_tokens + task_tokens > token_budget or 
-                len(current_batch_tasks) >= max_batch_size):
-                if current_batch_tasks:
-                    batches.append(SpellCorrectionBatch(tasks=current_batch_tasks))
-                current_batch_tasks = []
-                current_batch_tokens = 0
-            
-            current_batch_tasks.append(correction_task)
-            current_batch_tokens += task_tokens
+        sorted_tasks = sorted(tasks, 
+              key=lambda t: (len(t['response']) + len(t['oov_words'].split(', ')), str(t['respondent_id'])))
         
+        for task in sorted_tasks:
+            respondent_id = task['respondent_id']   
+            response = task['response']
+            misspelled_words = task['oov_words']
+            
+            # Handle multiple OOV words - split by comma and process each
+            for misspelled_word in misspelled_words.split(", "):
+                if not misspelled_word:
+                    continue
+                    
+                pattern = rf'\b{re.escape(misspelled_word)}\b'
+                response_with_oov_placeholders = re.sub(pattern, '<oov_word>', response)
+                
+                task_text = (
+                    f"Response:\n"
+                    f"Respondent ID: {respondent_id}\n"   
+                    f"Response: \"{response_with_oov_placeholders}\"\n"
+                    f"Misspelled word: \"{misspelled_word}\"\n"
+                    f"Suggested correction: \"{task['suggestions']}\"\n\n")
+                
+                task_tokens = len(encoding.encode(task_text))
+                
+                # If adding this task would exceed our budget, start a new batch
+                if (current_batch_tokens + task_tokens > token_budget
+                    or len(current_batch_tasks) >= max_batch_size):
+                    batches.append(SpellCorrectionBatch(tasks=current_batch_tasks))
+                    current_batch_tasks = []
+                    current_batch_tokens = 0
+                
+                correction_task = SpellCorrectionTask(
+                    respondent_id=respondent_id,
+                    original_response=response,
+                    response_with_oov_placeholders=response_with_oov_placeholders,
+                    oov_words=misspelled_word,
+                    suggestions=task['suggestions']
+                    )
+                
+                current_batch_tasks.append(correction_task)
+                current_batch_tokens += task_tokens
+        
+        # Don't forget the last batch
         if current_batch_tasks:
             batches.append(SpellCorrectionBatch(tasks=current_batch_tasks))
         
         return batches
-    
     
     async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
         oov_words = list(best_suggestions_dict.keys())
@@ -328,41 +339,13 @@ class SpellChecker:
         # Create tasks for sentences with OOV words
         for item in responses_with_ids:
             response = item['response']
-            response_oov_words = []
-            for word in oov_words:
-                if len(word) > 2:  
-                    pattern = rf'\b{re.escape(word)}\b'
-                    if re.search(pattern, response):
-                        response_oov_words.append(word)
-            
-            
+            response_oov_words = [word for word in oov_words if word in response]
             if response_oov_words:
-                # Create placeholder version of response
-                response_with_placeholders = response
-                for word in response_oov_words:
-                    pattern = rf'\b{re.escape(word)}\b'
-                    response_with_placeholders = re.sub(pattern, '<oov_word>', response_with_placeholders, count=1)
-                
-                # Get suggestions for all OOV words
-                all_suggestions = []
-                for word in response_oov_words:
-                    suggestions = best_suggestions_dict.get(word, ["OOV"])
-                    # Clean up suggestion format
-                    cleaned_suggestions = []
-                    for sug in suggestions:
-                        if isinstance(sug, tuple):
-                            cleaned_suggestions.extend([s for s in sug if s and s != "OOV"])
-                        else:
-                            cleaned_suggestions.append(sug)
-                    all_suggestions.append(", ".join(cleaned_suggestions))
-                
                 tasks.append({
                     "respondent_id": item['respondent_id'],
                     "response": response,
-                    "response_with_placeholders": response_with_placeholders,
                     "oov_words": ", ".join(response_oov_words),
-                    "suggestions": " | ".join(all_suggestions)  # Separate suggestions for each word
-                    })
+                    "suggestions": ", ".join(str(suggestion) for word in response_oov_words for suggestion in best_suggestions_dict.get(word, ["OOV"])) })
         
         repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')  # repeated N+ times
         single_word_pattern = re.compile(r'^[A-Za-z]+$')
@@ -385,23 +368,27 @@ class SpellChecker:
                     f"Response: \"{task.response_with_oov_placeholders}\"\n"
                     f"Misspelled words: {task.oov_words}\n"
                     f"Suggested corrections: {task.suggestions}\n\n")
-
+            
             prompt = SPELLCHECK_INSTRUCTIONS.format(
                 language=DEFAULT_LANGUAGE,
                 var_lab=var_lab,
                 tasks=tasks_string)
             
-            # debug
-            if hasattr(process_batch, 'first_call'):
-               process_batch.first_call = False
-            else:
-               process_batch.first_call = True
-               print("=" * 80)
-               print("EXAMPLE LLM PROMPT:")
-               print("=" * 80)
-               print(prompt)
-               print("=" * 80)
-
+            # Capture prompt if promptPrinter is available
+            if self.prompt_printer:
+                self.prompt_printer.capture_prompt(
+                    step_name="preprocessing",
+                    utility_name="SpellChecker",
+                    prompt_content=prompt,
+                    prompt_type="correction",
+                    metadata={
+                        "model": self.openai_model,
+                        "var_lab": var_lab,
+                        "language": DEFAULT_LANGUAGE,
+                        "batch_size": len(batch.tasks)
+                    }
+                )
+            
             # Using instructor for structured output
             # with random seed, for more determined outcomes
             response = await asyncio.to_thread(
@@ -454,7 +441,7 @@ class SpellChecker:
             for doc in self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size): #TODO process zonder spaCy
                 doc_flagged = False
                 for token in doc:
-                    if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
+                    if token.is_alpha and token.ent_type_ == "":
                         word = token.text
                         output = oov_identification_session.check_word(word)
                         if output and output.startswith(('&', '#')):
