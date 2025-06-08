@@ -1,8 +1,4 @@
-"""
-CoderingsTool Pipeline
-=====================
-To run: python pipeline.py (from src directory)
-"""
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # ===  MODULES ========================================================================================================
 import time
@@ -30,7 +26,7 @@ var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = None  # Set to step name (e.g., "embeddings") to recalculate specific step
+FORCE_STEP = "data"  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
