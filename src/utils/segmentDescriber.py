@@ -1,13 +1,17 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-from typing import List, Dict
+from typing import List, Dict, Union, Any
+from pydantic import BaseModel, Field
 import instructor
 import openai
 import tiktoken
 import asyncio
 import nest_asyncio
+import json
 
+from langchain_core.runnables import RunnableLambda
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 
@@ -16,6 +20,169 @@ from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT
 import models
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 
+class LangChainPipeline :
+    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
+                 temperature: float = 0.0, config: SegmentationConfig = None, prompt_printer = None):
+        self.language = language
+        self.var_lab = var_lab
+        self.config = config or DEFAULT_SEGMENTATION_CONFIG
+        self.prompt_printer = prompt_printer
+        
+        # Track which prompts have been captured
+        self.captured_segmentation = False
+        self.captured_refinement = False
+        self.captured_coding = False
+      
+        model_config = ModelConfig()
+        
+        self.llm = ChatOpenAI(
+            temperature=temperature,
+            model=model_name,
+            openai_api_key=api_key,
+            seed=model_config.seed)
+
+        self.parser = JsonOutputParser()
+        self.retry_delay = self.config.retry_delay
+        self.max_retries = self.config.max_retries
+        
+        self.chain = self.build_chain()
+
+    def _safe_get(self, x, key):
+        return x.get(key) if isinstance(x, dict) else None
+    
+    def _safe_extract_segments(self, inputs: Union[Dict, List, Any]) -> List[Dict]:
+        if isinstance(inputs, dict):
+            segments = inputs.get("segments", [])
+            if isinstance(segments, list):
+                return segments
+            return [segments] if segments else []
+        elif isinstance(inputs, list):
+            return inputs
+        return []
+
+    def build_chain(self):
+        
+        def debug_log(label: str):
+            return RunnableLambda(lambda x: print(f"\n--- {label} ---\n{json.dumps(x, indent=2, ensure_ascii=False)}\n") or x)
+    
+        segmentation_prompt = PromptTemplate.from_template(SEGMENTATION_PROMPT)
+        refinement_prompt = PromptTemplate.from_template(REFINEMENT_PROMPT)
+        coding_prompt = PromptTemplate.from_template(CODING_PROMPT)
+        
+        # Prompt capture functions
+        def capture_segmentation_prompt(inputs):
+            if self.prompt_printer and not self.captured_segmentation:
+                formatted_prompt = SEGMENTATION_PROMPT.format(
+                    responses=inputs.get("responses", []),
+                    var_lab=inputs.get("var_lab", ""),
+                    language=inputs.get("language", "")
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="segmentation",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": inputs.get("var_lab", ""),
+                        "language": inputs.get("language", ""),
+                        "stage": "1/3 - Segmentation"
+                    }
+                )
+                self.captured_segmentation = True
+            return inputs
+            
+        def capture_refinement_prompt(inputs):
+            if self.prompt_printer and not self.captured_refinement:
+                formatted_prompt = REFINEMENT_PROMPT.format(
+                    segments=inputs.get("segments", []),
+                    var_lab=self.var_lab,
+                    language=self.language
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="refinement",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": self.var_lab,
+                        "language": self.language,
+                        "stage": "2/3 - Refinement"
+                    }
+                )
+                self.captured_refinement = True
+            return inputs
+            
+        def capture_coding_prompt(inputs):
+            if self.prompt_printer and not self.captured_coding:
+                formatted_prompt = CODING_PROMPT.format(
+                    segments=inputs.get("segments", []),
+                    var_lab=self.var_lab,
+                    language=self.language
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="coding",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": self.var_lab,
+                        "language": self.language,
+                        "stage": "3/3 - Coding"
+                    }
+                )
+                self.captured_coding = True
+            return inputs
+    
+        chain = (
+           {
+               "responses": lambda x: x["responses"],
+               "var_lab": lambda x: x["var_lab"],
+               "language": lambda x: x["language"]
+           }
+           | RunnableLambda(capture_segmentation_prompt)
+           | segmentation_prompt
+           | self.llm
+           | self.parser
+           | RunnableLambda(lambda inputs: {
+               "segments": inputs if isinstance(inputs, list) else [],
+               "var_lab": self.var_lab,
+               "language": self.language
+           })
+           | RunnableLambda(capture_refinement_prompt)
+           | refinement_prompt
+           | self.llm
+           | self.parser
+           | RunnableLambda(lambda inputs: {
+               "segments": inputs if isinstance(inputs, list) else [],
+               "var_lab": self.var_lab,
+               "language": self.language
+           })
+           | RunnableLambda(capture_coding_prompt)
+           | coding_prompt
+           | self.llm
+           | self.parser
+           )
+   
+        return chain
+
+    async def invoke_with_retries(self, inputs: dict):
+        retries = 0
+        while retries <= self.max_retries:
+            try:
+                result = await self.chain.ainvoke(inputs)
+                return result
+            except Exception as e:
+                print(f"Retry {retries + 1}: Error in LangChain chain execution: {str(e)}")
+                retries += 1
+                await asyncio.sleep(self.retry_delay * retries)
+
+        raise RuntimeError("LangChain pipeline failed after max retries")
+
+class CodingBatch(BaseModel):
+    tasks: List[Dict] = Field(description="List of coding tasks in this batch")   
 
 class SegmentDescriber:
     def __init__(
@@ -47,21 +214,16 @@ class SegmentDescriber:
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
         
-        # Initialize encoding for token calculations
-        try:
-            self.encoding = tiktoken.encoding_for_model(self.openai_model)
-        except KeyError:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-            print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
-        
-        # Initialize reusable LLM client (Fix 1: Avoid creating new client every call)
-        self.llm = ChatOpenAI(
+        self.langchain_pipeline = LangChainPipeline(
+            model_name=self.openai_model,
+            api_key=self.openai_api_key,
+            language=DEFAULT_LANGUAGE,
+            var_lab = "",
             temperature=self.config.temperature,
-            model=self.openai_model,
-            openai_api_key=self.openai_api_key,
-            seed=self.model_config.seed
-        )
-        self.parser = JsonOutputParser()
+            config=self.config,
+            prompt_printer=self.prompt_printer) 
+            
+        self.chain = self.langchain_pipeline.build_chain()
 
         if not self.openai_api_key:
             raise ValueError("API key is required")
@@ -77,219 +239,180 @@ class SegmentDescriber:
         
         #print(f"Initialized DescriptiveCoder with {provider} provider and {self.openai_model} model")
     
-    def create_dynamic_batches(self, responses: List[models.DescriptiveModel], var_lab: str) -> List[List[models.DescriptiveModel]]:
-        """Create batches optimized for multi-response processing"""
+    def create_batches(self, responses: List[models.DescriptiveModel], var_lab: str) -> List[CodingBatch]:
+        #encoding = tiktoken.encoding_for_model(self.openai_model)
+        
         try:
             encoding = tiktoken.encoding_for_model(self.openai_model)
         except KeyError:
-            encoding = tiktoken.get_encoding("cl100k_base")
+            encoding = tiktoken.get_encoding("cl100k_base")  # This is the encoding used by GPT-4
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
-        # Calculate base prompt overhead (constant per batch)
-        base_prompt_tokens = self._calculate_base_prompt_tokens(var_lab, encoding)
+        # Calculate token budget
+        segmentation_prompt = SEGMENTATION_PROMPT
+        segmentation_prompt = segmentation_prompt.replace("{language}", DEFAULT_LANGUAGE)
+        segmentation_prompt = segmentation_prompt.replace("{var_lab}", var_lab)
+        segmentation_prompt = segmentation_prompt.replace("{responses}", "")
+        coding_prompt = CODING_PROMPT
+        coding_prompt = coding_prompt.replace("{language}", DEFAULT_LANGUAGE)
+        coding_prompt = coding_prompt.replace("{var_lab}", var_lab)
+        coding_prompt = coding_prompt.replace("{segments}", "")
+        prompt = segmentation_prompt + "\n" + coding_prompt
         
-        # Available tokens for response content  
-        available_tokens = int((self.config.max_tokens - base_prompt_tokens - self.config.completion_reserve) 
-                              * self.config.target_token_utilization)
+        prompt_length = len(encoding.encode(prompt))
+        token_budget = self.max_tokens - prompt_length - self.completion_reserve
         
+        # Skip calculation if no responses
         if not responses:
             return []
         
+        # Calculate average tokens per response for adaptive batching
+        # Since we process in groups of 10, we need to account for that in token calculation
+        avg_tokens_per_response = sum(len(encoding.encode(r.response)) for r in responses) / max(1, len(responses))
+        # Estimate tokens for a group of 10 responses (with some overhead for JSON formatting)
+        tokens_per_group = avg_tokens_per_response * 10 * 1.2  # 20% overhead for formatting
+        adaptive_max_batch_size = min(self.max_batch_size, max(10, int(token_budget / max(1, tokens_per_group)) * 10))
+        
+        #print(f"estimated number of tokens= {prompt_length + avg_tokens_per_response}")
+        
         batches = []
-        current_batch = []
-        current_tokens = 0
+        current_batch_tasks = []
+        current_batch_tokens = 0
+        
+        #print(f"Creating batches with token budget: {token_budget}, adaptive max batch size: {adaptive_max_batch_size}")
         
         for response in responses:
-            # Calculate tokens for this response in batch format
-            response_tokens = len(encoding.encode(f"Response {len(current_batch) + 1} (ID: {response.respondent_id}): \"{response.response}\""))
+            respondent_id = response.respondent_id
+            response_text = response.response
             
-            # Would this response exceed our budget?
-            if (current_tokens + response_tokens > available_tokens and 
-                len(current_batch) >= self.config.min_batch_size):
+            # Estimate tokens for this response when part of a group of 10
+            # Include some overhead for JSON formatting
+            task_text = f"Respondent ID: {respondent_id}\nResponse: \"{response_text}\""
+            task_tokens = len(encoding.encode(task_text)) * 1.1  # 10% overhead
+            
+            # Handle oversized individual responses
+            if task_tokens > token_budget / 10 and not current_batch_tasks:
+                print(f"Warning: Response from respondent {respondent_id} exceeds token budget per response ({task_tokens} > {token_budget / 10}). Processing as single item batch.")
+                batches.append(CodingBatch(tasks=[response.model_dump()]))  # Convert to dict for Pydantic v2
+                continue
                 
-                # Finalize current batch
-                batches.append(current_batch)
-                current_batch = [response]
-                current_tokens = response_tokens
-            else:
-                current_batch.append(response)
-                current_tokens += response_tokens
-            
-            # Don't exceed max batch size
-            if len(current_batch) >= self.config.max_batch_size:
-                batches.append(current_batch)
-                current_batch = []
-                current_tokens = 0
+            # Start a new batch if current one would exceed limits
+            if (current_batch_tokens + task_tokens > token_budget or 
+                len(current_batch_tasks) >= adaptive_max_batch_size):
+                if current_batch_tasks:  # Only add batch if it's not empty
+                    batches.append(CodingBatch(tasks=current_batch_tasks))
+                    current_batch_tasks = []
+                    current_batch_tokens = 0
+                
+            # Add the response to the current batch
+            current_batch_tasks.append(response.model_dump())  
+            current_batch_tokens += task_tokens
         
-        # Add final batch
-        if current_batch:
-            batches.append(current_batch)
+        # Add the last batch if not empty
+        if current_batch_tasks:
+            batches.append(CodingBatch(tasks=current_batch_tasks))
         
+        #print(f"Created {len(batches)} batches from {len(responses)} responses")
         return batches
-    
-    def _calculate_base_prompt_tokens(self, var_lab: str, encoding) -> int:
-        """Calculate token overhead for base prompt templates"""
-        # Sample base prompts without response content
-        base_segmentation = SEGMENTATION_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            responses=""  # Empty for calculation
-        )
-        base_refinement = REFINEMENT_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            segments=""  # Empty for calculation
-        )
-        base_coding = CODING_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            segments=""  # Empty for calculation
-        )
-        
-        # Return the maximum (worst case) for any single stage
-        return max(
-            len(encoding.encode(base_segmentation)),
-            len(encoding.encode(base_refinement)),
-            len(encoding.encode(base_coding))
-        )
 
-    def _format_responses_for_prompt(self, responses: List[models.DescriptiveModel]) -> str:
-        """Format multiple responses for batch processing"""
-        formatted_responses = []
-        for response in responses:
-            formatted_responses.append(f"Response {len(formatted_responses) + 1} (ID: {response.respondent_id}): \"{response.response}\"")
-        return "\n".join(formatted_responses)
-    
-    def _format_segments_for_refinement(self, segmented_results: List[Dict]) -> str:
-        """Format segmented results for refinement stage"""
-        import json
-        return json.dumps(segmented_results, ensure_ascii=False, indent=2)
-    
-    def _format_segments_for_coding(self, refined_results: List[Dict]) -> str:
-        """Format refined results for coding stage"""
-        import json
-        return json.dumps(refined_results, ensure_ascii=False, indent=2)
-
-    async def process_batch_multi_response(self, batch: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
-        """Process a batch of responses using multi-response 3-stage approach"""
-        try:
-            # Stage 1: Segmentation - Process all responses at once
-            responses_text = self._format_responses_for_prompt(batch)
-            segmentation_result = await self._call_segmentation_stage(responses_text, var_lab, max_retries)
-            
-            # Stage 2: Refinement - Process all segmented results at once  
-            segments_text = self._format_segments_for_refinement(segmentation_result)
-            refinement_result = await self._call_refinement_stage(segments_text, var_lab, max_retries)
-            
-            # Stage 3: Coding - Process all refined results at once
-            refined_text = self._format_segments_for_coding(refinement_result)
-            coding_result = await self._call_coding_stage(refined_text, var_lab, max_retries)
-            
-            # Convert results back to DescriptiveModel objects
-            # Fix 3: Pre-build lookup dict for O(1) response lookup
-            response_lookup = {str(r.respondent_id): r.response for r in batch}
-            
-            processed_results = []
-            for result_item in coding_result:
-                respondent_id = result_item.get("respondent_id")
-                segments = result_item.get("segments", [])
-                
-                # Fast O(1) lookup instead of O(n) search
-                original_response = response_lookup.get(str(respondent_id), "")
-                
-                processed_results.append(models.DescriptiveModel(
-                    respondent_id=respondent_id,
-                    response=original_response,
-                    quality_filter=None,
-                    response_segment=[models.DescriptiveSubmodel(**seg) for seg in segments]
-                ))
-            
-            return processed_results
-            
-        except Exception as e:
-            print(f"Error in multi-response batch processing: {str(e)}")
-            # Return fallback responses
-            return [self._create_fallback_response(response) for response in batch]
-    
-    def _create_fallback_response(self, response: models.DescriptiveModel) -> models.DescriptiveModel:
-        """Create fallback response for failed processing"""
-        return models.DescriptiveModel(
-            respondent_id=response.respondent_id,
-            response=response.response,
-            quality_filter=None,
-            response_segment=[
-                models.DescriptiveSubmodel(
-                    segment_id="1",
-                    segment_response=response.response,
-                    segment_label="PROCESSING_ERROR",
-                    segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
-                )
-            ]
-        )
-    
-    async def _call_segmentation_stage(self, responses_text: str, var_lab: str, max_retries: int) -> List[Dict]:
-        """Call segmentation stage with multiple responses"""
-        prompt = SEGMENTATION_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            responses=responses_text
-        )
-        
-        # Capture prompt for first call
-        if self.prompt_printer and not hasattr(self, '_captured_segmentation'):
-            self.prompt_printer.capture_prompt(
-                step_name="segmentation",
-                utility_name="SegmentDescriber",
-                prompt_content=prompt,
-                prompt_type="segmentation_multi",
-                metadata={
-                    "model": self.openai_model,
-                    "var_lab": var_lab,
-                    "language": DEFAULT_LANGUAGE,
-                    "stage": "1/3 - Multi-Response Segmentation"
-                }
-            )
-            self._captured_segmentation = True
-        
-        return await self._call_llm_with_retries(prompt, max_retries)
-    
-    async def _call_refinement_stage(self, segments_text: str, var_lab: str, max_retries: int) -> List[Dict]:
-        """Call refinement stage with multiple segmented responses"""
-        prompt = REFINEMENT_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            segments=segments_text
-        )
-        
-        return await self._call_llm_with_retries(prompt, max_retries)
-    
-    async def _call_coding_stage(self, refined_text: str, var_lab: str, max_retries: int) -> List[Dict]:
-        """Call coding stage with multiple refined responses"""
-        prompt = CODING_PROMPT.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            segments=refined_text
-        )
-        
-        return await self._call_llm_with_retries(prompt, max_retries)
-    
-    async def _call_llm_with_retries(self, prompt: str, max_retries: int) -> List[Dict]:
-        """Call LLM with retry logic"""
+    async def process_multiple_responses(self, responses_data, var_lab, max_retries=3):
+        """Process multiple responses with three-step approach"""
         retries = 0
         while retries <= max_retries:
             try:
-                # Fix 1: Use reusable client instead of creating new one
-                result = await self.llm.ainvoke(prompt)
-                return self.parser.parse(result.content)
+                # Format responses for the prompt
+                formatted_responses = []
+                for resp_data in responses_data:
+                    respondent_id = resp_data['respondent_id']
+                    response_text = resp_data['response']
+                    formatted_responses.append({
+                        "respondent_id": respondent_id,
+                        "response": response_text
+                    })
+                
+                result = await self.langchain_pipeline.invoke_with_retries({
+                    "responses": formatted_responses,
+                    "var_lab": var_lab,
+                    "language": DEFAULT_LANGUAGE
+                })
+         
+                # Convert result back to DescriptiveModels
+                results = []
+                for resp_result in result:
+                    results.append(models.DescriptiveModel(
+                        respondent_id=resp_result["respondent_id"],
+                        response=next(r["response"] for r in formatted_responses if r["respondent_id"] == resp_result["respondent_id"]),
+                        quality_filter=None,
+                        response_segment=[models.DescriptiveSubmodel(**seg) for seg in resp_result["segments"]]
+                    ))
+                return results
+            
+            except Exception as e:
+                print(f"Error in LangChain pipeline: {str(e)}")
+                # Return fallback results for all responses
+                results = []
+                for resp_data in responses_data:
+                    results.append(models.DescriptiveModel(
+                        respondent_id=resp_data['respondent_id'],
+                        response=resp_data['response'],
+                        quality_filter=None,
+                        response_segment=[
+                            models.DescriptiveSubmodel(
+                                segment_id="1",
+                                segment_response=resp_data['response'],
+                                segment_label="NA",
+                                segment_description="NA"
+                            )]))
+                return results
+       
+    async def process_batch(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
+        """Process a batch of responses using three-step approach with multiple responses at once"""
+        
+        # Prepare responses data for batch processing
+        responses_data = []
+        for task_dict in batch.tasks:
+            # Convert dict back to DescriptiveModel if needed
+            if isinstance(task_dict, dict):
+                task = models.DescriptiveModel(**task_dict)
+            else:
+                task = task_dict
+                
+            responses_data.append({
+                'respondent_id': task.respondent_id,
+                'response': task.response
+            })
+        
+        # Split into groups of 10 for processing
+        group_size = 10
+        all_results = []
+        
+        for i in range(0, len(responses_data), group_size):
+            group = responses_data[i:i + group_size]
+            
+            try:
+                # Process group of up to 10 responses together
+                group_results = await self.process_multiple_responses(group, var_lab, max_retries)
+                all_results.extend(group_results)
                 
             except Exception as e:
-                print(f"LLM call failed on attempt {retries + 1}/{max_retries + 1}: {str(e)}")
-                retries += 1
-                if retries <= max_retries:
-                    await asyncio.sleep(self.config.retry_delay * retries)
+                print(f"Error processing group: {str(e)}")
+                # Create fallback results for the entire group
+                for resp_data in group:
+                    all_results.append(models.DescriptiveModel(
+                        respondent_id=resp_data['respondent_id'],
+                        response=resp_data['response'],
+                        quality_filter=None,
+                        response_segment=[
+                            models.DescriptiveSubmodel(
+                                segment_id="1",
+                                segment_response=resp_data['response'],
+                                segment_label="PROCESSING_ERROR",
+                                segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
+                            )
+                        ]
+                    ))
         
-        raise RuntimeError(f"LLM call failed after {max_retries + 1} attempts")
-       
+        return all_results
     
     async def generate_codes_async(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
         self._stats.start_timing()
@@ -298,15 +421,16 @@ class SegmentDescriber:
         self.verbose_reporter.step_start("Descriptive Code Generation", emoji="🏷️")
         self.verbose_reporter.stat_line(f"Processing {len(responses)} responses...")
         
-        batches = self.create_dynamic_batches(responses, var_lab)
+        batches = self.create_batches(responses, var_lab)
         
         if not batches:
             print("No batches created. Returning original responses.")
             return responses
             
-        self.verbose_reporter.stat_line(f"Processing {len(batches)} batches with multi-response approach...")
+        #total_batches = len(batches)
+        #print(f"Processing {total_batches} batches with max {max_retries} retries per batch if needed")
         
-        # Process batches concurrently using new multi-response approach
+        # Process batches concurrently
         all_results = []
         
         # Track progress and failures
@@ -315,7 +439,7 @@ class SegmentDescriber:
         responses_with_codes = 0
     
         batch_results = await asyncio.gather(
-            *(self.process_batch_multi_response(batch, var_lab, max_retries) for batch in batches),
+            *(self.process_batch(batch, var_lab, max_retries) for batch in batches),
             return_exceptions=True
         )
         
@@ -386,6 +510,7 @@ class SegmentDescriber:
             return []
         
         self.var_lab = var_lab
+        self.langchain_pipeline.var_lab = var_lab
         
         #print(f"\nThe survey question: {var_lab}\n")
     
