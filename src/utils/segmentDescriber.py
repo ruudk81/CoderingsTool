@@ -466,59 +466,6 @@ class SegmentDescriber:
         
         raise RuntimeError(f"LLM call failed after {max_retries + 1} attempts")
        
-    # Removed old process_batch method - replaced with process_batch_multi_response
-    async def process_batch_old_unused(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
-        """Process a batch of responses using two-step approach"""
-        tasks = []
-        
-        # Create tasks for each response in the batch
-        for task_dict in batch.tasks:
-            # Convert dict back to DescriptiveModel if needed
-            if isinstance(task_dict, dict):
-                task = models.DescriptiveModel(**task_dict)
-            else:
-                task = task_dict
-                
-            # Add task to process list
-            tasks.append(self.process_response(
-                task.respondent_id, 
-                task.response, 
-                var_lab, 
-                max_retries))
-        
-        # Process all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Handle any exceptions in results
-        processed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # Create fallback for failed task
-                task_dict = batch.tasks[i]
-                if isinstance(task_dict, dict):
-                    respondent_id = task_dict.get("respondent_id")
-                    response_text = task_dict.get("response", "")
-                else:
-                    respondent_id = task_dict.respondent_id
-                    response_text = task_dict.response
-                    
-                processed_results.append(models.DescriptiveModel(
-                    respondent_id=respondent_id,
-                    response=response_text,
-                    quality_filter=None,
-                    response_segment=[
-                        models.DescriptiveSubmodel(
-                            segment_id="1",
-                            segment_response=response_text,
-                            segment_label="PROCESSING_ERROR",
-                            segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
-                        )
-                    ]
-                ))
-            else:
-                processed_results.append(result)
-        
-        return processed_results
     
     async def generate_codes_async(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
         self._stats.start_timing()
