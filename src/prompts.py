@@ -119,12 +119,12 @@ First, here is the survey question:
 {var_lab}
 </survey_question>
 
-Now, here are the responses you need to segment:
-<responses>
-{responses}
-</responses>
+Now, here is the response you need to segment:
+<response>
+{response}
+</response>
 
-Your task is to break each response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
+Your task is to break the response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
 - Opinion
 - Preference
 - Issue
@@ -142,30 +142,21 @@ Follow these segmentation rules:
 4. Use the respondent's exact words - do not paraphrase or correct
 5. Keep meaningless responses (e.g., "Don't know", "?") as a single segment
 
-Your output should be a JSON array with one object per response, each containing:
-- "respondent_id": The respondent's ID (string or number)
-- "segments": Array of segments with these fields:
-  - "segment_id": A sequential number as string ("1", "2", etc.)
-  - "segment_response": The exact segmented text with necessary context preserved
+Your output should be a JSON array with these fields for each segment:
+- "segment_id": A sequential number as string ("1", "2", etc.)
+- "segment_response": The exact segmented text with necessary context preserved
 
-Here's an example of how your output should look:
+Here's an example of how two entries in your output should look:
 [
-  {{
-    "respondent_id": "123",
-    "segments": [
-      {{"segment_id": "1", "segment_response": "Minder verpakking."}}
-    ]
-  }},
-  {{
-    "respondent_id": "124", 
-    "segments": [
-      {{"segment_id": "1", "segment_response": "Meer variatie in smaken"}},
-      {{"segment_id": "2", "segment_response": "betere kwaliteit"}}
-    ]
-  }}
+{{
+"segment_id": "1",
+"segment_response": "Minder verpakking."
+}}
 ]
 
-Process each response systematically, thinking through the segmentation rules for each one.
+Before providing your final output, think through the segmentation process. 
+Consider how many segments the response should be divided into and how to apply the segmentation rules.
+
 After your analysis, provide the final segmented output formatted as a JSON array as specified above.
 """
 
@@ -174,10 +165,10 @@ You are a {language} language expert in semantic segmentation of survey response
 Your task is to review and refine response segments derived from responses to this survey question: 
 "{var_lab}"
 
-Here are the segmented responses to refine:
-<segmented_responses>
+Here are the segments to refine:
+<segments_to_refine>
 {segments}
-</segmented_responses>
+</segments_to_refine>
 
 Follow these refinement rules:
 1. Ensure that each segment contains ONLY ONE standalone idea or response segment.
@@ -196,42 +187,45 @@ Process the segments as follows:
 4. Ensure each resulting segment is meaningful and contains only one idea.
 5. Assign new segment IDs to split segments, continuing the sequence from the original segment ID.
 
-Your output should be a JSON array with one object per response, each containing:
-- "respondent_id": The respondent's ID (string or number)
-- "segments": Array of refined segments with these fields:
-  - "segment_id": A sequential number as string ("1", "2", etc.)
-  - "segment_response": The refined segment text
-
-Here's an example of how your output should look:
+Provide your output in the following JSON format:
 [
   {{
-    "respondent_id": "123",
-    "segments": [
-      {{"segment_id": "1", "segment_response": "Ik wil minder zout in de maaltijden"}},
-      {{"segment_id": "2", "segment_response": "Ik wil meer kruiden in de maaltijden"}}
-    ]
+    "segment_id": "1",
+    "segment_response": "Refined segment text"
   }},
   {{
-    "respondent_id": "124",
-    "segments": [
-      {{"segment_id": "1", "segment_response": "De prijs is te hoog"}},
-      {{"segment_id": "2", "segment_response": "de kwaliteit is laag"}}
-    ]
+    "segment_id": "2",
+    "segment_response": "Another refined segment text"
   }}
+]    
+    
+Here are two examples to guide you:
+
+Example 1: Multiple ideas with shared context
+Input: {{"segment_id": "1", "segment_response": "Ik wil minder zout en meer kruiden in de maaltijden"}}
+Output: [
+  {{"segment_id": "1", "segment_response": "Ik wil minder zout in de maaltijden"}},
+  {{"segment_id": "2", "segment_response": "Ik wil meer kruiden in de maaltijden"}}
 ]
 
-Process each response systematically, applying the refinement rules to each segment.
-After your analysis, provide the final refined output formatted as a JSON array as specified above.
+Example 2: Multiple ideas without shared context
+Input: {{"segment_id": "1", "segment_response": "De prijs is te hoog en de kwaliteit is laag"}}
+Output: [
+  {{"segment_id": "1", "segment_response": "De prijs is te hoog"}},
+  {{"segment_id": "2", "segment_response": "de kwaliteit is laag"}}
+]
+
+Now, please process the provided segments and return the refined segments in the specified JSON format.
 """
 
 CODING_PROMPT = """
 You are a {language} language expert in thematic analysis of survey responses. 
 Your task is to code segments from responses to the survey question: "{var_lab}"
 
-Here are the refined responses with segments you need to code:
-<refined_responses>
+Here are the segments you need to code:
+<segments>
 {segments}
-</refined_responses>
+</segments>
 
 For each segment, you will:
 1. Keep the original segment_id and segment_response
@@ -261,42 +255,30 @@ For meaningless responses (e.g., "?", "Don't know"):
 - segment_label: "NA"
 - segment_description: "NA"
 
-Your output should be a JSON array with one object per response, each containing:
-- "respondent_id": The respondent's ID (string or number)
-- "segments": Array of coded segments with these fields:
-  - "segment_id": The original segment ID
-  - "segment_response": The original segment text
-  - "segment_label": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
-  - "segment_description": Your clarifying description
+Output format:
+Return a valid JSON array with these fields for each segment:
+- "segment_id": The original segment ID
+- "segment_response": The original segment text
+- "segment_label": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
+- "segment_description": Your clarifying description
 
-Here's an example of how your output should look:
+Ensure all output is written in {language}, unless the code is "NA".
+
+Here's an example of correct output:
 [
   {{
-    "respondent_id": "123",
-    "segments": [
-      {{
-        "segment_id": "1",
-        "segment_response": "Betere interactie met de docent.",
-        "segment_label": "DOCENTCONTACT",
-        "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
-      }}
-    ]
+  "segment_id": "1",
+  "segment_response": "Betere interactie met de docent.",
+  "segment_label": "DOCENTCONTACT",
+  "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
   }},
   {{
-    "respondent_id": "124",
-    "segments": [
-      {{
-        "segment_id": "1",
-        "segment_response": "?",
-        "segment_label": "NA",
-        "segment_description": "NA"
-      }}
-    ]
+    "segment_id": "2",
+    "segment_response": "?",
+    "segment_label": "NA",
+    "segment_description": "NA"
   }}
 ]
-
-Process each response systematically, applying the coding requirements to each segment.
-Ensure all output is written in {language}, unless the code is "NA".
 """
 
 MERGE_PROMPT = """
