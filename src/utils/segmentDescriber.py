@@ -131,6 +131,7 @@ class SegmentDescriber:
             responses=""  # Empty for calculation
         )
         base_refinement = REFINEMENT_PROMPT.format(
+            language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             segments=""  # Empty for calculation
         )
