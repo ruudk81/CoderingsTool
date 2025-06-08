@@ -20,10 +20,16 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 
 class LangChainPipeline :
     def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
-                 temperature: float = 0.0, config: SegmentationConfig = None):
+                 temperature: float = 0.0, config: SegmentationConfig = None, prompt_printer = None):
         self.language = language
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
+        self.prompt_printer = prompt_printer
+        
+        # Track which prompts have been captured
+        self.captured_segmentation = False
+        self.captured_refinement = False
+        self.captured_coding = False
       
         model_config = ModelConfig()
         
@@ -60,6 +66,82 @@ class LangChainPipeline :
         segmentation_prompt = PromptTemplate.from_template(SEGMENTATION_PROMPT)
         refinement_prompt = PromptTemplate.from_template(REFINEMENT_PROMPT)
         coding_prompt = PromptTemplate.from_template(CODING_PROMPT)
+        
+        # Prompt capture functions
+        def capture_segmentation_prompt(inputs):
+            if self.prompt_printer and not self.captured_segmentation:
+                formatted_prompt = SEGMENTATION_PROMPT.format(
+                    response=inputs.get("response", ""),
+                    var_lab=inputs.get("var_lab", ""),
+                    language=inputs.get("language", "")
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="segmentation",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": inputs.get("var_lab", ""),
+                        "language": inputs.get("language", ""),
+                        "stage": "1/3 - Segmentation"
+                    }
+                )
+                self.captured_segmentation = True
+            return inputs
+            
+        def capture_refinement_prompt(inputs):
+            if self.prompt_printer and not self.captured_refinement:
+                formatted_prompt = REFINEMENT_PROMPT.format(
+                    segments=self._safe_extract_segments(inputs),
+                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
+                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="refinement",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
+                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
+                        "stage": "2/3 - Refinement"
+                    }
+                )
+                self.captured_refinement = True
+            return inputs
+            
+        def capture_coding_prompt(inputs):
+            if self.prompt_printer and not self.captured_coding:
+                segments = [
+                    {
+                        "segment_id": segment.get("segment_id", "") if isinstance(segment, dict) else "",
+                        "segment_response": segment.get("segment_response", "") if isinstance(segment, dict) else "",
+                        "segment_label": segment.get("segment_label", "") if isinstance(segment, dict) else "",
+                        "segment_description": segment.get("segment_description", "") if isinstance(segment, dict) else ""
+                    } 
+                    for segment in self._safe_extract_segments(inputs)
+                ]
+                formatted_prompt = CODING_PROMPT.format(
+                    segments=segments,
+                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
+                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
+                )
+                self.prompt_printer.capture_prompt(
+                    step_name="segmentation",
+                    utility_name="SegmentDescriber",
+                    prompt_content=formatted_prompt,
+                    prompt_type="coding",
+                    metadata={
+                        "model": self.llm.model_name,
+                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
+                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
+                        "stage": "3/3 - Coding"
+                    }
+                )
+                self.captured_coding = True
+            return inputs
     
         chain = (
            {
@@ -67,6 +149,7 @@ class LangChainPipeline :
                "var_lab": lambda x: x["var_lab"],
                "language": lambda x: x["language"]
            }
+           | RunnableLambda(capture_segmentation_prompt)
            | segmentation_prompt
            | self.llm
            | self.parser
@@ -75,6 +158,7 @@ class LangChainPipeline :
                "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
            })
+           | RunnableLambda(capture_refinement_prompt)
            | refinement_prompt
            | self.llm
            | self.parser
@@ -91,6 +175,7 @@ class LangChainPipeline :
                "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
            })
+           | RunnableLambda(capture_coding_prompt)
            | coding_prompt
            | self.llm
            | self.parser
@@ -143,7 +228,6 @@ class SegmentDescriber:
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
-        self._first_prompt_captured = False
         
         self.langchain_pipeline = LangChainPipeline(
             model_name=self.openai_model,
@@ -151,7 +235,8 @@ class SegmentDescriber:
             language=DEFAULT_LANGUAGE,
             var_lab = "",
             temperature=self.config.temperature,
-            config=self.config) 
+            config=self.config,
+            prompt_printer=self.prompt_printer) 
             
         self.chain = self.langchain_pipeline.build_chain()
 
@@ -247,30 +332,6 @@ class SegmentDescriber:
 
     async def process_response(self, respondent_id, response_text, var_lab, max_retries=3):
         """Process a single response with two-step approach"""
-        
-        # Capture the first prompt only once
-        if self.prompt_printer and not self._first_prompt_captured:
-            # Create a sample prompt similar to what would be sent to the LLM
-            sample_prompt = SEGMENTATION_PROMPT.format(
-                response=response_text,
-                var_lab=var_lab,
-                language=DEFAULT_LANGUAGE
-            )
-            
-            self.prompt_printer.capture_prompt(
-                step_name="segmentation",
-                utility_name="SegmentDescriber",
-                prompt_content=sample_prompt,
-                prompt_type="segmentation",
-                metadata={
-                    "model": self.openai_model,
-                    "var_lab": var_lab,
-                    "language": DEFAULT_LANGUAGE,
-                    "pipeline_stages": "segmentation -> refinement -> coding"
-                }
-            )
-            self._first_prompt_captured = True
-        
         retries = 0
         while retries <= max_retries:
             try:
