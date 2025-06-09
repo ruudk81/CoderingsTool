@@ -27,7 +27,7 @@ class DescriptiveSubmodel(ResponseSegmentModel):
 
 class DescriptiveModel(ResponseModel):
     quality_filter: Optional[bool] = None
-    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999996=nonsense, 99999997=user_missing, 99999998=system_missing
+    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=user_missing, 99999998=system_missing, 99999999=no_answer
     response_segment: Optional[List[DescriptiveSubmodel]] = None
 
 class EmbeddingsSubmodel(DescriptiveSubmodel):
