@@ -320,6 +320,16 @@ class ClusterGenerator:
             rescued_count = 0
             threshold = self.config.noise_rescue.rescue_threshold
             
+            # Show confidence distribution for debugging
+            if len(strengths) > 0:
+                max_conf = np.max(strengths)
+                min_conf = np.min(strengths)
+                mean_conf = np.mean(strengths)
+                above_threshold = np.sum(strengths > threshold)
+                
+                self.verbose_reporter.stat_line(f"Confidence scores - Min: {min_conf:.3f}, Max: {max_conf:.3f}, Mean: {mean_conf:.3f}")
+                self.verbose_reporter.stat_line(f"Points above threshold ({threshold}): {above_threshold}/{len(strengths)}")
+            
             for i, noise_idx in enumerate(noise_indices):
                 if strengths[i] > threshold:
                     # Update the appropriate cluster field
@@ -334,7 +344,12 @@ class ClusterGenerator:
             self.verbose_reporter.stat_line(f"Rescued {rescued_count}/{total_noise} noise points ({success_rate:.1%} success rate)")
             self.verbose_reporter.stat_line(f"Used confidence threshold: {threshold}")
             
-            # Show examples of rescued points
+            # Suggest threshold adjustment if no rescues but there are predictions
+            if rescued_count == 0 and len(strengths) > 0 and max_conf > 0:
+                suggested_threshold = max(0.1, max_conf * 0.8)  # 80% of max confidence, minimum 0.1
+                self.verbose_reporter.stat_line(f"💡 Suggestion: Try lowering threshold to {suggested_threshold:.2f} to rescue {np.sum(strengths > suggested_threshold)} points")
+            
+            # Show examples of rescued points OR highest confidence candidates
             if rescued_count > 0:
                 examples = []
                 example_count = 0
@@ -351,6 +366,21 @@ class ClusterGenerator:
                 
                 if examples:
                     self.verbose_reporter.sample_list("Rescued examples", examples)
+            else:
+                # Show highest confidence candidates that weren't rescued
+                if len(strengths) > 0:
+                    top_indices = np.argsort(strengths)[-3:][::-1]  # Top 3 confidence scores
+                    examples = []
+                    for idx in top_indices:
+                        noise_idx = noise_indices[idx]
+                        if self.embedding_type == "code":
+                            item_text = self.output_list[noise_idx].segment_label or "N/A"
+                        else:
+                            item_text = self.output_list[noise_idx].segment_description or "N/A"
+                        examples.append(f"→ Cluster {rescued_clusters[idx]} (conf: {strengths[idx]:.2f}): {item_text[:60]}...")
+                    
+                    if examples:
+                        self.verbose_reporter.sample_list("Highest confidence candidates (not rescued)", examples)
             
             self.verbose_reporter.step_complete("Noise rescue completed")
             
