@@ -2,6 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # ===  MODULES ========================================================================================================
 import time
+import pandas as pd
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -68,7 +69,24 @@ else:
     start_time       = time.time()
     raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
     raw_unstructued  = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
-    raw_text_list    = [models.ResponseModel(respondent_id=resp_id, response=resp if resp is not None else "" ) for resp_id, resp in raw_unstructued]
+    # Create ResponseModel objects with type tracking
+    raw_text_list = []
+    for resp_id, resp in raw_unstructued:
+        # Determine response type
+        if pd.isna(resp):
+            response_type = 'nan'
+        elif isinstance(resp, (int, float)):
+            response_type = 'numeric'
+        elif isinstance(resp, str):
+            response_type = 'string'
+        else:
+            response_type = 'unknown'
+        
+        raw_text_list.append(models.ResponseModel(
+            respondent_id=resp_id, 
+            response=resp,
+            response_type=response_type
+        ))
     end_time         = time.time()
     elapsed_time     = end_time - start_time
     cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
@@ -87,7 +105,7 @@ verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessModel)
+    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
     verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {f"Input: {len(raw_text_list)} responses → Output": f"{len(preprocessed_text)} responses", "Overall success rate": f"{(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%"})
 else: 
     verbose_reporter.section_header("PREPROCESSING PHASE")
@@ -97,11 +115,80 @@ else:
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
   
     start_time            = time.time()
-    preprocess_text       = [item.to_model(models.PreprocessModel) for item in raw_text_list]
-    normalized_text       = text_normalizer.normalize_responses(preprocess_text)
-    normal_no_missing     = [item.to_model(models.PreprocessModel) for item in raw_text_list if item.response != '<NA>']
-    corrected_text        = spell_checker.spell_check(normal_no_missing, var_lab)
-    preprocessed_text     = text_finalizer.finalize_responses(corrected_text)
+    
+    # Separate responses by type for appropriate processing
+    all_responses = []
+    string_responses = []
+    non_string_responses = []
+    
+    for item in raw_text_list:
+        preprocess_item = item.to_model(models.PreprocessModel)
+        all_responses.append(preprocess_item)
+        
+        if item.response_type == 'string':
+            string_responses.append(preprocess_item)
+        else:
+            # Keep non-string responses as-is (NaN, numeric)
+            non_string_responses.append(preprocess_item)
+    
+    # Only process string responses through text pipeline
+    if string_responses:
+        normalized_text = text_normalizer.normalize_responses(string_responses)
+        # Filter out normalized strings that became '<NA>'
+        normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
+        corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
+        finalized_text = text_finalizer.finalize_responses(corrected_text)
+    else:
+        finalized_text = []
+    
+    # Combine processed strings with non-string responses
+    # Create a mapping of respondent_id to processed response
+    processed_map = {item.respondent_id: item for item in finalized_text}
+    processed_map.update({item.respondent_id: item for item in non_string_responses})
+    
+    # Preserve original order from raw_text_list and add quality filter codes
+    preprocessed_text = []
+    for original in raw_text_list:
+        if original.respondent_id in processed_map:
+            item = processed_map[original.respondent_id]
+            
+            # Add initial quality filter code based on response type and content
+            # Convert to DescriptiveModel to add quality_filter_code
+            desc_item = item.to_model(models.DescriptiveModel)
+            
+            # Categorize based on type and content
+            if item.response_type == 'nan':
+                desc_item.quality_filter_code = 99999998  # System missing
+                desc_item.quality_filter = True
+            elif item.response_type == 'numeric':
+                # Check if it's a known missing value code
+                if item.response in [99999996, 99999997, 99999998]:
+                    desc_item.quality_filter_code = int(item.response)
+                    desc_item.quality_filter = True
+                else:
+                    # Regular numeric response - will be evaluated by qualityFilter
+                    desc_item.quality_filter_code = None
+                    desc_item.quality_filter = None
+            elif item.response_type == 'string':
+                if item.response == '<NA>' or (isinstance(item.response, str) and item.response.strip() == ''):
+                    desc_item.quality_filter_code = 99999998  # Empty text = system missing
+                    desc_item.quality_filter = True
+                else:
+                    # Text response - will be evaluated by qualityFilter
+                    desc_item.quality_filter_code = None
+                    desc_item.quality_filter = None
+            
+            preprocessed_text.append(desc_item)
+        else:
+            # If not in processed_map, it was filtered out during normalization
+            # Create a DescriptiveModel with system missing code
+            preprocessed_text.append(models.DescriptiveModel(
+                respondent_id=original.respondent_id,
+                response='<NA>',
+                response_type=original.response_type,
+                quality_filter_code=99999998,  # System missing
+                quality_filter=True
+            ))
     end_time = time.time()
     elapsed_time = end_time - start_time
 

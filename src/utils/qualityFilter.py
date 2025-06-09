@@ -4,20 +4,15 @@ import asyncio
 import functools
 import nest_asyncio #for Spyder
 from typing import Dict, List, Optional, Union
-from pydantic import BaseModel
 import instructor
 from openai import OpenAI
 
-from config import (DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,
-                    QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG)
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG
 from prompts import GRADER_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
-# Patch OpenAI client with instructor for structured output
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY)) 
-
-# GraderConfig is now replaced by QualityFilterConfig from config.py
 
 class Grader:
     def __init__(
@@ -223,7 +218,3 @@ if __name__ == "__main__":
         if r.quality_filter:
         #print(r)
             print(f"{r.respondent_id}: {r.response} ")
-
-    # print("\nMeaningful responses only:")
-    # for r in filtered:
-    #     print(f"{r.respondent_id}: {r.response}")
