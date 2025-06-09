@@ -17,7 +17,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
-# Models for structured data
+
 class CodebookEntry(BaseModel):
     """Single entry in the hierarchical codebook"""
     id: str = Field(description="Unique identifier - int for themes, float-like for topics")
@@ -36,18 +36,15 @@ class Codebook(BaseModel):
     topics: List[CodebookEntry] 
     codes: List[CodebookEntry]
 
-
 class ClusterLabel(BaseModel):
     """Initial cluster label from Phase 1"""
     cluster_id: int
     label: str = Field(description="Concise label (max 5 words)")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
 
-
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
     label: str = Field(description="Concise thematic label (max 5 words)")
-
 
 class MergedGroup(BaseModel):
     """A group of merged labels"""
@@ -55,37 +52,28 @@ class MergedGroup(BaseModel):
     merged_label: str
     original_cluster_ids: List[int]
 
-
 class UnchangedLabel(BaseModel):
     """A label that wasn't merged"""
     new_cluster_id: int
     label: str
     original_cluster_id: int
 
-
 class LabelMergerResponse(BaseModel):
     """Response from Phase 1b label merger"""
     merged_groups: List[MergedGroup] = Field(default_factory=list)
     unchanged_labels: List[UnchangedLabel] = Field(default_factory=list)
 
-
 class InitialTheme(BaseModel):
     """An initial theme with related labels"""
     theme_name: str
-    description: str
-    related_labels: List[str]
-
-
+    
 class InitialThemesResponse(BaseModel):
     """Response from Phase 1c initial themes"""
     initial_themes: List[InitialTheme]
-    rationale: str
     
-
 class DiscoveryResponse(BaseModel):
     """Response from Phase 2  discovery"""
     themes: List[Dict[str, Any]] = Field(description="List of themes with their structure")
-
 
 class ThemeJudgmentResponse(BaseModel):
     """Response from Phase 3 theme judger - updated structure"""
@@ -94,31 +82,26 @@ class ThemeJudgmentResponse(BaseModel):
     issues: List[str] = Field(default_factory=list, description="List of structural issues found")
     actions: List[Dict[str, str]] = Field(default_factory=list, description="List of actions with type and details")
 
-
 class ThemeReviewResponse(BaseModel):
     """Response from Phase 4 theme review"""
     themes: List[Dict[str, Any]] = Field(description="Improved theme structure")
-
 
 class RefinementEntry(BaseModel):
     """Single refinement entry"""
     label: str
     description: str
 
-
 class LabelRefinementResponse(BaseModel):
     """Response from Phase 5 label refinement"""
     refined_themes: Dict[str, RefinementEntry] = Field(description="Refined theme labels by ID")
     refined_topics: Dict[str, RefinementEntry] = Field(description="Refined topic labels by ID")
     refined_codes: Dict[str, RefinementEntry] = Field(description="Refined code labels by ID")
-    
 
 class AssignmentResponse(BaseModel):
     """Response from Phase 5 assignment"""
     primary_assignment: Dict[str, str] = Field(description="Direct mapping: theme_id, topic_id, code_id")  # Changed
     confidence: float = Field(description="Confidence in assignment")
     alternatives: Optional[List[Dict]] = Field(default=None, description="Alternative assignments if confidence is low")
-
 
 class ThemeAssignment(BaseModel):
     """Direct assignment for a single cluster"""
@@ -132,8 +115,7 @@ class ThemeAssignment(BaseModel):
 class ThemeDiscoveryPipeline:
     """LangChain pipeline for three-step theme discovery"""
     
-    def __init__(self, model_name: str, api_key: str, language: str, survey_question: str,
-                 temperature: float = 0.0, config: LabellerConfig = None, prompt_printer = None):
+    def __init__(self, model_name: str, api_key: str, language: str, survey_question: str, temperature: float = 0.0, config: LabellerConfig = None, prompt_printer = None):
         self.language = language
         self.survey_question = survey_question
         self.config = config or LabellerConfig()
@@ -149,8 +131,7 @@ class ThemeDiscoveryPipeline:
             temperature=temperature,
             model=model_name,
             openai_api_key=api_key,
-            seed=self.config.seed if hasattr(self.config, 'seed') else 42
-        )
+            seed=self.config.seed if hasattr(self.config, 'seed') else 42)
         
         self.parser = JsonOutputParser()
         self.retry_delay = self.config.retry_delay
@@ -196,9 +177,7 @@ class ThemeDiscoveryPipeline:
     
     def build_chain(self):
         # Import prompts
-        from prompts import (PHASE2_EXTRACT_THEMES_PROMPT, 
-                           PHASE2_GROUP_TOPICS_PROMPT, 
-                           PHASE2_CREATE_CODEBOOK_PROMPT)
+        from prompts import (PHASE2_EXTRACT_THEMES_PROMPT, PHASE2_GROUP_TOPICS_PROMPT, PHASE2_CREATE_CODEBOOK_PROMPT)
         
         # Create prompt templates
         extract_themes_prompt = PromptTemplate.from_template(PHASE2_EXTRACT_THEMES_PROMPT)
@@ -375,7 +354,7 @@ class ThematicLabeller:
         
         return [(descriptions[i], float(similarities[i])) for i in top_indices]
     
-    def _extract_micro_clusters(self, cluster_models: List[models.ClusterModel]) -> Dict[int, Dict]:
+    def _extract_initial_clusters(self, cluster_models: List[models.ClusterModel]) -> Dict[int, Dict]:
         """Extract initial cluster information from cluster models"""
         clusters = {}
         
@@ -433,31 +412,31 @@ class ThematicLabeller:
         self.verbose_reporter.section_header("HIERARCHICAL LABELING PROCESS", emoji="🔄")
         
         # Extract micro-clusters
-        micro_clusters = self._extract_micro_clusters(cluster_models)
-        self.verbose_reporter.stat_line(f"Found {len(micro_clusters)} unique response segments")
+        initial_clusters = self._extract_initial_clusters(cluster_models)
+        self.verbose_reporter.stat_line(f"Found {len(initial_clusters)} unique response segments")
         
         # =============================================================================
         # Phase 1: Descriptive Coding
         # =============================================================================
     
         self.verbose_reporter.step_start("Phase 1: Descriptive Coding", emoji="📝")
-        labeled_clusters = await self._phase1_descriptive_coding(micro_clusters)
+        labeled_clusters = await self._phase1_descriptive_coding(initial_clusters)
         self.labeled_clusters = labeled_clusters
         self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} segment labels")
       
         # =============================================================================
-        # Phase 1b: Label Merger (NEW)
+        # Phase 1b: Label Merger 
         # =============================================================================
         
         merged_clusters = await self._phase1b_label_merger(labeled_clusters)
-        self.merged_clusters = merged_clusters  # Store for debugging
+        self.merged_clusters = merged_clusters   
         
         # =============================================================================
-        # Phase 1c: Initial Themes (NEW)
+        # Phase 1c: Initial Themes 
         # =============================================================================
         
         initial_themes = await self._phase1c_initial_themes(merged_clusters)
-        self.initial_themes = initial_themes  # Store for debugging and phase 2
+        self.initial_themes = initial_themes   
         
         # =============================================================================
         # Phase 2: Theme Discovery 
@@ -541,19 +520,19 @@ class ThematicLabeller:
         
         self.verbose_reporter.stat_line("✅ Applying hierarchy to responses...")
         result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, self.codebook)
-        self._print_assignment_diagnostics(self.final_labels, micro_clusters)
+        self._print_assignment_diagnostics(self.final_labels, initial_clusters)
         self.verbose_reporter.stat_line("🎉 Enhanced hierarchical labeling complete!")
         self._print_summary(self.codebook)
 
         return result
     
-    async def _phase1_descriptive_coding(self, micro_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
+    async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
         """Phase 1: Descriptive coding """
         from prompts import PHASE1_DESCRIPTIVE_CODING_PROMPT
        
         labeled_clusters = []
         tasks = []
-        for cluster_id, cluster_data in sorted(micro_clusters.items()):
+        for cluster_id, cluster_data in sorted(initial_clusters.items()):
             # Calculate representatives
             if cluster_data['embeddings']:
                 embeddings = np.array(cluster_data['embeddings'])
@@ -776,7 +755,6 @@ class ThematicLabeller:
             return initial_themes_result
             
         except Exception as e:
-            self.verbose_reporter.stat_line(f"⚠️ Initial themes generation failed: {str(e)}")
             self.verbose_reporter.step_complete("Using fallback themes")
             
             # Fallback: create simple themes based on label patterns
@@ -799,7 +777,8 @@ class ThematicLabeller:
         
         # Format initial themes for context
         initial_themes_text = "\n".join([
-            f"- {theme.theme_name}: {theme.description}" 
+            #f"- {theme.theme_name}: {theme.description}" 
+            f"- {theme.theme_name}" 
             for theme in initial_themes.initial_themes
         ])
         
@@ -1176,7 +1155,7 @@ class ThematicLabeller:
                     numeric_id=theme_numeric_id,
                     level=1,
                     label=theme_data['label'],
-                    description=theme_data.get('description', ''),
+                    #description=theme_data.get('description', ''),
                     source_codes=[]  # Themes don't have source codes
                 )
                 themes.append(theme)
@@ -1191,7 +1170,7 @@ class ThematicLabeller:
                             numeric_id=topic_numeric_id,
                             level=2,
                             label=topic_data['label'],
-                            description=topic_data.get('description', ''),
+                            #description=topic_data.get('description', ''),
                             parent_id=theme_id,
                             parent_numeric_id=theme_numeric_id,
                             source_codes=[]  # Topics don't have source codes
@@ -1210,7 +1189,7 @@ class ThematicLabeller:
                                     numeric_id=code_numeric_id,
                                     level=3,
                                     label=code_data['label'],
-                                    description=code_data.get('description', ''),
+                                    #description=code_data.get('description', ''),
                                     parent_id=topic_id,
                                     parent_numeric_id=topic_numeric_id,  # Fixed: was hardcoded as 1
                                     source_codes=source_codes   
@@ -1811,12 +1790,12 @@ class ThematicLabeller:
         
         print("\n" + "="*80)
     
-    def _print_assignment_diagnostics(self, final_labels: Dict[int, Dict], micro_clusters: Dict[int, Dict]):
+    def _print_assignment_diagnostics(self, final_labels: Dict[int, Dict], initial_clusters: Dict[int, Dict]):
         """Print diagnostics about cluster assignments"""
         print("\n🔍 Assignment Diagnostics:")
         
         # Find all cluster IDs
-        all_cluster_ids = set(micro_clusters.keys())
+        all_cluster_ids = set(initial_clusters.keys())
         assigned_cluster_ids = set(final_labels.keys())
         missing_cluster_ids = all_cluster_ids - assigned_cluster_ids
         

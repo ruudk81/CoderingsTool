@@ -118,7 +118,7 @@ Remember to use the exact format specified. Here's an example of how entries in 
 Ensure that your entire output is a valid JSON array containing all evaluated responses.
 """
 
-ENHANCED_SEGMENTATION_PROMPT = """
+SEGMENTATION_PROMPT = """
 You are a helpful {language} language expert in analyzing survey responses. 
 Your task is to segment free-text survey responses into distinct, standalone segments with the highest quality to eliminate the need for further refinement.
 
@@ -179,7 +179,7 @@ Consider how many segments the response should be divided into and apply the enh
 After your analysis, provide the final segmented output formatted as a JSON array as specified above.
 """
 
-FOCUSED_CODING_PROMPT = """
+CODING_PROMPT = """
 You are a {language} language expert in thematic analysis of survey responses.
 Your task is to generate ONLY thematic labels for segments from responses to the survey question: "{var_lab}"
 
@@ -220,7 +220,7 @@ Example output:
 Ensure all labels are written in {language} and focus solely on creating high-quality thematic labels.
 """
 
-DESCRIPTION_GENERATION_PROMPT = """
+DESCRIPTION_PROMPT = """
 You are a {language} language expert in creating natural-sounding descriptions for thematic codes.
 Your task is to generate descriptions for labeled segments from responses to the survey question: "{var_lab}"
 
@@ -281,82 +281,6 @@ CORRECT examples (stay within segment content):
 
 """
 
-MERGE_PROMPT = """
-You are an AI assistant tasked with evaluating whether clusters of survey responses represent meaningfully different answers to a specific survey question. 
-Your goal is to determine whether each pair of response clusters should be merged or remain separate.
-
-The survey question you will be working with is:
-<survey_question>
-"{var_lab}"
-</survey_question>
-
-You will be provided with pairs of clusters, each containing representative responses.
-Your task is to analyze these pairs and decide whether they should be merged or kept separate based on the following criteria:
-
-Merge clusters (YES) ONLY IF:
-- Both clusters express essentially the same response pattern in light of the survey question.
-- The differences between them are minimal or irrelevant to the survey question.
-- A survey analyst would reasonably group these responses together as the same type of answer.
-
-Keep clusters separate (NO) IF:
-- The clusters represent distinct response patterns, viewpoints, suggestions, ideas, or concerns.
-- They focus on different aspects in addressing the survey question.
-- They provide unique or complementary feedback or information.
-- They represent different topics even within the same broad theme.
-- There is ANY meaningful differentiation relevant to understanding survey responses.
-
-Important guidelines:
-- Focus SPECIFICALLY on the survey question context.
-- Base decisions on the MOST REPRESENTATIVE responses in each cluster (shown by cosine similarity to centroid).
-- Be conservative - when in doubt, keep clusters separate.
-- Consider semantic meaning, not just surface-level wording.
-- The responses are in Dutch, so make sure to understand the meaning in that language.
-
-Your output should be a JSON object with a single key "decisions", containing an array of objects with these fields:
-- "cluster_id_1": First cluster ID
-- "cluster_id_2": Second cluster ID  
-- "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
-- "reason": Brief explanation of your decision (1-2 sentences maximum)
-
-Follow these steps for each cluster pair:
-1. Read the representative responses for both clusters carefully.
-2. Consider how these responses relate to the survey question.
-3. Determine if the responses in both clusters are essentially saying the same thing or if they represent meaningfully different answers.
-4. Make a decision on whether to merge the clusters or keep them separate.
-5. Provide a brief reason for your decision.
-6. Format your decision as a JSON object as specified above.
-
-Return a JSON object with a single key "decisions", containing an array of objects with these fields:
-- "cluster_id_1": First cluster ID
-- "cluster_id_2": Second cluster ID  
-- "should_merge": Boolean (true ONLY if clusters are not meaningfully differentiated)
-- "reason": Brief explanation of your decision (1-2 sentences maximum)
-
-Here's an example of how your output should be structured:
-{
-  "decisions": [
-    {
-      "cluster_id_1": "13",
-      "cluster_id_2": "2",
-      "should_merge": true,
-      "reason": "Both clusters consistently express the desire for less salt in meals. There is no meaningful differentiation between the responses."
-    },
-    {
-      "cluster_id_1": "17",
-      "cluster_id_2": "2",
-      "should_merge": true,
-      "reason": "All responses in both clusters uniformly request less salt in meals. The clusters are semantically identical."
-    }
-  ]
-}
-
-Now, analyze the following cluster pairs:
-{cluster_pairs}
-
-Provide your decisions in the required JSON format.
-"""
-
-
 LABEL_MERGER_PROMPT = """
 You are an expert in qualitative research working in {language}. 
 Your task is to evaluate and merge descriptive labels from survey response clusters that are semantically identical or meaningfully equivalent in the context of the survey question.
@@ -371,25 +295,17 @@ Here are the current labels to evaluate for merging:
 {labels}
 </labels>
 
-Your objective is to merge labels that are semantically identical or address the same response pattern for most researchers analyzing this survey question. Labels should be merged when they:
+Merge labels (YES) ONLY IF:
+- Both clusters are semantically identical or meaningfully equivalent
 
-1. Express essentially the same meaning or concept
-2. Address identical response patterns to the survey question
-3. Would be grouped together by researchers seeking to understand response patterns
-4. Differ only in wording but capture the same underlying idea
+Important guidelines:
+- Be conservative - when in doubt, keep clusters separate.
 
-Do NOT merge labels when they:
-- Address different aspects of the survey question
-- Represent distinct response patterns or viewpoints
-- Provide unique insights or information
-- Have meaningful differences that would matter to researchers
-
-For each group of labels that should be merged:
-1. Choose the most representative label from the group as the new merged label
+For merged labels :
+1. Choose the most representative label as the new merged label
 2. Assign a new sequential cluster ID starting from 0
 3. List all original cluster IDs that are being merged
 
-Output your merging decisions in the following JSON format:
 {{
   "merged_groups": [
     {{
@@ -412,12 +328,13 @@ Output your merging decisions in the following JSON format:
   ]
 }}
 
-Remember: Be conservative - when in doubt, keep labels separate. Only merge when labels are truly semantically equivalent in the context of this specific survey question.
+Provide your decisions in the required JSON format.
 """
 
 INITIAL_THEMES_PROMPT = """
 You are an expert in thematic analysis working in {language}.
-Your task is to identify broad, organizing themes that provide a preliminary framework for understanding responses to the survey question. These initial themes will guide more detailed thematic analysis in subsequent steps.
+Your task is to identify broad, organizing themes that provide a preliminary framework for understanding responses to the survey question. 
+These initial themes will guide more detailed thematic analysis in subsequent steps.
 
 Here is the survey question:
 <survey_question>
@@ -436,34 +353,26 @@ Your goal is to identify initial themes that:
 4. Are distinct enough to represent meaningfully different aspects of responses
 5. Give context for subsequent detailed thematic analysis
 
-Guidelines for initial themes:
-- Each theme should represent a central organizing concept
-- Themes should be broad enough to accommodate detailed sub-analysis
-- Themes should be semantically meaningful in relation to the survey question
-- Use 2-4 words maximum per theme name
-- Aim for 3-7 themes total (adjust based on data complexity)
-- Ensure all labels can naturally fit under one of the themes
+Critical guideline for initial themes:
+- Each theme should represent a SINGLE, SINGULAR, INDIVISIBLE idea, concept, aspect, etc.
+- Do not create themes that compound sub-themes (e.g. [sub-theme 1] and [subtheme 2]). Instead, find the underlying, unifying theme.
 
-Analyze the labels and identify the initial themes that best organize the response patterns.
+Analyze the labels and identify the initial themes that best organize the response patterns. 
+Take your time to think through the labels and potential themes before providing your final answer.
 
 Output your analysis in the following JSON format:
 {{
   "initial_themes": [
     {{
       "theme_name": "Theme Name 1",
-      "description": "Brief description of what this theme encompasses",
-      "related_labels": ["Label 1", "Label 2", "Label 3"]
     }},
     {{
       "theme_name": "Theme Name 2", 
-      "description": "Brief description of what this theme encompasses",
-      "related_labels": ["Label 4", "Label 5"]
     }}
-  ],
-  "rationale": "Brief explanation of the thematic framework and how it organizes the data"
+  ]
 }}
 
-Remember: These are initial, broad themes that will be refined in subsequent analysis. Focus on creating a useful organizing framework rather than detailed categorization.
+Ensure that your output is valid JSON and includes at least two initial themes. If you identify more themes, add them to the JSON structure following the same format.
 """
 
 PHASE1_DESCRIPTIVE_CODING_PROMPT = """
@@ -475,15 +384,7 @@ Here are the coding principles you must follow:
 1. Stay close to the data: Use respondents' own concepts
 2. Be descriptive: Capture what is said, not why
 3. Be specific: Focus on the distinct pattern in these segments
-4. Be concise: Maximum 5 words
-5. Use Title Case for labels
 
-Rules to adhere to:
-- Describe only what is explicitly stated
-- No interpretation or inference beyond the text
-- No evaluation or judgment
-- Focus on a single coherent idea
-- If segments express multiple ideas, identify the primary pattern
 
 The output format should be:
 {{
@@ -510,15 +411,6 @@ Representative segments:
 </representatives>
 
 Follow these steps to complete the task:
-
-1. Carefully read the survey question and all representative segments.
-2. Identify the main theme or idea expressed across the segments.
-3. Create a concise label (maximum 5 words) that captures this main idea.
-4. Ensure your label adheres to all coding principles and rules mentioned above.
-5. Double-check that your label is in Title Case and in the correct language ({language}).
-6. Format your output according to the specified JSON format.
-
-Remember, your goal is to provide a single, concise label that accurately represents the content of the segments without interpretation or judgment. Output your final answer within the specified JSON format tags.
 """
 
 PHASE2_EXTRACT_THEMES_PROMPT = """
@@ -635,7 +527,7 @@ Provide your response in the specified JSON format.
 """
 
 PHASE2_CREATE_CODEBOOK_PROMPT = """
-You are an expert in thematic analysis working in {LANGUAGE}. 
+You are an expert in thematic analysis working in {language}. 
 Your task is to create a codebook that organizes initial codes representing segments of survey responses to an open-ended survey question.
 
 Here are the input variables you will be working with:
