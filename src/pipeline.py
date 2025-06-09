@@ -26,7 +26,7 @@ var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "segmented_descriptions"  # Set to step name (e.g., "embeddings") to recalculate specific step
+FORCE_STEP = "segmented_descriptions"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
@@ -311,86 +311,52 @@ else:
     print("\n")
 
 # === STEP 5 ========================================================================================================
-"""get embeddings"""
-from utils import embedder  
+"""get initial clusters"""
+from utils import embedder, clusterer
 
-step_name        = "embeddings"
-get_embeddings   = embedder.Embedder(verbose=VERBOSE)
+step_name        = "initial_clusters"
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
-    total_segments = sum(len(resp.response_segment) for resp in embedded_text if resp.response_segment)
-    verbose_reporter.summary("EMBEDDINGS FROM CACHE", {f"Input: {len(encoded_text)} responses → Output": f"{len(embedded_text)} embedded responses","Total segments embedded": f"{total_segments}", "Embedding model": f"{get_embeddings.embedding_model}"})   
-    
-else:
-    verbose_reporter.section_header("EMBEDDINGS GENERATION PHASE")
-    
-    start_time              = time.time()
-    input_data              = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
-    code_embeddings         = get_embeddings.get_code_embeddings(input_data)
-    description_embeddings  = get_embeddings.get_description_embeddings(input_data, var_lab)
-    embedded_text           = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
-    end_time                = time.time()
-    elapsed_time            = end_time - start_time
-
-    cache_manager.save_to_cache(embedded_text, filename, step_name, elapsed_time)
-    print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
-
-    
-# === STEP 6 ========================================================================================================
-"get clusters"
-from utils import clusterer, clusterMerger
-
-step_name        = "clusters"
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
-    micro_ids = set([list(segment.micro_cluster.keys())[0] for result in cluster_results for segment in result.response_segment])
+    initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
+    micro_ids = set([list(segment.micro_cluster.keys())[0] for result in initial_cluster_results for segment in result.response_segment if segment.micro_cluster])
     num_micro_clusters = len(micro_ids)
-    verbose_reporter.summary("CLUSTERS FROM CACHE", {"Input": f"{total_segments} response segments","Output": f"{num_micro_clusters} clusters"})
+    total_segments = sum(len(resp.response_segment) for resp in initial_cluster_results if resp.response_segment)
+    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial micro clusters": f"{num_micro_clusters}"})
     
 else:
+    verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
+    
     start_time = time.time()
+    
+    # Step 5a: Generate embeddings
+    get_embeddings = embedder.Embedder(verbose=VERBOSE)
+    input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
+    code_embeddings = get_embeddings.get_code_embeddings(input_data)
+    description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)
+    embedded_text = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
+    
+    # Step 5b: Generate initial clusters
     print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
         embedding_type=EMBEDDING_TYPE,
-        verbose=VERBOSE )
+        verbose=VERBOSE)
     cluster_gen.run_pipeline()
-    initial_clusters = cluster_gen.to_cluster_model()
+    initial_cluster_results = cluster_gen.to_cluster_model()
     print("\nInitial clustering completed successfully")
-
-    print("\nMerging similar clusters...")
-    merger = clusterMerger.ClusterMerger(
-        input_list=initial_clusters, 
-        var_lab=var_lab,
-        config=cluster_gen.config,  # Use same config as ClusterGenerator
-        verbose=VERBOSE,
-        prompt_printer=prompt_printer)
-    cluster_results, merge_mapping = merger.merge_clusters()
-    print("\nCluster merging completed successfully")
-
-    cache_key = 'cluster_merge_mapping'
-    cache_data = {
-        'merge_mapping': merge_mapping,
-        'cluster_data': merger.cluster_data}
-    cache_manager.cache_intermediate_data(cache_data, filename, cache_key)
-    print(f"Saved merge mapping to cache with key '{cache_key}'")
     
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    cache_manager.save_to_cache(cluster_results, filename, step_name, elapsed_time)
-    print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
+    cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
+    print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
 
 
-# === STEP 7 ========================================================================================================
+
+# === STEP 6 ========================================================================================================
 """hierarchical labeling"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
@@ -435,7 +401,7 @@ else:
     
     start_time = time.time()
     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
     
@@ -467,7 +433,7 @@ from config import DEFAULT_LABELLER_CONFIG
 
 #debug
 thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
-labeled_results = thematic_labeller.process_hierarchy(cluster_models=cluster_results, survey_question=var_lab)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
 # print(thematic_labeller.unused_codes_text)
 
