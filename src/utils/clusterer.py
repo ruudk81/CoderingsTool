@@ -471,11 +471,24 @@ class ClusterGenerator:
         self.add_initial_clusters()
         
         # Step 2.5: Rescue noise points (if enabled)
-        rescue_stats = self.rescue_noise_points()
+        self.rescue_stats = self.rescue_noise_points()
         
         # Step 3: Calculate and display quality metrics (if enabled)
         if self.config.enable_quality_metrics:
-            self.calculate_and_display_quality_metrics()
+            metrics = self.calculate_and_display_quality_metrics()
+            
+            # Show noise rescue impact if rescue was performed
+            if self.rescue_stats["total_noise"] > 0:
+                self.verbose_reporter.step_start("Noise rescue impact", "📈")
+                original_noise_ratio = self.rescue_stats["total_noise"] / len(self.output_list)
+                final_noise_ratio = metrics.get("noise_ratio", 0.0)
+                noise_reduction = original_noise_ratio - final_noise_ratio
+                
+                self.verbose_reporter.stat_line(f"Original noise ratio: {original_noise_ratio:.1%}")
+                self.verbose_reporter.stat_line(f"Final noise ratio: {final_noise_ratio:.1%}")
+                self.verbose_reporter.stat_line(f"Noise reduction: {noise_reduction:.1%}")
+                self.verbose_reporter.stat_line(f"Coverage improvement: {self.rescue_stats['rescued_count']} points rescued")
+                self.verbose_reporter.step_complete("Noise rescue impact calculated")
         
         # Step 4: Filter NA items and remap clusters (if enabled)
         if self.config.filter_na_items or self.config.remap_cluster_ids:
@@ -503,6 +516,12 @@ class ClusterGenerator:
             "Clusters found": len(unique_clusters),
             "Items filtered out": len(self.output_list) - len(clusters)
         }
+        
+        # Add noise rescue information if rescue was performed
+        if hasattr(self, 'rescue_stats') and self.rescue_stats["total_noise"] > 0:
+            summary_stats["Original noise points"] = self.rescue_stats["total_noise"]
+            summary_stats["Points rescued"] = self.rescue_stats["rescued_count"]
+            summary_stats["Rescue success rate"] = f"{self.rescue_stats['success_rate']:.1%}"
         
         self.verbose_reporter.summary("Final Clustering Summary", summary_stats, "📊")
         self.verbose_reporter.step_complete("Clustering pipeline completed successfully")
