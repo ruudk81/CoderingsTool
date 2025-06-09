@@ -127,7 +127,7 @@ class ClusterGenerator:
             try:
                 return list(spacy.load("nl_core_news_lg").Defaults.stop_words)
             except:
-                print("Warning: Dutch language model not found. Using English stop words.")
+                self.verbose_reporter.stat_line("Warning: Dutch language model not found. Using English stop words.")
                 return 'english'
         else:
             return 'english'
@@ -275,6 +275,95 @@ class ClusterGenerator:
         
         self.verbose_reporter.step_complete("Initial clustering completed")
 
+    def rescue_noise_points(self) -> Dict[str, int]:
+        """Rescue noise points using approximate_predict with confidence threshold"""
+        if not self.config.noise_rescue.enabled:
+            return {"rescued_count": 0, "total_noise": 0, "success_rate": 0.0}
+            
+        self.verbose_reporter.step_start("Noise rescue", "🚀")
+        
+        # Get current cluster labels and embeddings based on embedding type
+        if self.embedding_type == "code":
+            labels = np.array([item.initial_code_cluster for item in self.output_list])
+            embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
+        else:
+            labels = np.array([item.initial_description_cluster for item in self.output_list])
+            embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+        
+        # Find noise points
+        noise_mask = labels == -1
+        total_noise = noise_mask.sum()
+        
+        if total_noise == 0:
+            self.verbose_reporter.stat_line("No noise points to rescue")
+            self.verbose_reporter.step_complete("Noise rescue completed")
+            return {"rescued_count": 0, "total_noise": 0, "success_rate": 1.0}
+        
+        self.verbose_reporter.stat_line(f"Found {total_noise} noise points to rescue")
+        
+        # Limit rescue attempts for safety
+        noise_indices = np.where(noise_mask)[0]
+        if len(noise_indices) > self.config.noise_rescue.max_rescue_attempts:
+            self.verbose_reporter.stat_line(f"Limiting rescue to {self.config.noise_rescue.max_rescue_attempts} attempts")
+            noise_indices = noise_indices[:self.config.noise_rescue.max_rescue_attempts]
+            noise_mask = np.zeros_like(labels, dtype=bool)
+            noise_mask[noise_indices] = True
+        
+        try:
+            # Use approximate_predict to find best clusters for noise points
+            rescued_clusters, strengths = hdbscan.approximate_predict(
+                self.cluster_model, 
+                embeddings[noise_mask]
+            )
+            
+            # Apply threshold and update cluster assignments
+            rescued_count = 0
+            threshold = self.config.noise_rescue.rescue_threshold
+            
+            for i, noise_idx in enumerate(noise_indices):
+                if strengths[i] > threshold:
+                    # Update the appropriate cluster field
+                    if self.embedding_type == "code":
+                        self.output_list[noise_idx].initial_code_cluster = rescued_clusters[i]
+                    else:
+                        self.output_list[noise_idx].initial_description_cluster = rescued_clusters[i]
+                    rescued_count += 1
+            
+            success_rate = rescued_count / total_noise if total_noise > 0 else 0.0
+            
+            self.verbose_reporter.stat_line(f"Rescued {rescued_count}/{total_noise} noise points ({success_rate:.1%} success rate)")
+            self.verbose_reporter.stat_line(f"Used confidence threshold: {threshold}")
+            
+            # Show examples of rescued points
+            if rescued_count > 0:
+                examples = []
+                example_count = 0
+                for i, noise_idx in enumerate(noise_indices):
+                    if strengths[i] > threshold and example_count < 3:
+                        if self.embedding_type == "code":
+                            item_text = self.output_list[noise_idx].segment_label or "N/A"
+                            cluster_id = self.output_list[noise_idx].initial_code_cluster
+                        else:
+                            item_text = self.output_list[noise_idx].segment_description or "N/A"
+                            cluster_id = self.output_list[noise_idx].initial_description_cluster
+                        examples.append(f"→ Cluster {cluster_id} (conf: {strengths[i]:.2f}): {item_text[:60]}...")
+                        example_count += 1
+                
+                if examples:
+                    self.verbose_reporter.sample_list("Rescued examples", examples)
+            
+            self.verbose_reporter.step_complete("Noise rescue completed")
+            
+            return {
+                "rescued_count": rescued_count,
+                "total_noise": total_noise,
+                "success_rate": success_rate
+            }
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"Rescue failed: {str(e)}")
+            self.verbose_reporter.step_complete("Noise rescue failed")
+            return {"rescued_count": 0, "total_noise": total_noise, "success_rate": 0.0}
 
     def calculate_and_display_quality_metrics(self) -> Dict:
         """Calculate quality metrics for the clustering results - informational only"""
@@ -380,6 +469,9 @@ class ClusterGenerator:
         
         # Step 2: Perform initial clustering
         self.add_initial_clusters()
+        
+        # Step 2.5: Rescue noise points (if enabled)
+        rescue_stats = self.rescue_noise_points()
         
         # Step 3: Calculate and display quality metrics (if enabled)
         if self.config.enable_quality_metrics:
