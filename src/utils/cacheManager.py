@@ -436,7 +436,13 @@ class CacheManager:
                     parsed_row = {}
                     for key, value in row.items():
                         if value == '':
-                            parsed_row[key] = None
+                            # Special handling for response field - don't convert empty string to None
+                            if key == 'response':
+                                # For response field, empty string likely means NaN from original data
+                                import pandas as pd
+                                parsed_row[key] = float('nan')
+                            else:
+                                parsed_row[key] = None
                             continue
                         
                         # Handle complex types stored as JSON
@@ -464,24 +470,40 @@ class CacheManager:
                         elif value.lower() == 'false':
                             parsed_row[key] = False
                         else:
-                            # Check if field should be string
-                            should_be_string = False
-                            if key in field_types:
-                                field_type_str = str(field_types[key])
-                                if ('str' in field_type_str or 'typing.Optional[str]' in field_type_str
-                                    or key == 'response'):
-                                    should_be_string = True
-                            
-                            if should_be_string:
-                                parsed_row[key] = value
+                            # Special handling for response field to preserve NaN values
+                            if key == 'response':
+                                # Try to convert to appropriate type based on the value
+                                if value.lower() in ['nan', 'nat', 'null']:
+                                    import pandas as pd
+                                    parsed_row[key] = float('nan')  # Use Python NaN
+                                else:
+                                    try:
+                                        # Try numeric conversion first
+                                        if '.' in value:
+                                            parsed_row[key] = float(value)
+                                        else:
+                                            parsed_row[key] = int(value)
+                                    except ValueError:
+                                        # Keep as string
+                                        parsed_row[key] = value
                             else:
-                                try:
-                                    if '.' in value:
-                                        parsed_row[key] = float(value)
-                                    else:
-                                        parsed_row[key] = int(value)
-                                except ValueError:
+                                # Check if field should be string
+                                should_be_string = False
+                                if key in field_types:
+                                    field_type_str = str(field_types[key])
+                                    if ('str' in field_type_str or 'typing.Optional[str]' in field_type_str):
+                                        should_be_string = True
+                                
+                                if should_be_string:
                                     parsed_row[key] = value
+                                else:
+                                    try:
+                                        if '.' in value:
+                                            parsed_row[key] = float(value)
+                                        else:
+                                            parsed_row[key] = int(value)
+                                    except ValueError:
+                                        parsed_row[key] = value
                     
                     # Create model instance
                     result.append(model_cls(**parsed_row))
@@ -493,6 +515,14 @@ class CacheManager:
             logger.error(f"Error loading cache for {filename} at step {step}: {e}")
             self.db.invalidate_cache(filename, step)
             return None
+    
+    def _get_all_model_fields(self, model_cls: Type[BaseModel]) -> List[str]:
+        """Get all field names from model class annotations, ensuring complete serialization"""
+        try:
+            return list(model_cls.model_fields.keys())
+        except AttributeError:
+            # Fallback for older Pydantic versions
+            return list(model_cls.__annotations__.keys())
     
     def save_to_cache(self, 
                      data: List[T], 
@@ -517,10 +547,14 @@ class CacheManager:
                 with open(cache_path, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     
-                    # Get field names from first item
+                    # Get ALL field names from model class to ensure complete serialization
                     sample = data[0]
-                    serialize_method = getattr(sample, 'model_dump' if hasattr(sample, 'model_dump') else 'dict')
-                    fieldnames = list(serialize_method().keys())
+                    if hasattr(sample, '__class__') and hasattr(sample.__class__, 'model_fields'):
+                        fieldnames = self._get_all_model_fields(sample.__class__)
+                    else:
+                        # Fallback to instance-based method for non-Pydantic models
+                        serialize_method = getattr(sample, 'model_dump' if hasattr(sample, 'model_dump') else 'dict')
+                        fieldnames = list(serialize_method().keys())
                     writer.writerow(fieldnames)
                     
                     # Custom JSON encoder for numpy types
@@ -617,10 +651,14 @@ class CacheManager:
             with open(temp_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 
-                # Get field names from first item
+                # Get ALL field names from model class to ensure complete serialization
                 sample = data[0]
-                serialize_method = getattr(sample, 'model_dump' if hasattr(sample, 'model_dump') else 'dict')
-                fieldnames = list(serialize_method().keys())
+                if hasattr(sample, '__class__') and hasattr(sample.__class__, 'model_fields'):
+                    fieldnames = self._get_all_model_fields(sample.__class__)
+                else:
+                    # Fallback to instance-based method for non-Pydantic models
+                    serialize_method = getattr(sample, 'model_dump' if hasattr(sample, 'model_dump') else 'dict')
+                    fieldnames = list(serialize_method().keys())
                 writer.writerow(fieldnames)
                 
                 # Custom JSON encoder for numpy types
