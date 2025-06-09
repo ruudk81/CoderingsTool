@@ -275,8 +275,65 @@ class ClusterGenerator:
         
         self.verbose_reporter.step_complete("Initial clustering completed")
 
+    def _calculate_cluster_centroids(self, embeddings: np.ndarray, labels: np.ndarray) -> Dict[int, np.ndarray]:
+        """Calculate cluster centroids using simple mean of embeddings"""
+        centroids = {}
+        unique_labels = np.unique(labels)
+        
+        for cluster_id in unique_labels:
+            if cluster_id != -1:  # Skip noise points
+                cluster_mask = labels == cluster_id
+                cluster_embeddings = embeddings[cluster_mask]
+                centroids[cluster_id] = np.mean(cluster_embeddings, axis=0)
+        
+        return centroids
+
+    def _cosine_similarity_rescue(self, noise_indices: np.ndarray, embeddings: np.ndarray, labels: np.ndarray) -> int:
+        """Rescue noise points using cosine similarity to cluster centroids"""
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        # Calculate cluster centroids
+        centroids = self._calculate_cluster_centroids(embeddings, labels)
+        
+        if not centroids:
+            self.verbose_reporter.stat_line("No clusters found for centroid calculation")
+            return 0
+        
+        cluster_ids = list(centroids.keys())
+        centroid_vectors = np.array(list(centroids.values()))
+        
+        self.verbose_reporter.stat_line(f"Calculated centroids for {len(centroids)} clusters")
+        
+        rescued_count = 0
+        threshold = self.config.noise_rescue.cosine_similarity_threshold
+        
+        # Process each noise point
+        for noise_idx in noise_indices:
+            noise_embedding = embeddings[noise_idx].reshape(1, -1)
+            
+            # Calculate cosine similarities to all centroids
+            similarities = cosine_similarity(noise_embedding, centroid_vectors)[0]
+            
+            # Find best cluster
+            best_cluster_idx = np.argmax(similarities)
+            best_similarity = similarities[best_cluster_idx]
+            
+            # Assign if above threshold
+            if best_similarity >= threshold:
+                best_cluster_id = cluster_ids[best_cluster_idx]
+                
+                # Update the appropriate cluster field
+                if self.embedding_type == "code":
+                    self.output_list[noise_idx].initial_code_cluster = best_cluster_id
+                else:
+                    self.output_list[noise_idx].initial_description_cluster = best_cluster_id
+                
+                rescued_count += 1
+        
+        return rescued_count
+
     def rescue_noise_points(self) -> Dict[str, int]:
-        """Rescue noise points using approximate_predict with confidence threshold"""
+        """Rescue noise points using cosine similarity or HDBSCAN methods"""
         if not self.config.noise_rescue.enabled:
             return {"rescued_count": 0, "total_noise": 0, "success_rate": 0.0}
             
@@ -299,7 +356,7 @@ class ClusterGenerator:
             self.verbose_reporter.step_complete("Noise rescue completed")
             return {"rescued_count": 0, "total_noise": 0, "success_rate": 1.0}
         
-        self.verbose_reporter.stat_line(f"Found {total_noise} noise points to rescue")
+        self.verbose_reporter.stat_line(f"Noise before: n={total_noise} noise points")
         
         # Limit rescue attempts for safety
         noise_indices = np.where(noise_mask)[0]
@@ -310,107 +367,123 @@ class ClusterGenerator:
             noise_mask[noise_indices] = True
         
         try:
-            # Debug: Check if clusterer has prediction data
-            if not hasattr(self.cluster_model, 'prediction_data_') or self.cluster_model.prediction_data_ is None:
-                self.verbose_reporter.stat_line("⚠️  Warning: HDBSCAN clusterer has no prediction data")
-                self.verbose_reporter.stat_line("This might be because prediction_data=True wasn't set during fit")
+            # Choose rescue method based on configuration
+            if self.config.noise_rescue.use_cosine_rescue:
+                # Use cosine similarity rescue
+                self.verbose_reporter.stat_line("Using cosine similarity rescue method")
+                rescued_count = self._cosine_similarity_rescue(noise_indices, embeddings, labels)
+                
             else:
-                self.verbose_reporter.stat_line("✅ HDBSCAN has prediction data available")
+                # Use existing HDBSCAN methods
+                self.verbose_reporter.stat_line("Using HDBSCAN rescue methods")
                 
-            # Try using membership_vector approach as alternative
-            try:
-                # Get membership vectors for noise points
-                test_membership_vectors = hdbscan.membership_vector(self.cluster_model, embeddings[noise_mask])
+                # Debug: Check if clusterer has prediction data
+                if not hasattr(self.cluster_model, 'prediction_data_') or self.cluster_model.prediction_data_ is None:
+                    self.verbose_reporter.stat_line("⚠️  Warning: HDBSCAN clusterer has no prediction data")
+                    self.verbose_reporter.stat_line("This might be because prediction_data=True wasn't set during fit")
+                else:
+                    self.verbose_reporter.stat_line("✅ HDBSCAN has prediction data available")
+                    
+                # Try using membership_vector approach as alternative
+                try:
+                    # Get membership vectors for noise points
+                    test_membership_vectors = hdbscan.membership_vector(self.cluster_model, embeddings[noise_mask])
+                    
+                    # Find best cluster for each point based on membership strength
+                    best_clusters = np.argmax(test_membership_vectors, axis=1)
+                    membership_strengths = np.max(test_membership_vectors, axis=1)
+                    
+                    self.verbose_reporter.stat_line(f"membership_vector approach - Max strength: {np.max(membership_strengths):.3f}")
+                    self.verbose_reporter.stat_line(f"membership_vector approach - Mean strength: {np.mean(membership_strengths):.3f}")
+                    
+                    # Use membership vector results instead of approximate_predict
+                    rescued_clusters = best_clusters
+                    strengths = membership_strengths
+                    
+                except Exception as e:
+                    self.verbose_reporter.stat_line(f"membership_vector failed: {e}")
+                    # Fall back to approximate_predict
+                    rescued_clusters, strengths = hdbscan.approximate_predict(
+                        self.cluster_model, 
+                        embeddings[noise_mask]
+                    )
                 
-                # Find best cluster for each point based on membership strength
-                best_clusters = np.argmax(test_membership_vectors, axis=1)
-                membership_strengths = np.max(test_membership_vectors, axis=1)
+                # Debug: Check what we got
+                self.verbose_reporter.stat_line(f"Final method returned {len(rescued_clusters)} cluster predictions")
+                unique_predictions = np.unique(rescued_clusters)
+                self.verbose_reporter.stat_line(f"Unique predicted clusters: {unique_predictions[:10]}...")  # Show first 10
                 
-                self.verbose_reporter.stat_line(f"membership_vector approach - Max strength: {np.max(membership_strengths):.3f}")
-                self.verbose_reporter.stat_line(f"membership_vector approach - Mean strength: {np.mean(membership_strengths):.3f}")
+                # Apply threshold and update cluster assignments
+                rescued_count = 0
+                threshold = self.config.noise_rescue.rescue_threshold
                 
-                # Use membership vector results instead of approximate_predict
-                rescued_clusters = best_clusters
-                strengths = membership_strengths
+                # Show confidence distribution for debugging
+                if len(strengths) > 0:
+                    max_conf = np.max(strengths)
+                    min_conf = np.min(strengths)
+                    mean_conf = np.mean(strengths)
+                    above_threshold = np.sum(strengths > threshold)
+                    
+                    self.verbose_reporter.stat_line(f"Confidence scores - Min: {min_conf:.3f}, Max: {max_conf:.3f}, Mean: {mean_conf:.3f}")
+                    self.verbose_reporter.stat_line(f"Points above threshold ({threshold}): {above_threshold}/{len(strengths)}")
                 
-            except Exception as e:
-                self.verbose_reporter.stat_line(f"membership_vector failed: {e}")
-                # Fall back to approximate_predict
-                rescued_clusters, strengths = hdbscan.approximate_predict(
-                    self.cluster_model, 
-                    embeddings[noise_mask]
-                )
-            
-            # Debug: Check what we got
-            self.verbose_reporter.stat_line(f"Final method returned {len(rescued_clusters)} cluster predictions")
-            unique_predictions = np.unique(rescued_clusters)
-            self.verbose_reporter.stat_line(f"Unique predicted clusters: {unique_predictions[:10]}...")  # Show first 10
-            
-            # Apply threshold and update cluster assignments
-            rescued_count = 0
-            threshold = self.config.noise_rescue.rescue_threshold
-            
-            # Show confidence distribution for debugging
-            if len(strengths) > 0:
-                max_conf = np.max(strengths)
-                min_conf = np.min(strengths)
-                mean_conf = np.mean(strengths)
-                above_threshold = np.sum(strengths > threshold)
-                
-                self.verbose_reporter.stat_line(f"Confidence scores - Min: {min_conf:.3f}, Max: {max_conf:.3f}, Mean: {mean_conf:.3f}")
-                self.verbose_reporter.stat_line(f"Points above threshold ({threshold}): {above_threshold}/{len(strengths)}")
-            
-            for i, noise_idx in enumerate(noise_indices):
-                if strengths[i] > threshold:
-                    # Update the appropriate cluster field
-                    if self.embedding_type == "code":
-                        self.output_list[noise_idx].initial_code_cluster = rescued_clusters[i]
-                    else:
-                        self.output_list[noise_idx].initial_description_cluster = rescued_clusters[i]
-                    rescued_count += 1
+                for i, noise_idx in enumerate(noise_indices):
+                    if strengths[i] > threshold:
+                        # Update the appropriate cluster field
+                        if self.embedding_type == "code":
+                            self.output_list[noise_idx].initial_code_cluster = rescued_clusters[i]
+                        else:
+                            self.output_list[noise_idx].initial_description_cluster = rescued_clusters[i]
+                        rescued_count += 1
             
             success_rate = rescued_count / total_noise if total_noise > 0 else 0.0
+            remaining_noise = total_noise - rescued_count
             
             self.verbose_reporter.stat_line(f"Rescued {rescued_count}/{total_noise} noise points ({success_rate:.1%} success rate)")
-            self.verbose_reporter.stat_line(f"Used confidence threshold: {threshold}")
+            self.verbose_reporter.stat_line(f"Noise after: n={remaining_noise} noise points")
             
-            # Suggest threshold adjustment if no rescues but there are predictions
-            if rescued_count == 0 and len(strengths) > 0 and max_conf > 0:
+            # Only show threshold info for HDBSCAN methods
+            if not self.config.noise_rescue.use_cosine_rescue:
+                self.verbose_reporter.stat_line(f"Used confidence threshold: {threshold}")
+            
+            # Suggest threshold adjustment if no rescues but there are predictions (HDBSCAN methods only)
+            if not self.config.noise_rescue.use_cosine_rescue and rescued_count == 0 and len(strengths) > 0 and max_conf > 0:
                 suggested_threshold = max(0.1, max_conf * 0.8)  # 80% of max confidence, minimum 0.1
                 self.verbose_reporter.stat_line(f"💡 Suggestion: Try lowering threshold to {suggested_threshold:.2f} to rescue {np.sum(strengths > suggested_threshold)} points")
             
-            # Show examples of rescued points OR highest confidence candidates
-            if rescued_count > 0:
-                examples = []
-                example_count = 0
-                for i, noise_idx in enumerate(noise_indices):
-                    if strengths[i] > threshold and example_count < 3:
-                        if self.embedding_type == "code":
-                            item_text = self.output_list[noise_idx].segment_label or "N/A"
-                            cluster_id = self.output_list[noise_idx].initial_code_cluster
-                        else:
-                            item_text = self.output_list[noise_idx].segment_description or "N/A"
-                            cluster_id = self.output_list[noise_idx].initial_description_cluster
-                        examples.append(f"→ Cluster {cluster_id} (conf: {strengths[i]:.2f}): {item_text[:60]}...")
-                        example_count += 1
-                
-                if examples:
-                    self.verbose_reporter.sample_list("Rescued examples", examples)
-            else:
-                # Show highest confidence candidates that weren't rescued
-                if len(strengths) > 0:
-                    top_indices = np.argsort(strengths)[-3:][::-1]  # Top 3 confidence scores
+            # Show examples only for HDBSCAN methods (which have confidence scores)
+            if not self.config.noise_rescue.use_cosine_rescue:
+                if rescued_count > 0:
                     examples = []
-                    for idx in top_indices:
-                        noise_idx = noise_indices[idx]
-                        if self.embedding_type == "code":
-                            item_text = self.output_list[noise_idx].segment_label or "N/A"
-                        else:
-                            item_text = self.output_list[noise_idx].segment_description or "N/A"
-                        examples.append(f"→ Cluster {rescued_clusters[idx]} (conf: {strengths[idx]:.2f}): {item_text[:60]}...")
+                    example_count = 0
+                    for i, noise_idx in enumerate(noise_indices):
+                        if strengths[i] > threshold and example_count < 3:
+                            if self.embedding_type == "code":
+                                item_text = self.output_list[noise_idx].segment_label or "N/A"
+                                cluster_id = self.output_list[noise_idx].initial_code_cluster
+                            else:
+                                item_text = self.output_list[noise_idx].segment_description or "N/A"
+                                cluster_id = self.output_list[noise_idx].initial_description_cluster
+                            examples.append(f"→ Cluster {cluster_id} (conf: {strengths[i]:.2f}): {item_text[:60]}...")
+                            example_count += 1
                     
                     if examples:
-                        self.verbose_reporter.sample_list("Highest confidence candidates (not rescued)", examples)
+                        self.verbose_reporter.sample_list("Rescued examples", examples)
+                else:
+                    # Show highest confidence candidates that weren't rescued
+                    if len(strengths) > 0:
+                        top_indices = np.argsort(strengths)[-3:][::-1]  # Top 3 confidence scores
+                        examples = []
+                        for idx in top_indices:
+                            noise_idx = noise_indices[idx]
+                            if self.embedding_type == "code":
+                                item_text = self.output_list[noise_idx].segment_label or "N/A"
+                            else:
+                                item_text = self.output_list[noise_idx].segment_description or "N/A"
+                            examples.append(f"→ Cluster {rescued_clusters[idx]} (conf: {strengths[idx]:.2f}): {item_text[:60]}...")
+                        
+                        if examples:
+                            self.verbose_reporter.sample_list("Highest confidence candidates (not rescued)", examples)
             
             self.verbose_reporter.step_complete("Noise rescue completed")
             

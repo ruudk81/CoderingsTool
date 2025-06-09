@@ -293,10 +293,14 @@ class ClusterMergerConfig:
 
 @dataclass
 class NoiseRescueConfig:
-    """Configuration for noise point rescue using approximate_predict"""
+    """Configuration for noise point rescue using cosine similarity or HDBSCAN methods"""
     enabled: bool = True
-    rescue_threshold: float = 0.3
+    rescue_threshold: float = 0.3  # For HDBSCAN methods
     max_rescue_attempts: int = 1000
+    
+    # Cosine similarity rescue parameters
+    use_cosine_rescue: bool = True
+    cosine_similarity_threshold: float = 0.7
 
 
 @dataclass
