@@ -1,4 +1,4 @@
-from typing import List, Any, Optional, Type, Dict
+from typing import List, Any, Optional, Type, Dict, Union
 from pydantic import BaseModel, ConfigDict
 import numpy as np
 import numpy.typing as npt
@@ -10,7 +10,8 @@ class ResponseSegmentModel(BaseModel):
 
 class ResponseModel(BaseModel):
     respondent_id: Any
-    response: str
+    response: Union[str, float, int]  # Allow string, float, or int types
+    response_type: Optional[str] = None  # Track original type: 'string', 'numeric', 'nan'
     model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
  
     def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
@@ -26,6 +27,7 @@ class DescriptiveSubmodel(ResponseSegmentModel):
 
 class DescriptiveModel(ResponseModel):
     quality_filter: Optional[bool] = None
+    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999996=nonsense, 99999997=user_missing, 99999998=system_missing
     response_segment: Optional[List[DescriptiveSubmodel]] = None
 
 class EmbeddingsSubmodel(DescriptiveSubmodel):
