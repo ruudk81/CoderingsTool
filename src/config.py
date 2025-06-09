@@ -261,7 +261,7 @@ class HDBSCANConfig:
     min_samples: Optional[int] = None  # Use algorithm default if None
     metric: str = "euclidean"
     cluster_selection_method: str = "eom"
-    prediction_data: bool = False
+    prediction_data: bool = True
     approx_min_span_tree: bool = False
     gen_min_span_tree: bool = True
 
@@ -292,6 +292,14 @@ class ClusterMergerConfig:
 
 
 @dataclass
+class NoiseRescueConfig:
+    """Configuration for noise point rescue using approximate_predict"""
+    enabled: bool = True
+    rescue_threshold: float = 0.3
+    max_rescue_attempts: int = 1000
+
+
+@dataclass
 class ClusteringConfig:
     """Master configuration for clustering step (Step 5)"""
     # Embedding selection
@@ -302,6 +310,7 @@ class ClusteringConfig:
     hdbscan: HDBSCANConfig = field(default_factory=HDBSCANConfig)
     vectorizer: VectorizerConfig = field(default_factory=VectorizerConfig)
     merger: ClusterMergerConfig = field(default_factory=ClusterMergerConfig)
+    noise_rescue: NoiseRescueConfig = field(default_factory=NoiseRescueConfig)
     
     # Quality and filtering settings
     enable_quality_metrics: bool = True
