@@ -35,7 +35,8 @@ class Grader:
         self.prompt_printer = prompt_printer 
 
     def _batch(self) -> List[List[tuple]]:
-        indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses)]
+        # Only batch items that need LLM evaluation (quality_filter_code = None)
+        indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses) if r.quality_filter_code is None]
         return [indexed[i:i + self.config.batch_size] for i in range(0, len(indexed), self.config.batch_size)]
 
     def _build_prompt(self, var_lab: str, batch: List[tuple]) -> str:
@@ -125,10 +126,49 @@ class Grader:
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
         
-        self.verbose_reporter.step_start("Quality Assessment")
+        # Separate items that need LLM evaluation from pre-filtered items
+        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
+        pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
         
-        nest_asyncio.apply()
-        asyncio.run(self._process_all_batches())
+        self.verbose_reporter.step_start("Quality Assessment")
+        self.verbose_reporter.stat_line(f"Items needing LLM evaluation: {len(items_to_process)}")
+        self.verbose_reporter.stat_line(f"Pre-filtered items: {len(pre_filtered_items)}")
+        
+        # Only process items that need LLM evaluation
+        if items_to_process:
+            # Temporarily replace self.responses for batching
+            original_responses = self.responses
+            self.responses = items_to_process
+            
+            nest_asyncio.apply()
+            asyncio.run(self._process_all_batches())
+            
+            # Restore original responses
+            self.responses = original_responses
+        else:
+            self.verbose_reporter.stat_line("No items require LLM evaluation")
+        
+        # Create mapping from respondent_id to LLM results for efficient lookup
+        llm_results_map = {result.respondent_id: result for result in self._results}
+        
+        # Merge results: combine pre-filtered items with LLM results in original order
+        merged_results = []
+        for original_item in self.responses:
+            if original_item.quality_filter_code is not None:
+                # Keep pre-filtered item as-is
+                merged_results.append(original_item)
+            else:
+                # Use LLM result if available, otherwise keep original
+                if original_item.respondent_id in llm_results_map:
+                    merged_results.append(llm_results_map[original_item.respondent_id])
+                else:
+                    # Fallback: mark as unprocessed (shouldn't happen normally)
+                    original_item.quality_filter = False
+                    original_item.quality_filter_code = 0  # Assume meaningful if LLM failed
+                    merged_results.append(original_item)
+        
+        # Update self._results to the merged list for statistics and filtering
+        self._results = merged_results
         
         # Calculate quality statistics
         quality_counts = {"high": 0, "medium": 0, "low": 0}
@@ -152,15 +192,20 @@ class Grader:
         # Report statistics
         total = len(self._results)
         filtered_count = sum(1 for r in self._results if r.quality_filter)
+        llm_processed = len(items_to_process)
+        
+        self.verbose_reporter.stat_line(f"Total responses: {total}")
+        self.verbose_reporter.stat_line(f"LLM processed: {llm_processed}")
+        self.verbose_reporter.stat_line(f"Pre-filtered: {len(pre_filtered_items)}")
         
         if quality_counts["high"] > 0:
-            self.verbose_reporter.stat_line(f"High quality: {quality_counts['high']} responses ({quality_counts['high']/total*100:.1f}%)")
+            self.verbose_reporter.stat_line(f"High quality: {quality_counts['high']} responses ({quality_counts['high']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "High quality: 0 responses")
         if quality_counts["medium"] > 0:
-            self.verbose_reporter.stat_line(f"Medium quality: {quality_counts['medium']} responses ({quality_counts['medium']/total*100:.1f}%)")
+            self.verbose_reporter.stat_line(f"Medium quality: {quality_counts['medium']} responses ({quality_counts['medium']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "Medium quality: 0 responses")
         if quality_counts["low"] > 0:
-            self.verbose_reporter.stat_line(f"Low quality: {quality_counts['low']} responses ({quality_counts['low']/total*100:.1f}%)")
+            self.verbose_reporter.stat_line(f"Low quality: {quality_counts['low']} responses ({quality_counts['low']/llm_processed*100:.1f}% of LLM processed)" if llm_processed > 0 else "Low quality: 0 responses")
         
-        self.verbose_reporter.stat_line(f"Filtered out: {filtered_count} responses")
+        self.verbose_reporter.stat_line(f"Total filtered out: {filtered_count} responses ({filtered_count/total*100:.1f}%)")
         
         # Show filtered examples
         if filtered_examples:
@@ -177,12 +222,19 @@ class Grader:
         total = len(self._results)
         meaningless = sum(1 for r in self._results if r.quality_filter)
         meaningful = total - meaningless
+        
+        # Count items by how they were processed
+        llm_processed = sum(1 for r in self._results if hasattr(r, 'quality_score'))
+        pre_filtered = total - llm_processed
 
         return {
             "total_responses": total,
             "meaningful_responses": meaningful,
             "meaningless_responses": meaningless,
-            "meaningful_percentage": round((meaningful / total) * 100, 2) if total > 0 else 0}
+            "meaningful_percentage": round((meaningful / total) * 100, 2) if total > 0 else 0,
+            "llm_processed": llm_processed,
+            "pre_filtered": pre_filtered
+        }
 
 # example/test section
 if __name__ == "__main__":
