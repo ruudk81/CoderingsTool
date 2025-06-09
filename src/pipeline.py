@@ -224,38 +224,61 @@ else:
     
 
 # === STEP 3 ========================================================================================================
+"""quality filter"""
+from utils import qualityFilter
+
+step_name        = "quality_filter"
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    quality_filtered_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
+    filtering_rate = 100 * (1-(len(quality_filtered_text)/len(preprocessed_text)))
+    verbose_reporter.summary("QUALITY FILTERED RESPONSES FROM CACHE", {f"Input: {len(preprocessed_text)} responses → Output: {len(quality_filtered_text)} responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
+else:
+    verbose_reporter.section_header("QUALITY FILTERING PHASE")
+    
+    start_time = time.time()
+    # TODO: Implement quality filter that only processes items with quality_filter_code = None
+    # For now, pass through all responses unchanged
+    quality_filtered_text = preprocessed_text
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    cache_manager.save_to_cache(quality_filtered_text, filename, step_name, elapsed_time)
+    print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
+
+
+# === STEP 4 ========================================================================================================
 """describe and segment data"""
-from utils import qualityFilter, segmentDescriber
+from utils import segmentDescriber
 
 step_name        = "segmented_descriptions"
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
-    filtering_rate = 100 * (1-(len(encoded_text)/len(preprocessed_text)))
-    verbose_reporter.summary("SEGMENTED RESPONSES FROM CAHCE", {f"Input: {len(preprocessed_text)} responses → Output: {len(encoded_text)} coded responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
-
+    filtering_rate = 100 * (1-(len(encoded_text)/len(quality_filtered_text)))
+    verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(quality_filtered_text)} responses → Output: {len(encoded_text)} coded responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
 else: 
     verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
     
-    start_time            = time.time()
-    grader                = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE, prompt_printer=prompt_printer)
-    graded_text           = grader.grade()
-    grading_summary       = grader.summary()
-    filtered_text         = grader.filter()
-    encoder               = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer)
-    encoded_text          = encoder.generate_codes(filtered_text, var_lab)
-    end_time              = time.time()
-    elapsed_time          = end_time - start_time
+    start_time = time.time()
+    # Filter out items that were marked as meaningless in quality filtering
+    filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
+    encoder = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer)
+    encoded_text = encoder.generate_codes(filtered_text, var_lab)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
 
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
 
 
-# === STEP 4 ========================================================================================================
+# === STEP 5 ========================================================================================================
 """get embeddings"""
 from utils import embedder  
 
@@ -284,7 +307,7 @@ else:
     print(f"\n'Get embeddings' completed in {elapsed_time:.2f} seconds.")
 
     
-# === STEP 5 ========================================================================================================
+# === STEP 6 ========================================================================================================
 "get clusters"
 from utils import clusterer, clusterMerger
 
@@ -335,7 +358,7 @@ else:
     print(f"\n'Get clusters' completed in {elapsed_time:.2f} seconds.")
 
 
-# === STEP 6 ========================================================================================================
+# === STEP 7 ========================================================================================================
 """hierarchical labeling"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
@@ -405,7 +428,7 @@ if PROMPT_PRINTER and prompt_printer:
     # prompt_printer.save_prompts("pipeline_prompts.json")
 
 ###
-# === STEP 6 ========================================================================================================
+# === STEP 7 ========================================================================================================
 """get labels"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG

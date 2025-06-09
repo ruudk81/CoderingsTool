@@ -106,11 +106,12 @@ class CacheConfig:
     step_prefixes: Dict[str, str] = field(default_factory=lambda: {
         "data": "001",
         "preprocessed": "002", 
-        "segmented_descriptions": "003",
-        "embeddings": "004",
-        "clusters": "005",
-        "labels": "006",
-        "results": "007"
+        "quality_filter": "003",
+        "segmented_descriptions": "004",
+        "embeddings": "005",
+        "clusters": "006",
+        "labels": "007",
+        "results": "008"
         })
     
     # Cache validity settings
