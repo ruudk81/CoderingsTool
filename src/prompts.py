@@ -426,8 +426,22 @@ Requirements for segment descriptions:
   - If the segment is a suggestion: use an imperative tone (e.g., "Maak...", "Laat...")
   - If the segment expresses a wish or opinion: use first-person (e.g., "Ik wil...", "Ik vind...")
 - NEVER rephrase the segment as a third-person summary
-- CRITICAL: Do NOT add interpretations beyond what's in the original segment
-- Language: {language}
+
+CRITICAL CONSTRAINTS - FOLLOW EXACTLY:
+1. NEVER add information not explicitly stated in the original segment
+2. NEVER infer motivations, reasons, or explanations beyond what's written
+3. NEVER add context about why someone might want this
+4. NEVER elaborate on consequences or benefits
+5. ONLY rephrase what is literally stated in the segment
+6. If the segment says "better taste" → describe "better taste", NOT "improve taste because..."
+7. If the segment says "less packaging" → describe "less packaging", NOT "reduce environmental impact"
+
+BEFORE writing each description, ask yourself:
+- "Is every word in my description based on something explicitly stated in the segment?"
+- "Am I adding any explanations, reasons, or context not in the original?"
+- "Would someone reading just the segment come to the exact same description?"
+
+Language: {language}
 
 Special cases:
 For meaningless responses with segment_label "NA":
@@ -440,25 +454,39 @@ Your output must be a JSON array with these fields for each segment:
 - "segment_label": The original segment label
 - "segment_description": Your natural-sounding description
 
-Example output:
+Example output demonstrating CRITICAL CONSTRAINTS:
+
+CORRECT examples (stay within segment content):
 [
   {{
     "respondent_id": "12345",
     "segment_id": "1", 
     "segment_response": "Betere interactie met de docent.",
     "segment_label": "DOCENTCONTACT",
-    "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
+    "segment_description": "Ik wil betere interactie met de docent."
   }},
   {{
-    "respondent_id": "12345",
-    "segment_id": "2",
-    "segment_response": "?", 
+    "respondent_id": "12346",
+    "segment_id": "1",
+    "segment_response": "Minder verpakking.",
+    "segment_label": "VERPAKKING_REDUCTIE", 
+    "segment_description": "Ik wil minder verpakking."
+  }},
+  {{
+    "respondent_id": "12347",
+    "segment_id": "1",
+    "segment_response": "?",
     "segment_label": "NA",
     "segment_description": "NA"
   }}
 ]
 
-Focus on creating clear, natural descriptions that maintain the respondent's intent and perspective.
+WRONG examples (adding interpretation - DO NOT DO THIS):
+❌ "Ik wil betere interactie met de docent zodat ik beter kan leren" (adds WHY)
+❌ "Ik wil minder verpakking vanwege het milieu" (adds REASON)
+❌ "Verbeter de communicatie met docenten" (adds specifics not in segment)
+
+FINAL REMINDER: For each description, only rephrase what is literally stated in the segment_response. Do not add explanations, motivations, benefits, or context beyond what the respondent explicitly wrote.
 """
 
 MERGE_PROMPT = """
