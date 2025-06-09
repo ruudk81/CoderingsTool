@@ -47,6 +47,39 @@ class ClusterLabel(BaseModel):
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
     label: str = Field(description="Concise thematic label (max 5 words)")
+
+
+class MergedGroup(BaseModel):
+    """A group of merged labels"""
+    new_cluster_id: int
+    merged_label: str
+    original_cluster_ids: List[int]
+
+
+class UnchangedLabel(BaseModel):
+    """A label that wasn't merged"""
+    new_cluster_id: int
+    label: str
+    original_cluster_id: int
+
+
+class LabelMergerResponse(BaseModel):
+    """Response from Phase 1b label merger"""
+    merged_groups: List[MergedGroup] = Field(default_factory=list)
+    unchanged_labels: List[UnchangedLabel] = Field(default_factory=list)
+
+
+class InitialTheme(BaseModel):
+    """An initial theme with related labels"""
+    theme_name: str
+    description: str
+    related_labels: List[str]
+
+
+class InitialThemesResponse(BaseModel):
+    """Response from Phase 1c initial themes"""
+    initial_themes: List[InitialTheme]
+    rationale: str
     
 
 class DiscoveryResponse(BaseModel):
@@ -178,6 +211,7 @@ class ThemeDiscoveryPipeline:
                 formatted_prompt = PHASE2_EXTRACT_THEMES_PROMPT.format(
                     survey_question=inputs.get("survey_question", ""),
                     codes=inputs.get("codes", ""),
+                    initial_themes=inputs.get("initial_themes", ""),
                     language=inputs.get("language", "")
                 )
                 self.prompt_printer.capture_prompt(
@@ -249,6 +283,7 @@ class ThemeDiscoveryPipeline:
             {
                 "survey_question": lambda x: x["survey_question"],
                 "codes": lambda x: x["codes"],
+                "initial_themes": lambda x: x.get("initial_themes", ""),
                 "language": lambda x: x["language"]
             }
             | RunnableLambda(capture_extract_themes_prompt)
@@ -306,6 +341,8 @@ class ThematicLabeller:
         
         # Track which phase prompts have been captured (only capture first prompt per phase)
         self.captured_phase1 = False
+        self.captured_phase1b = False
+        self.captured_phase1c = False
         self.captured_phase2 = False
         self.captured_phase3 = False
         self.captured_phase4 = False
@@ -409,11 +446,25 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} segment labels")
       
         # =============================================================================
+        # Phase 1b: Label Merger (NEW)
+        # =============================================================================
+        
+        merged_clusters = await self._phase1b_label_merger(labeled_clusters)
+        self.merged_clusters = merged_clusters  # Store for debugging
+        
+        # =============================================================================
+        # Phase 1c: Initial Themes (NEW)
+        # =============================================================================
+        
+        initial_themes = await self._phase1c_initial_themes(merged_clusters)
+        self.initial_themes = initial_themes  # Store for debugging and phase 2
+        
+        # =============================================================================
         # Phase 2: Theme Discovery 
         # =============================================================================
     
         self.verbose_reporter.step_start("Phase 2: Theme Discovery", emoji="🔍")
-        self.codebook = await self._phase2_discovery(labeled_clusters)
+        self.codebook = await self._phase2_discovery(merged_clusters, initial_themes)  # Use merged clusters + initial themes
         self.initial_codebook = self.codebook  # Store initial codebook for debugging
         self.verbose_reporter.step_complete("Codebook structure created")
             
@@ -473,7 +524,7 @@ class ThematicLabeller:
         # =============================================================================
         
         self.verbose_reporter.step_start("Phase 6: Assignment", emoji="🎯")
-        assignments = await self._phase6_assignment(labeled_clusters, self.codebook)
+        assignments = await self._phase6_assignment(merged_clusters, self.codebook)  # Use merged clusters
         self.verbose_reporter.step_complete("Themes assigned to clusters")
         
         # Remove empty codes  after assignment
@@ -481,7 +532,12 @@ class ThematicLabeller:
     
         # Print codebook
         self._display_full_codebook(self.codebook)
-        self.final_labels = self._create_final_labels(labeled_clusters, assignments)
+        
+        # Create mapping from original to merged cluster IDs
+        original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
+        
+        # Create final labels using merged clusters but map back to original IDs
+        self.final_labels = self._create_final_labels_with_mapping(merged_clusters, assignments, original_to_merged_mapping)
         
         self.verbose_reporter.stat_line("✅ Applying hierarchy to responses...")
         result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, self.codebook)
@@ -566,11 +622,186 @@ class ThematicLabeller:
         
         return labeled_clusters
     
-    async def _phase2_discovery(self, labeled_clusters: List[ClusterLabel]) -> Codebook:
-        """Phase 2: Theme discovery using three-step LangChain approach"""
+    async def _phase1b_label_merger(self, labeled_clusters: List[ClusterLabel]) -> List[ClusterLabel]:
+        """Phase 1b: Merge semantically identical labels"""
+        from prompts import LABEL_MERGER_PROMPT
+        
+        self.verbose_reporter.step_start("Phase 1b: Label Merger", emoji="🔗")
+        
+        # Format labels for the merger prompt
+        labels_text = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.label}" 
+            for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
+        ])
+        
+        prompt = LABEL_MERGER_PROMPT.format(
+            survey_question=self.survey_question,
+            labels=labels_text,
+            language=self.config.language
+        )
+        
+        # Capture prompt
+        if self.prompt_printer and not hasattr(self, 'captured_phase1b'):
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase1b_label_merger",
+                metadata={
+                    "model": self.config.model,
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "1b/6 - Label Merger"
+                }
+            )
+            self.captured_phase1b = True
+        
+        try:
+            merger_result = await self._invoke_with_retries(prompt, LabelMergerResponse)
+            self.merger_result = merger_result  # Store for mapping later
+            
+            # Create new merged cluster labels
+            merged_clusters = []
+            
+            # Process merged groups
+            for group in merger_result.merged_groups:
+                # Find representatives from all original clusters in the group
+                all_representatives = []
+                for original_id in group.original_cluster_ids:
+                    original_cluster = next((c for c in labeled_clusters if c.cluster_id == original_id), None)
+                    if original_cluster:
+                        all_representatives.extend(original_cluster.representatives)
+                
+                # Sort by similarity and take top k
+                all_representatives.sort(key=lambda x: x[1], reverse=True)
+                top_representatives = all_representatives[:self.config.top_k_representatives]
+                
+                merged_cluster = ClusterLabel(
+                    cluster_id=group.new_cluster_id,
+                    label=group.merged_label,
+                    representatives=top_representatives
+                )
+                merged_clusters.append(merged_cluster)
+            
+            # Process unchanged labels
+            for unchanged in merger_result.unchanged_labels:
+                original_cluster = next((c for c in labeled_clusters if c.cluster_id == unchanged.original_cluster_id), None)
+                if original_cluster:
+                    unchanged_cluster = ClusterLabel(
+                        cluster_id=unchanged.new_cluster_id,
+                        label=unchanged.label,
+                        representatives=original_cluster.representatives
+                    )
+                    merged_clusters.append(unchanged_cluster)
+            
+            # Sort by new cluster ID
+            merged_clusters.sort(key=lambda x: x.cluster_id)
+            
+            # Log merging statistics
+            original_count = len(labeled_clusters)
+            merged_count = len(merged_clusters)
+            groups_merged = len(merger_result.merged_groups)
+            
+            self.verbose_reporter.stat_line(f"Original clusters: {original_count}")
+            self.verbose_reporter.stat_line(f"After merging: {merged_count}")
+            self.verbose_reporter.stat_line(f"Merged groups: {groups_merged}")
+            self.verbose_reporter.stat_line(f"Reduction: {original_count - merged_count} clusters")
+            
+            self.verbose_reporter.step_complete("Labels merged successfully")
+            
+            return merged_clusters
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️ Label merger failed: {str(e)}, proceeding with original labels")
+            self.verbose_reporter.step_complete("Using original labels")
+            
+            # Create fallback merger result for mapping
+            self.merger_result = LabelMergerResponse(
+                merged_groups=[],
+                unchanged_labels=[
+                    UnchangedLabel(
+                        new_cluster_id=cluster.cluster_id,
+                        label=cluster.label,
+                        original_cluster_id=cluster.cluster_id
+                    ) for cluster in labeled_clusters
+                ]
+            )
+            
+            return labeled_clusters
+    
+    async def _phase1c_initial_themes(self, merged_clusters: List[ClusterLabel]) -> InitialThemesResponse:
+        """Phase 1c: Generate initial themes from merged labels"""
+        from prompts import INITIAL_THEMES_PROMPT
+        
+        self.verbose_reporter.step_start("Phase 1c: Initial Themes", emoji="🎯")
+        
+        # Format merged labels for the prompt
+        merged_labels_text = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.label}" 
+            for c in sorted(merged_clusters, key=lambda x: x.cluster_id)
+        ])
+        
+        prompt = INITIAL_THEMES_PROMPT.format(
+            survey_question=self.survey_question,
+            merged_labels=merged_labels_text,
+            language=self.config.language
+        )
+        
+        # Capture prompt
+        if self.prompt_printer and not hasattr(self, 'captured_phase1c'):
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase1c_initial_themes",
+                metadata={
+                    "model": self.config.model,
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "1c/6 - Initial Themes"
+                }
+            )
+            self.captured_phase1c = True
+        
+        try:
+            initial_themes_result = await self._invoke_with_retries(prompt, InitialThemesResponse)
+            
+            # Log themes identified
+            self.verbose_reporter.stat_line(f"Initial themes identified: {len(initial_themes_result.initial_themes)}")
+            for theme in initial_themes_result.initial_themes:
+                self.verbose_reporter.stat_line(f"• {theme.theme_name}: {len(theme.related_labels)} related labels", bullet="  ")
+            
+            self.verbose_reporter.step_complete("Initial themes generated")
+            
+            return initial_themes_result
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️ Initial themes generation failed: {str(e)}")
+            self.verbose_reporter.step_complete("Using fallback themes")
+            
+            # Fallback: create simple themes based on label patterns
+            fallback_theme = InitialTheme(
+                theme_name="General Responses",
+                description="All survey responses",
+                related_labels=[c.label for c in merged_clusters]
+            )
+            
+            return InitialThemesResponse(
+                initial_themes=[fallback_theme],
+                rationale="Fallback single theme due to processing error"
+            )
+    
+    async def _phase2_discovery(self, labeled_clusters: List[ClusterLabel], initial_themes: InitialThemesResponse) -> Codebook:
+        """Phase 2: Theme discovery using three-step LangChain approach with initial themes context"""
         
         # Format codes for the pipeline
         codes_text = "\n".join([f"[source ID: {c.cluster_id:2d}] {c.label}" for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)])
+        
+        # Format initial themes for context
+        initial_themes_text = "\n".join([
+            f"- {theme.theme_name}: {theme.description}" 
+            for theme in initial_themes.initial_themes
+        ])
         
         # Initialize the LangChain pipeline
         self.theme_pipeline = ThemeDiscoveryPipeline(
@@ -582,10 +813,11 @@ class ThematicLabeller:
             config=self.config,
             prompt_printer=self.prompt_printer)
         
-        self.verbose_reporter.stat_line("Running 3-step theme discovery...")
+        self.verbose_reporter.stat_line("Running 3-step theme discovery with initial themes context...")
             
         result = await self.theme_pipeline.invoke_with_retries({
             "codes": codes_text,
+            "initial_themes": initial_themes_text,
             "survey_question": self.survey_question,
             "language": self.config.language})
         
@@ -658,10 +890,10 @@ class ThematicLabeller:
         # Format codebook WITH source information
         codebook_text = self.format_codebook_prompt(codebook, include_sources=True)
         
-        # Also provide the original cluster summaries for context
+        # Also provide the cluster summaries for context (use merged clusters)
         cluster_summaries = "\n".join([
             f"[source ID: {c.cluster_id:2d}] {c.label}"
-            for c in sorted(self.labeled_clusters, key=lambda x: x.cluster_id)
+            for c in sorted(self.merged_clusters, key=lambda x: x.cluster_id)
         ])
         
         issues_text = "\n".join([f"- {issue}" for issue in judgment.issues])
@@ -1031,11 +1263,11 @@ class ThematicLabeller:
                     formatted.append(f"         Description: {code.description}")
                     
                     if include_sources and code.source_codes:
-                        # Include which clusters this code represents
+                        # Include which clusters this code represents (use merged clusters)
                         source_labels = []
                         for cluster_id in code.source_codes:
-                            if hasattr(self, 'labeled_clusters'):
-                                cluster = next((c for c in self.labeled_clusters if c.cluster_id == cluster_id), None)
+                            if hasattr(self, 'merged_clusters'):
+                                cluster = next((c for c in self.merged_clusters if c.cluster_id == cluster_id), None)
                                 if cluster:
                                     source_labels.append(f"source_code {cluster_id}: \"{cluster.label}\"")
                                 else:
@@ -1061,9 +1293,9 @@ class ThematicLabeller:
         for code in codebook.codes:
             assigned_cluster_ids.update(code.source_codes)
         
-        # Find unused clusters
+        # Find unused clusters (use merged clusters)
         unused_clusters = []
-        for cluster in self.labeled_clusters:
+        for cluster in self.merged_clusters:
             if cluster.cluster_id not in assigned_cluster_ids:
                 unused_clusters.append(cluster)
         
@@ -1293,6 +1525,83 @@ class ThematicLabeller:
                 final_labels[cluster_id] = {
                     'label': cluster.label,
                     #'description': cluster.description,
+                    'theme': (assignment.theme_id, assignment.confidence),
+                    'topic': (assignment.topic_id, assignment.confidence),
+                    'code': (assignment.code_id, assignment.confidence)
+                }
+        
+        return final_labels
+    
+    def _create_cluster_mapping(self, original_clusters: List[ClusterLabel], merged_clusters: List[ClusterLabel]) -> Dict[int, int]:
+        """Create mapping from original cluster IDs to merged cluster IDs"""
+        mapping = {}
+        
+        # If no merging occurred, check if we have the merger result stored
+        if hasattr(self, 'merger_result'):
+            # Use the merger result to create mapping
+            merger_result = self.merger_result
+            
+            # Map merged groups
+            for group in merger_result.merged_groups:
+                for original_id in group.original_cluster_ids:
+                    mapping[original_id] = group.new_cluster_id
+            
+            # Map unchanged labels
+            for unchanged in merger_result.unchanged_labels:
+                mapping[unchanged.original_cluster_id] = unchanged.new_cluster_id
+        else:
+            # Fallback: assume cluster IDs changed sequentially
+            original_ids = sorted([c.cluster_id for c in original_clusters])
+            merged_ids = sorted([c.cluster_id for c in merged_clusters])
+            
+            if len(original_ids) == len(merged_ids):
+                # No merging occurred, create 1:1 mapping
+                for i, orig_id in enumerate(original_ids):
+                    mapping[orig_id] = merged_ids[i]
+            else:
+                # Merging occurred but we don't have detailed info
+                # This is a fallback that assumes sequential renumbering
+                for orig_cluster in original_clusters:
+                    # Try to find merged cluster with same label
+                    merged_cluster = next(
+                        (c for c in merged_clusters if c.label == orig_cluster.label), 
+                        None
+                    )
+                    if merged_cluster:
+                        mapping[orig_cluster.cluster_id] = merged_cluster.cluster_id
+        
+        return mapping
+    
+    def _create_final_labels_with_mapping(self, merged_clusters: List[ClusterLabel], 
+                                         assignments: List[ThemeAssignment], 
+                                         original_to_merged_mapping: Dict[int, int]) -> Dict[int, Dict]:
+        """Create final labels dictionary mapping original cluster IDs to assignments via merged clusters"""
+        final_labels = {}
+        
+        # Create lookup dictionaries
+        merged_cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        assignment_lookup = {a.cluster_id: a for a in assignments}
+        
+        # Reverse the mapping to go from merged back to original
+        merged_to_original = {}
+        for orig_id, merged_id in original_to_merged_mapping.items():
+            if merged_id not in merged_to_original:
+                merged_to_original[merged_id] = []
+            merged_to_original[merged_id].append(orig_id)
+        
+        # Process each merged cluster assignment and map back to original IDs
+        for merged_cluster_id, assignment in assignment_lookup.items():
+            merged_cluster = merged_cluster_lookup.get(merged_cluster_id)
+            if not merged_cluster:
+                continue
+            
+            # Get all original cluster IDs that map to this merged cluster
+            original_ids = merged_to_original.get(merged_cluster_id, [merged_cluster_id])
+            
+            # Assign the same theme/topic/code to all original clusters that were merged
+            for original_id in original_ids:
+                final_labels[original_id] = {
+                    'label': merged_cluster.label,  # Use the merged label
                     'theme': (assignment.theme_id, assignment.confidence),
                     'topic': (assignment.topic_id, assignment.confidence),
                     'code': (assignment.code_id, assignment.confidence)

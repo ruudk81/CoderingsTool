@@ -357,6 +357,115 @@ Provide your decisions in the required JSON format.
 """
 
 
+LABEL_MERGER_PROMPT = """
+You are an expert in qualitative research working in {language}. 
+Your task is to evaluate and merge descriptive labels from survey response clusters that are semantically identical or meaningfully equivalent in the context of the survey question.
+
+Here is the survey question:
+<survey_question>
+{survey_question}
+</survey_question>
+
+Here are the current labels to evaluate for merging:
+<labels>
+{labels}
+</labels>
+
+Your objective is to merge labels that are semantically identical or address the same response pattern for most researchers analyzing this survey question. Labels should be merged when they:
+
+1. Express essentially the same meaning or concept
+2. Address identical response patterns to the survey question
+3. Would be grouped together by researchers seeking to understand response patterns
+4. Differ only in wording but capture the same underlying idea
+
+Do NOT merge labels when they:
+- Address different aspects of the survey question
+- Represent distinct response patterns or viewpoints
+- Provide unique insights or information
+- Have meaningful differences that would matter to researchers
+
+For each group of labels that should be merged:
+1. Choose the most representative label from the group as the new merged label
+2. Assign a new sequential cluster ID starting from 0
+3. List all original cluster IDs that are being merged
+
+Output your merging decisions in the following JSON format:
+{{
+  "merged_groups": [
+    {{
+      "new_cluster_id": 0,
+      "merged_label": "Best Representative Label",
+      "original_cluster_ids": [1, 5, 12]
+    }},
+    {{
+      "new_cluster_id": 1,
+      "merged_label": "Another Representative Label", 
+      "original_cluster_ids": [3, 8]
+    }}
+  ],
+  "unchanged_labels": [
+    {{
+      "new_cluster_id": 2,
+      "label": "Unique Label",
+      "original_cluster_id": 7
+    }}
+  ]
+}}
+
+Remember: Be conservative - when in doubt, keep labels separate. Only merge when labels are truly semantically equivalent in the context of this specific survey question.
+"""
+
+INITIAL_THEMES_PROMPT = """
+You are an expert in thematic analysis working in {language}.
+Your task is to identify broad, organizing themes that provide a preliminary framework for understanding responses to the survey question. These initial themes will guide more detailed thematic analysis in subsequent steps.
+
+Here is the survey question:
+<survey_question>
+{survey_question}
+</survey_question>
+
+Here are the merged labels from the initial analysis:
+<merged_labels>
+{merged_labels}
+</merged_labels>
+
+Your goal is to identify initial themes that:
+1. Capture the major conceptual areas represented in the labels
+2. Provide a broad organizing framework for understanding response patterns
+3. Are comprehensive enough to encompass all labels
+4. Are distinct enough to represent meaningfully different aspects of responses
+5. Give context for subsequent detailed thematic analysis
+
+Guidelines for initial themes:
+- Each theme should represent a central organizing concept
+- Themes should be broad enough to accommodate detailed sub-analysis
+- Themes should be semantically meaningful in relation to the survey question
+- Use 2-4 words maximum per theme name
+- Aim for 3-7 themes total (adjust based on data complexity)
+- Ensure all labels can naturally fit under one of the themes
+
+Analyze the labels and identify the initial themes that best organize the response patterns.
+
+Output your analysis in the following JSON format:
+{{
+  "initial_themes": [
+    {{
+      "theme_name": "Theme Name 1",
+      "description": "Brief description of what this theme encompasses",
+      "related_labels": ["Label 1", "Label 2", "Label 3"]
+    }},
+    {{
+      "theme_name": "Theme Name 2", 
+      "description": "Brief description of what this theme encompasses",
+      "related_labels": ["Label 4", "Label 5"]
+    }}
+  ],
+  "rationale": "Brief explanation of the thematic framework and how it organizes the data"
+}}
+
+Remember: These are initial, broad themes that will be refined in subsequent analysis. Focus on creating a useful organizing framework rather than detailed categorization.
+"""
+
 PHASE1_DESCRIPTIVE_CODING_PROMPT = """
 You are an expert in descriptive coding working in {language}.
 Your task is to perform descriptive coding on segments from open-ended survey responses. 
@@ -413,7 +522,7 @@ Remember, your goal is to provide a single, concise label that accurately repres
 """
 
 PHASE2_EXTRACT_THEMES_PROMPT = """
-You are an expert in thematic analysis working in {LANGUAGE}. 
+You are an expert in thematic analysis working in {language}. 
 Your task is to extract themes from initial codes of survey responses to an open-ended survey question. 
 These themes will be used for a codebook, but you only need to discover the themes themselves.
 
@@ -422,12 +531,19 @@ Here is the survey question:
 {survey_question}
 </survey_question>
 
+Previous analysis has identified these initial organizing themes:
+<initial_themes>
+{initial_themes}
+</initial_themes>
+
 Now, carefully review these initial codes:
 <initial_codes>
 {codes}
 </initial_codes>
 
 Extract themes from these initial codes following these guidelines:
+
+IMPORTANT: Use the initial themes above as a starting framework, but refine, modify, or expand them as needed based on the detailed analysis of the codes. The initial themes provide context, but your analysis of the codes should take precedence.
 
 1. Each theme must be underpinned by a central organizing concept or a singular latent idea that makes semantic sense in light of the survey question.
 2. Ensure each theme is:
@@ -445,11 +561,11 @@ After careful consideration, provide your output in the following JSON format:
 }}
 
 Each theme name should be 1-4 words, capturing the essence of a major pattern.
-Remember to conduct this analysis and provide your response in {LANGUAGE}.
+Remember to conduct this analysis and provide your response in {language}.
 """
 
 PHASE2_GROUP_TOPICS_PROMPT = """
-You are an expert in thematic analysis working in {LANGUAGE}. 
+You are an expert in thematic analysis working in {language}. 
 Your task is to organize initial codes into topics under provided themes. 
 
 These will be used for a codebook with the following structure:
@@ -513,7 +629,7 @@ Remember:
 - Topic names should be 1-4 words each.
 - Ensure all themes are included in the structure.
 - All codes should be accounted for in your topic organization, even if not explicitly mentioned in the output.
-- The analysis and output should be in {LANGUAGE}.
+- The analysis and output should be in {language}.
 
 Provide your response in the specified JSON format.
 """
@@ -579,7 +695,7 @@ Present your codebook in the following JSON format:
   ]
 }}
 
-Ensure that your response is in {LANGUAGE}.
+Ensure that your response is in {language}.
 """
 
 PHASE3_THEME_JUDGER_PROMPT = """
