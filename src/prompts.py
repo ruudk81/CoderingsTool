@@ -289,6 +289,178 @@ Here's an example of correct output:
 ]
 """
 
+# =============================================================================
+# NEW ENHANCED WORKFLOW PROMPTS (Segmentation → Coding → Description)
+# =============================================================================
+
+ENHANCED_SEGMENTATION_PROMPT = """
+You are a helpful {language} language expert in analyzing survey responses. 
+Your task is to segment free-text survey responses into distinct, standalone segments with the highest quality to eliminate the need for further refinement.
+
+First, here is the survey question:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Now, here is the response you need to segment:
+<respondent_info>
+Respondent ID: {respondent_id}
+Response: {response}
+</respondent_info>
+
+Your task is to break the response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
+- Opinion
+- Preference  
+- Issue
+- Topic
+- Idea
+- Response pattern
+
+Follow these ENHANCED segmentation rules:
+1. Split at conjunctions (and, or, but, also) when they connect DIFFERENT ideas or topics
+2. Split listed items into separate segments (e.g., "milk and sugar" → "milk", "sugar")
+3. When items share context, preserve that context in each segment:
+   Example: "I like milk and sugar in my coffee" →
+   - "I like milk in my coffee"
+   - "I like sugar in my coffee"
+4. Use the respondent's exact words - do not paraphrase or correct
+5. Keep meaningless responses (e.g., "Don't know", "?") as a single segment
+6. CRITICAL: Each segment must be completely standalone and meaningful
+7. CRITICAL: Avoid segments that would need further splitting - be thorough now
+8. Handle complex compound statements carefully to ensure clean separation
+
+Your output must be a JSON array with these fields for each segment:
+- "respondent_id": The exact respondent ID provided
+- "segment_id": A sequential number as string ("1", "2", etc.)  
+- "segment_response": The exact segmented text with necessary context preserved
+
+Example output format:
+[
+  {{
+    "respondent_id": "{respondent_id}",
+    "segment_id": "1", 
+    "segment_response": "Minder verpakking."
+  }},
+  {{
+    "respondent_id": "{respondent_id}",
+    "segment_id": "2",
+    "segment_response": "Betere smaak."
+  }}
+]
+
+Before providing your final output, think through the segmentation process carefully. 
+Consider how many segments the response should be divided into and apply the enhanced segmentation rules thoroughly.
+
+After your analysis, provide the final segmented output formatted as a JSON array as specified above.
+"""
+
+FOCUSED_CODING_PROMPT = """
+You are a {language} language expert in thematic analysis of survey responses.
+Your task is to generate ONLY thematic labels for segments from responses to the survey question: "{var_lab}"
+
+Here are the coded segments you need to label:
+<segments>
+{coded_segments}
+</segments>
+
+For each segment, you will:
+1. Keep the original respondent_id, segment_id, and segment_response
+2. Add ONLY a segment_label (thematic label)
+
+Requirements for segment labels:
+- Create a concise label of up to 5 words total, using ONLY ADJECTIVES AND NOUNS in {language}
+- Capture the CENTRAL MEANING of the segment in relation to the survey question
+- ONLY return labels that reflect ONE idea, topic, concern, issue, or theme
+- NEVER return multi-headed labels or combinations of multiple ideas
+- Format: ALL_CAPS_WITH_UNDERSCORES
+- Examples: "ONBETROUWBARE_DIENSTREGELING", "VERPAKKING_REDUCTIE", "SMAAK_VERBETERING"
+- Language: {language}
+
+Special cases:
+For meaningless responses (e.g., "?", "Don't know"):
+- segment_label: "NA"
+
+Your output must be a JSON array with these fields for each segment:
+- "respondent_id": The original respondent ID
+- "segment_id": The original segment ID  
+- "segment_response": The original segment text
+- "segment_label": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
+
+Example output:
+[
+  {{
+    "respondent_id": "12345",
+    "segment_id": "1",
+    "segment_response": "Betere interactie met de docent.",
+    "segment_label": "DOCENTCONTACT"
+  }},
+  {{
+    "respondent_id": "12345", 
+    "segment_id": "2",
+    "segment_response": "?",
+    "segment_label": "NA"
+  }}
+]
+
+Ensure all labels are written in {language} and focus solely on creating high-quality thematic labels.
+"""
+
+DESCRIPTION_GENERATION_PROMPT = """
+You are a {language} language expert in creating natural-sounding descriptions for thematic codes.
+Your task is to generate descriptions for labeled segments from responses to the survey question: "{var_lab}"
+
+Here are the labeled segments you need to describe:
+<labeled_segments>
+{labeled_segments}
+</labeled_segments>
+
+For each segment, you will:
+1. Keep the original respondent_id, segment_id, segment_response, and segment_label
+2. Add ONLY a segment_description (natural-sounding description)
+
+Requirements for segment descriptions:
+- Rewrite the segment as a natural-sounding first-person response to the survey question
+- Use the segment_label as context to understand the thematic meaning
+- Make sure it sounds like something a person would actually say when answering the question
+- Use a direct, conversational or instructional tone:
+  - If the segment is a suggestion: use an imperative tone (e.g., "Maak...", "Laat...")
+  - If the segment expresses a wish or opinion: use first-person (e.g., "Ik wil...", "Ik vind...")
+- NEVER rephrase the segment as a third-person summary
+- CRITICAL: Do NOT add interpretations beyond what's in the original segment
+- Language: {language}
+
+Special cases:
+For meaningless responses with segment_label "NA":
+- segment_description: "NA"
+
+Your output must be a JSON array with these fields for each segment:
+- "respondent_id": The original respondent ID
+- "segment_id": The original segment ID
+- "segment_response": The original segment text  
+- "segment_label": The original segment label
+- "segment_description": Your natural-sounding description
+
+Example output:
+[
+  {{
+    "respondent_id": "12345",
+    "segment_id": "1", 
+    "segment_response": "Betere interactie met de docent.",
+    "segment_label": "DOCENTCONTACT",
+    "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
+  }},
+  {{
+    "respondent_id": "12345",
+    "segment_id": "2",
+    "segment_response": "?", 
+    "segment_label": "NA",
+    "segment_description": "NA"
+  }}
+]
+
+Focus on creating clear, natural descriptions that maintain the respondent's intent and perspective.
+"""
+
 MERGE_PROMPT = """
 You are an AI assistant tasked with evaluating whether clusters of survey responses represent meaningfully different answers to a specific survey question. 
 Your goal is to determine whether each pair of response clusters should be merged or remain separate.
