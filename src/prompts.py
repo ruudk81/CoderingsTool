@@ -376,10 +376,6 @@ Requirements for segment labels:
 - Examples: "ONBETROUWBARE_DIENSTREGELING", "VERPAKKING_REDUCTIE", "SMAAK_VERBETERING"
 - Language: {language}
 
-Special cases:
-For meaningless responses (e.g., "?", "Don't know"):
-- segment_label: "NA"
-
 Your output must be a JSON array with these fields for each segment:
 - "respondent_id": The original respondent ID
 - "segment_id": The original segment ID  
@@ -393,12 +389,6 @@ Example output:
     "segment_id": "1",
     "segment_response": "Betere interactie met de docent.",
     "segment_label": "DOCENTCONTACT"
-  }},
-  {{
-    "respondent_id": "12345", 
-    "segment_id": "2",
-    "segment_response": "?",
-    "segment_label": "NA"
   }}
 ]
 
@@ -443,10 +433,6 @@ BEFORE writing each description, ask yourself:
 
 Language: {language}
 
-Special cases:
-For meaningless responses with segment_label "NA":
-- segment_description: "NA"
-
 Your output must be a JSON array with these fields for each segment:
 - "respondent_id": The original respondent ID
 - "segment_id": The original segment ID
@@ -471,13 +457,6 @@ CORRECT examples (stay within segment content):
     "segment_response": "Minder verpakking.",
     "segment_label": "VERPAKKING_REDUCTIE", 
     "segment_description": "Ik wil minder verpakking."
-  }},
-  {{
-    "respondent_id": "12347",
-    "segment_id": "1",
-    "segment_response": "?",
-    "segment_label": "NA",
-    "segment_description": "NA"
   }}
 ]
 
