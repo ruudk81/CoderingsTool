@@ -25,7 +25,7 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "labels"  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
@@ -67,12 +67,12 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("DATA LOADING SUMMARY")
     start_time       = time.time()
+    # loading data from spss file
     raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
     raw_unstructued  = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
-    # Create ResponseModel objects with type tracking
     raw_text_list = []
+    # structuring data NaN=system missing; Numeric=undefined user missing; String=response 
     for resp_id, resp in raw_unstructued:
-        # Determine response type
         if pd.isna(resp):
             response_type = 'nan'
         elif isinstance(resp, (int, float)):
@@ -81,17 +81,30 @@ else:
             response_type = 'string'
         else:
             response_type = 'unknown'
-        
-        raw_text_list.append(models.ResponseModel(
-            respondent_id=resp_id, 
-            response=resp,
-            response_type=response_type
-        ))
+        raw_text_list.append(models.ResponseModel(respondent_id=resp_id,  response=resp, response_type=response_type))
     end_time         = time.time()
     elapsed_time     = end_time - start_time
     cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
-
+    
+    print("\n=== RAW DATA TYPE ANALYSIS ===")
+    type_counts = {'nan': 0, 'numeric': 0, 'string': 0, 'unknown': 0}
+    for item in raw_text_list:
+        type_counts[item.response_type] += 1
+    for data_type, count in type_counts.items():
+        print(f"{data_type}: {count} items")
+    
+    # debug 
+    # import random
+    # n_samples = 20
+    # indices = random.sample(range(len(raw_unstructued)), n_samples)
+    
+    # for i in indices:
+    #     print("Raw unstructured:", raw_unstructued[i])
+    #     print("---")    
+    # for i in indices:
+    #     print("Raw structured:", raw_text_list[i])
+    #     print("---")    
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
@@ -109,60 +122,48 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {f"Input: {len(raw_text_list)} responses → Output": f"{len(preprocessed_text)} responses", "Overall success rate": f"{(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%"})
 else: 
     verbose_reporter.section_header("PREPROCESSING PHASE")
-  
+    # intialize utils
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
     spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE, prompt_printer=prompt_printer)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
-  
     start_time            = time.time()
-    
-    # Separate responses by type for appropriate processing
+    # preprocess strings 
     all_responses = []
     string_responses = []
     non_string_responses = []
-    
     for item in raw_text_list:
         preprocess_item = item.to_model(models.PreprocessModel)
         all_responses.append(preprocess_item)
-        
         if item.response_type == 'string':
             string_responses.append(preprocess_item)
         else:
-            # Keep non-string responses as-is (NaN, numeric)
             non_string_responses.append(preprocess_item)
-    
-    # Only process string responses through text pipeline
     if string_responses:
         normalized_text = text_normalizer.normalize_responses(string_responses)
-        # Filter out normalized strings that became '<NA>'
         normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
         corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
         finalized_text = text_finalizer.finalize_responses(corrected_text)
     else:
-        finalized_text = []
-    
+        finalized_text = [] 
     # Combine processed strings with non-string responses
     # Create a mapping of respondent_id to processed response
     processed_map = {item.respondent_id: item for item in finalized_text}
     processed_map.update({item.respondent_id: item for item in non_string_responses})
-    
-    # Preserve original order from raw_text_list and add quality filter codes
+    # create list for the qualityFilter/grader
     preprocessed_text = []
     for original in raw_text_list:
         if original.respondent_id in processed_map:
             item = processed_map[original.respondent_id]
-            
             # Add initial quality filter code based on response type and content
             # Convert to DescriptiveModel to add quality_filter_code
             desc_item = item.to_model(models.DescriptiveModel)
-            
             # Categorize based on type and content
             if item.response_type == 'nan':
                 desc_item.quality_filter_code = 99999998  # System missing
                 desc_item.quality_filter = True
             elif item.response_type == 'numeric':
-                # Check if it's a known missing value code
-                if item.response in [99999996, 99999997, 99999998]:
+                # Check if it's a known missing code
+                if item.response in [99999997, 99999998, 99999999]:
                     desc_item.quality_filter_code = int(item.response)
                     desc_item.quality_filter = True
                 else:
@@ -171,13 +172,12 @@ else:
                     desc_item.quality_filter = None
             elif item.response_type == 'string':
                 if item.response == '<NA>' or (isinstance(item.response, str) and item.response.strip() == ''):
-                    desc_item.quality_filter_code = 99999998  # Empty text = system missing
+                    desc_item.quality_filter_code = 99999999  # empty strings
                     desc_item.quality_filter = True
                 else:
                     # Text response - will be evaluated by qualityFilter
                     desc_item.quality_filter_code = None
                     desc_item.quality_filter = None
-            
             preprocessed_text.append(desc_item)
         else:
             # If not in processed_map, it was filtered out during normalization
@@ -186,14 +186,42 @@ else:
                 respondent_id=original.respondent_id,
                 response='<NA>',
                 response_type=original.response_type,
-                quality_filter_code=99999998,  # System missing
-                quality_filter=True
-            ))
+                quality_filter_code=99999999,  # no answer, etc. only numbers, 1 character or empty
+                quality_filter=True))
     end_time = time.time()
     elapsed_time = end_time - start_time
 
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, elapsed_time)
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    
+    print("\n=== QUALITY FILTER CODE SUMMARY ===")
+    code_counts = {}
+    for item in preprocessed_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    
+    code_meanings = {
+        99999997: "User missing: Don't know/only expressing uncertainty", 
+        99999998: "System missing: NAt",
+        99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+    
+    for code, count in sorted(code_counts.items()):
+        meaning = code_meanings.get(code, "Unknown code")
+        print(f"Code {code}: {count} items - {meaning}")
+    
+    print(f"Total items with codes: {sum(code_counts.values())}")
+    print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
+
+    #debug
+    # import random
+    # n_samples = 20
+    # indices = random.sample(range(len(preprocessed_text)), n_samples)
+    # for i in indices:
+    #     print("Preprocessed:", preprocessed_text[i])
+    #     print("---")
+
+    
 
 # === STEP 3 ========================================================================================================
 """describe and segment data"""
