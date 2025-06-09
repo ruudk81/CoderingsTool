@@ -108,10 +108,9 @@ class CacheConfig:
         "preprocessed": "002", 
         "quality_filter": "003",
         "segmented_descriptions": "004",
-        "embeddings": "005",
-        "clusters": "006",
-        "labels": "007",
-        "results": "008"
+        "initial_clusters": "005",
+        "labels": "006",
+        "results": "007"
         })
     
     # Cache validity settings
