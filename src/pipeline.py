@@ -26,9 +26,9 @@ var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "segmented_descriptions"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
+FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -95,16 +95,17 @@ else:
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug 
-    import random
-    n_samples = 20
-    indices = random.sample(range(len(raw_unstructued)), n_samples)
+    #import random
+    # n_samples = 5
+    # indices = random.sample(range(len(raw_unstructued)), n_samples)
     
-    for i in indices:
-        print("Raw unstructured:", raw_unstructued[i])
-        print("---")    
-    for i in indices:
-        print("Raw structured:", raw_text_list[i])
-        print("---")    
+    # for i in indices:
+    #     print("Raw unstructured:", raw_unstructued[i])
+    #     print("---")    
+    # print("\n")
+    # for i in indices:
+    #     print("Raw structured:", raw_text_list[i])
+    #     print("---")    
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
@@ -115,7 +116,7 @@ from utils.promptPrinter import promptPrinter
 step_name = "preprocessed"
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessedModel)
@@ -215,7 +216,7 @@ else:
 
     #debug
     # import random
-    # n_samples = 20
+    # n_samples = 5
     # indices = random.sample(range(len(preprocessed_text)), n_samples)
     # for i in indices:
     #     print("Preprocessed:", preprocessed_text[i])
@@ -232,42 +233,40 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     quality_filtered_text = cache_manager.load_from_cache(filename, step_name, models.QualityFilteredModel)
-    filtering_rate = 100 * (1-(len(quality_filtered_text)/len(preprocessed_text)))
-    verbose_reporter.summary("QUALITY FILTERED RESPONSES FROM CACHE", {f"Input: {len(preprocessed_text)} responses → Output: {len(quality_filtered_text)} responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
+    filtered = [item.quality_filter for item in quality_filtered_text if item.quality_filter]
+    qualified = len([item.quality_filter for item in quality_filtered_text if not item.quality_filter])
+    filtering_rate = 100 * (len(filtered)/len(quality_filtered_text))
+    verbose_reporter.summary("QUALITY FILTERED RESPONSES FROM CACHE", {f"Input: {len(preprocessed_text)} responses → Output": f"{qualified} responses", "Filtering rate": f"{filtering_rate:.1f}%"})
 else:
     verbose_reporter.section_header("QUALITY FILTERING PHASE")
-    
     start_time = time.time()
     grader = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE, prompt_printer=prompt_printer)
     quality_filtered_text = grader.grade()
     grading_summary = grader.summary()
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
     cache_manager.save_to_cache(quality_filtered_text, filename, step_name, elapsed_time)
+    
     print("\n=== MISSING CODE SUMMARY ===")
     code_counts = {}
     for item in quality_filtered_text:
         code = item.quality_filter_code
         if code is not None:
             code_counts[code] = code_counts.get(code, 0) + 1
-    
     code_meanings = {
         99999997: "User missing: Don't know/only expressing uncertainty", 
         99999998: "System missing: NAt",
         99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"}
-    
     for code, count in sorted(code_counts.items()):
         meaning = code_meanings.get(code, "Unknown code")
         print(f"Code {code}: {count} items - {meaning}")
-    
     print(f"Total items with codes: {sum(code_counts.values())}")
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
     # import random
-    # n_samples = 20
+    # n_samples = 5
     # indices = random.sample(range(len(quality_filtered_text)), n_samples)
     # for i in indices:
     #     print("Filtered:", quality_filtered_text[i])
@@ -285,11 +284,10 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.SegmentedModel)
-    filtering_rate = 100 * (1-(len(encoded_text)/len(quality_filtered_text)))
-    verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(quality_filtered_text)} responses → Output: {len(encoded_text)} coded responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
+    segments = len([segment.segment_id for item in encoded_text for segment in item.response_segment])
+    verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
 else: 
     verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
-    
     start_time = time.time()
     # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
@@ -297,18 +295,18 @@ else:
     encoded_text = encoder.generate_codes(filtered_text, var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
-
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug
-    import random
-    n_samples = 10
-    sampled_items = random.sample(encoded_text, n_samples)
-    for item in sampled_items:
-        for segment in item.response_segment:
-            print(segment.segment_description)
-    print("\n")
+    # import random
+    # n_samples = 5
+    # sampled_items = random.sample(encoded_text, n_samples)
+    # for item in sampled_items:
+    #     for segment in item.response_segment:
+    #         print(segment.segment_description)
+    # print("\n")
+
 
 # === STEP 5 ========================================================================================================
 """get initial clusters"""
@@ -324,19 +322,16 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     num_initial_clusters = len(cluster_ids)
     total_segments = sum(len(resp.response_segment) for resp in initial_cluster_results if resp.response_segment)
     verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial clusters": f"{num_initial_clusters}"})
-    
 else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
-    
     start_time = time.time()
-    
     # Step 5a: Generate embeddings
+    print("\nEmbedding CODES and DESCRIPTIONS of response segments")
     get_embeddings = embedder.Embedder(verbose=VERBOSE)
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
     description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)
     embedded_text = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
-    
     # Step 5b: Generate initial clusters
     print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
@@ -346,103 +341,124 @@ else:
         verbose=VERBOSE)
     cluster_gen.run_pipeline()
     initial_cluster_results = cluster_gen.to_cluster_model()
-    print("\nInitial clustering completed successfully")
-    
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
-
-
+    
+    #debug 
+    # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    # for x in range(1, round(len(cluster_ids) / 20) + 1):
+    #     y = x * 20
+    #     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+    
+    #     for z in range(y - 20, y):
+    #         if z < len(cluster_ids):
+    #             print(f"\nCluster {z}")
+    #             for item in initial_cluster_results:
+    #                 for subitem in item.response_segment:
+    #                     if subitem.initial_cluster == z:
+    #                         print(subitem.segment_description)
+    #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    
+    for item in initial_cluster_results:
+        print(item)
+        break
 
 # === STEP 6 ========================================================================================================
-"""hierarchical labeling"""
-from utils.thematicLabeller import ThematicLabeller
-from config import DEFAULT_LABELLER_CONFIG
+# """thematic labeling"""
+# from utils.thematicLabeller import ThematicLabeller
+# from config import DEFAULT_LABELLER_CONFIG
 
-step_name = "labels"
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+# step_name = "labels"
+# verbose_reporter = VerboseReporter(VERBOSE)
+# prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    if labeled_results and labeled_results[0].themes:
-        # Get complete hierarchical structure from first result (same for all)
-        first_result = labeled_results[0]
+# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+#     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
+#     if labeled_results and labeled_results[0].themes:
+#         # Get complete hierarchical structure from first result (same for all)
+#         first_result = labeled_results[0]
 
-        # Count themes, topics, and codes from hierarchical structure
-        theme_count = len(first_result.themes)
-        topic_count = sum(len(theme.topics) for theme in first_result.themes)
-        code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
+#         # Count themes, topics, and codes from hierarchical structure
+#         theme_count = len(first_result.themes)
+#         topic_count = sum(len(theme.topics) for theme in first_result.themes)
+#         code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
 
-        # Get cluster mappings
-        cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
+#         # Get cluster mappings
+#         cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
 
-        verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
-            "Themes": theme_count,
-            "Topics": topic_count,
-            "Codes": code_count,
-            "Mapped Clusters": cluster_count
-            })
+#         verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
+#             "Themes": theme_count,
+#             "Topics": topic_count,
+#             "Codes": code_count,
+#             "Mapped Clusters": cluster_count
+#             })
 
-        print("\nExample Theme Structure:")
-        for theme in first_result.themes:  
-            print(f"Theme {theme.theme_id}: {theme.label}")
-            for topic in theme.topics: 
-                print(f"  Topic {topic.topic_id}: {topic.label}")
-                for code in topic.codes: 
-                    print(f"    Code {code.code_id}: {code.label}")
+#         print("\nExample Theme Structure:")
+#         for theme in first_result.themes:  
+#             print(f"Theme {theme.theme_id}: {theme.label}")
+#             for topic in theme.topics: 
+#                 print(f"  Topic {topic.topic_id}: {topic.label}")
+#                 for code in topic.codes: 
+#                     print(f"    Code {code.code_id}: {code.label}")
     
     
-else:
-    verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
-    
-    start_time = time.time()
-    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    
-    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-    verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
+# else:
+#     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
+#     start_time = time.time()
+#     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+#     labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
+#     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
+#     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
-# === PROMPT SUMMARY ========================================================================================================
-"""Print all captured prompts after pipeline completion"""
-if PROMPT_PRINTER and prompt_printer:
-    print("\n" + "="*80)
-    print("PIPELINE COMPLETE - PROMPT SUMMARY")
-    print("="*80)
+# # === PROMPT SUMMARY ========================================================================================================
+# """Print all captured prompts after pipeline completion"""
+# if PROMPT_PRINTER and prompt_printer:
+#     print("\n" + "="*80)
+#     print("PIPELINE COMPLETE - PROMPT SUMMARY")
+#     print("="*80)
     
-    # Print summary statistics
-    prompt_printer.print_summary()
+#     # Print summary statistics
+#     prompt_printer.print_summary()
     
-    # Print all prompts again for review
-    prompt_printer.print_all_prompts()
+#     # Print all prompts again for review
+#     prompt_printer.print_all_prompts()
     
-    # Optional: Save prompts to file
-    # prompt_printer.save_prompts("pipeline_prompts.json")
+#     # Optional: Save prompts to file
+#     # prompt_printer.save_prompts("pipeline_prompts.json")
 
 ###
-# === STEP 7 ========================================================================================================
-"""get labels"""
+# === STEP 6 ========================================================================================================
+
+"""debug section"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
 
-#debug
 thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
 labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
-# print(thematic_labeller.unused_codes_text)
-
-# cluster_summaries = []
-# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         cluster_summaries.append(summary)
-# cluster_summaries_text = "\n".join(cluster_summaries)
-# print(cluster_summaries_text)
+print("\nINITIAL CLUSTERS")  
+cluster_summaries = []
+for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        cluster_summaries.append(summary)
+cluster_summaries_text = "\n".join(cluster_summaries)
+print(cluster_summaries_text)
+print("\nMERGED CLUSTERS")  
+merged_summaries = []
+for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        merged_summaries.append(summary)
+merged_summaries_text = "\n".join(merged_summaries)
+print(merged_summaries_text)
+print("\nINITIAL THEMES")  
+for theme in thematic_labeller.initial_themes.initial_themes:
+    print(theme.theme_name)  
 
 codebook_initial = thematic_labeller.initial_codebook
 lines_initial = []
@@ -485,4 +501,6 @@ print("\n".join(lines_final))
 total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
 print(f"Total clusters assigned: {total_sources}")
 
+print("\nUNUSED CODES")  
+print(thematic_labeller.unused_codes_text)
 ###############

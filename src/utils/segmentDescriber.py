@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
-from prompts import ENHANCED_SEGMENTATION_PROMPT, FOCUSED_CODING_PROMPT, DESCRIPTION_GENERATION_PROMPT
+from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
@@ -60,14 +60,14 @@ class LangChainPipeline :
 
     def build_enhanced_chain(self):
         
-        enhanced_segmentation_prompt = PromptTemplate.from_template(ENHANCED_SEGMENTATION_PROMPT)
-        focused_coding_prompt = PromptTemplate.from_template(FOCUSED_CODING_PROMPT) 
-        description_prompt = PromptTemplate.from_template(DESCRIPTION_GENERATION_PROMPT)
+        enhanced_segmentation_prompt = PromptTemplate.from_template(SEGMENTATION_PROMPT)
+        focused_coding_prompt = PromptTemplate.from_template(CODING_PROMPT) 
+        description_prompt = PromptTemplate.from_template(DESCRIPTION_PROMPT)
         
         # Prompt capture functions
         def capture_segmentation_prompt(inputs):
             if self.prompt_printer and not self.captured_segmentation:
-                formatted_prompt = ENHANCED_SEGMENTATION_PROMPT.format(
+                formatted_prompt = SEGMENTATION_PROMPT.format(
                     respondent_id=inputs.get("respondent_id", ""),
                     response=inputs.get("response", ""),
                     var_lab=inputs.get("var_lab", ""),
@@ -92,7 +92,7 @@ class LangChainPipeline :
             if self.prompt_printer and not self.captured_coding:
                 # Extract coded_segments directly from inputs
                 coded_segments = inputs.get("coded_segments", []) if isinstance(inputs, dict) else []
-                formatted_prompt = FOCUSED_CODING_PROMPT.format(
+                formatted_prompt = CODING_PROMPT.format(
                     coded_segments=coded_segments,
                     var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                     language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
@@ -116,7 +116,7 @@ class LangChainPipeline :
             if self.prompt_printer and not self.captured_description:
                 # Extract labeled_segments directly from inputs
                 labeled_segments = inputs.get("labeled_segments", []) if isinstance(inputs, dict) else []
-                formatted_prompt = DESCRIPTION_GENERATION_PROMPT.format(
+                formatted_prompt = DESCRIPTION_PROMPT.format(
                     labeled_segments=labeled_segments,
                     var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                     language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
@@ -255,11 +255,11 @@ class SegmentDescriber:
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
         # Calculate token budget
-        segmentation_prompt = ENHANCED_SEGMENTATION_PROMPT 
+        segmentation_prompt = SEGMENTATION_PROMPT 
         segmentation_prompt = segmentation_prompt.replace("{language}", DEFAULT_LANGUAGE)
         segmentation_prompt = segmentation_prompt.replace("{var_lab}", var_lab)
         segmentation_prompt = segmentation_prompt.replace("{response}", "")
-        coding_prompt = FOCUSED_CODING_PROMPT
+        coding_prompt = CODING_PROMPT
         coding_prompt = coding_prompt.replace("{language}", DEFAULT_LANGUAGE)
         coding_prompt = coding_prompt.replace("{var_lab}", var_lab)
         coding_prompt = coding_prompt.replace("{segments}", "")
