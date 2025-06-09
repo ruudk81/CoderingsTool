@@ -1728,14 +1728,11 @@ class ThematicLabeller:
             # Apply hierarchy to segments
             if label_model.response_segment:
                 for segment in label_model.response_segment:
-                    if segment.micro_cluster:
-                        cluster_id = list(segment.micro_cluster.keys())[0]
+                    if segment.initial_cluster is not None:
+                        cluster_id = segment.initial_cluster
                         
                         if cluster_id in final_labels:
                             labels = final_labels[cluster_id]
-                            
-                            # Update micro_cluster with the cluster label from phase 1
-                            segment.micro_cluster[cluster_id] = labels['label']
                             
                             # Apply Theme (Dict[int, str])
                             theme_id_str, _ = labels['theme']
@@ -1764,9 +1761,7 @@ class ThematicLabeller:
                             elif code_id_str == "99.1.1":
                                 segment.Code = {99.11: "Other: Unclassified"}
                         else:
-                            # Handle unmapped clusters - keep original empty label or set fallback
-                            if not segment.micro_cluster[cluster_id]:
-                                segment.micro_cluster[cluster_id] = f"Cluster {cluster_id}"
+                            # Handle unmapped clusters - assign to "other" category
                             segment.Theme = {999: "Other: Unmapped cluster"}
                             segment.Topic = {99.9: "Other: Unmapped cluster"}
                             segment.Code = {99.11: "Other: Unmapped cluster"}
@@ -1877,8 +1872,8 @@ if __name__ == "__main__":
     for result in cluster_results:
         if result.response_segment:
             for segment in result.response_segment:
-                if segment.micro_cluster:
-                    cluster_id = list(segment.micro_cluster.keys())[0]
+                if segment.initial_cluster is not None:
+                    cluster_id = segment.initial_cluster
                     unique_clusters.add(cluster_id)
         
     print(f"📊 Found {len(unique_clusters)} unique micro-clusters to label")
