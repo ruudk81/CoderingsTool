@@ -24,7 +24,7 @@ class CodebookEntry(BaseModel):
     numeric_id: float = Field(description="Numeric ID for model compatibility")
     level: int = Field(description="1 for theme, 2 for topic, 3 for code")
     label: str = Field(description="Concise label (max 4 words)")
-    description: str = Field(description="Clear description")
+    description: Optional[str] = Field(default="", description="Clear description")
     parent_id: Optional[str] = Field(default=None, description="ID of parent")
     parent_numeric_id: Optional[float] = Field(default=None, description="Numeric ID of parent")
     source_codes: List[int] = Field(default_factory=list, description="For codes: original cluster IDs from Phase 1. For themes/topics: empty")
@@ -748,7 +748,7 @@ class ThematicLabeller:
             # Log themes identified
             self.verbose_reporter.stat_line(f"Initial themes identified: {len(initial_themes_result.initial_themes)}")
             for theme in initial_themes_result.initial_themes:
-                self.verbose_reporter.stat_line(f"• {theme.theme_name}: {len(theme.related_labels)} related labels", bullet="  ")
+                self.verbose_reporter.stat_line(f"• {theme.theme_name}", bullet="  ")
             
             self.verbose_reporter.step_complete("Initial themes generated")
             
@@ -759,14 +759,11 @@ class ThematicLabeller:
             
             # Fallback: create simple themes based on label patterns
             fallback_theme = InitialTheme(
-                theme_name="General Responses",
-                description="All survey responses",
-                related_labels=[c.label for c in merged_clusters]
+                theme_name="General Responses"
             )
             
             return InitialThemesResponse(
-                initial_themes=[fallback_theme],
-                rationale="Fallback single theme due to processing error"
+                initial_themes=[fallback_theme]
             )
     
     async def _phase2_discovery(self, labeled_clusters: List[ClusterLabel], initial_themes: InitialThemesResponse) -> Codebook:
@@ -1155,7 +1152,7 @@ class ThematicLabeller:
                     numeric_id=theme_numeric_id,
                     level=1,
                     label=theme_data['label'],
-                    #description=theme_data.get('description', ''),
+                    description=theme_data.get('description', ''),
                     source_codes=[]  # Themes don't have source codes
                 )
                 themes.append(theme)
@@ -1170,7 +1167,7 @@ class ThematicLabeller:
                             numeric_id=topic_numeric_id,
                             level=2,
                             label=topic_data['label'],
-                            #description=topic_data.get('description', ''),
+                            description=topic_data.get('description', ''),
                             parent_id=theme_id,
                             parent_numeric_id=theme_numeric_id,
                             source_codes=[]  # Topics don't have source codes
@@ -1189,7 +1186,7 @@ class ThematicLabeller:
                                     numeric_id=code_numeric_id,
                                     level=3,
                                     label=code_data['label'],
-                                    #description=code_data.get('description', ''),
+                                    description=code_data.get('description', ''),
                                     parent_id=topic_id,
                                     parent_numeric_id=topic_numeric_id,  # Fixed: was hardcoded as 1
                                     source_codes=source_codes   
@@ -1229,17 +1226,20 @@ class ThematicLabeller:
         for theme in codebook.themes:
             formatted.append(f"\n{'='*60}")
             formatted.append(f"THEME [ID: {theme.id}] → \"{theme.label}\"")
-            formatted.append(f"   Description: {theme.description}")
+            if theme.description:
+                formatted.append(f"   Description: {theme.description}")
             formatted.append(f"{'='*60}")
             
             for topic in topics_by_theme.get(theme.id, []):
                 formatted.append(f"\n   TOPIC [ID: {topic.id}] → \"{topic.label}\"")
-                formatted.append(f"      Description: {topic.description}")
+                if topic.description:
+                    formatted.append(f"      Description: {topic.description}")
                 formatted.append(f"   {'-'*50}")
                 
                 for code in codes_by_topic.get(topic.id, []):
                     formatted.append(f"      CODE [ID: {code.id}] → \"{code.label}\"")
-                    formatted.append(f"         Description: {code.description}")
+                    if code.description:
+                        formatted.append(f"         Description: {code.description}")
                     
                     if include_sources and code.source_codes:
                         # Include which clusters this code represents (use merged clusters)
@@ -1634,7 +1634,7 @@ class ThematicLabeller:
                 theme_id=theme.id,
                 numeric_id=theme.numeric_id,
                 label=theme.label,
-                description=theme.description,
+                description=theme.description or "",
                 level=theme.level,
                 topics=[]
             )
@@ -1646,7 +1646,7 @@ class ThematicLabeller:
                         topic_id=topic.id,
                         numeric_id=topic.numeric_id,
                         label=topic.label,
-                        description=topic.description,
+                        description=topic.description or "",
                         parent_id=topic.parent_id,
                         level=topic.level,
                         codes=[]
@@ -1659,7 +1659,7 @@ class ThematicLabeller:
                                 code_id=code.id,
                                 numeric_id=code.numeric_id,
                                 label=code.label,
-                                description=code.description,
+                                description=code.description or "",
                                 parent_id=code.parent_id,
                                 level=code.level
                             )
@@ -1718,7 +1718,8 @@ class ThematicLabeller:
                             if theme_id_str in theme_str_lookup:
                                 theme = theme_str_lookup[theme_id_str]
                                 theme_id_int = int(theme.numeric_id)
-                                segment.Theme = {theme_id_int: f"{theme.label}: {theme.description}"}
+                                description = f": {theme.description}" if theme.description else ""
+                                segment.Theme = {theme_id_int: f"{theme.label}{description}"}
                             elif theme_id_str == "other":
                                 segment.Theme = {999: "Other: Unclassified"}
                             
@@ -1727,7 +1728,8 @@ class ThematicLabeller:
                             if topic_id_str in topic_str_lookup:
                                 topic = topic_str_lookup[topic_id_str]
                                 topic_id_float = topic.numeric_id  # Already a float from model
-                                segment.Topic = {topic_id_float: f"{topic.label}: {topic.description}"}
+                                description = f": {topic.description}" if topic.description else ""
+                                segment.Topic = {topic_id_float: f"{topic.label}{description}"}
                             elif topic_id_str == "other":
                                 segment.Topic = {99.9: "Other: Unclassified"}
                             
@@ -1736,7 +1738,8 @@ class ThematicLabeller:
                             if code_id_str in code_str_lookup:
                                 code = code_str_lookup[code_id_str]
                                 code_id_float = code.numeric_id
-                                segment.Code = {code_id_float: f"{code.label}: {code.description}"}
+                                description = f": {code.description}" if code.description else ""
+                                segment.Code = {code_id_float: f"{code.label}{description}"}
                             elif code_id_str == "99.1.1":
                                 segment.Code = {99.11: "Other: Unclassified"}
                         else:

@@ -364,10 +364,10 @@ Output your analysis in the following JSON format:
 {{
   "initial_themes": [
     {{
-      "theme_name": "Theme Name 1",
+      "theme_name": "Theme Name 1"
     }},
     {{
-      "theme_name": "Theme Name 2", 
+      "theme_name": "Theme Name 2"
     }}
   ]
 }}
