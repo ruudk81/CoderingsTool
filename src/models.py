@@ -18,36 +18,36 @@ class ResponseModel(BaseModel):
         data = self.model_dump()
         return model_class(**data)
 
-class PreprocessModel(ResponseModel):
+class PreprocessedModel(ResponseModel):
+    """Model for Step 2: Preprocessed text data with initial quality assessment"""
+    quality_filter: Optional[bool] = None
+    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=user_missing, 99999998=system_missing, 99999999=no_answer
+
+class QualityFilteredModel(PreprocessedModel):
+    """Model for Step 3: Quality filtered data (same fields, but after LLM quality grading)"""
     pass
 
-class DescriptiveSubmodel(ResponseSegmentModel):
+class SegmentSubmodel(ResponseSegmentModel):
+    """Submodel for response segments with labels and descriptions"""
     segment_label: Optional[str] = None
     segment_description: Optional[str] = None
 
-class DescriptiveModel(ResponseModel):
-    quality_filter: Optional[bool] = None
-    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=user_missing, 99999998=system_missing, 99999999=no_answer
-    response_segment: Optional[List[DescriptiveSubmodel]] = None
+class SegmentedModel(QualityFilteredModel):
+    """Model for Step 4: Segmented responses with codes and descriptions"""
+    response_segment: Optional[List[SegmentSubmodel]] = None
 
-class EmbeddingsSubmodel(DescriptiveSubmodel):
+class ClusterSubmodel(SegmentSubmodel):
+    """Submodel for segments with embeddings and initial cluster assignment"""
     code_embedding: Optional[npt.NDArray[np.float32]] = None
     description_embedding: Optional[npt.NDArray[np.float32]] = None
+    initial_cluster: Optional[int] = None  # Single cluster ID from initial clustering
     
-class EmbeddingsModel(DescriptiveModel):
-    response_segment: Optional[List[EmbeddingsSubmodel]] = None
-
-class ClusterSubmodel(EmbeddingsSubmodel):
-    #clusters with keywords
-    meta_cluster: Optional[Dict[int, str]] = None 
-    macro_cluster: Optional[Dict[int, str]] = None
-    micro_cluster: Optional[Dict[int, str]] = None
-    
-class ClusterModel(EmbeddingsModel):
+class ClusterModel(SegmentedModel):
+    """Model for Step 5: Initial clusters with embeddings"""
     response_segment: Optional[List[ClusterSubmodel]] = None
 
 class LabelSubmodel(ClusterSubmodel):
-    #clusters with labels
+    """Submodel for segments with hierarchical labeling information"""
     Theme: Optional[Dict[int, str]] = None 
     Topic: Optional[Dict[float, str]] = None  # Float keys for topic IDs like 1.1, 1.2, etc.
     Code: Optional[Dict[float, str]] = None  # Float keys for code IDs like 1.1.1
@@ -92,6 +92,7 @@ class ClusterMapping(BaseModel):
     confidence: float = 1.0
 
 class LabelModel(ClusterModel):
+    """Model for Step 6: Hierarchical labeling with themes, topics, and codes"""
     summary: Optional[str] = None
     response_segment: Optional[List[LabelSubmodel]] = None
     # Hierarchical structure data
@@ -116,3 +117,10 @@ def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
             data['response_segment'] = converted_segments
     
     return model_class(**data)
+
+# Backward compatibility aliases
+DescriptiveModel = SegmentedModel
+DescriptiveSubmodel = SegmentSubmodel
+PreprocessModel = PreprocessedModel
+EmbeddingsModel = ClusterModel  # For pipeline compatibility
+EmbeddingsSubmodel = ClusterSubmodel  # For pipeline compatibility

@@ -339,27 +339,27 @@ class ThematicLabeller:
         return [(descriptions[i], float(similarities[i])) for i in top_indices]
     
     def _extract_micro_clusters(self, cluster_models: List[models.ClusterModel]) -> Dict[int, Dict]:
-        """Extract micro-cluster information from cluster models"""
-        micro_clusters = {}
+        """Extract initial cluster information from cluster models"""
+        clusters = {}
         
         for model in cluster_models:
             if model.response_segment:
                 for segment in model.response_segment:
-                    if segment.micro_cluster:
-                        cluster_id = list(segment.micro_cluster.keys())[0]
-                        if cluster_id not in micro_clusters:
-                            micro_clusters[cluster_id] = {
+                    if segment.initial_cluster is not None:
+                        cluster_id = segment.initial_cluster
+                        if cluster_id not in clusters:
+                            clusters[cluster_id] = {
                                 'descriptions': [],
                                 'embeddings': [],
                                 'codes': []
                             }
                         
-                        micro_clusters[cluster_id]['descriptions'].append(segment.segment_description)
+                        clusters[cluster_id]['descriptions'].append(segment.segment_description)
                         if segment.description_embedding is not None:
-                            micro_clusters[cluster_id]['embeddings'].append(segment.description_embedding)
-                        micro_clusters[cluster_id]['codes'].append(segment.segment_label)
+                            clusters[cluster_id]['embeddings'].append(segment.description_embedding)
+                        clusters[cluster_id]['codes'].append(segment.segment_label)
         
-        return micro_clusters
+        return clusters
     
     async def _invoke_with_retries(self, prompt: str, response_model: BaseModel, max_retries: int = None) -> Any:
         """Invoke LLM with retry logic"""

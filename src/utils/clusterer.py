@@ -449,18 +449,14 @@ class ClusterGenerator:
                 segment_key = (respondent_id, item.segment_id)
                 segment_response = segment_mapping.get(segment_key, "")
                 
-                # Only store micro clusters (initial clusters)
-                micro_cluster = {}
+                # Store initial cluster ID
+                initial_cluster = None
                 if self.embedding_type == "code" and item.initial_code_cluster is not None:
-                    micro_cluster[item.initial_code_cluster] = ""
+                    initial_cluster = item.initial_code_cluster
                 elif self.embedding_type == "description" and item.initial_description_cluster is not None:
-                    micro_cluster[item.initial_description_cluster] = ""
+                    initial_cluster = item.initial_description_cluster
                 
-                # Use None if no valid clusters were added
-                if not micro_cluster:
-                    micro_cluster = None
-                
-                # Create submodel with no meta clusters
+                # Create submodel with embeddings and initial cluster
                 submodel = models.ClusterSubmodel(
                     segment_id=item.segment_id,
                     segment_response=segment_response,
@@ -468,9 +464,7 @@ class ClusterGenerator:
                     segment_description=item.segment_description,
                     code_embedding=item.code_embedding,
                     description_embedding=item.description_embedding,
-                    meta_cluster=None,  # No meta clusters in simple version
-                    macro_cluster=None,  # No macro clusters 
-                    micro_cluster=micro_cluster  # Only initial clusters
+                    initial_cluster=initial_cluster  # Single cluster ID
                 )
                 
                 submodels.append(submodel)

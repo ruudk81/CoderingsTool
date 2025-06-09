@@ -118,7 +118,7 @@ verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
+    preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessedModel)
     verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {f"Input: {len(raw_text_list)} responses → Output": f"{len(preprocessed_text)} responses", "Overall success rate": f"{(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%"})
 else: 
     verbose_reporter.section_header("PREPROCESSING PHASE")
@@ -132,7 +132,7 @@ else:
     string_responses = []
     non_string_responses = []
     for item in raw_text_list:
-        preprocess_item = item.to_model(models.PreprocessModel)
+        preprocess_item = item.to_model(models.PreprocessedModel)
         all_responses.append(preprocess_item)
         if item.response_type == 'string':
             string_responses.append(preprocess_item)
@@ -155,8 +155,8 @@ else:
         if original.respondent_id in processed_map:
             item = processed_map[original.respondent_id]
             # Add initial quality filter code based on response type and content
-            # Convert to DescriptiveModel to add quality_filter_code
-            desc_item = item.to_model(models.DescriptiveModel)
+            # Convert to PreprocessedModel to add quality_filter_code
+            desc_item = item.to_model(models.PreprocessedModel)
             # Categorize based on type and content
             if item.response_type == 'nan':
                 desc_item.quality_filter_code = 99999998  # System missing
@@ -181,8 +181,8 @@ else:
             preprocessed_text.append(desc_item)
         else:
             # If not in processed_map, it was filtered out during normalization
-            # Create a DescriptiveModel with system missing code
-            preprocessed_text.append(models.DescriptiveModel(
+            # Create a PreprocessedModel with system missing code
+            preprocessed_text.append(models.PreprocessedModel(
                 respondent_id=original.respondent_id,
                 response='<NA>',
                 response_type=original.response_type,
@@ -231,7 +231,7 @@ prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  #
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    quality_filtered_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
+    quality_filtered_text = cache_manager.load_from_cache(filename, step_name, models.QualityFilteredModel)
     filtering_rate = 100 * (1-(len(quality_filtered_text)/len(preprocessed_text)))
     verbose_reporter.summary("QUALITY FILTERED RESPONSES FROM CACHE", {f"Input: {len(preprocessed_text)} responses → Output: {len(quality_filtered_text)} responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
 else:
@@ -284,7 +284,7 @@ prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  #
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    encoded_text = cache_manager.load_from_cache(filename, step_name, models.DescriptiveModel)
+    encoded_text = cache_manager.load_from_cache(filename, step_name, models.SegmentedModel)
     filtering_rate = 100 * (1-(len(encoded_text)/len(quality_filtered_text)))
     verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(quality_filtered_text)} responses → Output: {len(encoded_text)} coded responses": "", "Filtering rate": f"{filtering_rate:.1f}%"})
 else: 
@@ -320,10 +320,10 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
-    micro_ids = set([list(segment.micro_cluster.keys())[0] for result in initial_cluster_results for segment in result.response_segment if segment.micro_cluster])
-    num_micro_clusters = len(micro_ids)
+    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    num_initial_clusters = len(cluster_ids)
     total_segments = sum(len(resp.response_segment) for resp in initial_cluster_results if resp.response_segment)
-    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial micro clusters": f"{num_micro_clusters}"})
+    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial clusters": f"{num_initial_clusters}"})
     
 else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
@@ -332,7 +332,7 @@ else:
     
     # Step 5a: Generate embeddings
     get_embeddings = embedder.Embedder(verbose=VERBOSE)
-    input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
+    input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
     description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)
     embedded_text = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
