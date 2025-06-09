@@ -310,11 +310,21 @@ class ClusterGenerator:
             noise_mask[noise_indices] = True
         
         try:
+            # Debug: Check if clusterer has prediction data
+            if not hasattr(self.cluster_model, 'prediction_data_') or self.cluster_model.prediction_data_ is None:
+                self.verbose_reporter.stat_line("⚠️  Warning: HDBSCAN clusterer has no prediction data")
+                self.verbose_reporter.stat_line("This might be because prediction_data=True wasn't set during fit")
+                
             # Use approximate_predict to find best clusters for noise points
             rescued_clusters, strengths = hdbscan.approximate_predict(
                 self.cluster_model, 
                 embeddings[noise_mask]
             )
+            
+            # Debug: Check what approximate_predict returned
+            self.verbose_reporter.stat_line(f"approximate_predict returned {len(rescued_clusters)} cluster predictions")
+            unique_predictions = np.unique(rescued_clusters)
+            self.verbose_reporter.stat_line(f"Unique predicted clusters: {unique_predictions[:10]}...")  # Show first 10
             
             # Apply threshold and update cluster assignments
             rescued_count = 0
