@@ -7,198 +7,18 @@ import openai
 import tiktoken
 import asyncio
 import nest_asyncio
-import json
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
-
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
-from prompts import SEGMENTATION_PROMPT, REFINEMENT_PROMPT, CODING_PROMPT, ENHANCED_SEGMENTATION_PROMPT, FOCUSED_CODING_PROMPT, DESCRIPTION_GENERATION_PROMPT
+from prompts import ENHANCED_SEGMENTATION_PROMPT, FOCUSED_CODING_PROMPT, DESCRIPTION_GENERATION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
 class LangChainPipeline :
-    def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
-                 temperature: float = 0.0, config: SegmentationConfig = None, prompt_printer = None):
-        self.language = language
-        self.var_lab = var_lab
-        self.config = config or DEFAULT_SEGMENTATION_CONFIG
-        self.prompt_printer = prompt_printer
-        
-        # Track which prompts have been captured
-        self.captured_segmentation = False
-        self.captured_refinement = False
-        self.captured_coding = False
-      
-        model_config = ModelConfig()
-        
-        self.llm = ChatOpenAI(
-            temperature=temperature,
-            model=model_name,
-            openai_api_key=api_key,
-            seed=model_config.seed)
-
-        self.parser = JsonOutputParser()
-        self.retry_delay = self.config.retry_delay
-        self.max_retries = self.config.max_retries
-        
-        self.chain = self.build_chain()
-
-    def _safe_get(self, x, key):
-        return x.get(key) if isinstance(x, dict) else None
-    
-    def _safe_extract_segments(self, inputs: Union[Dict, List, Any]) -> List[Dict]:
-        if isinstance(inputs, dict):
-            segments = inputs.get("segments", [])
-            if isinstance(segments, list):
-                return segments
-            return [segments] if segments else []
-        elif isinstance(inputs, list):
-            return inputs
-        return []
-
-    def build_chain(self):
-        
-        def debug_log(label: str):
-            return RunnableLambda(lambda x: print(f"\n--- {label} ---\n{json.dumps(x, indent=2, ensure_ascii=False)}\n") or x)
-    
-        segmentation_prompt = PromptTemplate.from_template(SEGMENTATION_PROMPT)
-        refinement_prompt = PromptTemplate.from_template(REFINEMENT_PROMPT)
-        coding_prompt = PromptTemplate.from_template(CODING_PROMPT)
-        
-        # Prompt capture functions
-        def capture_segmentation_prompt(inputs):
-            if self.prompt_printer and not self.captured_segmentation:
-                formatted_prompt = SEGMENTATION_PROMPT.format(
-                    response=inputs.get("response", ""),
-                    var_lab=inputs.get("var_lab", ""),
-                    language=inputs.get("language", "")
-                )
-                self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
-                    utility_name="SegmentDescriber",
-                    prompt_content=formatted_prompt,
-                    prompt_type="segmentation",
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": inputs.get("var_lab", ""),
-                        "language": inputs.get("language", ""),
-                        "stage": "1/3 - Segmentation"
-                    }
-                )
-                self.captured_segmentation = True
-            return inputs
-            
-        def capture_refinement_prompt(inputs):
-            if self.prompt_printer and not self.captured_refinement:
-                formatted_prompt = REFINEMENT_PROMPT.format(
-                    segments=self._safe_extract_segments(inputs),
-                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-                )
-                self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
-                    utility_name="SegmentDescriber",
-                    prompt_content=formatted_prompt,
-                    prompt_type="refinement",
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
-                        "stage": "2/3 - Refinement"
-                    }
-                )
-                self.captured_refinement = True
-            return inputs
-            
-        def capture_coding_prompt(inputs):
-            if self.prompt_printer and not self.captured_coding:
-                segments = [
-                    {
-                        "segment_id": segment.get("segment_id", "") if isinstance(segment, dict) else "",
-                        "segment_response": segment.get("segment_response", "") if isinstance(segment, dict) else "",
-                        "segment_label": segment.get("segment_label", "") if isinstance(segment, dict) else "",
-                        "segment_description": segment.get("segment_description", "") if isinstance(segment, dict) else ""
-                    } 
-                    for segment in self._safe_extract_segments(inputs)
-                ]
-                formatted_prompt = CODING_PROMPT.format(
-                    segments=segments,
-                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-                )
-                self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
-                    utility_name="SegmentDescriber",
-                    prompt_content=formatted_prompt,
-                    prompt_type="coding",
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
-                        "stage": "3/3 - Coding"
-                    }
-                )
-                self.captured_coding = True
-            return inputs
-    
-        chain = (
-           {
-               "response": lambda x: x["response"],
-               "var_lab": lambda x: x["var_lab"],
-               "language": lambda x: x["language"]
-           }
-           | RunnableLambda(capture_segmentation_prompt)
-           | segmentation_prompt
-           | self.llm
-           | self.parser
-           | RunnableLambda(lambda inputs: {
-               "segments": self._safe_extract_segments(inputs),
-               "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-               "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-           })
-           | RunnableLambda(capture_refinement_prompt)
-           | refinement_prompt
-           | self.llm
-           | self.parser
-           | RunnableLambda(lambda inputs: {
-               "segments": [
-                   {
-                       "segment_id": segment.get("segment_id", "") if isinstance(segment, dict) else "",
-                       "segment_response": segment.get("segment_response", "") if isinstance(segment, dict) else "",
-                       "segment_label": segment.get("segment_label", "") if isinstance(segment, dict) else "",
-                       "segment_description": segment.get("segment_description", "") if isinstance(segment, dict) else ""
-                   } 
-                   for segment in self._safe_extract_segments(inputs)
-               ],
-               "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-               "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-           })
-           | RunnableLambda(capture_coding_prompt)
-           | coding_prompt
-           | self.llm
-           | self.parser
-           )
-   
-        return chain
-
-    async def invoke_with_retries(self, inputs: dict):
-        retries = 0
-        while retries <= self.max_retries:
-            try:
-                result = await self.chain.ainvoke(inputs)
-                return result
-            except Exception as e:
-                print(f"Retry {retries + 1}: Error in LangChain chain execution: {str(e)}")
-                retries += 1
-                await asyncio.sleep(self.retry_delay * retries)
-
-        raise RuntimeError("LangChain pipeline failed after max retries")
-
-class EnhancedLangChainPipeline:
     def __init__(self, model_name: str, api_key: str, language: str, var_lab: str, 
                  temperature: float = 0.0, config: SegmentationConfig = None, prompt_printer = None):
         self.language = language
@@ -382,8 +202,7 @@ class SegmentDescriber:
         var_lab : str = "",
         verbose: bool = False,
         model_config: ModelConfig = None,
-        prompt_printer = None,
-        use_enhanced_workflow: bool = True):  # ← New parameter
+        prompt_printer = None):  
         
         # Use provided config or create default
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
@@ -401,29 +220,16 @@ class SegmentDescriber:
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
-        self.use_enhanced_workflow = use_enhanced_workflow
         
-        # Choose pipeline based on workflow preference
-        if self.use_enhanced_workflow:
-            self.langchain_pipeline = EnhancedLangChainPipeline(
-                model_name=self.openai_model,
-                api_key=self.openai_api_key,
-                language=DEFAULT_LANGUAGE,
-                var_lab = "",
-                temperature=self.config.temperature,
-                config=self.config,
-                prompt_printer=self.prompt_printer)
-            self.chain = self.langchain_pipeline.build_enhanced_chain()
-        else:
-            self.langchain_pipeline = LangChainPipeline(
-                model_name=self.openai_model,
-                api_key=self.openai_api_key,
-                language=DEFAULT_LANGUAGE,
-                var_lab = "",
-                temperature=self.config.temperature,
-                config=self.config,
-                prompt_printer=self.prompt_printer) 
-            self.chain = self.langchain_pipeline.build_chain()
+        self.langchain_pipeline = LangChainPipeline(
+            model_name=self.openai_model,
+            api_key=self.openai_api_key,
+            language=DEFAULT_LANGUAGE,
+            var_lab = "",
+            temperature=self.config.temperature,
+            config=self.config,
+            prompt_printer=self.prompt_printer)
+        self.chain = self.langchain_pipeline.build_enhanced_chain()
 
         if not self.openai_api_key:
             raise ValueError("API key is required")
@@ -449,11 +255,11 @@ class SegmentDescriber:
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
         # Calculate token budget
-        segmentation_prompt = SEGMENTATION_PROMPT
+        segmentation_prompt = ENHANCED_SEGMENTATION_PROMPT 
         segmentation_prompt = segmentation_prompt.replace("{language}", DEFAULT_LANGUAGE)
         segmentation_prompt = segmentation_prompt.replace("{var_lab}", var_lab)
         segmentation_prompt = segmentation_prompt.replace("{response}", "")
-        coding_prompt = CODING_PROMPT
+        coding_prompt = FOCUSED_CODING_PROMPT
         coding_prompt = coding_prompt.replace("{language}", DEFAULT_LANGUAGE)
         coding_prompt = coding_prompt.replace("{var_lab}", var_lab)
         coding_prompt = coding_prompt.replace("{segments}", "")
@@ -520,21 +326,12 @@ class SegmentDescriber:
         retries = 0
         while retries <= max_retries:
             try:
-                if self.use_enhanced_workflow:
-                    # Enhanced workflow includes respondent_id
-                    result = await self.langchain_pipeline.invoke_with_retries({
-                        "respondent_id": respondent_id,
-                        "response": response_text,
-                        "var_lab": var_lab,
-                        "language": DEFAULT_LANGUAGE
-                    })
-                else:
-                    # Legacy workflow (backward compatibility)
-                    result = await self.langchain_pipeline.invoke_with_retries({
-                        "response": response_text,
-                        "var_lab": var_lab,
-                        "language": DEFAULT_LANGUAGE
-                    })
+                result = await self.langchain_pipeline.invoke_with_retries({
+                    "respondent_id": respondent_id,
+                    "response": response_text,
+                    "var_lab": var_lab,
+                    "language": DEFAULT_LANGUAGE
+                    })    
          
                 return models.DescriptiveModel(
                 respondent_id=respondent_id,
@@ -613,11 +410,7 @@ class SegmentDescriber:
     async def generate_codes_async(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
         self._stats.start_timing()
         self._stats.input_count = len(responses)
-        
-        if self.use_enhanced_workflow:
-            self.verbose_reporter.step_start("Enhanced Segment Processing (Segmentation → Coding → Description)", emoji="🔧")
-        else:
-            self.verbose_reporter.step_start("Descriptive Code Generation (Segmentation → Refinement → Coding)", emoji="🏷️")
+        self.verbose_reporter.step_start("Enhanced Segment Processing (Segmentation → Coding → Description)", emoji="🔧")
         self.verbose_reporter.stat_line(f"Processing {len(responses)} responses...")
         
         batches = self.create_batches(responses, var_lab)
@@ -699,10 +492,7 @@ class SegmentDescriber:
         if code_examples:
             self.verbose_reporter.sample_list("Sample generated codes", code_examples)
         
-        if self.use_enhanced_workflow:
-            self.verbose_reporter.step_complete("Enhanced segment processing completed")
-        else:
-            self.verbose_reporter.step_complete("Code generation completed")
+        self.verbose_reporter.step_complete("Segment processing completed")
         
         return all_results
     

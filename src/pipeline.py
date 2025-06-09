@@ -25,8 +25,8 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "labels"  # Set to step name (e.g., "embeddings") to recalculate specific step
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = "segmented_descriptions"  # Set to step name (e.g., "embeddings") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
@@ -95,16 +95,16 @@ else:
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug 
-    # import random
-    # n_samples = 20
-    # indices = random.sample(range(len(raw_unstructued)), n_samples)
+    import random
+    n_samples = 20
+    indices = random.sample(range(len(raw_unstructued)), n_samples)
     
-    # for i in indices:
-    #     print("Raw unstructured:", raw_unstructued[i])
-    #     print("---")    
-    # for i in indices:
-    #     print("Raw structured:", raw_text_list[i])
-    #     print("---")    
+    for i in indices:
+        print("Raw unstructured:", raw_unstructued[i])
+        print("---")    
+    for i in indices:
+        print("Raw structured:", raw_text_list[i])
+        print("---")    
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
@@ -293,14 +293,22 @@ else:
     start_time = time.time()
     # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
-    encoder = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer, use_enhanced_workflow=True)
+    encoder = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer)
     encoded_text = encoder.generate_codes(filtered_text, var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
 
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
-
+    
+    # debug
+    import random
+    n_samples = 10
+    sampled_items = random.sample(encoded_text, n_samples)
+    for item in sampled_items:
+        for segment in item.response_segment:
+            print(segment.segment_description)
+    print("\n")
 
 # === STEP 5 ========================================================================================================
 """get embeddings"""

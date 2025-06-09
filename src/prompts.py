@@ -118,181 +118,6 @@ Remember to use the exact format specified. Here's an example of how entries in 
 Ensure that your entire output is a valid JSON array containing all evaluated responses.
 """
 
-SEGMENTATION_PROMPT = """
-You are a helpful {language} language expert in analyzing survey responses. 
-Your task is to segment free-text survey responses into distinct, standalone segments. 
-
-First, here is the survey question:
-<survey_question>
-{var_lab}
-</survey_question>
-
-Now, here is the response you need to segment:
-<response>
-{response}
-</response>
-
-Your task is to break the response into the smallest meaningful standalone units, where each segment represents EXACTLY ONE:
-- Opinion
-- Preference
-- Issue
-- Topic
-- Idea
-- Response pattern
-
-Follow these segmentation rules:
-1. Split at conjunctions (and, or, but, also) when they connect DIFFERENT ideas or topics
-2. Split listed items into separate segments (e.g., "milk and sugar" → "milk", "sugar")
-3. When items share context, preserve that context in each segment:
-   Example: "I like milk and sugar in my coffee" →
-   - "I like milk in my coffee"
-   - "I like sugar in my coffee"
-4. Use the respondent's exact words - do not paraphrase or correct
-5. Keep meaningless responses (e.g., "Don't know", "?") as a single segment
-
-Your output should be a JSON array with these fields for each segment:
-- "segment_id": A sequential number as string ("1", "2", etc.)
-- "segment_response": The exact segmented text with necessary context preserved
-
-Here's an example of how two entries in your output should look:
-[
-{{
-"segment_id": "1",
-"segment_response": "Minder verpakking."
-}}
-]
-
-Before providing your final output, think through the segmentation process. 
-Consider how many segments the response should be divided into and how to apply the segmentation rules.
-
-After your analysis, provide the final segmented output formatted as a JSON array as specified above.
-"""
-
-REFINEMENT_PROMPT = """
-You are a {language} language expert in semantic segmentation of survey responses. 
-Your task is to review and refine response segments derived from responses to this survey question: 
-"{var_lab}"
-
-Here are the segments to refine:
-<segments_to_refine>
-{segments}
-</segments_to_refine>
-
-Follow these refinement rules:
-1. Ensure that each segment contains ONLY ONE standalone idea or response segment.
-2. Split any segment that still contains multiple distinct ideas or response segments.
-3. Preserve necessary context when splitting compound statements.
-4. Split segments that contain multiple distinct ideas or response segments (connected by conjunctions like "en", "of").
-5. When splitting, duplicate any necessary context to make each segment meaningful.
-6. Only duplicate words that appear in the original response.
-7. Never merge segments.
-8. Keep meaningless responses intact (e.g., "Weet niet").
-
-Process the segments as follows:
-1. Read each segment carefully.
-2. Identify if the segment contains multiple ideas or response segments.
-3. If it does, split the segment according to the refinement rules.
-4. Ensure each resulting segment is meaningful and contains only one idea.
-5. Assign new segment IDs to split segments, continuing the sequence from the original segment ID.
-
-Provide your output in the following JSON format:
-[
-  {{
-    "segment_id": "1",
-    "segment_response": "Refined segment text"
-  }},
-  {{
-    "segment_id": "2",
-    "segment_response": "Another refined segment text"
-  }}
-]    
-    
-Here are two examples to guide you:
-
-Example 1: Multiple ideas with shared context
-Input: {{"segment_id": "1", "segment_response": "Ik wil minder zout en meer kruiden in de maaltijden"}}
-Output: [
-  {{"segment_id": "1", "segment_response": "Ik wil minder zout in de maaltijden"}},
-  {{"segment_id": "2", "segment_response": "Ik wil meer kruiden in de maaltijden"}}
-]
-
-Example 2: Multiple ideas without shared context
-Input: {{"segment_id": "1", "segment_response": "De prijs is te hoog en de kwaliteit is laag"}}
-Output: [
-  {{"segment_id": "1", "segment_response": "De prijs is te hoog"}},
-  {{"segment_id": "2", "segment_response": "de kwaliteit is laag"}}
-]
-
-Now, please process the provided segments and return the refined segments in the specified JSON format.
-"""
-
-CODING_PROMPT = """
-You are a {language} language expert in thematic analysis of survey responses. 
-Your task is to code segments from responses to the survey question: "{var_lab}"
-
-Here are the segments you need to code:
-<segments>
-{segments}
-</segments>
-
-For each segment, you will:
-1. Keep the original segment_id and segment_response
-2. Add a segment_label (a thematic label)
-3. Add a segment_description (a clarification of the label)
-
-Requirements for segment labels:
-- Create a concise label of up to 5 words total, using ONLY ADJECTIVES AND NOUNS in Dutch, that captures the CENTRAL MEANING of the segment
-- ONLY return labels that reflect ONE idea, topic, concern, issue, or theme in response to the survey question
-- NEVER return multi-headed labels or combinations of multiple ideas
-- Format: ALL_CAPS_WITH_UNDERSCORES
-- Examples: "ONBETROUWBARE_DIENSTREGELING", "ONGEMAKKELIJKE_OVERSTAPPEN", "ONVEILIGHEID_GEVOEL"
-- Language: {language}
-
-Requirements for segment descriptions:
-- Rewrite the segment as a natural-sounding first-person response to the survey question
-- Make sure it sounds like something a person would actually say when answering the question
-- Use a direct, conversational or instructional tone:
-  - If the segment is a suggestion: use an imperative tone (e.g., "Maak...", "Laat...")
-  - If the segment expresses a wish or opinion: use first-person (e.g., "Ik wil...", "Ik vind...")
-- NEVER rephrase the segment as a third-person summary (e.g., "Wil dat de inhoud...") — that does not sound like a response
-- CRITICAL: Do NOT add interpretations beyond what's in the original segment
-- Language: {language}
-
-Special cases:
-For meaningless responses (e.g., "?", "Don't know"):
-- segment_label: "NA"
-- segment_description: "NA"
-
-Output format:
-Return a valid JSON array with these fields for each segment:
-- "segment_id": The original segment ID
-- "segment_response": The original segment text
-- "segment_label": Your thematic label in ALL_CAPS_WITH_UNDERSCORES
-- "segment_description": Your clarifying description
-
-Ensure all output is written in {language}, unless the code is "NA".
-
-Here's an example of correct output:
-[
-  {{
-  "segment_id": "1",
-  "segment_response": "Betere interactie met de docent.",
-  "segment_label": "DOCENTCONTACT",
-  "segment_description": "Meer en betere interactie met de docent tijdens online lessen."
-  }},
-  {{
-    "segment_id": "2",
-    "segment_response": "?",
-    "segment_label": "NA",
-    "segment_description": "NA"
-  }}
-]
-"""
-
-# =============================================================================
-# NEW ENHANCED WORKFLOW PROMPTS (Segmentation → Coding → Description)
-# =============================================================================
-
 ENHANCED_SEGMENTATION_PROMPT = """
 You are a helpful {language} language expert in analyzing survey responses. 
 Your task is to segment free-text survey responses into distinct, standalone segments with the highest quality to eliminate the need for further refinement.
@@ -339,12 +164,12 @@ Example output format:
   {{
     "respondent_id": "{respondent_id}",
     "segment_id": "1", 
-    "segment_response": "Minder verpakking."
+    "segment_response": "Betere interactie met de docent."
   }},
   {{
     "respondent_id": "{respondent_id}",
     "segment_id": "2",
-    "segment_response": "Betere smaak."
+    "segment_response": "Ouders moeten betrokken zijn."
   }}
 ]
 
@@ -373,7 +198,7 @@ Requirements for segment labels:
 - ONLY return labels that reflect ONE idea, topic, concern, issue, or theme
 - NEVER return multi-headed labels or combinations of multiple ideas
 - Format: ALL_CAPS_WITH_UNDERSCORES
-- Examples: "ONBETROUWBARE_DIENSTREGELING", "VERPAKKING_REDUCTIE", "SMAAK_VERBETERING"
+- Examples: "ONBETROUWBARE_DIENSTREGELING", "BETERE_GEBRUIKSERVARING", "DOCENTCONTACT"
 - Language: {language}
 
 Your output must be a JSON array with these fields for each segment:
@@ -417,14 +242,8 @@ Requirements for segment descriptions:
   - If the segment expresses a wish or opinion: use first-person (e.g., "Ik wil...", "Ik vind...")
 - NEVER rephrase the segment as a third-person summary
 
-CRITICAL CONSTRAINTS - FOLLOW EXACTLY:
-1. NEVER add information not explicitly stated in the original segment
-2. NEVER infer motivations, reasons, or explanations beyond what's written
-3. NEVER add context about why someone might want this
-4. NEVER elaborate on consequences or benefits
-5. ONLY rephrase what is literally stated in the segment
-6. If the segment says "better taste" → describe "better taste", NOT "improve taste because..."
-7. If the segment says "less packaging" → describe "less packaging", NOT "reduce environmental impact"
+CRITICAL CONSTRAINT - FOLLOW EXACTLY:
+- NEVER add information not explicitly stated in the original segment
 
 BEFORE writing each description, ask yourself:
 - "Is every word in my description based on something explicitly stated in the segment?"
@@ -440,7 +259,7 @@ Your output must be a JSON array with these fields for each segment:
 - "segment_label": The original segment label
 - "segment_description": Your natural-sounding description
 
-Example output demonstrating CRITICAL CONSTRAINTS:
+Example output demonstrating CRITICAL CONSTRAINT:
 
 CORRECT examples (stay within segment content):
 [
@@ -454,18 +273,12 @@ CORRECT examples (stay within segment content):
   {{
     "respondent_id": "12346",
     "segment_id": "1",
-    "segment_response": "Minder verpakking.",
-    "segment_label": "VERPAKKING_REDUCTIE", 
-    "segment_description": "Ik wil minder verpakking."
+    "segment_response": "De app is soms lastig te navigeren.",
+    "segment_label": "GEBRUIKSVRIENDELIJKHEID_APP",
+    "segment_description": "Ik vind de app niet altijd gebruiksvriendelijk."
   }}
 ]
 
-WRONG examples (adding interpretation - DO NOT DO THIS):
-❌ "Ik wil betere interactie met de docent zodat ik beter kan leren" (adds WHY)
-❌ "Ik wil minder verpakking vanwege het milieu" (adds REASON)
-❌ "Verbeter de communicatie met docenten" (adds specifics not in segment)
-
-FINAL REMINDER: For each description, only rephrase what is literally stated in the segment_response. Do not add explanations, motivations, benefits, or context beyond what the respondent explicitly wrote.
 """
 
 MERGE_PROMPT = """
