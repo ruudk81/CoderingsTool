@@ -85,7 +85,6 @@ else:
     end_time         = time.time()
     elapsed_time     = end_time - start_time
     cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
-    print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
     print("\n=== RAW DATA TYPE ANALYSIS ===")
     type_counts = {'nan': 0, 'numeric': 0, 'string': 0, 'unknown': 0}
@@ -93,6 +92,7 @@ else:
         type_counts[item.response_type] += 1
     for data_type, count in type_counts.items():
         print(f"{data_type}: {count} items")
+    print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug 
     # import random
@@ -192,7 +192,6 @@ else:
     elapsed_time = end_time - start_time
 
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, elapsed_time)
-    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
     
     print("\n=== QUALITY FILTER CODE SUMMARY ===")
     code_counts = {}
@@ -212,6 +211,7 @@ else:
     
     print(f"Total items with codes: {sum(code_counts.values())}")
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
+    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
     # import random
@@ -220,8 +220,6 @@ else:
     # for i in indices:
     #     print("Preprocessed:", preprocessed_text[i])
     #     print("---")
-
-    
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
@@ -247,7 +245,33 @@ else:
     elapsed_time = end_time - start_time
     
     cache_manager.save_to_cache(quality_filtered_text, filename, step_name, elapsed_time)
+    print("\n=== MISSING CODE SUMMARY ===")
+    code_counts = {}
+    for item in quality_filtered_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    
+    code_meanings = {
+        99999997: "User missing: Don't know/only expressing uncertainty", 
+        99999998: "System missing: NAt",
+        99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"}
+    
+    for code, count in sorted(code_counts.items()):
+        meaning = code_meanings.get(code, "Unknown code")
+        print(f"Code {code}: {count} items - {meaning}")
+    
+    print(f"Total items with codes: {sum(code_counts.values())}")
+    print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
+
+    #debug
+    # import random
+    # n_samples = 20
+    # indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    # for i in indices:
+    #     print("Filtered:", quality_filtered_text[i])
+    #     print("---")
 
 
 # === STEP 4 ========================================================================================================
