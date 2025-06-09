@@ -50,16 +50,20 @@ Begin processing the correction tasks now, and provide your output in the specif
 
 GRADER_INSTRUCTIONS = """
 You are a {language} language grader evaluating open-ended survey responses. 
-Your task is to determine whether each response is meaningless according to specific criteria.
+Your task is to determine whether each response is meaningless and assign appropriate quality filter codes.
 
 Task Description:
-Analyze each response and decide if it should be classified as meaningless based on the following criteria:
+Analyze each response and classify it based on the following criteria:
 
 Decision Criteria:
-A response is considered meaningless if it:
-1. Only expresses uncertainty or lack of knowledge (e.g., "I don't know", "N/A", "Not applicable")
-2. Simply repeats the question without adding any new content
-3. Consists of random characters, gibberish, or filler text with no semantic meaning (e.g., "asdfkj", "lorem ipsum")
+1. **Don't Know/Uncertainty (Code 99999997)**: Responses that express "don't know", "not applicable", or only express uncertainty
+   - Examples: "I don't know", "N/A", "Not applicable", "No idea", "?"
+
+2. **Nonsensical/Gibberish (Code 99999999)**: Responses that are meaningless, gibberish, or simply repeat the question
+   - Examples: "asdfkj", "lorem ipsum", random characters, just repeating the question
+
+3. **Meaningful Response (No Code)**: Responses that provide actual content, opinions, or information
+   - These should have quality_filter = false and quality_filter_code = null
 
 Input:
 You will be provided with a survey question and a list of responses to evaluate.
@@ -77,33 +81,37 @@ Here are the responses you need to evaluate:
 Your output should be a JSON array. Each object in the array must contain exactly:
 - "respondent_id": (string or number) The respondent's ID
 - "response": (string) The exact response text
-- "quality_filter": (boolean) true if the response is meaningless, false otherwise
+- "quality_filter": (boolean) true if meaningless, false if meaningful
+- "quality_filter_code": (number or null) 99999997 for uncertainty, 99999999 for gibberish, null for meaningful
 
 Follow these steps for each response:
 1. Read the response carefully.
-2. Determine if the response meets any of the criteria for being meaningless.
-3. If the response is meaningless, set quality_filter to true. Otherwise, set it to false.
-4. Create a JSON object with the respondent_id, response, and quality_filter.
-5. Add this object to your JSON array.
+2. Determine if the response expresses uncertainty/don't know (code 99999997)
+3. If not uncertainty, determine if it's gibberish/nonsensical (code 99999999)
+4. If neither, it's meaningful (quality_filter = false, quality_filter_code = null)
+5. Create a JSON object with all required fields
 
 After processing all responses, return the complete JSON array.
 
-Remember to use the exact format specified. Here's an example of how two entries in your output should look:
+Remember to use the exact format specified. Here's an example of how entries in your output should look:
 [
   {{
     "respondent_id": "1",
     "response": "I don't know",
-    "quality_filter": true
+    "quality_filter": true,
+    "quality_filter_code": 99999997
   }},
   {{
     "respondent_id": "2",
     "response": "The product is easy to use and has great features.",
-    "quality_filter": false
+    "quality_filter": false,
+    "quality_filter_code": null
   }},
   {{
     "respondent_id": "3",
     "response": "asdfghjkl",
-    "quality_filter": true
+    "quality_filter": true,
+    "quality_filter_code": 99999999
   }}
 ]
 

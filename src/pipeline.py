@@ -240,9 +240,9 @@ else:
     verbose_reporter.section_header("QUALITY FILTERING PHASE")
     
     start_time = time.time()
-    # TODO: Implement quality filter that only processes items with quality_filter_code = None
-    # For now, pass through all responses unchanged
-    quality_filtered_text = preprocessed_text
+    grader = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE, prompt_printer=prompt_printer)
+    quality_filtered_text = grader.grade()
+    grading_summary = grader.summary()
     end_time = time.time()
     elapsed_time = end_time - start_time
     
