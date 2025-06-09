@@ -84,15 +84,15 @@ class TextNormalizer:
             normalized = self.normalize_with_tracking(item)
             results.append(normalized)
             
-            # Track what changed
-            if original != original.lower():
-                case_changes += 1
-            if any(symbol in original for symbol in self.config.custom_symbols):
-                symbol_changes += 1
-            if re.search(r'\s{2,}', original or ''):
-                whitespace_changes += 1
-            if normalized.response == self.config.na_placeholder:
-                invalid_filtered += 1
+            if isinstance(original, str):
+                if original != original.lower():
+                    case_changes += 1
+                if any(symbol in original for symbol in self.config.custom_symbols):
+                    symbol_changes += 1
+                if re.search(r'\s{2,}', original or ''):
+                    whitespace_changes += 1
+                if normalized.response == self.config.na_placeholder:
+                    invalid_filtered += 1
         
         stats.output_count = len(results) - invalid_filtered
         stats.end_timing()
