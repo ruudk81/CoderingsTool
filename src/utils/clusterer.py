@@ -314,15 +314,35 @@ class ClusterGenerator:
             if not hasattr(self.cluster_model, 'prediction_data_') or self.cluster_model.prediction_data_ is None:
                 self.verbose_reporter.stat_line("⚠️  Warning: HDBSCAN clusterer has no prediction data")
                 self.verbose_reporter.stat_line("This might be because prediction_data=True wasn't set during fit")
+            else:
+                self.verbose_reporter.stat_line("✅ HDBSCAN has prediction data available")
                 
-            # Use approximate_predict to find best clusters for noise points
-            rescued_clusters, strengths = hdbscan.approximate_predict(
-                self.cluster_model, 
-                embeddings[noise_mask]
-            )
+            # Try using membership_vector approach as alternative
+            try:
+                # Get membership vectors for noise points
+                test_membership_vectors = hdbscan.membership_vector(self.cluster_model, embeddings[noise_mask])
+                
+                # Find best cluster for each point based on membership strength
+                best_clusters = np.argmax(test_membership_vectors, axis=1)
+                membership_strengths = np.max(test_membership_vectors, axis=1)
+                
+                self.verbose_reporter.stat_line(f"membership_vector approach - Max strength: {np.max(membership_strengths):.3f}")
+                self.verbose_reporter.stat_line(f"membership_vector approach - Mean strength: {np.mean(membership_strengths):.3f}")
+                
+                # Use membership vector results instead of approximate_predict
+                rescued_clusters = best_clusters
+                strengths = membership_strengths
+                
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"membership_vector failed: {e}")
+                # Fall back to approximate_predict
+                rescued_clusters, strengths = hdbscan.approximate_predict(
+                    self.cluster_model, 
+                    embeddings[noise_mask]
+                )
             
-            # Debug: Check what approximate_predict returned
-            self.verbose_reporter.stat_line(f"approximate_predict returned {len(rescued_clusters)} cluster predictions")
+            # Debug: Check what we got
+            self.verbose_reporter.stat_line(f"Final method returned {len(rescued_clusters)} cluster predictions")
             unique_predictions = np.unique(rescued_clusters)
             self.verbose_reporter.stat_line(f"Unique predicted clusters: {unique_predictions[:10]}...")  # Show first 10
             
