@@ -270,8 +270,10 @@ class EnhancedLangChainPipeline:
             
         def capture_coding_prompt(inputs):
             if self.prompt_printer and not self.captured_coding:
+                # Extract coded_segments directly from inputs
+                coded_segments = inputs.get("coded_segments", []) if isinstance(inputs, dict) else []
                 formatted_prompt = FOCUSED_CODING_PROMPT.format(
-                    coded_segments=self._safe_extract_segments(inputs),
+                    coded_segments=coded_segments,
                     var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                     language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
                 )
@@ -292,8 +294,10 @@ class EnhancedLangChainPipeline:
             
         def capture_description_prompt(inputs):
             if self.prompt_printer and not self.captured_description:
+                # Extract labeled_segments directly from inputs
+                labeled_segments = inputs.get("labeled_segments", []) if isinstance(inputs, dict) else []
                 formatted_prompt = DESCRIPTION_GENERATION_PROMPT.format(
-                    labeled_segments=self._safe_extract_segments(inputs),
+                    labeled_segments=labeled_segments,
                     var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
                     language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
                 )
