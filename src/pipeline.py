@@ -452,3 +452,50 @@ else:
 # total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
 # print(f"Total clusters assigned: {total_sources}")
 
+
+# === STEP 7 ========================================================================================================
+"""export results"""
+from utils.resultsExporter import ResultsExporter
+
+step_name = "results"
+verbose_reporter = VerboseReporter(VERBOSE)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    export_results = cache_manager.load_from_cache(filename, step_name, dict)
+    verbose_reporter.summary("EXPORT RESULTS FROM CACHE", {
+        "SPSS file": export_results.get('spss_file', 'Not found'),
+        "Excel file": export_results.get('excel_file', 'Not found')
+    })
+else:
+    verbose_reporter.section_header("RESULTS EXPORT PHASE")
+    start_time = time.time()
+    
+    # Initialize results exporter
+    results_exporter = ResultsExporter(verbose=VERBOSE)
+    
+    # Export results to SPSS and Excel
+    export_results = results_exporter.export_results(
+        labeled_results=labeled_results,
+        filename=filename,
+        id_column=id_column,
+        var_name=var_name
+    )
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Cache the export results (file paths)
+    cache_manager.save_to_cache(export_results, filename, step_name, elapsed_time)
+    
+    verbose_reporter.stat_line(f"'Results export' completed in {elapsed_time:.2f} seconds.")
+
+print("\n" + "=" * 80)
+print("PIPELINE COMPLETED SUCCESSFULLY")
+print("=" * 80)
+print(f"📊 Final output files:")
+print(f"   • SPSS: {export_results.get('spss_file', 'Not generated')}")
+print(f"   • Excel: {export_results.get('excel_file', 'Not generated')}")
+print(f"📁 Export directory: {export_results.get('export_directory', 'Unknown')}")
+print("=" * 80)
+
