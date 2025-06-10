@@ -106,50 +106,7 @@ class ThematicLabeller:
         self.captured_phase2 = False
         self.captured_phase3 = False
         self.captured_phase4 = False
-        
-    def _format_thematic_structure(self, grouped_concepts: GroupedConceptsResponse) -> str:
-        """Format grouped concepts for display"""
-        formatted = []
-        formatted.append("THEMATIC STRUCTURE")
-        formatted.append("=" * 50)
-        
-        for theme in grouped_concepts.themes:
-            formatted.append(f"\nTHEME [{theme.theme_id}]: {theme.label}")
-            formatted.append(f"  Description: {theme.description}")
-            formatted.append("  Atomic Concepts:")
-            
-            for concept in theme.atomic_concepts:
-                formatted.append(f"    [{concept.concept_id}] {concept.label}")
-                formatted.append(f"       {concept.description}")
-            
-        return "\n".join(formatted)
-    
-    def _get_representatives(self, cluster: models.ClusterModel) -> List[Tuple[str, float]]:
-        """Get top N representative descriptions with similarity scores"""
-        embeddings = []
-        descriptions = []
-        
-        for segment in cluster.response_segment:
-            if segment.description_embedding is not None:
-                embeddings.append(segment.description_embedding)
-                descriptions.append(segment.segment_description)
-        
-        if not embeddings:
-            return []
-        
-        # Calculate centroid
-        embeddings_array = np.array(embeddings)
-        centroid = np.mean(embeddings_array, axis=0)
-        
-        # Calculate similarities
-        similarities = cosine_similarity(embeddings_array, centroid.reshape(1, -1)).flatten()
-        
-        # Get top N
-        top_k = min(self.config.top_k_representatives, len(descriptions))
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        return [(descriptions[i], float(similarities[i])) for i in top_indices]
-    
+   
     def _extract_initial_clusters(self, cluster_models: List[models.ClusterModel]) -> Dict[int, Dict]:
         """Extract initial cluster information from cluster models"""
         clusters = {}
@@ -233,7 +190,7 @@ class ThematicLabeller:
         # Phase 2: Atomic Concepts  
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 2: Atomic Concepts + Cluster Merging", emoji="🔍")
+        self.verbose_reporter.step_start("Phase 2: Atomic Concepts", emoji="🔍")
         atomic_concepts, merged_clusters = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
         self.atomic_concepts = atomic_concepts
         self.merged_clusters = merged_clusters
@@ -723,10 +680,10 @@ class ThematicLabeller:
         from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
         # Show what concepts are going into Phase 3
-        self.verbose_reporter.stat_line(f"Phase 3 input: {len(atomic_concepts_result.atomic_concepts)} concepts")
-        for concept in atomic_concepts_result.atomic_concepts:
-            evidence_count = len(concept.evidence)
-            self.verbose_reporter.stat_line(f"• {concept.concept} (evidence: {evidence_count} clusters)", bullet="  ")
+        # self.verbose_reporter.stat_line(f"Phase 3 input: {len(atomic_concepts_result.atomic_concepts)} concepts")
+        # for concept in atomic_concepts_result.atomic_concepts:
+        #     evidence_count = len(concept.evidence)
+        #     self.verbose_reporter.stat_line(f"• {concept.concept} (evidence: {evidence_count} clusters)", bullet="  ")
         
         # Format atomic concepts for the prompt
         concepts_text = "\n".join([
