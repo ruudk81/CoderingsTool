@@ -7,7 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import instructor
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from config import LabellerConfig
+from config import LabellerConfig, ModelConfig, DEFAULT_MODEL_CONFIG
 import models
 from utils.verboseReporter import VerboseReporter
 
@@ -96,8 +96,9 @@ class ThemeAssignment(BaseModel):
 class ThematicLabeller:
     """Orchestrator for thematic analysis - Simplified 6-phase workflow"""
     
-    def __init__(self, config: LabellerConfig = None, verbose: bool = False, prompt_printer = None): 
+    def __init__(self, config: LabellerConfig = None, model_config: ModelConfig = None, verbose: bool = False, prompt_printer = None): 
         self.config = config or LabellerConfig()
+        self.model_config = model_config or DEFAULT_MODEL_CONFIG
         self.survey_question = ""
         self.client = instructor.from_openai(AsyncOpenAI(api_key=self.config.api_key or None), mode=instructor.Mode.JSON)
         self.batch_size = self.config.batch_size
@@ -162,13 +163,18 @@ class ThematicLabeller:
         return clusters
     
     async def _invoke_with_retries(self, prompt: str, response_model: BaseModel, 
-                                   max_retries: int = None, model_override: str = None) -> Any:
+                                   max_retries: int = None, model_override: str = None, phase: str = None) -> Any:
         """Invoke LLM with retry logic and optional model override"""
         if max_retries is None:
             max_retries = self.config.max_retries
         
-        # Use model override if provided, otherwise use default
-        model = model_override or self.config.model
+        # Use model override if provided, otherwise use phase-specific model, otherwise use default
+        if model_override:
+            model = model_override
+        elif phase:
+            model = self.model_config.get_model_for_phase(phase)
+        else:
+            model = self.config.model
             
         last_error = None
         
@@ -178,9 +184,9 @@ class ThematicLabeller:
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     response_model=response_model,
-                    temperature=self.config.temperature,
+                    temperature=self.model_config.get_temperature_for_phase(phase) if phase else self.config.temperature,
                     max_tokens=self.config.max_tokens,
-                    seed=self.config.seed if hasattr(self.config, 'seed') else 42
+                    seed=self.model_config.seed
                 )
                 return response
             except Exception as e:
@@ -317,7 +323,7 @@ class ThematicLabeller:
                     prompt_content=prompt,
                     prompt_type="phase1_descriptive_coding",
                     metadata={
-                        "model": self.config.model,
+                        "model": self.model_config.get_model_for_phase('phase1_descriptive'),
                         "survey_question": self.survey_question,
                         "language": self.config.language,
                         "phase": "1/6 - Descriptive Coding",
@@ -326,7 +332,7 @@ class ThematicLabeller:
                 )
                 self.captured_phase1 = True
             
-            task = self._invoke_with_retries(prompt, DescriptiveCodingResponse)
+            task = self._invoke_with_retries(prompt, DescriptiveCodingResponse, phase='phase1_descriptive')
             tasks.append((cluster_id, representatives, task))
         
         # Execute tasks concurrently in batches
@@ -377,7 +383,7 @@ class ThematicLabeller:
                 prompt_content=prompt,
                 prompt_type="phase2_label_merger",
                 metadata={
-                    "model": self.config.model,
+                    "model": self.model_config.get_model_for_phase('phase2_merger'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
                     "phase": "2/6 - Label Merger"
@@ -386,7 +392,7 @@ class ThematicLabeller:
             self.captured_phase2 = True
         
         try:
-            merger_result = await self._invoke_with_retries(prompt, LabelMergerResponse)
+            merger_result = await self._invoke_with_retries(prompt, LabelMergerResponse, phase='phase2_merger')
             self.merger_result = merger_result  # Store for mapping later
             
             # Create new merged cluster labels
@@ -488,7 +494,7 @@ class ThematicLabeller:
                 prompt_content=prompt,
                 prompt_type="phase3_extract_themes",
                 metadata={
-                    "model": self.config.phase3_extract_model,  # Note: using phase3 model
+                    "model": self.model_config.get_model_for_phase('phase3_themes'),  # Note: using phase3 model
                     "survey_question": self.survey_question,
                     "language": self.config.language,
                     "phase": "3/6 - Extract Themes"
@@ -496,11 +502,11 @@ class ThematicLabeller:
             )
             self.captured_phase3 = True
         
-        # Use phase3_extract_model (gpt-4o) for this phase
+        # Use phase3_themes_model (gpt-4o) for this phase
         result = await self._invoke_with_retries(
             prompt, 
             ExtractedThemesResponse,
-            model_override=self.config.phase3_extract_model
+            phase='phase3_themes'
         )
         
         self.verbose_reporter.stat_line(f"Extracted {len(result.themes)} main themes")
@@ -542,7 +548,7 @@ class ThematicLabeller:
                 prompt_content=prompt,
                 prompt_type="phase4_create_codebook",
                 metadata={
-                    "model": self.config.model,  # Back to default model
+                    "model": self.model_config.get_model_for_phase('phase4_codebook'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
                     "phase": "4/6 - Create Codebook"
@@ -554,7 +560,7 @@ class ThematicLabeller:
         class CodebookResponse(BaseModel):
             themes: List[Dict[str, Any]]
         
-        result = await self._invoke_with_retries(prompt, CodebookResponse)
+        result = await self._invoke_with_retries(prompt, CodebookResponse, phase='phase4_codebook')
         
         # Parse result into Codebook
         codebook = self._parse_codebook(result.model_dump())
@@ -585,7 +591,7 @@ class ThematicLabeller:
                 prompt_content=prompt,
                 prompt_type="phase5_label_refinement",
                 metadata={
-                    "model": self.config.model,
+                    "model": self.model_config.get_model_for_phase('phase5_refinement'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
                     "phase": "5/6 - Label Refinement"
@@ -594,7 +600,7 @@ class ThematicLabeller:
             self.captured_phase5 = True
         
         try:
-            result = await self._invoke_with_retries(prompt, LabelRefinementResponse)
+            result = await self._invoke_with_retries(prompt, LabelRefinementResponse, phase='phase5_refinement')
             
             # Apply refinements
             refinement_count = 0
@@ -715,7 +721,7 @@ class ThematicLabeller:
                     prompt_content=prompt,
                     prompt_type="phase6_assignment",
                     metadata={
-                        "model": self.config.model,
+                        "model": self.model_config.get_model_for_phase('phase6_assignment'),
                         "survey_question": self.survey_question,
                         "language": self.config.language,
                         "phase": "6/6 - Assignment",
@@ -724,7 +730,7 @@ class ThematicLabeller:
                 )
                 self.captured_phase6 = True
             
-            task = self._invoke_with_retries(prompt, AssignmentResponse)
+            task = self._invoke_with_retries(prompt, AssignmentResponse, phase='phase6_assignment')
             tasks.append((cluster, task))
         
         # Execute in batches

@@ -27,7 +27,7 @@ ENGLISH_DICT_PATH = os.path.join(hunspell_dir, "dict", "en_GB")
 DEFAULT_LANGUAGE = "Dutch"
 
 # =============================================================================
-# MODEL CONFIGURATION
+# MODEL CONFIGURATION - CENTRALIZED
 # =============================================================================
 
 # LLM settings (core settings)
@@ -36,29 +36,58 @@ DEFAULT_MODEL = "gpt-4o-mini"
 
 @dataclass
 class ModelConfig:
-    """Configuration for different models used in each pipeline stage"""
+    """Centralized configuration for all models used throughout the pipeline"""
     
-    # Stage-specific models
+    # =============================================================================
+    # STAGE-SPECIFIC MODELS
+    # =============================================================================
+    
+    # Step 2: Text preprocessing models
     spell_check_model: str = "gpt-4o-mini"           # Fast model for spell checking
+    
+    # Step 3: Quality filtering and segmentation models  
     quality_filter_model: str = "gpt-4o-mini"        # Fast model for quality filtering
     segmentation_model: str = "gpt-4o-mini"          # Fast model for response segmentation
     description_model: str = "gpt-4o-mini"           # Fast model for description generation
-    embedding_model: str = "text-embedding-3-large"  # Embedding model
-    cluster_merge_model: str = "gpt-4o-mini"         # Fast model for cluster merging
-    labelling_model: str = "gpt-4.1-mini"             # High-quality model for final labelling
     
-    # Global parameters
+    # Step 4: Embedding model
+    embedding_model: str = "text-embedding-3-large"  # Embedding model
+    
+    # Step 5: Clustering models
+    cluster_merge_model: str = "gpt-4o-mini"         # Fast model for cluster merging
+    
+    # Step 6: Hierarchical labelling models (6 phases)
+    labelling_base_model: str = "gpt-4.1-mini"        # Base model for most labelling phases
+    phase1_descriptive_model: str = "gpt-4.1-mini"    # Phase 1: Descriptive coding
+    phase2_merger_model: str = "gpt-4.1-mini"         # Phase 2: Label merger
+    phase3_themes_model: str = "gpt-4o"              # Phase 3: Extract themes (premium model)
+    phase4_codebook_model: str = "gpt-4o-mini"       # Phase 4: Create codebook
+    phase5_refinement_model: str = "gpt-4o"     # Phase 5: Label refinement
+    phase6_assignment_model: str = "gpt-4o-mini"     # Phase 6: Assignment
+    
+    # =============================================================================
+    # GLOBAL PARAMETERS
+    # =============================================================================
+    
     seed: int = 42
     default_temperature: float = 0.0  # Default to deterministic
-    max_tokens: int = 16000 # 4o-mini
+    default_max_tokens: int = 16000   # Default token limit
     
-    # Stage-specific temperatures (override default if needed)
+    # =============================================================================
+    # STAGE-SPECIFIC TEMPERATURES
+    # =============================================================================
+    
     spell_check_temperature: float = 0.0
     quality_filter_temperature: float = 0.0
     segmentation_temperature: float = 0.0
     description_temperature: float = 0.0
     cluster_merge_temperature: float = 0.0   
-    labelling_temperature: float = 0.0      
+    labelling_temperature: float = 0.0
+    phase3_themes_temperature: float = 0.0  # Keep deterministic even for premium model
+    
+    # =============================================================================
+    # HELPER METHODS
+    # =============================================================================
     
     def get_model_for_stage(self, stage: str) -> str:
         """Get the appropriate model for a pipeline stage"""
@@ -69,9 +98,21 @@ class ModelConfig:
             'description': self.description_model,
             'embedding': self.embedding_model,
             'cluster_merge': self.cluster_merge_model,
-            'labelling': self.labelling_model,
+            'labelling': self.labelling_base_model,
         }
         return stage_models.get(stage, DEFAULT_MODEL)
+    
+    def get_model_for_phase(self, phase: str) -> str:
+        """Get the appropriate model for a specific labelling phase"""
+        phase_models = {
+            'phase1_descriptive': self.phase1_descriptive_model,
+            'phase2_merger': self.phase2_merger_model,
+            'phase3_themes': self.phase3_themes_model,
+            'phase4_codebook': self.phase4_codebook_model,
+            'phase5_refinement': self.phase5_refinement_model,
+            'phase6_assignment': self.phase6_assignment_model,
+        }
+        return phase_models.get(phase, self.labelling_base_model)
     
     def get_temperature_for_stage(self, stage: str) -> float:
         """Get the appropriate temperature for a pipeline stage"""
@@ -84,6 +125,13 @@ class ModelConfig:
             'labelling': self.labelling_temperature,
         }
         return stage_temperatures.get(stage, self.default_temperature)
+    
+    def get_temperature_for_phase(self, phase: str) -> float:
+        """Get the appropriate temperature for a specific labelling phase"""
+        phase_temperatures = {
+            'phase3_themes': self.phase3_themes_temperature,
+        }
+        return phase_temperatures.get(phase, self.labelling_temperature)
 
 # =============================================================================
 # CACHE CONFIGURATION
@@ -202,7 +250,8 @@ class QualityFilterConfig:
     high_quality_threshold: float = 0.7
     medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5  # For verbose output
-    model: str = "gpt-4o-mini"  # Model for quality assessment
+    # Model configuration - will be overridden by ModelConfig
+    model: str = "gpt-4o-mini"  # Fallback model
     max_concurrent_requests: int = 5  # For API rate limiting
 
 
@@ -220,7 +269,8 @@ class SegmentationConfig:
     umap_n_jobs: int = 1
     max_code_examples: int = 5  # For verbose output
     max_sample_responses: int = 3  # For verbose output
-    model: str = "gpt-4o-mini"  # Model for segmentation
+    # Model configuration - will be overridden by ModelConfig
+    model: str = "gpt-4o-mini"  # Fallback model
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
 
@@ -233,7 +283,8 @@ class EmbeddingConfig:
     """Configuration for embedding generation step"""
     batch_size: int = 100
     max_concurrent_requests: int = 5
-    embedding_model: str = "text-embedding-3-large"
+    # Model configuration - will be overridden by ModelConfig
+    embedding_model: str = "text-embedding-3-large"  # Fallback model
     max_sample_responses: int = 3  # For verbose output
 
 
@@ -279,7 +330,8 @@ class VectorizerConfig:
 @dataclass
 class ClusterMergerConfig:
     """Configuration for cluster merging step"""
-    model: str = DEFAULT_MODEL
+    # Model configuration - will be overridden by ModelConfig
+    model: str = DEFAULT_MODEL  # Fallback model
     max_concurrent_requests: int = 5
     batch_size: int = 5
     similarity_threshold: float = 0.95
@@ -332,21 +384,20 @@ class ClusteringConfig:
 @dataclass
 class LabellerConfig:
     """Configuration for hierarchical labelling"""
-    # Model settings
-    model: str = "gpt-4.1-mini" #"gpt-4o"  # Primary model for labelling - upgraded for better quality
+    # Model settings - will be overridden by ModelConfig
+    model: str = "gpt-4o-mini"  # Fallback base model
     temperature: float = 0.0  # Lower for more consistent output
     max_tokens: int = 16000  # Increased for gpt-4o's higher capacity
     seed: int = 42  # For reproducibility
     api_key: Optional[str] = None  # Will use env var if not provided
     
-    # Phase-specific model overrides (simplified 6-phase workflow)
-    phase3_extract_model: str = "gpt-4o"  # Better model for theme extraction (Phase 3)
-    # Phase 1: Descriptive coding - uses default model
-    # Phase 2: Label merger - uses default model  
-    # Phase 3: Extract themes - uses phase3_extract_model (gpt-4o)
-    # Phase 4: Create codebook - uses default model
-    # Phase 5: Label refinement - uses default model
-    # Phase 6: Assignment - uses default model
+    # NOTE: Phase-specific models are now configured in ModelConfig
+    # Phase 1: Descriptive coding - uses phase1_descriptive_model
+    # Phase 2: Label merger - uses phase2_merger_model
+    # Phase 3: Extract themes - uses phase3_themes_model (gpt-4o)
+    # Phase 4: Create codebook - uses phase4_codebook_model
+    # Phase 5: Label refinement - uses phase5_refinement_model
+    # Phase 6: Assignment - uses phase6_assignment_model
     
     # Language and localization
     language: str = DEFAULT_LANGUAGE
@@ -357,9 +408,6 @@ class LabellerConfig:
     batch_size: int = 10  # Clusters per batch in MapReduce
     assignment_threshold: float = 0.5  # Minimum probability for assignment (lowered for better coverage)
     
-    # LLM refinement option
-    #use_llm_refinement: bool = True  # Enable Phase 4 LLM refinement by default
-    
     # Retry and concurrency settings
     max_retries: int = 3
     concurrent_requests: int = 10  # Increased for better performance
@@ -369,6 +417,10 @@ class LabellerConfig:
 # DEFAULT INSTANCES
 # =============================================================================
 
+# Central model configuration - configure all models here
+DEFAULT_MODEL_CONFIG = ModelConfig()
+
+# Step-specific configurations
 DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
