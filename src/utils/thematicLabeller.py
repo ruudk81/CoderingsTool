@@ -737,6 +737,7 @@ class ThematicLabeller:
         prompt = PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
             survey_question=self.survey_question,
             atomic_concepts=concepts_text,
+            total_concepts=len(atomic_concepts_result.atomic_concepts),
             language=self.config.language
         )
         
@@ -778,6 +779,28 @@ class ThematicLabeller:
         # Verify no concepts were lost
         if input_concepts != total_output_concepts:
             self.verbose_reporter.stat_line(f"⚠️ WARNING: Concept count mismatch! Input: {input_concepts}, Output: {total_output_concepts}", bullet="  ")
+            
+            # Find which concepts are missing
+            input_concept_names = {concept.concept for concept in atomic_concepts_result.atomic_concepts}
+            output_concept_names = set()
+            
+            # Collect concepts from themes
+            for theme in result.themes:
+                for concept in theme.atomic_concepts:
+                    output_concept_names.add(concept.label)
+            
+            # Collect concepts from unassigned
+            for unassigned_concept in result.unassigned_concepts:
+                output_concept_names.add(unassigned_concept)
+            
+            missing_concepts = input_concept_names - output_concept_names
+            if missing_concepts:
+                self.verbose_reporter.stat_line(f"⚠️ Missing concepts: {sorted(missing_concepts)}", bullet="  ")
+            
+            # Also check for concepts in output that weren't in input (renamed concepts)
+            extra_concepts = output_concept_names - input_concept_names
+            if extra_concepts:
+                self.verbose_reporter.stat_line(f"⚠️ New concepts in output: {sorted(extra_concepts)}", bullet="  ")
         
         return result
     
