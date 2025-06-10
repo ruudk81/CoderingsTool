@@ -351,263 +351,282 @@ Requirements:
 Remember to provide all output in {language}
 """
 
-PHASE2_LABEL_MERGER_PROMPT = """
-You are an expert in qualitative research working in {language}. 
-Your task is to evaluate and merge descriptive labels from survey response clusters that are semantically identical or meaningfully equivalent in the context of the survey question.
+PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
+You are an expert in thematic analysis working in {language}.
+Your task is to identify the atomic concepts present across descriptive codes derived from survey responses.
 
-Here is the survey question:
+Survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Here are the current labels to evaluate for merging:
-<labels>
-{labels}
-</labels>
+Descriptive codes of response segments in sample:
+<descriptive_codes>
+{codes}
+</descriptive_codes>
 
-Merge labels (YES) ONLY IF:
-- Labels are semantically identical or meaningfully equivalent in light of the survey question ("{survey_question}")
+Instructions:
+1. Review all descriptive codes carefully
+2. Identify the ATOMIC CONCEPTS - the irreducible, single ideas that appear across responses
+3. Focus on WHAT respondents are talking about (not WHY)
+4. Be exhaustive - capture every meaningful concept
 
-Important guidelines:
-- Be conservative - when in doubt, keep clusters separate.
-- Consider the context of the survey question when evaluating semantic similarity.
-- Pay attention to nuances in meaning that might be important to preserve.
+An atomic concept is:
+- A single, indivisible idea (e.g., "price", "waiting time", "staff attitude")
+- Cannot be meaningfully broken down further
+- Clear and specific
 
-For merged labels:
-1. Choose a label that represents the merged labels as the new merged label
-2. Assign a new sequential cluster ID starting from 0
-3. List all original cluster IDs that are being merged
+Begin with analytical notes:
+<analytical_notepad>
+Work through your analysis here:
+- What patterns do you see across descriptive codes?
+- What are the fundamental concepts respondents mention?
+- Which concepts appear in multiple descriptive codes?
+[Your analysis]
+</analytical_notepad>
 
+Output JSON:
 {{
-  "merged_groups": [
+  "analytical_notes": "Your working notes from above",
+  "atomic_concepts": [
     {{
-      "new_cluster_id": 0,
-      "merged_label": "Best Representative Label",
-      "original_cluster_ids": [1, 5, 12]
-    }},
-    {{
-      "new_cluster_id": 1,
-      "merged_label": "Another Representative Label", 
-      "original_cluster_ids": [3, 8]
-    }}
-  ],
-  "unchanged_labels": [
-    {{
-      "new_cluster_id": 2,
-      "label": "Unique Label",
-      "original_cluster_id": 7
+      "concept": "Concept name",
+      "description": "What this concept represents",
+      "evidence": ["code_example_1", "code_example_2"]  // Example codes that contain this concept
     }}
   ]
 }}
 
-Provide your decisions in the required JSON format.
+Remember: Keep concepts truly atomic and use respondents' frame of reference.
+Return output in {language}.
 """
 
-PHASE3_EXTRACT_THEMES_PROMPT = """
+PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
 You are an expert in thematic analysis working in {language}.
-Your goal is to identify the atomic concepts present across descriptive codes of survey responses.
+Your task is to identify the atomic concepts present across descriptive codes derived from survey responses.
 
-1. Review the survey question:
+Survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-2. Examine the codes:
-<initial_codes>
+Descriptive codes of response segments in sample:
+<Descriptive codes>
 {codes}
-</initial_codes>
+</Descriptive codes>
 
-3. Begin your analysis by using the analytical notepad:
+Instructions:
+1. Review all descriptive codes 
+2. Identify the ATOMIC CONCEPTS - the irreducible, single ideas that appear across responses
+3. Focus on WHAT respondents are talking about (not WHY)
+4. Be exhaustive - capture every meaningful concept
+
+An atomic concept is:
+- A single, indivisible idea (e.g., "price", "waiting time", "staff attitude")
+- Cannot be meaningfully broken down further
+- Clear and specific
+
+Begin with analytical notes:
 <analytical_notepad>
-Use this space to work through your analysis. Consider the following:
-- What atomic concepts do you see across the codes?
-- Which concepts appear repeatedly?
-- What are the irreducible elements that respondents focus on?
-[Write your analytical notes here]
+Work through your analysis here:
+- What patterns do you see across descriptive codes?
+- What are the fundamental concepts respondents mention?
+- Which concepts appear in multiple descriptive codes?
+[Your analysis]
 </analytical_notepad>
 
-4. Extract ATOMIC CONCEPTS following these principles:
-- Atomic = cannot be meaningfully broken down further
-- Each concept should be a single, clear idea
-- Focus on WHAT respondents are talking about, not WHY
-- Be exhaustive - every code should contain identifiable atomic concepts
-
-5. Provide your output in JSON format:
+Output JSON:
 {{
-  "analytical_notes": "Your working notes from the notepad above",
-  "themes": ["Concept 1", "Concept 2", "Concept 3", ...],  // These are your atomic concepts
-  "conceptual_insights": {{
-    "Concept 1": "What this atomic concept represents in the data",
-    "Concept 2": "What this atomic concept represents in the data",
-    ...
-  }}
+  "analytical_notes": "Your working notes from above",
+  "atomic_concepts": [
+    {{
+      "concept": "Concept name",
+      "description": "What this concept represents",
+      "evidence": ["cluster_id_1", "cluster_id_3"]  // Which clusters contain this concept
+    }}
+  ]
 }}
 
-Remember: 
-- Keep concepts truly atomic (single ideas)
-- Use the respondents' frame of reference
-- Name concepts clearly (e.g., "Price", "Salt Content", "Packaging")
-- Ensure complete coverage
+Remember: Keep concepts truly atomic and use respondents' frame of reference.
+Return output in {language}.
 """
 
-PHASE4_CREATE_CODEBOOK_PROMPT = """
-You are an expert in creating hierarchical codebooks for qualitative analysis working in {language}.
-Your task is to organize descriptive codes into a structured codebook, grouping them based on atomic concepts.
+PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
+You are an expert in qualitative analysis working in {language}.
+Your task is to group atomic concepts into meaningful themes.
 
-First, you will be given a list of topics identified from the data:
-<topics>
-{themes}
-</topics>
+Survey question:
+<survey_question>
+{survey_question}
+</survey_question>
 
-Next, you will be presented with descriptive codes derived from the data:
-<descriptive codes>
-{merged_clusters}
-</descriptive codess>
+Atomic concepts identified:
+<atomic_concepts>
+{atomic_concepts}
+</atomic_concepts>
 
-Your task is to create a 3-level hierarchy:
-- Level 1: THEMES (broad groupings of related atomic concepts)
-- Level 2: TOPICS (specific dimensions within themes)  
-- Level 3: CODES (the descriptive codes from merged clusters)
+Instructions:
+1. Group atomic concepts that share a common theme, dimension, or aspect
+2. Create clear, meaningful theme labels
+3. Ensure each theme has a coherent focus
+4. All atomic concepts must be assigned to a theme
 
-Follow these steps:
-1. Review the topics and descriptive codes carefully
-2. Group related topics into broader THEMES
-3. Within each theme, organize all TOPICS
-4. Assign all descriptive codes to the most relevant topics
+Guidelines for themes:
+- Should represent a broad area of response
+- Typically 3-7 themes total
+- Each theme should contain related atomic concepts
+- Theme names should be clear and descriptive
 
-Example structure:
-THEME: "Service Interaction" - Covers aspects of direct interaction between customers and service representatives, including communication, responsiveness, and attitude.
-    TOPIC: "Communication Style" - Focuses on how service representatives communicate with customers, including tone, clarity, and professionalism.
-        CODE: "Friendly and respectful tone" - Customers appreciate when staff speak in a polite, positive, and respectful manner.
-        CODE: "Clear and understandable language" - Desire for service agents to use plain, jargon-free explanations.
-
-Present your results in the following format:
+Output JSON:
 {{
   "themes": [
     {{
+      "theme_id": "1",
       "label": "Theme Name",
       "description": "What this theme encompasses",
-      "topics": [
+      "atomic_concepts": [
         {{
-          "label": "Topic Name", 
-          "description": "What this topic covers",
-          "codes": [
-            {{
-              "label": "Original descriptive code label",
-              "description": "Expanded description",
-              "source_codes": [0, 5]  // Original cluster IDs
-            }}
-          ]
+          "concept_id": "1.1",
+          "label": "Atomic concept name",
+          "description": "What this concept covers"
         }}
       ]
     }}
-  ]
+  ],
+  "unassigned_concepts": []  // Any concepts that don't fit well (should be minimal)
 }}
 
-Additional guidelines:
-- All topics need to be used
-- Aim for 2-5 topics per theme
-- Every descriptive code must be assigned to a topic
-- If a code doesn't fit well, create an "Other Considerations" theme
-- Maintain consistency in granularity across the hierarchy
-
-Begin your analysis and present the codebook structure as instructed.
+Ensure all atomic concepts are assigned to themes.
+Return output in {language}.
 """
 
 
 PHASE5_LABEL_REFINEMENT_PROMPT = """
-You are an expert in refining hierarchical codebooks working in {language}.
-Your task is to polish and standardize all labels and descriptions for clarity and consistency.
+You are an expert in creating clear, professional codebooks working in {language}.
+Your task is to refine all labels and descriptions for maximum clarity and usability.
 
 Survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Current codebook structure:
-<codebook>
-{codebook}
-</codebook>
+Current codebook with cluster assignments:
+<codebook_with_assignments>
+{codebook_with_cluster_counts}
+</codebook_with_assignments>
 
-Refinement guidelines:
-1. **Labels**: Make concise (2-4 words), clear, and parallel in structure
-2. **Descriptions**: Ensure they clearly explain what each level encompasses
-3. **Consistency**: Use similar grammatical structures at each level
-4. **Clarity**: Remove ambiguity and ensure distinctions are clear
-5. **Language**: Ensure all text is properly in {language}
+Refinement goals:
+1. **Theme Labels**: Clear, broad areas (2-4 words)
+2. **Concept Labels**: Precise, specific ideas (2-4 words)
+3. **Descriptions**: Clear, distinguishable, explain what's included
+4. **Examples**: Add 1-2 representative quotes per concept
+5. **Consistency**: Parallel structure and professional tone
+
+Guidelines:
+- Use clear, non-technical language
+- Ensure labels are distinct from each other
+- Descriptions should help coders understand boundaries
+- Include cluster counts to show concept prevalence
 
 DO NOT:
-- Change the hierarchical structure
-- Move items between categories
-- Add or remove any themes, topics, or codes
-- Change the meaning of any item
+- Change the structure or assignments
+- Merge or split any items
+- Add new themes or concepts
+- Move concepts between themes
 
-Provide refinements as JSON:
+Output JSON:
 {{
-  "refined_themes": {{
-    "1": {{
-      "label": "Refined Theme Label",
-      "description": "Clear theme description"
+  "refined_codebook": {{
+    "themes": [
+      {{
+        "theme_id": "1",
+        "label": "Refined Theme Label",
+        "description": "Clear description of what this theme encompasses",
+        "atomic_concepts": [
+          {{
+            "concept_id": "1.1",
+            "label": "Refined Concept Label",
+            "description": "Precise description of this atomic concept",
+            "example_quotes": [
+              "Representative quote from assigned clusters",
+              "Another illustrative example"
+            ],
+            "cluster_count": 5,
+            "percentage": 12.5  // Percentage of total clusters
+          }}
+        ]
+      }}
+    ],
+    "summary_statistics": {{
+      "total_themes": 5,
+      "total_concepts": 23,
+      "total_clusters": 40,
+      "unassigned_clusters": 2
     }}
   }},
-  "refined_topics": {{
-    "1.1": {{
-      "label": "Refined Topic Label",
-      "description": "Clear topic description"
-    }}
-  }},
-  "refined_codes": {{
-    "1.1.1": {{
-      "label": "Refined Code Label",
-      "description": "Clear code description"
-    }}
-  }}
+  "refinement_notes": "Key refinements made and rationale"
 }}
 
-Only include items where you're making refinements.
+Return output in {language}.
 """
 
 PHASE6_ASSIGNMENT_PROMPT = """
 You are an expert in qualitative coding working in {language}.
-Your task is to assign a cluster to the most appropriate place in the hierarchical codebook.
+Your task is to assign each cluster to the most appropriate atomic concept in the thematic structure.
 
 Survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Cluster to assign:
-- ID: {cluster_id}
-- Label: {cluster_label}
-- Representative examples:
-{cluster_representatives}
+Thematic structure:
+<thematic_structure>
+{thematic_structure}
+</thematic_structure>
 
-Hierarchical codebook:
-<codebook>
-{codebook}
-</codebook>
+Cluster to assign:
+<cluster>
+ID: {cluster_id}
+Label: {cluster_label}
+Size: {cluster_size}
+Representative examples:
+{cluster_representatives}
+</cluster>
 
 Instructions:
-1. Find the most semantically appropriate code for this cluster
-2. Consider the full hierarchy: theme → topic → code
-3. Base your decision on meaning alignment, not just keyword matching
-4. If no good match exists, assign to code 99.1.1 (Other/Unclassified)
+1. Read the cluster's representative examples carefully
+2. Identify which atomic concept the cluster best represents
+3. Base your decision on semantic meaning, not just keyword matching
+4. Consider the context of the survey question
 
-Provide your assignment as JSON:
+Output JSON:
 {{
+  "cluster_id": "{cluster_id}",
   "primary_assignment": {{
     "theme_id": "1",
-    "topic_id": "1.2", 
-    "code_id": "1.2.3"
+    "concept_id": "1.2",
+    "confidence": 0.85,
+    "rationale": "Why this assignment makes sense"
   }},
-  "confidence": 0.85,
-  "alternatives": [
+  "alternative_assignments": [
     {{
-      "code_id": "2.1.1",
-      "confidence": 0.15
+      "concept_id": "2.3",
+      "confidence": 0.15,
+      "rationale": "Why this could also fit"
     }}
   ]
 }}
 
-Remember: Focus on semantic meaning in the context of the survey question.
+If no good match exists:
+{{
+  "cluster_id": "{cluster_id}",
+  "primary_assignment": {{
+    "theme_id": "99",
+    "concept_id": "99.1",
+    "confidence": 0.0,
+    "rationale": "Does not fit existing concepts because..."
+  }}
+}}
+
+Return output in {language}.
 """
