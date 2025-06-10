@@ -29,15 +29,7 @@ FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate
 FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
-
-# Debug flags
-DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
-# Set DEBUG_CLUSTER_TRACKING = True to see:
-# - Detailed cluster ID flow through each phase
-# - How original clusters get merged into concepts
-# - Which clusters become "Other/Miscellaneous"
-# - Exact mapping from original to final cluster IDs
-# - Verification that no clusters are lost in the process
+DEBUG_CLUSTER_TRACKING = True  # Enable detailed cluster ID tracking diagnostics
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -383,10 +375,7 @@ if DEBUG_CLUSTER_TRACKING:
     
     verbose_reporter = VerboseReporter(VERBOSE)
     prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
-    
-    print("\n" + "="*60)
-    print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
-    print("="*60)
+  
     
     thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
     labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
@@ -424,6 +413,30 @@ for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster
         merged_summaries.append(summary)
 merged_summaries_text = "\n".join(merged_summaries)
 print(merged_summaries_text)
+
+codebook_final = thematic_labeller.refined_codebook
+lines_final = []
+for theme in codebook_final.themes:
+    lines_final.append(f"{theme.id}. {theme.label.upper()}")
+    
+    related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
+    for topic in related_topics:
+        lines_final.append(f"   {topic.id} {topic.label}")
+        
+        related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
+        for code in related_codes:
+            # Include source_codes in the display
+            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+            lines_final.append(f"      {code.id} {code.label}{source_info}")
+    
+print("\n==== CODEBOOK (After all phases) ===")    
+print("\n".join(lines_final))
+total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
+print(f"Total clusters assigned: {total_sources}")
+
+
+
+
 
 step_name = "labels"
 verbose_reporter = VerboseReporter(VERBOSE)
@@ -500,25 +513,6 @@ for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster
 merged_summaries_text = "\n".join(merged_summaries)
 print(merged_summaries_text)
 
-# codebook_final = thematic_labeller.codebook
-# lines_final = []
-# for theme in codebook_final.themes:
-#     lines_final.append(f"{theme.id}. {theme.label.upper()}")
-    
-#     related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
-#     for topic in related_topics:
-#         lines_final.append(f"   {topic.id} {topic.label}")
-        
-#         related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
-#         for code in related_codes:
-#             # Include source_codes in the display
-#             source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-#             lines_final.append(f"      {code.id} {code.label}{source_info}")
-    
-# print("\n==== CODEBOOK (After all phases) ===")    
-# print("\n".join(lines_final))
-# total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
-# print(f"Total clusters assigned: {total_sources}")
 
 # === STEP 7 ========================================================================================================
 """export results"""
