@@ -347,23 +347,23 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
     #debug 
-    # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-    # for x in range(1, round(len(cluster_ids) / 20) + 1):
-    #     y = x * 20
-    #     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    for x in range(1, round(len(cluster_ids) / 20) + 1):
+        y = x * 20
+        print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
     
-    #     for z in range(y - 20, y):
-    #         if z < len(cluster_ids):
-    #             print(f"\nCluster {z}")
-    #             for item in initial_cluster_results:
-    #                 for subitem in item.response_segment:
-    #                     if subitem.initial_cluster == z:
-    #                         print(subitem.segment_description)
-    #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+        for z in range(y - 20, y):
+            if z < len(cluster_ids):
+                print(f"\nCluster {z}")
+                for item in initial_cluster_results:
+                    for subitem in item.response_segment:
+                        if subitem.initial_cluster == z:
+                            print(subitem.segment_description)
+        input("\n🔸 Press Enter to continue to the next batch of clusters...")
     
-    for item in initial_cluster_results:
-        print(item)
-        break
+    # for item in initial_cluster_results:
+    #     print(item)
+    #     break
 
 # === STEP 6 ========================================================================================================
 # """thematic labeling"""

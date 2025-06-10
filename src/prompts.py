@@ -280,6 +280,45 @@ CORRECT examples (stay within segment content):
 ]
 
 """
+PHASE1_DESCRIPTIVE_CODING_PROMPT = """
+You are an expert in descriptive coding working in {language}.
+Your task is to perform descriptive coding on segments from open-ended survey responses. 
+You will provide one description that captures what respondents are expressing in these segments.
+
+Here are the coding principles you must follow:
+1. Stay close to the data: Use respondents' own concepts
+2. Be descriptive: Capture what is said, not why
+3. Be specific: Focus on the distinct pattern in these segments
+
+Survey question: 
+<survey_question>
+{survey_question}
+</survey_question>
+
+Segment ID: 
+<cluster_id>
+{cluster_id}
+</cluster_id>
+
+Representative segments:
+<representatives>
+{representatives}
+</representatives>
+
+To complete this task:
+1. Carefully read through all the representative segments.
+2. Identify the common theme or pattern expressed across these segments.
+3. Create a concise label that accurately captures this theme or pattern.
+4. Ensure your label adheres to the coding principles mentioned above.
+5. Double-check that your label is specific to this cluster and not too general.
+
+Your output should be in the following format:
+{{
+  "label": "Your Descriptive Label Here"
+}}
+
+Remember to provide the label in {language}
+"""
 
 LABEL_MERGER_PROMPT = """
 You are an expert in qualitative research working in {language}. 
@@ -300,6 +339,9 @@ Merge labels (YES) ONLY IF:
 
 Important guidelines:
 - Be conservative - when in doubt, keep clusters separate.
+- Consider the context of the survey question when evaluating semantic similarity.
+- Pay attention to nuances in meaning that might be important to preserve.
+
 
 For merged labels :
 1. Choose the most representative label as the new merged label
@@ -375,43 +417,7 @@ Output your analysis in the following JSON format:
 Ensure that your output is valid JSON and includes at least two initial themes. If you identify more themes, add them to the JSON structure following the same format.
 """
 
-PHASE1_DESCRIPTIVE_CODING_PROMPT = """
-You are an expert in descriptive coding working in {language}.
-Your task is to perform descriptive coding on segments from open-ended survey responses. 
-You will provide one concise label that captures what respondents are expressing in these segments.
 
-Here are the coding principles you must follow:
-1. Stay close to the data: Use respondents' own concepts
-2. Be descriptive: Capture what is said, not why
-3. Be specific: Focus on the distinct pattern in these segments
-
-
-The output format should be:
-{{
-  "label": "Descriptive Label Here"
-}}
-
-You must output the label in {language}.
-
-Now, here is the input you will work with:
-
-Survey question: 
-<survey_question>
-{survey_question}
-</survey_question>
-
-Segment ID: 
-<cluster_id>
-{cluster_id}
-</cluster_id>
-
-Representative segments:
-<representatives>
-{representatives}
-</representatives>
-
-Follow these steps to complete the task:
-"""
 
 PHASE2_EXTRACT_THEMES_PROMPT = """
 You are an expert in thematic analysis working in {language}. 
