@@ -304,10 +304,11 @@ Your task is to perform thematic coding on a cluster of similar segments from op
 You will provide both a thematic label and a natural description that captures the common theme.
 
 Here are the coding principles you must follow:
-1. Stay close to the data: Use respondents' own concepts
-2. Be descriptive: Capture what is said, not why
-3. Be specific: Focus on the distinct pattern in these segments
-4. Create single-themed labels: Each label should reflect ONE idea, topic, or theme
+1. Understand the survey responses in light of the survey question
+2. Stay close to the data: Use respondents' own concepts
+3. Be descriptive: Capture what is said, not why
+4. Be specific: Focus on the distinct pattern in these segments
+5. Create single-themed labels: Each label should reflect ONE idea, topic, or theme
 
 Survey question: 
 <survey_question>
@@ -326,8 +327,8 @@ Representative segments:
 
 To complete this task:
 1. Carefully read through all the representative segments
-2. Identify the common theme or pattern expressed across these segments
-3. Create both a label and description that capture this theme
+2. Identify the common theme or pattern expressed across these segments from the point of view of the survey question ("{survey_question}")
+3. Create both a label and description that capture this common theme or pattern
 
 Your output should be in the following format:
 {{
@@ -358,15 +359,15 @@ Here are the current labels to evaluate for merging:
 </labels>
 
 Merge labels (YES) ONLY IF:
-- Both clusters are semantically identical or meaningfully equivalent
+- Labels are semantically identical or meaningfully equivalent in light of the survey question ("{survey_question}")
 
 Important guidelines:
 - Be conservative - when in doubt, keep clusters separate.
 - Consider the context of the survey question when evaluating semantic similarity.
 - Pay attention to nuances in meaning that might be important to preserve.
 
-For merged labels :
-1. Choose the most representative label as the new merged label
+For merged labels:
+1. Choose a label that represents the merged labels as the new merged label
 2. Assign a new sequential cluster ID starting from 0
 3. List all original cluster IDs that are being merged
 
@@ -421,8 +422,8 @@ Use this space to work through your analysis. Consider the following:
 - What might be the deeper story here?
 - Which codes seem to cluster around similar underlying ideas?
 - What abstractions would explain these clusters?
-- Are there any surprising connections between seemingly different codes?
-- What themes would reveal non-obvious insights?
+- Are there more connections between seemingly different codes?
+- What other themes would reveal insights?
 
 [Write your analytical notes here]
 </analytical_notepad>
@@ -435,7 +436,7 @@ STEP 2: Discover themes that are TRUE ABSTRACTIONS
 5. Adhere to these CRITICAL REQUIREMENTS:
 - Themes must be conceptual abstractions, NOT collections of examples
 - Each theme should capture a pattern that requires interpretation to see
-- Themes should explain WHY certain codes belong together, not just THAT they belong together
+- Be exhaustive - alle codes need to be represented by the themes
 
 6. AVOID these pitfalls:
 - Descriptive groupings that just summarize visible features

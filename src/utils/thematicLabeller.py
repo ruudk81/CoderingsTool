@@ -280,17 +280,22 @@ class ThematicLabeller:
         labeled_clusters = []
         tasks = []
         for cluster_id, cluster_data in sorted(initial_clusters.items()):
-            # Calculate representatives
+            # Calculate unique representatives
             if cluster_data['embeddings']:
                 embeddings = np.array(cluster_data['embeddings'])
                 centroid = np.mean(embeddings, axis=0)
-                
                 similarities = cosine_similarity(embeddings, centroid.reshape(1, -1)).flatten()
-                top_k = min(self.config.top_k_representatives, len(cluster_data['descriptions']))
-                top_indices = np.argsort(similarities)[-top_k:][::-1]
-                
-                representatives = [(cluster_data['descriptions'][i], float(similarities[i])) 
-                                 for i in top_indices]
+                top_k = min(5, len(cluster_data['descriptions']))
+                sorted_indices = np.argsort(similarities)[::-1]
+                seen_descriptions = set()
+                representatives = []
+                for idx in sorted_indices:
+                    desc = cluster_data['descriptions'][idx]
+                    if desc not in seen_descriptions:
+                        seen_descriptions.add(desc)
+                        representatives.append((desc, float(similarities[idx])))
+                        if len(representatives) >= top_k:
+                            break
             else:
                 # Fallback if no embeddings
                 representatives = [(desc, 1.0) for desc in cluster_data['descriptions'][:3]]

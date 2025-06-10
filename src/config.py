@@ -333,7 +333,7 @@ class ClusteringConfig:
 class LabellerConfig:
     """Configuration for hierarchical labelling"""
     # Model settings
-    model: str = "gpt-4o-mini" #"gpt-4o"  # Primary model for labelling - upgraded for better quality
+    model: str = "gpt-4.1-mini" #"gpt-4o"  # Primary model for labelling - upgraded for better quality
     temperature: float = 0.0  # Lower for more consistent output
     max_tokens: int = 16000  # Increased for gpt-4o's higher capacity
     seed: int = 42  # For reproducibility
