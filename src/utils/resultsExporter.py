@@ -7,6 +7,16 @@ import pyreadstat
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 import json
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import seaborn as sns
+from wordcloud import WordCloud
+import io
+from openpyxl.drawing.image import Image
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
+import xlsxwriter
 
 import models
 from .verboseReporter import VerboseReporter
@@ -270,108 +280,247 @@ class ResultsExporter:
                         var_name: str,
                         export_dir: str) -> str:
         """
-        Export comprehensive Excel report with multiple tabs
+        Export comprehensive Excel report with embedded visualizations
         """
-        self.verbose_reporter.step_start("Exporting to Excel")
+        self.verbose_reporter.step_start("Exporting to Excel with visualizations")
         
         # Create output filename
         base_name = Path(filename).stem
         output_filename = f"{base_name}_{var_name}{self.config.excel_suffix}.xlsx"
         output_path = os.path.join(export_dir, output_filename)
         
-        # Create Excel writer
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            
+        # Use xlsxwriter for better chart support
+        workbook = xlsxwriter.Workbook(output_path)
+        
+        try:
             # Tab 1: Codebook
             if self.config.enable_codebook_tab:
-                self._create_codebook_tab(writer, hierarchical_structure)
+                self._create_enhanced_codebook_tab(workbook, hierarchical_structure)
             
-            # Tab 2: Dendrogram (hierarchical structure view)
+            # Tab 2: Hierarchy with visual dendrogram
             if self.config.enable_dendrogram_tab:
-                self._create_dendrogram_tab(writer, hierarchical_structure)
+                self._create_enhanced_dendrogram_tab(workbook, hierarchical_structure, export_dir)
             
-            # Tab 3: Frequency charts data
+            # Tab 3: Frequencies with embedded charts
             if self.config.enable_frequency_tab:
-                self._create_frequency_tab(writer, respondent_codes, hierarchical_structure)
+                self._create_enhanced_frequency_tab(workbook, respondent_codes, hierarchical_structure, export_dir)
             
-            # Tab 4: Wordcloud data (frequencies for each theme)
+            # Tab 4: Wordcloud with embedded images
             if self.config.enable_wordcloud_tab:
-                self._create_wordcloud_tab(writer, respondent_codes, hierarchical_structure)
+                self._create_enhanced_wordcloud_tab(workbook, respondent_codes, hierarchical_structure, export_dir)
         
-        self.verbose_reporter.stat_line(f"Excel file saved: {output_filename}")
+        finally:
+            workbook.close()
+        
+        self.verbose_reporter.stat_line(f"Excel file with visualizations saved: {output_filename}")
         return output_path
     
-    def _create_codebook_tab(self, writer, hierarchical_structure: Dict):
-        """Create codebook tab with full hierarchical structure"""
+    def _create_enhanced_codebook_tab(self, workbook, hierarchical_structure: Dict):
+        """Create enhanced codebook tab with styled formatting"""
         themes = hierarchical_structure['themes']
         
-        codebook_data = []
+        # Create worksheet
+        worksheet = workbook.add_worksheet('Codebook')
         
+        # Define formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'font_size': 12,
+            'bg_color': '#366092',
+            'font_color': 'white',
+            'align': 'center',
+            'valign': 'vcenter',
+            'border': 1
+        })
+        
+        theme_format = workbook.add_format({
+            'bold': True,
+            'font_size': 11,
+            'bg_color': '#D9E1F2',
+            'border': 1,
+            'align': 'left'
+        })
+        
+        topic_format = workbook.add_format({
+            'font_size': 10,
+            'bg_color': '#F2F2F2',
+            'border': 1,
+            'align': 'left',
+            'indent': 1
+        })
+        
+        code_format = workbook.add_format({
+            'font_size': 9,
+            'border': 1,
+            'align': 'left',
+            'indent': 2
+        })
+        
+        # Headers
+        headers = ['Level', 'ID', 'Numeric_ID', 'Label', 'Description', 'Parent_ID', 'Full_Path']
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_format)
+        
+        # Data
+        row = 1
         for theme in themes:
-            # Add theme row
-            codebook_data.append({
-                'Level': 'Theme',
-                'ID': theme.theme_id,
-                'Numeric_ID': theme.numeric_id,
-                'Label': theme.label,
-                'Description': theme.description,
-                'Parent_ID': '',
-                'Full_Path': theme.label
-            })
+            # Theme row
+            worksheet.write(row, 0, 'Theme', theme_format)
+            worksheet.write(row, 1, theme.theme_id, theme_format)
+            worksheet.write(row, 2, theme.numeric_id, theme_format)
+            worksheet.write(row, 3, theme.label, theme_format)
+            worksheet.write(row, 4, theme.description, theme_format)
+            worksheet.write(row, 5, '', theme_format)
+            worksheet.write(row, 6, theme.label, theme_format)
+            row += 1
             
             for topic in theme.topics:
-                # Add topic row
-                codebook_data.append({
-                    'Level': 'Topic',
-                    'ID': topic.topic_id,
-                    'Numeric_ID': topic.numeric_id,
-                    'Label': topic.label,
-                    'Description': topic.description,
-                    'Parent_ID': theme.theme_id,
-                    'Full_Path': f"{theme.label} > {topic.label}"
-                })
+                # Topic row
+                worksheet.write(row, 0, 'Topic', topic_format)
+                worksheet.write(row, 1, topic.topic_id, topic_format)
+                worksheet.write(row, 2, topic.numeric_id, topic_format)
+                worksheet.write(row, 3, topic.label, topic_format)
+                worksheet.write(row, 4, topic.description, topic_format)
+                worksheet.write(row, 5, theme.theme_id, topic_format)
+                worksheet.write(row, 6, f"{theme.label} > {topic.label}", topic_format)
+                row += 1
                 
                 for code in topic.codes:
-                    # Add code row
-                    codebook_data.append({
-                        'Level': 'Code',
-                        'ID': code.code_id,
-                        'Numeric_ID': code.numeric_id,
-                        'Label': code.label,
-                        'Description': code.description,
-                        'Parent_ID': topic.topic_id,
-                        'Full_Path': f"{theme.label} > {topic.label} > {code.label}"
-                    })
+                    # Code row
+                    worksheet.write(row, 0, 'Code', code_format)
+                    worksheet.write(row, 1, code.code_id, code_format)
+                    worksheet.write(row, 2, code.numeric_id, code_format)
+                    worksheet.write(row, 3, code.label, code_format)
+                    worksheet.write(row, 4, code.description, code_format)
+                    worksheet.write(row, 5, topic.topic_id, code_format)
+                    worksheet.write(row, 6, f"{theme.label} > {topic.label} > {code.label}", code_format)
+                    row += 1
         
-        codebook_df = pd.DataFrame(codebook_data)
-        codebook_df.to_excel(writer, sheet_name='Codebook', index=False)
+        # Adjust column widths
+        worksheet.set_column('A:A', 8)   # Level
+        worksheet.set_column('B:B', 10)  # ID
+        worksheet.set_column('C:C', 12)  # Numeric_ID
+        worksheet.set_column('D:D', 25)  # Label
+        worksheet.set_column('E:E', 40)  # Description
+        worksheet.set_column('F:F', 12)  # Parent_ID
+        worksheet.set_column('G:G', 50)  # Full_Path
     
-    def _create_dendrogram_tab(self, writer, hierarchical_structure: Dict):
-        """Create dendrogram tab showing hierarchical relationships"""
+    def _create_enhanced_dendrogram_tab(self, workbook, hierarchical_structure: Dict, export_dir: str):
+        """Create dendrogram tab with visual hierarchy and tree diagram"""
         themes = hierarchical_structure['themes']
         
-        # Create a structured view for dendrogram visualization
-        dendrogram_data = []
+        # Create worksheet
+        worksheet = workbook.add_worksheet('Hierarchy')
         
+        # Create tree diagram using matplotlib
+        fig, ax = plt.subplots(1, 1, figsize=(self.config.chart_width, self.config.chart_height))
+        fig.patch.set_facecolor('white')
+        
+        # Create hierarchical tree structure
+        y_pos = 0
+        y_positions = {}
+        
+        for theme_idx, theme in enumerate(themes):
+            # Theme level
+            theme_y = y_pos
+            y_positions[theme.theme_id] = theme_y
+            
+            # Draw theme box
+            ax.text(0, theme_y, theme.label, fontsize=14, fontweight='bold',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor='lightblue', alpha=0.8))
+            
+            topic_start_y = y_pos
+            for topic_idx, topic in enumerate(theme.topics):
+                y_pos -= 1
+                topic_y = y_pos
+                y_positions[topic.topic_id] = topic_y
+                
+                # Draw topic box
+                ax.text(1, topic_y, topic.label, fontsize=12,
+                       bbox=dict(boxstyle="round,pad=0.2", facecolor='lightgreen', alpha=0.6))
+                
+                # Draw line from theme to topic
+                ax.plot([0.4, 0.9], [theme_y, topic_y], 'k-', alpha=0.5)
+                
+                code_start_y = y_pos
+                for code_idx, code in enumerate(topic.codes):
+                    y_pos -= 0.7
+                    code_y = y_pos
+                    
+                    # Draw code box
+                    ax.text(2, code_y, code.label, fontsize=10,
+                           bbox=dict(boxstyle="round,pad=0.1", facecolor='lightyellow', alpha=0.6))
+                    
+                    # Draw line from topic to code
+                    ax.plot([1.4, 1.9], [topic_y, code_y], 'k-', alpha=0.3)
+                
+                y_pos -= 0.5  # Space between topics
+            
+            y_pos -= 1  # Space between themes
+        
+        ax.set_xlim(-0.5, 3)
+        ax.set_ylim(y_pos - 1, 1)
+        ax.set_title('Hierarchical Structure: Themes → Topics → Codes', fontsize=16, fontweight='bold')
+        ax.axis('off')
+        
+        # Save chart
+        chart_path = os.path.join(export_dir, 'hierarchy_chart.png')
+        plt.tight_layout()
+        plt.savefig(chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close()
+        
+        # Add structured data table
+        header_format = workbook.add_format({
+            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
+            'align': 'center', 'border': 1
+        })
+        
+        headers = ['Theme', 'Topic', 'Code', 'Numeric_ID', 'Level']
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_format)
+        
+        # Data rows
+        row = 1
         for theme in themes:
-            theme_row = [theme.label, '', '', theme.numeric_id, 'Theme']
-            dendrogram_data.append(theme_row)
+            worksheet.write(row, 0, theme.label, workbook.add_format({'bold': True, 'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 1, '', workbook.add_format({'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 2, '', workbook.add_format({'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 3, theme.numeric_id, workbook.add_format({'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 4, 'Theme', workbook.add_format({'bg_color': '#D9E1F2'}))
+            row += 1
             
             for topic in theme.topics:
-                topic_row = ['', topic.label, '', topic.numeric_id, 'Topic']
-                dendrogram_data.append(topic_row)
+                worksheet.write(row, 0, '', workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 1, topic.label, workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 2, '', workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 3, topic.numeric_id, workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 4, 'Topic', workbook.add_format({'bg_color': '#F2F2F2'}))
+                row += 1
                 
                 for code in topic.codes:
-                    code_row = ['', '', code.label, code.numeric_id, 'Code']
-                    dendrogram_data.append(code_row)
+                    worksheet.write(row, 0, '')
+                    worksheet.write(row, 1, '')
+                    worksheet.write(row, 2, code.label)
+                    worksheet.write(row, 3, code.numeric_id)
+                    worksheet.write(row, 4, 'Code')
+                    row += 1
         
-        dendrogram_df = pd.DataFrame(dendrogram_data, 
-                                   columns=['Theme', 'Topic', 'Code', 'Numeric_ID', 'Level'])
-        dendrogram_df.to_excel(writer, sheet_name='Hierarchy', index=False)
+        # Insert chart image
+        try:
+            worksheet.insert_image(f'G2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"Warning: Could not insert hierarchy chart: {e}")
+        
+        # Adjust column widths
+        worksheet.set_column('A:E', 20)
+        worksheet.set_column('F:P', 25)  # Space for chart
     
-    def _create_frequency_tab(self, writer, respondent_codes: Dict, hierarchical_structure: Dict):
-        """Create frequency analysis tab"""
+    def _create_enhanced_frequency_tab(self, workbook, respondent_codes: Dict, hierarchical_structure: Dict, export_dir: str):
+        """Create frequency analysis tab with embedded bar charts"""
         themes = hierarchical_structure['themes']
+        
+        # Create worksheet
+        worksheet = workbook.add_worksheet('Frequencies')
         
         # Count frequencies for each level
         theme_counts = {}
@@ -379,103 +528,268 @@ class ResultsExporter:
         code_counts = {}
         
         for respondent_id, codes in respondent_codes.items():
-            # Count themes
             theme_code = codes['theme_code']
             if theme_code is not None:
                 theme_counts[theme_code] = theme_counts.get(theme_code, 0) + 1
             
-            # Count topics
             topic_code = codes['topic_code']
             if topic_code is not None:
                 topic_counts[topic_code] = topic_counts.get(topic_code, 0) + 1
             
-            # Count codes
             code_code = codes['code_code']
             if code_code is not None:
                 code_counts[code_code] = code_counts.get(code_code, 0) + 1
         
-        # Create frequency dataframes
         total_respondents = len(respondent_codes)
         
-        # Theme frequencies
-        theme_freq_data = []
+        # Prepare data for charts
+        theme_data = []
+        topic_data = []
+        code_data = []
+        
         for theme in themes:
             count = theme_counts.get(theme.numeric_id, 0)
             percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-            theme_freq_data.append({
-                'Level': 'Theme',
-                'ID': theme.theme_id,
-                'Label': theme.label,
-                'Frequency': count,
-                'Percentage': percentage
-            })
+            if count > 0:  # Only include non-zero frequencies
+                theme_data.append((theme.label, count, percentage))
         
-        # Topic frequencies
-        topic_freq_data = []
         for theme in themes:
             for topic in theme.topics:
                 count = topic_counts.get(topic.numeric_id, 0)
                 percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                topic_freq_data.append({
-                    'Level': 'Topic',
-                    'ID': topic.topic_id,
-                    'Label': topic.label,
-                    'Frequency': count,
-                    'Percentage': percentage
-                })
+                if count > 0:
+                    topic_data.append((topic.label, count, percentage))
         
-        # Code frequencies
-        code_freq_data = []
         for theme in themes:
             for topic in theme.topics:
                 for code in topic.codes:
                     count = code_counts.get(code.numeric_id, 0)
                     percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                    code_freq_data.append({
-                        'Level': 'Code',
-                        'ID': code.code_id,
-                        'Label': code.label,
-                        'Frequency': count,
-                        'Percentage': percentage
-                    })
+                    if count > 0:
+                        code_data.append((code.label, count, percentage))
         
-        # Combine all frequencies
-        all_freq_data = theme_freq_data + topic_freq_data + code_freq_data
-        freq_df = pd.DataFrame(all_freq_data)
-        freq_df.to_excel(writer, sheet_name='Frequencies', index=False)
+        # Create charts
+        chart_paths = []
+        
+        # Theme frequency chart
+        if theme_data:
+            fig, ax = plt.subplots(figsize=(12, 6))
+            labels, counts, percentages = zip(*sorted(theme_data, key=lambda x: x[1], reverse=True))
+            bars = ax.bar(range(len(labels)), counts, color='skyblue', alpha=0.8)
+            ax.set_xlabel('Themes', fontsize=12)
+            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Theme Frequencies', fontsize=14, fontweight='bold')
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels([label[:20] + '...' if len(label) > 20 else label for label in labels], 
+                             rotation=45, ha='right')
+            
+            # Add value labels on bars
+            for bar, count, pct in zip(bars, counts, percentages):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=9)
+            
+            plt.tight_layout()
+            theme_chart_path = os.path.join(export_dir, 'theme_frequencies.png')
+            plt.savefig(theme_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            chart_paths.append(('Theme Frequencies', theme_chart_path))
+        
+        # Topic frequency chart (top 15)
+        if topic_data:
+            fig, ax = plt.subplots(figsize=(14, 8))
+            sorted_topics = sorted(topic_data, key=lambda x: x[1], reverse=True)[:15]
+            labels, counts, percentages = zip(*sorted_topics)
+            bars = ax.bar(range(len(labels)), counts, color='lightgreen', alpha=0.8)
+            ax.set_xlabel('Topics', fontsize=12)
+            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Top 15 Topic Frequencies', fontsize=14, fontweight='bold')
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels([label[:25] + '...' if len(label) > 25 else label for label in labels], 
+                             rotation=45, ha='right')
+            
+            for bar, count, pct in zip(bars, counts, percentages):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=8)
+            
+            plt.tight_layout()
+            topic_chart_path = os.path.join(export_dir, 'topic_frequencies.png')
+            plt.savefig(topic_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            chart_paths.append(('Topic Frequencies', topic_chart_path))
+        
+        # Code frequency chart (top 20)
+        if code_data:
+            fig, ax = plt.subplots(figsize=(16, 10))
+            sorted_codes = sorted(code_data, key=lambda x: x[1], reverse=True)[:20]
+            labels, counts, percentages = zip(*sorted_codes)
+            bars = ax.bar(range(len(labels)), counts, color='lightcoral', alpha=0.8)
+            ax.set_xlabel('Codes', fontsize=12)
+            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Top 20 Code Frequencies', fontsize=14, fontweight='bold')
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels([label[:30] + '...' if len(label) > 30 else label for label in labels], 
+                             rotation=45, ha='right')
+            
+            for bar, count, pct in zip(bars, counts, percentages):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=7)
+            
+            plt.tight_layout()
+            code_chart_path = os.path.join(export_dir, 'code_frequencies.png')
+            plt.savefig(code_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            chart_paths.append(('Code Frequencies', code_chart_path))
+        
+        # Add data table
+        header_format = workbook.add_format({
+            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
+            'align': 'center', 'border': 1
+        })
+        
+        headers = ['Level', 'ID', 'Label', 'Frequency', 'Percentage']
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_format)
+        
+        # Add all frequency data
+        row = 1
+        all_freq_data = []
+        
+        # Add theme data
+        for theme in themes:
+            count = theme_counts.get(theme.numeric_id, 0)
+            percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
+            all_freq_data.append(['Theme', theme.theme_id, theme.label, count, percentage])
+        
+        # Add topic data
+        for theme in themes:
+            for topic in theme.topics:
+                count = topic_counts.get(topic.numeric_id, 0)
+                percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
+                all_freq_data.append(['Topic', topic.topic_id, topic.label, count, percentage])
+        
+        # Add code data
+        for theme in themes:
+            for topic in theme.topics:
+                for code in topic.codes:
+                    count = code_counts.get(code.numeric_id, 0)
+                    percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
+                    all_freq_data.append(['Code', code.code_id, code.label, count, percentage])
+        
+        # Write data
+        for data_row in all_freq_data:
+            for col, value in enumerate(data_row):
+                if col == 4:  # Percentage column
+                    worksheet.write(row, col, f"{value:.1f}%")
+                else:
+                    worksheet.write(row, col, value)
+            row += 1
+        
+        # Insert charts
+        chart_row = row + 3
+        for i, (title, chart_path) in enumerate(chart_paths):
+            try:
+                worksheet.write(chart_row, 0, title, workbook.add_format({'bold': True, 'font_size': 14}))
+                worksheet.insert_image(chart_row + 1, 0, chart_path, {'x_scale': 0.7, 'y_scale': 0.7})
+                chart_row += 35  # Space for next chart
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"Warning: Could not insert chart {title}: {e}")
+        
+        # Adjust column widths
+        worksheet.set_column('A:E', 20)
     
-    def _create_wordcloud_tab(self, writer, respondent_codes: Dict, hierarchical_structure: Dict):
-        """Create wordcloud data tab with code frequencies by theme"""
+    def _create_enhanced_wordcloud_tab(self, workbook, respondent_codes: Dict, hierarchical_structure: Dict, export_dir: str):
+        """Create wordcloud tab with embedded wordcloud images for each theme"""
         themes = hierarchical_structure['themes']
         
-        wordcloud_data = []
+        # Create worksheet
+        worksheet = workbook.add_worksheet('Wordcloud_Data')
         
+        # Add data table first
+        header_format = workbook.add_format({
+            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
+            'align': 'center', 'border': 1
+        })
+        
+        headers = ['Theme', 'Code_Label', 'Frequency', 'Weight']
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_format)
+        
+        wordcloud_data = []
+        theme_wordclouds = {}
+        
+        row = 1
         for theme in themes:
-            # Get all codes under this theme
             theme_code_frequencies = {}
             
             for topic in theme.topics:
                 for code in topic.codes:
-                    # Count how many respondents were assigned to this code
                     count = sum(1 for codes in respondent_codes.values() 
                               if codes['code_code'] == code.numeric_id)
                     
                     if count > 0:
                         theme_code_frequencies[code.label] = count
+                        
+                        # Add to data table
+                        worksheet.write(row, 0, theme.label)
+                        worksheet.write(row, 1, code.label)
+                        worksheet.write(row, 2, count)
+                        worksheet.write(row, 3, count)  # Weight same as frequency
+                        row += 1
             
-            # Create wordcloud entries for this theme
-            for code_label, frequency in theme_code_frequencies.items():
-                wordcloud_data.append({
-                    'Theme': theme.label,
-                    'Code_Label': code_label,
-                    'Frequency': frequency,
-                    'Weight': frequency  # For wordcloud sizing
-                })
+            # Create wordcloud for this theme if it has data
+            if theme_code_frequencies:
+                theme_wordclouds[theme.label] = theme_code_frequencies
         
-        if wordcloud_data:
-            wordcloud_df = pd.DataFrame(wordcloud_data)
-            wordcloud_df.to_excel(writer, sheet_name='Wordcloud_Data', index=False)
-        else:
-            # Create empty dataframe with proper columns
-            empty_df = pd.DataFrame(columns=['Theme', 'Code_Label', 'Frequency', 'Weight'])
-            empty_df.to_excel(writer, sheet_name='Wordcloud_Data', index=False)
+        # Generate wordcloud images
+        wordcloud_paths = []
+        
+        for theme_label, code_frequencies in theme_wordclouds.items():
+            if len(code_frequencies) > 0:
+                try:
+                    # Create wordcloud
+                    wordcloud = WordCloud(
+                        width=self.config.wordcloud_width,
+                        height=self.config.wordcloud_height,
+                        max_words=self.config.max_wordcloud_words,
+                        background_color='white',
+                        colormap='viridis',
+                        relative_scaling=0.5,
+                        random_state=42
+                    ).generate_from_frequencies(code_frequencies)
+                    
+                    # Create matplotlib figure
+                    fig, ax = plt.subplots(figsize=(12, 8))
+                    ax.imshow(wordcloud, interpolation='bilinear')
+                    ax.axis('off')
+                    ax.set_title(f'Wordcloud: {theme_label}', fontsize=16, fontweight='bold', pad=20)
+                    
+                    # Save wordcloud
+                    wordcloud_path = os.path.join(export_dir, f'wordcloud_{theme_label.replace(" ", "_")}.png')
+                    plt.tight_layout()
+                    plt.savefig(wordcloud_path, dpi=300, bbox_inches='tight', facecolor='white')
+                    plt.close()
+                    
+                    wordcloud_paths.append((theme_label, wordcloud_path))
+                    
+                except Exception as e:
+                    self.verbose_reporter.stat_line(f"Warning: Could not create wordcloud for {theme_label}: {e}")
+        
+        # Insert wordcloud images
+        if wordcloud_paths:
+            chart_row = row + 3
+            for theme_label, wordcloud_path in wordcloud_paths:
+                try:
+                    worksheet.write(chart_row, 0, f'Wordcloud: {theme_label}', 
+                                  workbook.add_format({'bold': True, 'font_size': 14}))
+                    worksheet.insert_image(chart_row + 1, 0, wordcloud_path, 
+                                         {'x_scale': 0.6, 'y_scale': 0.6})
+                    chart_row += 30  # Space for next wordcloud
+                except Exception as e:
+                    self.verbose_reporter.stat_line(f"Warning: Could not insert wordcloud for {theme_label}: {e}")
+        
+        # Adjust column widths
+        worksheet.set_column('A:D', 20)
+        worksheet.set_column('E:O', 25)  # Space for wordclouds
