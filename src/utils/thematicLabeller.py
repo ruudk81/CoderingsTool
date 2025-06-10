@@ -1713,11 +1713,11 @@ class ThematicLabeller:
             print("  ✅ All clusters were assigned")
         
         # Count assignment types
-        theme_other = sum(1 for labels in final_labels.values() if labels['theme'][0] == 'other')
-        topic_other = sum(1 for labels in final_labels.values() if labels['topic'][0] == 'other')
+        theme_other = sum(1 for labels in final_labels.values() if labels['theme'][0] == '99')
+        concept_other = sum(1 for labels in final_labels.values() if labels['concept'][0] == '99.1')
         
-        if theme_other > 0 or topic_other > 0:
-            self.verbose_reporter.stat_line(f"Clusters assigned to 'other': {theme_other} themes, {topic_other} topics")
+        if theme_other > 0 or concept_other > 0:
+            self.verbose_reporter.stat_line(f"Clusters assigned to 'other': {theme_other} themes, {concept_other} concepts")
 
 
 # =============================================================================
