@@ -339,6 +339,15 @@ class LabellerConfig:
     seed: int = 42  # For reproducibility
     api_key: Optional[str] = None  # Will use env var if not provided
     
+    # Phase-specific model overrides (simplified 6-phase workflow)
+    phase3_extract_model: str = "gpt-4o"  # Better model for theme extraction (Phase 3)
+    # Phase 1: Descriptive coding - uses default model
+    # Phase 2: Label merger - uses default model  
+    # Phase 3: Extract themes - uses phase3_extract_model (gpt-4o)
+    # Phase 4: Create codebook - uses default model
+    # Phase 5: Label refinement - uses default model
+    # Phase 6: Assignment - uses default model
+    
     # Language and localization
     language: str = DEFAULT_LANGUAGE
     
