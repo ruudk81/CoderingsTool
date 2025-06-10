@@ -377,6 +377,19 @@ class ThematicLabeller:
         # TODO: Implement concept-based response application
         return cluster_models
     
+    def _validate_concept_assignments(self, labeled_clusters: List[ClusterLabel], assignments: List[ConceptAssignment]):
+        """Validate that all clusters have been assigned to concepts"""
+        cluster_ids = {c.cluster_id for c in labeled_clusters}
+        assigned_ids = {int(a.cluster_id) for a in assignments}
+        
+        missing = cluster_ids - assigned_ids
+        if missing:
+            self.verbose_reporter.stat_line(f"⚠️ Warning: {len(missing)} clusters not assigned: {sorted(list(missing))}")
+        
+        extra = assigned_ids - cluster_ids
+        if extra:
+            self.verbose_reporter.stat_line(f"⚠️ Warning: {len(extra)} unknown cluster IDs in assignments: {sorted(list(extra))}")
+    
     def _print_refined_summary(self, refined_codebook: RefinedCodebook):
         """Print summary of refined codebook"""
         stats = refined_codebook.summary_statistics
@@ -882,11 +895,8 @@ class ThematicLabeller:
         if other_count > 0:
             print(f"    ℹ️ {other_count} clusters assigned to 'other'")
         
-        # Update codebook with direct assignments
-        self._update_codebook_with_direct_assignments(codebook, assignments)
-        
         # Validate all clusters were assigned
-        self._validate_assignments(labeled_clusters, assignments)
+        self._validate_concept_assignments(labeled_clusters, assignments)
         
         return assignments
     
