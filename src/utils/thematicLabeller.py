@@ -229,7 +229,7 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} descriptive codes")
       
         # =============================================================================
-        # Phase 2: Atomic Concepts + Cluster Merging
+        # Phase 2: Atomic Concepts  
         # =============================================================================
         
         self.verbose_reporter.step_start("Phase 2: Atomic Concepts + Cluster Merging", emoji="🔍")
@@ -239,7 +239,7 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete(f"Extracted {len(atomic_concepts.atomic_concepts)} concepts, merged to {len(merged_clusters)} clusters")
 
         # =============================================================================
-        # Phase 3: Grouping into Themes
+        # Phase 3: Themes
         # =============================================================================
 
         self.verbose_reporter.step_start("Phase 3: Grouping into Themes", emoji="📚")
@@ -543,19 +543,14 @@ class ThematicLabeller:
         """Phase 2: Extract atomic concepts and merge clusters based on concept assignment"""
         from prompts import PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT
         
-        # Format codes for the prompt - use descriptions for better concept extraction
-        codes_text = "\n".join([
-            f"[ID: {c.cluster_id:2d}] {c.description or c.label}" 
-            for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
-        ])
+        # get atompic concepts
+        codes_text = "\n".join([ f"[ID: {c.cluster_id:2d}] {c.description or c.label}" for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)])
         
         prompt = PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT.format(
             survey_question=self.survey_question,
             codes=codes_text,
-            language=self.config.language
-        )
-        
-        # Capture prompt
+            language=self.config.language)
+
         if self.prompt_printer and not self.captured_phase2:
             self.prompt_printer.capture_prompt(
                 step_name="hierarchical_labeling",
@@ -566,17 +561,10 @@ class ThematicLabeller:
                     "model": self.model_config.get_model_for_phase('phase3_themes'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "2/4 - Atomic Concepts + Merging"
-                }
-            )
+                    "phase": "2/4 - Atomic Concepts"})
             self.captured_phase2 = True
         
-        # Extract atomic concepts
-        atomic_concepts_result = await self._invoke_with_retries(
-            prompt, 
-            ExtractedAtomicConceptsResponse,
-            phase='phase3_themes'
-        )
+        atomic_concepts_result = await self._invoke_with_retries(prompt, ExtractedAtomicConceptsResponse, phase='phase3_themes')
         
         # Merge clusters based on atomic concept evidence
         self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} labeled clusters for concept extraction")
@@ -595,8 +583,7 @@ class ThematicLabeller:
         
         return atomic_concepts_result, merged_clusters
     
-    def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], 
-                                          atomic_concepts_result: ExtractedAtomicConceptsResponse) -> List[ClusterLabel]:
+    def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> List[ClusterLabel]:
         """Merge clusters that are assigned to the same atomic concept based on evidence"""
         # Create mapping from cluster ID to atomic concept
         cluster_to_concept = {}
@@ -628,7 +615,7 @@ class ThematicLabeller:
             else:
                 unassigned_clusters.append(cluster)
         
-        # Create merged clusters
+        # Create merged clustersv
         merged_clusters = []
         new_cluster_id = 0
         
@@ -733,8 +720,7 @@ class ThematicLabeller:
         
         return result
     
-    async def _phase4_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
-                                                       merged_clusters: List[ClusterLabel]) -> RefinedCodebook:
+    async def _phase4_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse,  merged_clusters: List[ClusterLabel]) -> RefinedCodebook:
         """Phase 4: Label refinement with assignment statistics"""
         from prompts import PHASE5_LABEL_REFINEMENT_PROMPT
         
@@ -750,6 +736,7 @@ class ThematicLabeller:
         
         # Create codebook with cluster counts for prompt
         codebook_with_counts = self._format_codebook_with_assignments(grouped_concepts, concept_assignments, merged_clusters)
+        self.codebook = codebook_with_counts 
         
         prompt = PHASE5_LABEL_REFINEMENT_PROMPT.format(
             survey_question=self.survey_question,
@@ -781,14 +768,13 @@ class ThematicLabeller:
         
         return result.refined_codebook
     
-    def _format_codebook_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
-                                        concept_assignments: dict, merged_clusters: List[ClusterLabel]) -> str:
+    def _format_codebook_with_assignments(self, grouped_concepts: GroupedConceptsResponse, concept_assignments: dict, merged_clusters: List[ClusterLabel]) -> str:
         """Format codebook with cluster assignment counts for refinement prompt"""
         formatted = []
         formatted.append("CODEBOOK WITH CLUSTER ASSIGNMENTS")
         formatted.append("=" * 60)
         
-        total_clusters = len(merged_clusters)
+        # total_clusters = len(merged_clusters)
         cluster_lookup = {c.cluster_id: c for c in merged_clusters}
         
         for theme in grouped_concepts.themes:
@@ -799,11 +785,11 @@ class ThematicLabeller:
             for concept in theme.atomic_concepts:
                 assigned_cluster_ids = concept_assignments.get(concept.concept_id, [])
                 cluster_count = len(assigned_cluster_ids)
-                percentage = (cluster_count / total_clusters * 100) if total_clusters > 0 else 0
+                #percentage = (cluster_count / total_clusters * 100) if total_clusters > 0 else 0
                 
                 formatted.append(f"  CONCEPT [{concept.concept_id}]: {concept.label}")
                 formatted.append(f"  Description: {concept.description}")
-                formatted.append(f"  Assigned clusters: {cluster_count} ({percentage:.1f}%)")
+                formatted.append(f"  Assigned clusters: {cluster_count}")
                 
                 # Add example quotes from assigned clusters
                 example_quotes = []

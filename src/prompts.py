@@ -405,7 +405,7 @@ Provide your decisions in the required JSON format.
 
 PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
 You are an expert in thematic analysis working in {language}.
-Your task is to identify the atomic concepts present across descriptive codes derived from survey responses.
+Your task is to identify ALL atomic concepts present across descriptive codes derived from survey responses.
 
 Survey question:
 <survey_question>
@@ -418,38 +418,53 @@ Descriptive codes of response segments in sample:
 </Descriptive codes>
 
 Instructions:
-1. Review all descriptive codes 
-2. Identify the ATOMIC CONCEPTS - the irreducible, single ideas that appear across responses
+1. Review all descriptive codes carefully
+2. Identify EVERY ATOMIC CONCEPT - the irreducible, single ideas that appear across responses
 3. Focus on WHAT respondents are talking about (not WHY)
-4. Be exhaustive - capture every meaningful concept
+4. Be COMPLETELY EXHAUSTIVE - capture every meaningful concept, even if it appears only once
+5. Do NOT group or merge similar concepts - keep them separate
+6. Include specific subconcepts (e.g., don't just say "ingredients" if respondents specifically mention "vegetables", "meat", "salt", etc.)
 
 An atomic concept is:
-- A single, indivisible idea (e.g., "price", "waiting time", "staff attitude")
+- A single, indivisible idea (e.g., "price", "salt content", "portion size", "vegetables")
 - Cannot be meaningfully broken down further
 - Clear and specific
+
+IMPORTANT: 
+- If respondents mention specific aspects (like "vegetables" or "meat"), list these as separate concepts
+- Don't combine concepts like "packaging" and "sustainable packaging" - keep them separate
+- Include concepts even if they appear in only one or two codes
 
 Begin with analytical notes:
 <analytical_notepad>
 Work through your analysis here:
-- What patterns do you see across descriptive codes?
-- What are the fundamental concepts respondents mention?
-- Which concepts appear in multiple descriptive codes?
+- List EVERY distinct concept you find, no matter how specific
+- Note which descriptive codes contain each concept
+- Do not summarize or group - be comprehensive
 [Your analysis]
 </analytical_notepad>
 
 Output JSON:
 {{
-  "analytical_notes": "Your working notes from above",
+  "analytical_notes": "Your complete working notes from above",
   "atomic_concepts": [
     {{
       "concept": "Concept name",
-      "description": "What this concept represents",
-      "evidence": ["cluster_id_1", "cluster_id_3"]  // Which clusters contain this concept
+      "description": "What this concept represents", 
+      "evidence": ["0", "2", "3", "15", "27"]  // List EVERY source ID where this concept appears - do NOT provide just examples
     }}
   ]
 }}
 
-Remember: Keep concepts truly atomic and use respondents' frame of reference.
+CRITICAL: For the "evidence" field, you MUST list ALL source IDs where each concept appears, not just a few examples. Go through each descriptive code systematically and include every single occurrence.
+
+Remember: 
+- Keep concepts truly atomic
+- List EVERY concept separately (e.g., "price", "affordability", "cost" as separate concepts if they appear)
+- Use respondents' exact frame of reference
+- When in doubt, include it as a separate concept
+- The evidence list must be COMPLETE - every source ID where the concept appears
+
 Return output in {language}.
 """
 

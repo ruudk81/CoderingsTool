@@ -28,7 +28,7 @@ var_name = "Q20"
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -376,11 +376,32 @@ prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  #
 thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
 labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
+# debug
+print("\nINITIAL CLUSTERS")  
+cluster_summaries = []
+for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
+        cluster_summaries.append(summary)
+cluster_summaries_text = "\n".join(cluster_summaries)
+print(cluster_summaries_text)
+print("\nAtomic concepts")  
+for concept in thematic_labeller.atomic_concepts.atomic_concepts:
+    print(concept.concept)
+
+
+print("\nMERGED CLUSTERS")  
+merged_summaries = []
+for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        merged_summaries.append(summary)
+merged_summaries_text = "\n".join(merged_summaries)
+print(merged_summaries_text)
 
 step_name = "labels"
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
