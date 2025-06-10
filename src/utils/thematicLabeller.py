@@ -60,7 +60,6 @@ class LabelMergerResponse(BaseModel):
     merged_groups: List[MergedGroup] = Field(default_factory=list)
     unchanged_labels: List[UnchangedLabel] = Field(default_factory=list)
 
-# Phase 3 Models
 class AtomicConcept(BaseModel):
     """Single atomic concept from Phase 3"""
     concept: str = Field(description="Concept name")
@@ -72,7 +71,6 @@ class ExtractedAtomicConceptsResponse(BaseModel):
     analytical_notes: str = Field(description="Working notes from analysis")
     atomic_concepts: List[AtomicConcept] = Field(description="List of atomic concepts identified")
 
-# Phase 4 Models
 class AtomicConceptGrouped(BaseModel):
     """Atomic concept within a theme"""
     concept_id: str = Field(description="Concept ID like 1.1")
