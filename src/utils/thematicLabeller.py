@@ -233,11 +233,17 @@ class ThematicLabeller:
         # Phase 2: Atomic Concepts  
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 2: Atomic Concepts", emoji="🔍")
+        self.verbose_reporter.step_start("Phase 2: Atomic Concepts + Cluster Merging", emoji="🔍")
         atomic_concepts, merged_clusters = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
         self.atomic_concepts = atomic_concepts
         self.merged_clusters = merged_clusters
-        self.verbose_reporter.step_complete(f"Extracted {len(atomic_concepts.atomic_concepts)} concepts, merged to {len(merged_clusters)} clusters")
+        
+        # Count concepts (including "Other" if present)
+        concept_count = len(atomic_concepts.atomic_concepts)
+        has_other = any(c.concept == "Other" for c in atomic_concepts.atomic_concepts)
+        other_note = " (including 'Other' concept)" if has_other else ""
+        
+        self.verbose_reporter.step_complete(f"Extracted {concept_count} concepts{other_note}, merged to {len(merged_clusters)} clusters")
 
         # =============================================================================
         # Phase 3: Themes
@@ -716,6 +722,12 @@ class ThematicLabeller:
         """Phase 3: Grouping into themes - Organize atomic concepts into themes"""
         from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
+        # Show what concepts are going into Phase 3
+        self.verbose_reporter.stat_line(f"Phase 3 input: {len(atomic_concepts_result.atomic_concepts)} concepts")
+        for concept in atomic_concepts_result.atomic_concepts:
+            evidence_count = len(concept.evidence)
+            self.verbose_reporter.stat_line(f"• {concept.concept} (evidence: {evidence_count} clusters)", bullet="  ")
+        
         # Format atomic concepts for the prompt
         concepts_text = "\n".join([
             f"- {concept.concept}: {concept.description} (evidence: {', '.join(concept.evidence)})"
@@ -746,14 +758,26 @@ class ThematicLabeller:
         
         result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase4_codebook')
         
-        # Report statistics
-        total_concepts = sum(len(theme.atomic_concepts) for theme in result.themes)
-        self.verbose_reporter.stat_line(f"Grouped {total_concepts} concepts into {len(result.themes)} themes")
+        # Report statistics with proper accounting
+        input_concepts = len(atomic_concepts_result.atomic_concepts)
+        concepts_in_themes = sum(len(theme.atomic_concepts) for theme in result.themes)
+        concepts_unassigned = len(result.unassigned_concepts)
+        total_output_concepts = concepts_in_themes + concepts_unassigned
+        
+        # Show input vs output first
+        self.verbose_reporter.stat_line(f"Input: {input_concepts} concepts → Output: {concepts_in_themes} in themes + {concepts_unassigned} unassigned = {total_output_concepts} total")
+        
+        # Show breakdown by theme
+        self.verbose_reporter.stat_line(f"Grouped {concepts_in_themes} concepts into {len(result.themes)} themes")
         for theme in result.themes:
             self.verbose_reporter.stat_line(f"• {theme.label}: {len(theme.atomic_concepts)} concepts", bullet="  ")
         
         if result.unassigned_concepts:
-            self.verbose_reporter.stat_line(f"⚠️ {len(result.unassigned_concepts)} concepts remain unassigned", bullet="  ")
+            self.verbose_reporter.stat_line(f"⚠️ {len(result.unassigned_concepts)} concepts remain unassigned: {result.unassigned_concepts}", bullet="  ")
+            
+        # Verify no concepts were lost
+        if input_concepts != total_output_concepts:
+            self.verbose_reporter.stat_line(f"⚠️ WARNING: Concept count mismatch! Input: {input_concepts}, Output: {total_output_concepts}", bullet="  ")
         
         return result
     
