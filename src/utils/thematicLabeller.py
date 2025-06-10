@@ -34,11 +34,14 @@ class ClusterLabel(BaseModel):
     """Initial cluster label from Phase 1"""
     cluster_id: int
     label: str = Field(description="Concise label (max 5 words)")
+    description: Optional[str] = Field(default=None, description="Natural description from Phase 1")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
-    label: str = Field(description="Concise thematic label (max 5 words)")
+    cluster_id: str = Field(description="ID of the cluster being processed")
+    segment_label: str = Field(description="Concise thematic label (max 5 words)")
+    segment_description: str = Field(description="Natural-sounding description")
 
 class MergedGroup(BaseModel):
     """A group of merged labels"""
@@ -59,7 +62,9 @@ class LabelMergerResponse(BaseModel):
 
 class ExtractedThemesResponse(BaseModel):
     """Response from Phase 3 theme extraction"""
+    analytical_notes: str = Field(description="Working notes from analysis")
     themes: List[str] = Field(description="List of main themes identified")
+    conceptual_insights: Dict[str, str] = Field(description="Insights for each theme")
 
 class RefinementEntry(BaseModel):
     """Single refinement entry"""
@@ -324,11 +329,13 @@ class ThematicLabeller:
                     labeled_clusters.append(ClusterLabel(
                         cluster_id=cluster_id,
                         label="UNLABELED",
+                        description="Failed to generate description",
                         representatives=representatives))
                 else:
                     labeled_clusters.append(ClusterLabel(
                         cluster_id=cluster_id,
-                        label=result.label,
+                        label=result.segment_label,
+                        description=result.segment_description,
                         representatives=representatives))
         
         return labeled_clusters
@@ -374,20 +381,27 @@ class ThematicLabeller:
             
             # Process merged groups
             for group in merger_result.merged_groups:
-                # Find representatives from all original clusters in the group
+                # Find representatives and descriptions from all original clusters in the group
                 all_representatives = []
+                descriptions = []
                 for original_id in group.original_cluster_ids:
                     original_cluster = next((c for c in labeled_clusters if c.cluster_id == original_id), None)
                     if original_cluster:
                         all_representatives.extend(original_cluster.representatives)
+                        if original_cluster.description:
+                            descriptions.append(original_cluster.description)
                 
                 # Sort by similarity and take top k
                 all_representatives.sort(key=lambda x: x[1], reverse=True)
                 top_representatives = all_representatives[:self.config.top_k_representatives]
                 
+                # Combine descriptions (use first one as primary)
+                combined_description = descriptions[0] if descriptions else None
+                
                 merged_cluster = ClusterLabel(
                     cluster_id=group.new_cluster_id,
                     label=group.merged_label,
+                    description=combined_description,
                     representatives=top_representatives
                 )
                 merged_clusters.append(merged_cluster)
@@ -399,6 +413,7 @@ class ThematicLabeller:
                     unchanged_cluster = ClusterLabel(
                         cluster_id=unchanged.new_cluster_id,
                         label=unchanged.label,
+                        description=original_cluster.description,
                         representatives=original_cluster.representatives
                     )
                     merged_clusters.append(unchanged_cluster)
@@ -489,6 +504,12 @@ class ThematicLabeller:
         for theme in result.themes:
             self.verbose_reporter.stat_line(f"• {theme}", bullet="  ")
         
+        # Report analytical insights if verbose
+        if self.verbose_reporter.enabled and result.conceptual_insights:
+            self.verbose_reporter.stat_line("Key conceptual insights:", bullet="  ")
+            for theme, insight in result.conceptual_insights.items():
+                self.verbose_reporter.stat_line(f"• {theme}: {insight[:100]}{'...' if len(insight) > 100 else ''}", bullet="    ")
+        
         return result
     
     async def _phase4_create_codebook(self, labeled_clusters: List[ClusterLabel], 
@@ -506,7 +527,7 @@ class ThematicLabeller:
         prompt = PHASE4_CREATE_CODEBOOK_PROMPT.format(
             survey_question=self.survey_question,
             themes=themes_text,
-            codes=codes_text,
+            merged_clusters=codes_text,
             language=self.config.language
         )
         
