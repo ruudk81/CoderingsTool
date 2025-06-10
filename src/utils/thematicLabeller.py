@@ -288,7 +288,7 @@ class ThematicLabeller:
         """Simplified 6-phase processing workflow"""
         self.survey_question = survey_question
         
-        self.verbose_reporter.section_header("HIERARCHICAL LABELING PROCESS (6 PHASES)", emoji="🔄")
+        self.verbose_reporter.section_header("HIERARCHICAL LABELING PROCESS (4 PHASES)", emoji="🔄")
         
         # Extract micro-clusters
         initial_clusters = self._extract_initial_clusters(cluster_models)
@@ -304,48 +304,32 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} descriptive codes")
       
         # =============================================================================
-        # Phase 2: Label Merger 
+        # Phase 2: Atomic Concepts + Cluster Merging
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 2: Merging Labels", emoji="🔗")
-        merged_clusters = await self._phase2_label_merger(labeled_clusters)
+        self.verbose_reporter.step_start("Phase 2: Atomic Concepts + Cluster Merging", emoji="🔍")
+        atomic_concepts, merged_clusters = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
+        self.atomic_concepts = atomic_concepts
         self.merged_clusters = merged_clusters
-        self.verbose_reporter.step_complete(f"Merged to {len(merged_clusters)} unique labels")
-        
-        # =============================================================================
-        # Phase 3: Theme Discovery 
-        # =============================================================================
-
-        self.verbose_reporter.step_start("Phase 3: Atomic Concepts", emoji="🔍")
-        atomic_concepts = await self._phase3_extract_atomic_concepts(merged_clusters)
-        self.verbose_reporter.step_complete("Atomic concepts extracted")
+        self.verbose_reporter.step_complete(f"Extracted {len(atomic_concepts.atomic_concepts)} concepts, merged to {len(merged_clusters)} clusters")
 
         # =============================================================================
-        # Phase 4: Create codebook
+        # Phase 3: Grouping into Themes
         # =============================================================================
 
-        self.verbose_reporter.step_start("Phase 4: Grouping into Themes", emoji="📚")
-        grouped_concepts = await self._phase4_group_concepts_into_themes(merged_clusters, atomic_concepts)
-        self.verbose_reporter.step_complete("Themes and hierarchy created")
+        self.verbose_reporter.step_start("Phase 3: Grouping into Themes", emoji="📚")
+        grouped_concepts = await self._phase3_group_concepts_into_themes(atomic_concepts)
+        self.verbose_reporter.step_complete("Concepts grouped into themes")
          
         # =============================================================================
-        # Phase 5: Initial Cluster Assignment  
+        # Phase 4: Label Refinement
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 5: Initial Cluster Assignment", emoji="🎯")
-        assignments = await self._phase6_assignment(merged_clusters, grouped_concepts)
-        self.verbose_reporter.step_complete("Clusters assigned to concepts")
-        
-        # =============================================================================
-        # Phase 6: Label Refinement (with assignment statistics)
-        # =============================================================================
-        
-        self.verbose_reporter.step_start("Phase 6: Label Refinement", emoji="✨")
-        refined_codebook = await self._phase5_label_refinement_with_assignments(grouped_concepts, assignments, merged_clusters)
+        self.verbose_reporter.step_start("Phase 4: Label Refinement", emoji="✨")
+        refined_codebook = await self._phase4_label_refinement_with_assignments(grouped_concepts, merged_clusters)
         self.verbose_reporter.step_complete("Labels refined with statistics")
         
         # Store results
-        self.assignments = assignments
         self.refined_codebook = refined_codebook
     
         # Print refined codebook
@@ -354,11 +338,11 @@ class ThematicLabeller:
         # Create mapping from original to merged cluster IDs
         original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
         
-        # Create mapping from original to merged cluster IDs
+        # Create mapping from original to merged cluster IDs  
         original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
         
-        # Create final labels using the new concept-based assignments
-        self.final_labels = self._create_final_labels_from_concept_assignments(assignments, original_to_merged_mapping, refined_codebook)
+        # Create final labels using concept-based structure
+        self.final_labels = self._create_final_labels_from_merged_clusters(merged_clusters, original_to_merged_mapping, refined_codebook)
         
         self.verbose_reporter.stat_line("✅ Applying concept assignments to responses...")
         result = self._apply_concept_assignments_to_responses(cluster_models, self.final_labels, refined_codebook)
@@ -368,14 +352,14 @@ class ThematicLabeller:
 
         return result
         
-    def _create_final_labels_from_concept_assignments(self, assignments: List[ConceptAssignment], 
-                                                     original_to_merged_mapping: Dict[int, int], 
-                                                     refined_codebook: RefinedCodebook) -> Dict[int, Dict]:
-        """Create final labels dictionary mapping original cluster IDs to concept assignments"""
+    def _create_final_labels_from_merged_clusters(self, merged_clusters: List[ClusterLabel],
+                                                 original_to_merged_mapping: Dict[int, int], 
+                                                 refined_codebook: RefinedCodebook) -> Dict[int, Dict]:
+        """Create final labels dictionary mapping original cluster IDs to concept assignments from merged clusters"""
         final_labels = {}
         
         # Create lookup dictionaries
-        assignment_lookup = {int(a.cluster_id): a for a in assignments}
+        merged_cluster_lookup = {c.cluster_id: c for c in merged_clusters}
         concept_lookup = {}
         theme_lookup = {}
         
@@ -392,28 +376,40 @@ class ThematicLabeller:
                 merged_to_original[merged_id] = []
             merged_to_original[merged_id].append(orig_id)
         
-        # Process each merged cluster assignment and map back to original IDs
-        for merged_cluster_id, assignment in assignment_lookup.items():
-            original_cluster_ids = merged_to_original.get(merged_cluster_id, [merged_cluster_id])
+        # Process each merged cluster and map back to original IDs
+        for merged_cluster in merged_clusters:
+            original_cluster_ids = merged_to_original.get(merged_cluster.cluster_id, [merged_cluster.cluster_id])
             
-            # Get concept and theme info
-            concept_info = concept_lookup.get(assignment.concept_id)
+            # Extract concept from cluster description
+            concept_name = "Unclassified"
+            if "Concept:" in merged_cluster.description:
+                concept_name = merged_cluster.description.split("Concept:")[1].split("(")[0].strip()
+            
+            # Find matching concept in refined codebook
+            concept_info = None
+            for theme in refined_codebook.themes:
+                for concept in theme.atomic_concepts:
+                    if concept.label == concept_name or concept_name in concept.label:
+                        concept_info = (concept, theme)
+                        break
+                if concept_info:
+                    break
+            
             if concept_info:
                 concept, theme = concept_info
-                
                 label_info = {
-                    'theme': (assignment.theme_id, theme.label),
-                    'concept': (assignment.concept_id, concept.label),
-                    'confidence': assignment.confidence,
-                    'rationale': assignment.rationale
+                    'theme': (theme.theme_id, theme.label),
+                    'concept': (concept.concept_id, concept.label),
+                    'confidence': 1.0,
+                    'rationale': "Merged cluster assignment"
                 }
             else:
-                # Fallback for unassigned or "other" concepts
+                # Fallback for unassigned concepts
                 label_info = {
                     'theme': ("99", "Other"),
                     'concept': ("99.1", "Unclassified"),
                     'confidence': 0.0,
-                    'rationale': "No assignment found"
+                    'rationale': "No concept match found"
                 }
             
             # Apply to all original cluster IDs
@@ -553,6 +549,145 @@ class ThematicLabeller:
             "Clusters assigned": stats.total_clusters,
             "Unassigned clusters": stats.unassigned_clusters
         }, emoji="📊")
+    
+    async def _phase2_atomic_concepts_and_merging(self, labeled_clusters: List[ClusterLabel]) -> Tuple[ExtractedAtomicConceptsResponse, List[ClusterLabel]]:
+        """Phase 2: Extract atomic concepts and merge clusters based on concept assignment"""
+        from prompts import PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT
+        
+        # Format codes for the prompt
+        codes_text = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.label}" 
+            for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
+        ])
+        
+        prompt = PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT.format(
+            survey_question=self.survey_question,
+            codes=codes_text,
+            language=self.config.language
+        )
+        
+        # Capture prompt
+        if self.prompt_printer and not self.captured_phase3:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase2_atomic_concepts_and_merging",
+                metadata={
+                    "model": self.model_config.get_model_for_phase('phase3_themes'),
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "2/4 - Atomic Concepts + Merging"
+                }
+            )
+            self.captured_phase3 = True
+        
+        # Extract atomic concepts
+        atomic_concepts_result = await self._invoke_with_retries(
+            prompt, 
+            ExtractedAtomicConceptsResponse,
+            phase='phase3_themes'
+        )
+        
+        # Merge clusters based on atomic concept evidence
+        merged_clusters = self._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts_result)
+        
+        self.verbose_reporter.stat_line(f"Extracted {len(atomic_concepts_result.atomic_concepts)} atomic concepts")
+        for concept in atomic_concepts_result.atomic_concepts:
+            evidence_count = len(concept.evidence)
+            self.verbose_reporter.stat_line(f"• {concept.concept} (evidence in {evidence_count} clusters)", bullet="  ")
+        
+        # Report analytical insights if verbose
+        if self.verbose_reporter.enabled and atomic_concepts_result.analytical_notes:
+            self.verbose_reporter.stat_line("Analytical notes:", bullet="  ")
+            self.verbose_reporter.stat_line(f"{atomic_concepts_result.analytical_notes[:200]}{'...' if len(atomic_concepts_result.analytical_notes) > 200 else ''}", bullet="    ")
+        
+        return atomic_concepts_result, merged_clusters
+    
+    def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], 
+                                          atomic_concepts_result: ExtractedAtomicConceptsResponse) -> List[ClusterLabel]:
+        """Merge clusters that are assigned to the same atomic concept based on evidence"""
+        # Create mapping from cluster ID to atomic concept
+        cluster_to_concept = {}
+        for concept in atomic_concepts_result.atomic_concepts:
+            for cluster_id_str in concept.evidence:
+                cluster_id = int(cluster_id_str)
+                if cluster_id in cluster_to_concept:
+                    # Cluster appears in multiple concepts - keep first assignment
+                    self.verbose_reporter.stat_line(f"⚠️ Cluster {cluster_id} appears in multiple concepts, keeping first assignment")
+                    continue
+                cluster_to_concept[cluster_id] = concept.concept
+        
+        # Group clusters by concept
+        concept_groups = {}
+        unassigned_clusters = []
+        
+        for cluster in labeled_clusters:
+            concept = cluster_to_concept.get(cluster.cluster_id)
+            if concept:
+                if concept not in concept_groups:
+                    concept_groups[concept] = []
+                concept_groups[concept].append(cluster)
+            else:
+                unassigned_clusters.append(cluster)
+        
+        # Create merged clusters
+        merged_clusters = []
+        new_cluster_id = 0
+        
+        # Merge clusters for each concept
+        for concept, clusters in concept_groups.items():
+            if len(clusters) == 1:
+                # Single cluster - just update ID
+                cluster = clusters[0]
+                merged_cluster = ClusterLabel(
+                    cluster_id=new_cluster_id,
+                    label=cluster.label,
+                    description=f"Concept: {concept}",
+                    representatives=cluster.representatives
+                )
+            else:
+                # Multiple clusters - merge them
+                all_representatives = []
+                all_labels = []
+                for cluster in clusters:
+                    all_representatives.extend(cluster.representatives)
+                    all_labels.append(cluster.label)
+                
+                # Sort by similarity and take top k
+                all_representatives.sort(key=lambda x: x[1], reverse=True)
+                top_representatives = all_representatives[:self.config.top_k_representatives]
+                
+                # Use most common label or first one
+                primary_label = all_labels[0] if all_labels else concept
+                
+                merged_cluster = ClusterLabel(
+                    cluster_id=new_cluster_id,
+                    label=primary_label,
+                    description=f"Concept: {concept} (merged from {len(clusters)} clusters)",
+                    representatives=top_representatives
+                )
+                
+                self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept}'", bullet="  ")
+            
+            merged_clusters.append(merged_cluster)
+            new_cluster_id += 1
+        
+        # Add unassigned clusters
+        for cluster in unassigned_clusters:
+            unassigned_cluster = ClusterLabel(
+                cluster_id=new_cluster_id,
+                label=cluster.label,
+                description="Unassigned to atomic concept",
+                representatives=cluster.representatives
+            )
+            merged_clusters.append(unassigned_cluster)
+            new_cluster_id += 1
+        
+        if unassigned_clusters:
+            self.verbose_reporter.stat_line(f"⚠️ {len(unassigned_clusters)} clusters not assigned to any atomic concept")
+        
+        return merged_clusters
     
     async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
         """Phase 1: Descriptive codes - Generate thematic labels for clusters"""
@@ -796,9 +931,8 @@ class ThematicLabeller:
         
         return result
     
-    async def _phase4_group_concepts_into_themes(self, labeled_clusters: List[ClusterLabel], 
-                                               atomic_concepts_result: ExtractedAtomicConceptsResponse) -> GroupedConceptsResponse:
-        """Phase 4: Grouping into themes - Organize atomic concepts into themes"""
+    async def _phase3_group_concepts_into_themes(self, atomic_concepts_result: ExtractedAtomicConceptsResponse) -> GroupedConceptsResponse:
+        """Phase 3: Grouping into themes - Organize atomic concepts into themes"""
         from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
         # Format atomic concepts for the prompt
@@ -819,12 +953,12 @@ class ThematicLabeller:
                 step_name="hierarchical_labeling",
                 utility_name="ThematicLabeller",
                 prompt_content=prompt,
-                prompt_type="phase4_group_concepts_into_themes",
+                prompt_type="phase3_group_concepts_into_themes",
                 metadata={
                     "model": self.model_config.get_model_for_phase('phase4_codebook'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "4/6 - Grouping into Themes"
+                    "phase": "3/4 - Grouping into Themes"
                 }
             )
             self.captured_phase4 = True
@@ -1054,19 +1188,20 @@ class ThematicLabeller:
         
         return assignments
     
-    async def _phase5_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
-                                                       assignments: List[ConceptAssignment], 
+    async def _phase4_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
                                                        merged_clusters: List[ClusterLabel]) -> RefinedCodebook:
-        """Phase 6: Label refinement with assignment statistics"""
+        """Phase 4: Label refinement with assignment statistics"""
         from prompts import PHASE5_LABEL_REFINEMENT_PROMPT
         
-        # Calculate assignment statistics
+        # Calculate assignment statistics from merged clusters
         concept_assignments = {}
-        for assignment in assignments:
-            concept_id = assignment.concept_id
-            if concept_id not in concept_assignments:
-                concept_assignments[concept_id] = []
-            concept_assignments[concept_id].append(assignment.cluster_id)
+        for cluster in merged_clusters:
+            # Extract concept from cluster description
+            if "Concept:" in cluster.description:
+                concept = cluster.description.split("Concept:")[1].split("(")[0].strip()
+                if concept not in concept_assignments:
+                    concept_assignments[concept] = []
+                concept_assignments[concept].append(str(cluster.cluster_id))
         
         # Create codebook with cluster counts for prompt
         codebook_with_counts = self._format_codebook_with_assignments(grouped_concepts, concept_assignments, merged_clusters)
@@ -1088,7 +1223,7 @@ class ThematicLabeller:
                     "model": self.model_config.get_model_for_phase('phase5_refinement'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "6/6 - Label Refinement"
+                    "phase": "4/4 - Label Refinement"
                 }
             )
             self.captured_phase5 = True
