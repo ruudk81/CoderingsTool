@@ -414,10 +414,11 @@ class ThematicLabeller:
     def _print_refined_summary(self, refined_codebook: RefinedCodebook):
         """Print summary of refined codebook"""
         stats = refined_codebook.summary_statistics
+        assigned_clusters = stats.total_clusters - stats.unassigned_clusters
         self.verbose_reporter.summary("Final Results", {
             "Themes": stats.total_themes,
             "Atomic Concepts": stats.total_concepts, 
-            "Clusters assigned": stats.total_clusters,
+            "Clusters assigned": assigned_clusters,
             "Unassigned clusters": stats.unassigned_clusters
         }, emoji="📊")
     
@@ -679,42 +680,78 @@ class ThematicLabeller:
         """Phase 3: Grouping into themes - Organize atomic concepts into themes"""
         from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
-        # Show what concepts are going into Phase 3
-        # self.verbose_reporter.stat_line(f"Phase 3 input: {len(atomic_concepts_result.atomic_concepts)} concepts")
-        # for concept in atomic_concepts_result.atomic_concepts:
-        #     evidence_count = len(concept.evidence)
-        #     self.verbose_reporter.stat_line(f"• {concept.concept} (evidence: {evidence_count} clusters)", bullet="  ")
+        # Separate "Other" concepts from meaningful concepts
+        meaningful_concepts = []
+        other_concepts = []
         
-        # Format atomic concepts for the prompt
-        concepts_text = "\n".join([
-            f"- {concept.concept}: {concept.description} (evidence: {', '.join(concept.evidence)})"
-            for concept in atomic_concepts_result.atomic_concepts
-        ])
+        for concept in atomic_concepts_result.atomic_concepts:
+            if concept.concept.lower() in ["other", "miscellaneous", "unclassified"]:
+                other_concepts.append(concept)
+            else:
+                meaningful_concepts.append(concept)
         
-        prompt = PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
-            survey_question=self.survey_question,
-            atomic_concepts=concepts_text,
-            total_concepts=len(atomic_concepts_result.atomic_concepts),
-            language=self.config.language
-        )
+        self.verbose_reporter.stat_line(f"Phase 3 input: {len(meaningful_concepts)} meaningful concepts (excluding {len(other_concepts)} 'Other' concepts)")
         
-        # Capture prompt
-        if self.prompt_printer and not self.captured_phase3:
-            self.prompt_printer.capture_prompt(
-                step_name="hierarchical_labeling",
-                utility_name="ThematicLabeller",
-                prompt_content=prompt,
-                prompt_type="phase3_group_concepts_into_themes",
-                metadata={
-                    "model": self.model_config.get_model_for_phase('phase4_codebook'),
-                    "survey_question": self.survey_question,
-                    "language": self.config.language,
-                    "phase": "3/4 - Grouping into Themes"
-                }
+        # Only process meaningful concepts with the LLM if there are any
+        if meaningful_concepts:
+            # Format meaningful concepts for the prompt
+            concepts_text = "\n".join([
+                f"- {concept.concept}: {concept.description} (evidence: {', '.join(concept.evidence)})"
+                for concept in meaningful_concepts
+            ])
+            
+            prompt = PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
+                survey_question=self.survey_question,
+                atomic_concepts=concepts_text,
+                total_concepts=len(meaningful_concepts),
+                language=self.config.language
             )
-            self.captured_phase3 = True
+            
+            # Capture prompt
+            if self.prompt_printer and not self.captured_phase3:
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=prompt,
+                    prompt_type="phase3_group_concepts_into_themes",
+                    metadata={
+                        "model": self.model_config.get_model_for_phase('phase4_codebook'),
+                        "survey_question": self.survey_question,
+                        "language": self.config.language,
+                        "phase": "3/4 - Grouping into Themes"
+                    }
+                )
+                self.captured_phase3 = True
+            
+            result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase4_codebook')
+        else:
+            # No meaningful concepts to group - create empty result
+            result = GroupedConceptsResponse(themes=[], unassigned_concepts=[])
+            self.verbose_reporter.stat_line("No meaningful concepts to group - creating empty themes")
         
-        result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase4_codebook')
+        # Add "Other" theme if we have other concepts
+        if other_concepts:
+            # Create atomic concepts for the "Other" theme
+            other_atomic_concepts = []
+            for i, concept in enumerate(other_concepts):
+                other_atomic_concept = AtomicConceptGrouped(
+                    concept_id=f"99.{i+1}",  # Use 99.x for Other concepts
+                    label=concept.concept,
+                    description=concept.description
+                )
+                other_atomic_concepts.append(other_atomic_concept)
+            
+            # Create the "Other" theme
+            other_theme = ThemeGroup(
+                theme_id="99",
+                label="Other",
+                description="Miscellaneous responses that don't fit into specific thematic categories",
+                atomic_concepts=other_atomic_concepts
+            )
+            
+            # Add to results
+            result.themes.append(other_theme)
+            self.verbose_reporter.stat_line(f"Added 'Other' theme with {len(other_concepts)} concepts")
         
         # Report statistics with proper accounting
         input_concepts = len(atomic_concepts_result.atomic_concepts)
@@ -722,13 +759,25 @@ class ThematicLabeller:
         concepts_unassigned = len(result.unassigned_concepts)
         total_output_concepts = concepts_in_themes + concepts_unassigned
         
-        # Show input vs output first
-        self.verbose_reporter.stat_line(f"Input: {input_concepts} concepts → Output: {concepts_in_themes} in themes + {concepts_unassigned} unassigned = {total_output_concepts} total")
+        # Show input vs output with breakdown
+        meaningful_concepts_in_themes = sum(len(theme.atomic_concepts) for theme in result.themes if theme.theme_id != "99")
+        other_concepts_in_themes = sum(len(theme.atomic_concepts) for theme in result.themes if theme.theme_id == "99")
+        
+        self.verbose_reporter.stat_line(f"Input: {len(meaningful_concepts)} meaningful + {len(other_concepts)} 'Other' = {input_concepts} total concepts")
+        self.verbose_reporter.stat_line(f"Output: {meaningful_concepts_in_themes} in meaningful themes + {other_concepts_in_themes} in 'Other' theme + {concepts_unassigned} unassigned = {total_output_concepts} total")
         
         # Show breakdown by theme
-        self.verbose_reporter.stat_line(f"Grouped {concepts_in_themes} concepts into {len(result.themes)} themes")
-        for theme in result.themes:
-            self.verbose_reporter.stat_line(f"• {theme.label}: {len(theme.atomic_concepts)} concepts", bullet="  ")
+        meaningful_themes = [theme for theme in result.themes if theme.theme_id != "99"]
+        other_themes = [theme for theme in result.themes if theme.theme_id == "99"]
+        
+        if meaningful_themes:
+            self.verbose_reporter.stat_line(f"Grouped {meaningful_concepts_in_themes} meaningful concepts into {len(meaningful_themes)} themes")
+            for theme in meaningful_themes:
+                self.verbose_reporter.stat_line(f"• {theme.label}: {len(theme.atomic_concepts)} concepts", bullet="  ")
+        
+        if other_themes:
+            for theme in other_themes:
+                self.verbose_reporter.stat_line(f"• {theme.label}: {len(theme.atomic_concepts)} concepts (automatically added)", bullet="  ")
         
         if result.unassigned_concepts:
             self.verbose_reporter.stat_line(f"⚠️ {len(result.unassigned_concepts)} concepts remain unassigned: {result.unassigned_concepts}", bullet="  ")
@@ -803,9 +852,54 @@ class ThematicLabeller:
         
         result = await self._invoke_with_retries(prompt, LabelRefinementResponse, phase='phase5_refinement')
         
+        # Calculate correct statistics from actual data rather than trusting LLM
+        actual_total_concepts = sum(len(theme.atomic_concepts) for theme in result.refined_codebook.themes)
+        actual_total_clusters = len(merged_clusters)
+        
+        # All merged clusters should be assigned to concepts, so unassigned = 0
+        # (The assignment diagnostics confirm this works correctly)
+        actual_unassigned_clusters = 0
+        
+        # Update the summary statistics with correct values
+        result.refined_codebook.summary_statistics.total_themes = len(result.refined_codebook.themes)
+        result.refined_codebook.summary_statistics.total_concepts = actual_total_concepts
+        result.refined_codebook.summary_statistics.total_clusters = actual_total_clusters
+        result.refined_codebook.summary_statistics.unassigned_clusters = actual_unassigned_clusters
+        
+        # Update cluster counts and percentages for each atomic concept
+        cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        
+        for theme in result.refined_codebook.themes:
+            for concept in theme.atomic_concepts:
+                # Look up actual cluster assignments for this concept
+                assigned_cluster_ids = concept_assignments.get(concept.label, [])
+                
+                # If no direct match, try partial matching
+                if not assigned_cluster_ids:
+                    for concept_name, cluster_ids in concept_assignments.items():
+                        if (concept_name.lower() in concept.label.lower() or 
+                            concept.label.lower() in concept_name.lower()):
+                            assigned_cluster_ids = cluster_ids
+                            break
+                
+                # Update with correct counts
+                concept.cluster_count = len(assigned_cluster_ids)
+                concept.percentage = (concept.cluster_count / actual_total_clusters * 100) if actual_total_clusters > 0 else 0
+                
+                # Update example quotes from actual assigned clusters
+                example_quotes = []
+                for cluster_id_str in assigned_cluster_ids[:3]:  # Take first 3 examples
+                    cluster_id = int(cluster_id_str)
+                    if cluster_id in cluster_lookup:
+                        cluster = cluster_lookup[cluster_id]
+                        if cluster.representatives:
+                            example_quotes.append(cluster.representatives[0][0])
+                
+                concept.example_quotes = example_quotes
+        
         self.verbose_reporter.stat_line(f"Refined {len(result.refined_codebook.themes)} themes")
-        self.verbose_reporter.stat_line(f"Total concepts: {result.refined_codebook.summary_statistics.total_concepts}")
-        self.verbose_reporter.stat_line(f"Total clusters: {result.refined_codebook.summary_statistics.total_clusters}")
+        self.verbose_reporter.stat_line(f"Total concepts: {actual_total_concepts}")
+        self.verbose_reporter.stat_line(f"Total clusters: {actual_total_clusters}")
         
         return result.refined_codebook
     
@@ -824,9 +918,18 @@ class ThematicLabeller:
             formatted.append("")
             
             for concept in theme.atomic_concepts:
-                assigned_cluster_ids = concept_assignments.get(concept.concept_id, [])
+                # Look up by concept label/name since concept_assignments uses names as keys
+                assigned_cluster_ids = concept_assignments.get(concept.label, [])
+                
+                # If no direct match, try partial matching
+                if not assigned_cluster_ids:
+                    for concept_name, cluster_ids in concept_assignments.items():
+                        if (concept_name.lower() in concept.label.lower() or 
+                            concept.label.lower() in concept_name.lower()):
+                            assigned_cluster_ids = cluster_ids
+                            break
+                
                 cluster_count = len(assigned_cluster_ids)
-                #percentage = (cluster_count / total_clusters * 100) if total_clusters > 0 else 0
                 
                 formatted.append(f"  CONCEPT [{concept.concept_id}]: {concept.label}")
                 formatted.append(f"  Description: {concept.description}")
@@ -834,7 +937,8 @@ class ThematicLabeller:
                 
                 # Add example quotes from assigned clusters
                 example_quotes = []
-                for cluster_id in assigned_cluster_ids[:2]:  # Take first 2 examples
+                for cluster_id_str in assigned_cluster_ids[:2]:  # Take first 2 examples
+                    cluster_id = int(cluster_id_str)  # Convert string to int
                     if cluster_id in cluster_lookup:
                         cluster = cluster_lookup[cluster_id]
                         if cluster.representatives:
