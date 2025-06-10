@@ -349,12 +349,12 @@ class ThematicLabeller:
         return labeled_clusters
     
     async def _phase2_label_merger(self, labeled_clusters: List[ClusterLabel]) -> List[ClusterLabel]:
-        """Phase 2: Merge semantically identical labels"""
+        """Phase 2: Merge semantically identical descriptions (using descriptions as labels)"""
         from prompts import PHASE2_LABEL_MERGER_PROMPT
         
-        # Format labels for the merger prompt
+        # Format descriptions as labels for the merger prompt
         labels_text = "\n".join([
-            f"[ID: {c.cluster_id:2d}] {c.label}" 
+            f"[ID: {c.cluster_id:2d}] {c.description or c.label}" 
             for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
         ])
         
@@ -403,13 +403,13 @@ class ThematicLabeller:
                 all_representatives.sort(key=lambda x: x[1], reverse=True)
                 top_representatives = all_representatives[:self.config.top_k_representatives]
                 
-                # Combine descriptions (use first one as primary)
-                combined_description = descriptions[0] if descriptions else None
+                # Use descriptions as the label, and keep the merged_label as description
+                primary_description = descriptions[0] if descriptions else group.merged_label
                 
                 merged_cluster = ClusterLabel(
                     cluster_id=group.new_cluster_id,
-                    label=group.merged_label,
-                    description=combined_description,
+                    label=primary_description,  # Use description as the label
+                    description=group.merged_label,  # Keep merged label as secondary info
                     representatives=top_representatives
                 )
                 merged_clusters.append(merged_cluster)
@@ -420,8 +420,8 @@ class ThematicLabeller:
                 if original_cluster:
                     unchanged_cluster = ClusterLabel(
                         cluster_id=unchanged.new_cluster_id,
-                        label=unchanged.label,
-                        description=original_cluster.description,
+                        label=original_cluster.description or unchanged.label,  # Use description as the label
+                        description=unchanged.label,  # Keep unchanged label as secondary info
                         representatives=original_cluster.representatives
                     )
                     merged_clusters.append(unchanged_cluster)
