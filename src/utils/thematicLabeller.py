@@ -359,7 +359,7 @@ class ThematicLabeller:
         # Create cluster mappings for the LabelModel
         cluster_mappings = []
         for cluster_id, labels in final_labels.items():
-            theme_id_str, theme_label = labels['theme']
+            theme_id_str, _ = labels['theme']  # theme_label not used
             concept_id_str, concept_label = labels['concept']
             confidence = labels['confidence']
             
@@ -428,7 +428,7 @@ class ThematicLabeller:
                             labels = final_labels[cluster_id]
                             
                             # Apply Theme (Dict[int, str])
-                            theme_id_str, theme_label = labels['theme']
+                            theme_id_str, _ = labels['theme']  # theme_label not used here
                             if theme_id_str in theme_lookup:
                                 theme = theme_lookup[theme_id_str]
                                 theme_id_int = int(float(theme.theme_id))
