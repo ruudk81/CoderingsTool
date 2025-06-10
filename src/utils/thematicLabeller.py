@@ -367,15 +367,168 @@ class ThematicLabeller:
 
         return result
         
-    def _create_final_labels_from_concept_assignments(self, assignments, original_to_merged_mapping, refined_codebook):
-        """Create final labels from concept assignments - stub for now"""
-        # TODO: Implement concept-based label creation
-        return {}
+    def _create_final_labels_from_concept_assignments(self, assignments: List[ConceptAssignment], 
+                                                     original_to_merged_mapping: Dict[int, int], 
+                                                     refined_codebook: RefinedCodebook) -> Dict[int, Dict]:
+        """Create final labels dictionary mapping original cluster IDs to concept assignments"""
+        final_labels = {}
+        
+        # Create lookup dictionaries
+        assignment_lookup = {int(a.cluster_id): a for a in assignments}
+        concept_lookup = {}
+        theme_lookup = {}
+        
+        # Build lookup dictionaries from refined codebook
+        for theme in refined_codebook.themes:
+            theme_lookup[theme.theme_id] = theme
+            for concept in theme.atomic_concepts:
+                concept_lookup[concept.concept_id] = (concept, theme)
+        
+        # Reverse the mapping to go from merged back to original
+        merged_to_original = {}
+        for orig_id, merged_id in original_to_merged_mapping.items():
+            if merged_id not in merged_to_original:
+                merged_to_original[merged_id] = []
+            merged_to_original[merged_id].append(orig_id)
+        
+        # Process each merged cluster assignment and map back to original IDs
+        for merged_cluster_id, assignment in assignment_lookup.items():
+            original_cluster_ids = merged_to_original.get(merged_cluster_id, [merged_cluster_id])
+            
+            # Get concept and theme info
+            concept_info = concept_lookup.get(assignment.concept_id)
+            if concept_info:
+                concept, theme = concept_info
+                
+                label_info = {
+                    'theme': (assignment.theme_id, theme.label),
+                    'concept': (assignment.concept_id, concept.label),
+                    'confidence': assignment.confidence,
+                    'rationale': assignment.rationale
+                }
+            else:
+                # Fallback for unassigned or "other" concepts
+                label_info = {
+                    'theme': ("99", "Other"),
+                    'concept': ("99.1", "Unclassified"),
+                    'confidence': 0.0,
+                    'rationale': "No assignment found"
+                }
+            
+            # Apply to all original cluster IDs
+            for orig_id in original_cluster_ids:
+                final_labels[orig_id] = label_info
+        
+        return final_labels
     
-    def _apply_concept_assignments_to_responses(self, cluster_models, final_labels, refined_codebook):
-        """Apply concept assignments to responses - stub for now"""
-        # TODO: Implement concept-based response application
-        return cluster_models
+    def _apply_concept_assignments_to_responses(self, cluster_models: List[models.ClusterModel], 
+                                               final_labels: Dict[int, Dict], 
+                                               refined_codebook: RefinedCodebook) -> List[models.LabelModel]:
+        """Apply concept assignments to response segments"""
+        # Create lookup dictionaries from refined codebook
+        theme_lookup = {theme.theme_id: theme for theme in refined_codebook.themes}
+        concept_lookup = {}
+        for theme in refined_codebook.themes:
+            for concept in theme.atomic_concepts:
+                concept_lookup[concept.concept_id] = concept
+        
+        # Create cluster mappings for the LabelModel
+        cluster_mappings = []
+        for cluster_id, labels in final_labels.items():
+            theme_id_str, theme_label = labels['theme']
+            concept_id_str, concept_label = labels['concept']
+            confidence = labels['confidence']
+            
+            mapping = models.ClusterMapping(
+                cluster_id=cluster_id,
+                cluster_label=concept_label,
+                theme_id=theme_id_str,
+                topic_id=concept_id_str,  # Using concept as "topic" for compatibility
+                code_id=concept_id_str,   # Using concept as "code" for compatibility
+                confidence=confidence
+            )
+            cluster_mappings.append(mapping)
+        
+        # Convert to hierarchical themes for backward compatibility
+        hierarchical_themes = []
+        for theme in refined_codebook.themes:
+            # Create hierarchical topics from atomic concepts
+            hierarchical_topics = []
+            for concept in theme.atomic_concepts:
+                hierarchical_topic = models.HierarchicalTopic(
+                    topic_id=concept.concept_id,
+                    numeric_id=float(concept.concept_id.replace('.', '')),
+                    label=concept.label,
+                    description=concept.description,
+                    parent_id=theme.theme_id,
+                    level=2,
+                    codes=[]  # No codes in the new structure
+                )
+                hierarchical_topics.append(hierarchical_topic)
+            
+            hierarchical_theme = models.HierarchicalTheme(
+                theme_id=theme.theme_id,
+                numeric_id=float(theme.theme_id),
+                label=theme.label,
+                description=theme.description,
+                level=1,
+                topics=hierarchical_topics
+            )
+            hierarchical_themes.append(hierarchical_theme)
+        
+        label_models = []
+        
+        for cluster_model in cluster_models:
+            # Convert to LabelModel using the to_model method
+            label_model = cluster_model.to_model(models.LabelModel)
+            
+            # Force rebuild model to clear any cached schema
+            if hasattr(label_model, 'model_rebuild'):
+                label_model.model_rebuild()
+            
+            # Add hierarchical structure data
+            label_model.themes = hierarchical_themes
+            label_model.cluster_mappings = cluster_mappings
+            
+            # Generate a summary for the model
+            segment_count = len(label_model.response_segment) if label_model.response_segment else 0
+            label_model.summary = f"Response with {segment_count} segments analyzed"
+            
+            # Apply concept assignments to segments
+            if label_model.response_segment:
+                for segment in label_model.response_segment:
+                    if segment.initial_cluster is not None:
+                        cluster_id = segment.initial_cluster
+                        
+                        if cluster_id in final_labels:
+                            labels = final_labels[cluster_id]
+                            
+                            # Apply Theme (Dict[int, str])
+                            theme_id_str, theme_label = labels['theme']
+                            if theme_id_str in theme_lookup:
+                                theme = theme_lookup[theme_id_str]
+                                theme_id_int = int(float(theme.theme_id))
+                                description = f": {theme.description}" if theme.description else ""
+                                segment.Theme = {theme_id_int: f"{theme.label}{description}"}
+                            elif theme_id_str == "99":
+                                segment.Theme = {99: "Other: Unclassified"}
+                            
+                            # Apply Topic (using concept as topic)
+                            concept_id_str, concept_label = labels['concept']
+                            if concept_id_str in concept_lookup:
+                                concept = concept_lookup[concept_id_str]
+                                concept_id_float = float(concept_id_str.replace('.', ''))
+                                description = f": {concept.description}" if concept.description else ""
+                                segment.Topic = {concept_id_float: f"{concept.label}{description}"}
+                            elif concept_id_str == "99.1":
+                                segment.Topic = {99.1: "Unclassified: No clear concept match"}
+                            
+                            # Apply Code (same as concept for now)
+                            segment.Code = segment.Topic.copy() if hasattr(segment, 'Topic') and segment.Topic else {}
+            
+            label_models.append(label_model)
+        
+        return label_models
     
     def _validate_concept_assignments(self, labeled_clusters: List[ClusterLabel], assignments: List[ConceptAssignment]):
         """Validate that all clusters have been assigned to concepts"""
