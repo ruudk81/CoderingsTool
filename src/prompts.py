@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 10 07:00:34 2025
+
+@author: RKN
+"""
+
 
 # =============================================================================
 # STEP 2: SPELL CHECKING
@@ -396,106 +403,85 @@ For merged labels:
 Provide your decisions in the required JSON format.
 """
 
-
 PHASE3_EXTRACT_THEMES_PROMPT = """
 You are an expert in thematic analysis working in {language}.
-Your goal is to discover overarching themes from initial codes of survey responses to an open-ended question. 
-Follow these instructions carefully:
+Your goal is to identify the atomic concepts present across descriptive codes of survey responses.
 
 1. Review the survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-2. Examine the initial codes:
+2. Examine the codes:
 <initial_codes>
 {codes}
 </initial_codes>
 
-3. Begin your analysis by using the analytical notepad. This is your space for exploratory thinking:
-
+3. Begin your analysis by using the analytical notepad:
 <analytical_notepad>
 Use this space to work through your analysis. Consider the following:
-
-- What atomic concepts do you see in each code?
-- What patterns are you noticing across codes?
-- What might be the deeper story here?
-- Which codes seem to cluster around similar underlying ideas?
-- What abstractions would explain these clusters?
-- Are there more connections between seemingly different codes?
-- What other themes would reveal insights?
-
+- What atomic concepts do you see across the codes?
+- Which concepts appear repeatedly?
+- What are the irreducible elements that respondents focus on?
 [Write your analytical notes here]
 </analytical_notepad>
 
-4. After your exploratory analysis, extract themes following these steps:
+4. Extract ATOMIC CONCEPTS following these principles:
+- Atomic = cannot be meaningfully broken down further
+- Each concept should be a single, clear idea
+- Focus on WHAT respondents are talking about, not WHY
+- Be exhaustive - every code should contain identifiable atomic concepts
 
-STEP 1: Identify atomic concepts within each code
-STEP 2: Discover themes that are TRUE ABSTRACTIONS
-
-5. Adhere to these CRITICAL REQUIREMENTS:
-- Themes must be conceptual abstractions, NOT collections of examples
-- Each theme should capture a pattern that requires interpretation to see
-- Be exhaustive - alle codes need to be represented by the themes
-
-6. AVOID these pitfalls:
-- Descriptive groupings that just summarize visible features
-- Surface-level categories without deeper insight
-- Themes that are obvious from just reading code titles
-
-7. TEST each theme by asking:
-- "Does this reveal an insight that wasn't immediately apparent?"
-- "Does this explain an underlying dynamic?"
-- "Is this a genuine conceptual discovery?"
-
-8. Provide your final output in JSON format:
+5. Provide your output in JSON format:
 {{
   "analytical_notes": "Your working notes from the notepad above",
-  "themes": ["Theme Name 1", "Theme Name 2", "Theme Name 3", ...],
+  "themes": ["Concept 1", "Concept 2", "Concept 3", ...],  // These are your atomic concepts
   "conceptual_insights": {{
-    "Theme Name 1": "The non-obvious pattern this theme captures",
-    "Theme Name 2": "The non-obvious pattern this theme captures",
+    "Concept 1": "What this atomic concept represents in the data",
+    "Concept 2": "What this atomic concept represents in the data",
     ...
   }}
 }}
 
-Remember:
-- Theme names should be 1-4 words.
-- Conduct all analysis in {language}.
-- Ensure your themes are true abstractions that reveal non-obvious insights.
+Remember: 
+- Keep concepts truly atomic (single ideas)
+- Use the respondents' frame of reference
+- Name concepts clearly (e.g., "Price", "Salt Content", "Packaging")
+- Ensure complete coverage
 """
 
 PHASE4_CREATE_CODEBOOK_PROMPT = """
 You are an expert in creating hierarchical codebooks for qualitative analysis working in {language}.
-Your task is to organize descriptive codes into a structured codebook based on the themes identified.
+Your task is to organize descriptive codes into a structured codebook, grouping them based on atomic concepts.
 
-First, you will be given a list of themes. These are broad and coherent patterns in the data that address the research question. They form Level 1 of the codebook structure.
-
-Themes:
-<themes>
+First, you will be given a list of topics identified from the data:
+<topics>
 {themes}
-</themes>
+</topics>
 
-Next, you will be presented with a list of merged clusters. 
-These are initial codes derived from the data and will form Level 3 of the codebook structure.
-
-Merged Clusters:
-<merged_clusters>
+Next, you will be presented with descriptive codes derived from the data:
+<descriptive codes>
 {merged_clusters}
-</merged_clusters>
+</descriptive codess>
 
-Your task is to organize these initial codes into topics under the provided themes. Topics are specific facets or dimensions of a theme and will form Level 2 of the codebook structure.
+Your task is to create a 3-level hierarchy:
+- Level 1: THEMES (broad groupings of related atomic concepts)
+- Level 2: TOPICS (specific dimensions within themes)  
+- Level 3: CODES (the descriptive codes from merged clusters)
 
 Follow these steps:
+1. Review the topics and descriptive codes carefully
+2. Group related topics into broader THEMES
+3. Within each theme, organize all TOPICS
+4. Assign all descriptive codes to the most relevant topics
 
-1. Review the list of themes and merged clusters carefully.
-2. For each theme, identify relevant merged clusters that fit within it.
-3. Group related merged clusters into topics under each theme.
-4. Assign a descriptive name to each topic in Dutch.
-5. Ensure that each merged cluster is placed under only one topic and theme.
+Example structure:
+THEME: "Service Interaction" - Covers aspects of direct interaction between customers and service representatives, including communication, responsiveness, and attitude.
+    TOPIC: "Communication Style" - Focuses on how service representatives communicate with customers, including tone, clarity, and professionalism.
+        CODE: "Friendly and respectful tone" - Customers appreciate when staff speak in a polite, positive, and respectful manner.
+        CODE: "Clear and understandable language" - Desire for service agents to use plain, jargon-free explanations.
 
 Present your results in the following format:
-Provide the codebook as JSON:
 {{
   "themes": [
     {{
@@ -517,17 +503,17 @@ Provide the codebook as JSON:
     }}
   ]
 }}
-    
 
 Additional guidelines:
-- Aim for 2-5 topics per theme, depending on the breadth of the theme and the number of relevant merged clusters.
-- It's okay if some themes have more topics than others.
-- If a merged cluster doesn't fit well under any theme, you may create a "Miscellaneous" theme at the end of your codebook.
-- Use your expertise to make informed decisions about grouping and categorization.
-- Maintain consistency in the level of detail and granularity across topics and themes.
+- All topics need to be used
+- Aim for 2-5 topics per theme
+- Every descriptive code must be assigned to a topic
+- If a code doesn't fit well, create an "Other Considerations" theme
+- Maintain consistency in granularity across the hierarchy
 
 Begin your analysis and present the codebook structure as instructed.
 """
+
 
 PHASE5_LABEL_REFINEMENT_PROMPT = """
 You are an expert in refining hierarchical codebooks working in {language}.

@@ -25,8 +25,8 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
@@ -417,20 +417,20 @@ else:
 
 
 # debug
-# print("\nINITIAL CLUSTERS")  
-# cluster_summaries = []
-# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-#         cluster_summaries.append(summary)
-# cluster_summaries_text = "\n".join(cluster_summaries)
-# print(cluster_summaries_text)
-# print("\nMERGED CLUSTERS")  
-# merged_summaries = []
-# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         merged_summaries.append(summary)
-# merged_summaries_text = "\n".join(merged_summaries)
-# print(merged_summaries_text)
+print("\nINITIAL CLUSTERS")  
+cluster_summaries = []
+for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
+        cluster_summaries.append(summary)
+cluster_summaries_text = "\n".join(cluster_summaries)
+print(cluster_summaries_text)
+print("\nMERGED CLUSTERS")  
+merged_summaries = []
+for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        merged_summaries.append(summary)
+merged_summaries_text = "\n".join(merged_summaries)
+print(merged_summaries_text)
 
 # codebook_final = thematic_labeller.codebook
 # lines_final = []
@@ -451,7 +451,6 @@ else:
 # print("\n".join(lines_final))
 # total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
 # print(f"Total clusters assigned: {total_sources}")
-
 
 # === STEP 7 ========================================================================================================
 """export results"""
@@ -493,7 +492,7 @@ else:
 print("\n" + "=" * 80)
 print("PIPELINE COMPLETED SUCCESSFULLY")
 print("=" * 80)
-print(f"📊 Final output files:")
+print("📊 Final output files:")
 print(f"   • SPSS: {export_results.get('spss_file', 'Not generated')}")
 print(f"   • Excel: {export_results.get('excel_file', 'Not generated')}")
 print(f"📁 Export directory: {export_results.get('export_directory', 'Unknown')}")
