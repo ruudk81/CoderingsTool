@@ -486,13 +486,19 @@ Instructions:
 1. Group atomic concepts that share a common theme, dimension, or aspect
 2. Create clear, meaningful theme labels
 3. Ensure each theme has a coherent focus
-4. All atomic concepts must be assigned to a theme
+4. CRITICAL: Every single atomic concept from the input list must appear in your output
 
 Guidelines for themes:
 - Should represent a broad area of response
 - Typically 3-7 themes total
 - Each theme should contain related atomic concepts
 - Theme names should be clear and descriptive
+
+IMPORTANT REQUIREMENTS:
+- You must account for ALL {total_concepts} atomic concepts provided
+- If a concept doesn't fit well with others, put it in "unassigned_concepts"
+- Do NOT merge, combine, or drop any concepts
+- Use the exact concept names from the input list
 
 Output JSON:
 {{
@@ -504,16 +510,16 @@ Output JSON:
       "atomic_concepts": [
         {{
           "concept_id": "1.1",
-          "label": "Atomic concept name",
+          "label": "EXACT_CONCEPT_NAME_FROM_INPUT",
           "description": "What this concept covers"
         }}
       ]
     }}
   ],
-  "unassigned_concepts": []  // Any concepts that don't fit well (should be minimal)
+  "unassigned_concepts": ["EXACT_CONCEPT_NAME_IF_UNASSIGNED"]
 }}
 
-Ensure all atomic concepts are assigned to themes.
+VERIFY: Your output must contain exactly {total_concepts} concepts total (in themes + unassigned).
 Return output in {language}.
 """
 
