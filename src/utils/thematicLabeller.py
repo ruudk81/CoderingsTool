@@ -547,7 +547,7 @@ class ThematicLabeller:
     def _print_refined_summary(self, refined_codebook: RefinedCodebook):
         """Print summary of refined codebook"""
         stats = refined_codebook.summary_statistics
-        self.verbose_reporter.section_summary({
+        self.verbose_reporter.summary("Final Results", {
             "Themes": stats.total_themes,
             "Atomic Concepts": stats.total_concepts, 
             "Clusters assigned": stats.total_clusters,
