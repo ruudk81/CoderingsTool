@@ -351,54 +351,56 @@ Requirements:
 Remember to provide all output in {language}
 """
 
-PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
-You are an expert in thematic analysis working in {language}.
-Your task is to identify the atomic concepts present across descriptive codes derived from survey responses.
+PHASE2_LABEL_MERGER_PROMPT = """
+You are an expert in qualitative research working in {language}. 
+Your task is to evaluate and merge descriptive labels from survey response clusters that are semantically identical or meaningfully equivalent in the context of the survey question.
 
-Survey question:
+Here is the survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Descriptive codes of response segments in sample:
-<descriptive_codes>
-{codes}
-</descriptive_codes>
+Here are the current labels to evaluate for merging:
+<labels>
+{labels}
+</labels>
 
-Instructions:
-1. Review all descriptive codes carefully
-2. Identify the ATOMIC CONCEPTS - the irreducible, single ideas that appear across responses
-3. Focus on WHAT respondents are talking about (not WHY)
-4. Be exhaustive - capture every meaningful concept
+Merge labels (YES) ONLY IF:
+- Labels are semantically identical or meaningfully equivalent in light of the survey question ("{survey_question}")
 
-An atomic concept is:
-- A single, indivisible idea (e.g., "price", "waiting time", "staff attitude")
-- Cannot be meaningfully broken down further
-- Clear and specific
+Important guidelines:
+- Be conservative - when in doubt, keep clusters separate.
+- Consider the context of the survey question when evaluating semantic similarity.
+- Pay attention to nuances in meaning that might be important to preserve.
 
-Begin with analytical notes:
-<analytical_notepad>
-Work through your analysis here:
-- What patterns do you see across descriptive codes?
-- What are the fundamental concepts respondents mention?
-- Which concepts appear in multiple descriptive codes?
-[Your analysis]
-</analytical_notepad>
+For merged labels:
+1. Choose a label that represents the merged labels as the new merged label
+2. Assign a new sequential cluster ID starting from 0
+3. List all original cluster IDs that are being merged
 
-Output JSON:
 {{
-  "analytical_notes": "Your working notes from above",
-  "atomic_concepts": [
+  "merged_groups": [
     {{
-      "concept": "Concept name",
-      "description": "What this concept represents",
-      "evidence": ["code_example_1", "code_example_2"]  // Example codes that contain this concept
+      "new_cluster_id": 0,
+      "merged_label": "Best Representative Label",
+      "original_cluster_ids": [1, 5, 12]
+    }},
+    {{
+      "new_cluster_id": 1,
+      "merged_label": "Another Representative Label", 
+      "original_cluster_ids": [3, 8]
+    }}
+  ],
+  "unchanged_labels": [
+    {{
+      "new_cluster_id": 2,
+      "label": "Unique Label",
+      "original_cluster_id": 7
     }}
   ]
 }}
 
-Remember: Keep concepts truly atomic and use respondents' frame of reference.
-Return output in {language}.
+Provide your decisions in the required JSON format.
 """
 
 PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
