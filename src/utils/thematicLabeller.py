@@ -213,16 +213,16 @@ class ThematicLabeller:
         # Phase 1: Descriptive Coding
         # =============================================================================
     
-        self.verbose_reporter.step_start("Phase 1: Descriptive Coding", emoji="📝")
+        self.verbose_reporter.step_start("Phase 1: Descriptive Codes", emoji="📝")
         labeled_clusters = await self._phase1_descriptive_coding(initial_clusters)
         self.labeled_clusters = labeled_clusters
-        self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} segment labels")
+        self.verbose_reporter.step_complete(f"Generated {len(labeled_clusters)} descriptive codes")
       
         # =============================================================================
         # Phase 2: Label Merger 
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 2: Label Merger", emoji="🔗")
+        self.verbose_reporter.step_start("Phase 2: Merging Labels", emoji="🔗")
         merged_clusters = await self._phase2_label_merger(labeled_clusters)
         self.merged_clusters = merged_clusters
         self.verbose_reporter.step_complete(f"Merged to {len(merged_clusters)} unique labels")
@@ -231,17 +231,17 @@ class ThematicLabeller:
         # Phase 3: Theme Discovery 
         # =============================================================================
 
-        self.verbose_reporter.step_start("Phase 3: Theme Discovery", emoji="🔍")
+        self.verbose_reporter.step_start("Phase 3: Atomic Concepts", emoji="🔍")
         themes = await self._phase3_extract_themes(merged_clusters)
-        self.verbose_reporter.step_complete("Themes discovered")
+        self.verbose_reporter.step_complete("Atomic concepts extracted")
 
         # =============================================================================
         # Phase 4: Create codebook
         # =============================================================================
 
-        self.verbose_reporter.step_start("Phase 4: Codebook Creation", emoji="📚")
+        self.verbose_reporter.step_start("Phase 4: Grouping into Themes", emoji="📚")
         self.codebook = await self._phase4_create_codebook(merged_clusters, themes)
-        self.verbose_reporter.step_complete("Codebook created")
+        self.verbose_reporter.step_complete("Themes and hierarchy created")
          
         # =============================================================================
         # Phase 5: Label Refinement  
@@ -280,7 +280,7 @@ class ThematicLabeller:
         return result
     
     async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
-        """Phase 1: Descriptive coding """
+        """Phase 1: Descriptive codes - Generate thematic labels for clusters"""
         from prompts import PHASE1_DESCRIPTIVE_CODING_PROMPT
        
         labeled_clusters = []
@@ -326,7 +326,7 @@ class ThematicLabeller:
                         "model": self.model_config.get_model_for_phase('phase1_descriptive'),
                         "survey_question": self.survey_question,
                         "language": self.config.language,
-                        "phase": "1/6 - Descriptive Coding",
+                        "phase": "1/6 - Descriptive Codes",
                         "cluster_id": cluster_id
                     }
                 )
@@ -360,7 +360,7 @@ class ThematicLabeller:
         return labeled_clusters
     
     async def _phase2_label_merger(self, labeled_clusters: List[ClusterLabel]) -> List[ClusterLabel]:
-        """Phase 2: Merge semantically identical descriptions (using descriptions as labels)"""
+        """Phase 2: Merging labels - Merge semantically identical codes"""
         from prompts import PHASE2_LABEL_MERGER_PROMPT
         
         # Format descriptions as labels for the merger prompt
@@ -386,7 +386,7 @@ class ThematicLabeller:
                     "model": self.model_config.get_model_for_phase('phase2_merger'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "2/6 - Label Merger"
+                    "phase": "2/6 - Merging Labels"
                 }
             )
             self.captured_phase2 = True
@@ -471,7 +471,7 @@ class ThematicLabeller:
     
     
     async def _phase3_extract_themes(self, labeled_clusters: List[ClusterLabel]) -> ExtractedThemesResponse:
-        """Phase 3: Extract themes using better model"""
+        """Phase 3: Atomic concepts - Extract irreducible concepts from codes"""
         from prompts import PHASE3_EXTRACT_THEMES_PROMPT
         
         # Format codes for the prompt
@@ -497,7 +497,7 @@ class ThematicLabeller:
                     "model": self.model_config.get_model_for_phase('phase3_themes'),  # Note: using phase3 model
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "3/6 - Extract Themes"
+                    "phase": "3/6 - Atomic Concepts"
                 }
             )
             self.captured_phase3 = True
@@ -523,7 +523,7 @@ class ThematicLabeller:
     
     async def _phase4_create_codebook(self, labeled_clusters: List[ClusterLabel], 
                                      themes_result: ExtractedThemesResponse) -> Codebook:
-        """Phase 4: Create hierarchical codebook"""
+        """Phase 4: Grouping into themes - Organize codes into hierarchical structure"""
         from prompts import PHASE4_CREATE_CODEBOOK_PROMPT
         
         # Format themes and codes
@@ -551,7 +551,7 @@ class ThematicLabeller:
                     "model": self.model_config.get_model_for_phase('phase4_codebook'),
                     "survey_question": self.survey_question,
                     "language": self.config.language,
-                    "phase": "4/6 - Create Codebook"
+                    "phase": "4/6 - Grouping into Themes"
                 }
             )
             self.captured_phase4 = True
@@ -724,7 +724,7 @@ class ThematicLabeller:
                         "model": self.model_config.get_model_for_phase('phase6_assignment'),
                         "survey_question": self.survey_question,
                         "language": self.config.language,
-                        "phase": "6/6 - Assignment",
+                        "phase": "6/6 - Initial Cluster Assignment",
                         "cluster_id": cluster.cluster_id
                     }
                 )
