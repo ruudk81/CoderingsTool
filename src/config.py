@@ -414,6 +414,53 @@ class LabellerConfig:
     retry_delay: int = 2  # Seconds between retries
 
 # =============================================================================
+# EXPORT CONFIGURATION
+# =============================================================================
+
+@dataclass
+class ExportConfig:
+    """Configuration for results export functionality"""
+    
+    # Output directory settings
+    export_dir: Optional[str] = None  # Will use data dir if None
+    create_subdirs: bool = True  # Create subdirectories by survey variable
+    
+    # File naming patterns
+    spss_suffix: str = "_codes"  # Suffix for SPSS file with codes
+    excel_suffix: str = "_results"  # Suffix for Excel results file
+    
+    # Excel export settings
+    enable_codebook_tab: bool = True
+    enable_dendrogram_tab: bool = True
+    enable_frequency_tab: bool = True
+    enable_wordcloud_tab: bool = True
+    
+    # Visualization settings
+    chart_width: int = 12
+    chart_height: int = 8
+    wordcloud_width: int = 800
+    wordcloud_height: int = 600
+    max_wordcloud_words: int = 100
+    
+    # Data formatting
+    include_descriptions: bool = True
+    include_frequencies: bool = True
+    include_percentages: bool = True
+    
+    # Quality settings
+    min_frequency_for_chart: int = 1  # Minimum frequency to include in charts
+    max_categories_in_chart: int = 50  # Maximum categories to show in frequency charts
+    
+    # Output verbosity
+    verbose: bool = True
+    
+    def get_export_dir(self, base_data_dir: str) -> str:
+        """Get the export directory path"""
+        if self.export_dir:
+            return self.export_dir
+        return os.path.join(base_data_dir, "exports")
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -427,5 +474,6 @@ DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
+DEFAULT_EXPORT_CONFIG = ExportConfig()
 
 

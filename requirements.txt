@@ -6,6 +6,7 @@ pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.5.2
 pyreadstat==1.2.7
+openpyxl==3.1.5
 
 # ML and clustering
 hdbscan==0.8.39
