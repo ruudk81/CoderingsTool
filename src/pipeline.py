@@ -28,7 +28,7 @@ var_name = "Q20"
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -369,6 +369,13 @@ else:
 """thematic labeling"""
 from utils.thematicLabeller import ThematicLabeller
 from config import DEFAULT_LABELLER_CONFIG
+
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+
 
 step_name = "labels"
 verbose_reporter = VerboseReporter(VERBOSE)
