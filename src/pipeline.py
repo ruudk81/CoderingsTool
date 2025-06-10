@@ -419,9 +419,9 @@ else:
 
 """debug section"""
 from utils.thematicLabeller import ThematicLabeller
-from config import DEFAULT_LABELLER_CONFIG
+from config import DEFAULT_LABELLER_CONFIG, DEFAULT_MODEL_CONFIG
 
-thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, model_config=DEFAULT_MODEL_CONFIG, verbose=VERBOSE)
 labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
 
