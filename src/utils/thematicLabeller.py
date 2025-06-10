@@ -233,7 +233,7 @@ class ThematicLabeller:
         # Phase 2: Atomic Concepts  
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 2: Atomic Concepts + Cluster Merging", emoji="🔍")
+        self.verbose_reporter.step_start("Phase 2: Atomic Concepts", emoji="🔍")
         atomic_concepts, merged_clusters = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
         self.atomic_concepts = atomic_concepts
         self.merged_clusters = merged_clusters
@@ -245,6 +245,7 @@ class ThematicLabeller:
 
         self.verbose_reporter.step_start("Phase 3: Grouping into Themes", emoji="📚")
         grouped_concepts = await self._phase3_group_concepts_into_themes(atomic_concepts)
+        self.grouped_concepts = grouped_concepts
         self.verbose_reporter.step_complete("Concepts grouped into themes")
          
         # =============================================================================
@@ -254,11 +255,8 @@ class ThematicLabeller:
         self.verbose_reporter.step_start("Phase 4: Label Refinement", emoji="✨")
         refined_codebook = await self._phase4_label_refinement_with_assignments(grouped_concepts, merged_clusters)
         self.verbose_reporter.step_complete("Labels refined with statistics")
-        
-        # Store results
+      
         self.refined_codebook = refined_codebook
-    
-        # Print refined codebook
         self._display_refined_codebook(refined_codebook)
         
         # Create mapping from original to merged cluster IDs
@@ -282,7 +280,7 @@ class ThematicLabeller:
         final_labels = {}
         
         # Create lookup dictionaries
-        merged_cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        #merged_cluster_lookup = {c.cluster_id: c for c in merged_clusters}
         concept_lookup = {}
         theme_lookup = {}
         
