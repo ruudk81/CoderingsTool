@@ -133,6 +133,7 @@ class LabelRefinementResponse(BaseModel):
 # Phase 6 Models
 class ConceptAssignment(BaseModel):
     """Assignment to a concept"""
+    cluster_id: str
     theme_id: str
     concept_id: str
     confidence: float
@@ -1020,7 +1021,7 @@ class ThematicLabeller:
                     print(f"    ⚠️ Error assigning cluster {cluster.cluster_id}: {str(result)}")
                     # Fallback to "other"
                     assignment = ConceptAssignment(
-                        cluster_id=cluster.cluster_id,
+                        cluster_id=str(cluster.cluster_id),
                         theme_id="99",
                         concept_id="99.1",
                         confidence=0.0,
@@ -1029,7 +1030,7 @@ class ThematicLabeller:
                 else:
                     # Direct assignment from LLM 
                     assignment = ConceptAssignment(
-                        cluster_id=cluster.cluster_id,
+                        cluster_id=str(cluster.cluster_id),
                         theme_id=result.primary_assignment.theme_id,
                         concept_id=result.primary_assignment.concept_id,
                         confidence=result.primary_assignment.confidence,
