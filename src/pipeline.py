@@ -30,6 +30,15 @@ FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalcul
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
+# Debug flags
+DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
+# Set DEBUG_CLUSTER_TRACKING = True to see:
+# - Detailed cluster ID flow through each phase
+# - How original clusters get merged into concepts
+# - Which clusters become "Other/Miscellaneous"
+# - Exact mapping from original to final cluster IDs
+# - Verification that no clusters are lost in the process
+
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
@@ -48,6 +57,7 @@ print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP 
 print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
 print(f"💬 Verbose mode: {VERBOSE}")
 print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
+print(f"🔍 Debug cluster tracking: {DEBUG_CLUSTER_TRACKING}")
 print("=" * 80)
 
 
@@ -367,14 +377,32 @@ else:
 
 # === STEP 6 ========================================================================================================
 """thematic labeling"""
-from utils.thematicLabeller import ThematicLabeller
-from config import DEFAULT_LABELLER_CONFIG
+if DEBUG_CLUSTER_TRACKING:
+    from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
+    from config import DEFAULT_LABELLER_CONFIG
+    
+    verbose_reporter = VerboseReporter(VERBOSE)
+    prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+    
+    print("\n" + "="*60)
+    print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
+    print("="*60)
+    
+    thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+    
+    # Print comprehensive diagnostic summary
+    thematic_labeller.print_diagnostic_summary()
+    
+else:
+    from utils.thematicLabeller import ThematicLabeller
+    from config import DEFAULT_LABELLER_CONFIG
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+    verbose_reporter = VerboseReporter(VERBOSE)
+    prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 
-thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
 # debug
 print("\nINITIAL CLUSTERS")  
@@ -436,8 +464,20 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
     start_time = time.time()
-    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+    
+    if DEBUG_CLUSTER_TRACKING:
+        from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
+        print("\n" + "="*60)
+        print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
+        print("="*60)
+        thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+        labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+        # Print comprehensive diagnostic summary
+        thematic_labeller.print_diagnostic_summary()
+    else:
+        thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+        labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)

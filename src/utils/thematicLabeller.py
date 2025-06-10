@@ -18,6 +18,7 @@ class ClusterLabel(BaseModel):
     label: str = Field(description="Concise label (max 5 words)")
     description: Optional[str] = Field(default=None, description="Natural description from Phase 1")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
+    original_cluster_ids: List[int] = Field(default_factory=list, description="Original cluster IDs that were merged into this cluster")
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
@@ -529,13 +530,15 @@ class ThematicLabeller:
                         cluster_id=cluster_id,
                         label="UNLABELED",
                         description="Failed to generate description",
-                        representatives=representatives))
+                        representatives=representatives,
+                        original_cluster_ids=[cluster_id]))
                 else:
                     labeled_clusters.append(ClusterLabel(
                         cluster_id=cluster_id,
                         label=result.segment_label,
                         description=result.segment_description,
-                        representatives=representatives))
+                        representatives=representatives,
+                        original_cluster_ids=[cluster_id]))
         
         return labeled_clusters
     
@@ -569,6 +572,19 @@ class ThematicLabeller:
         # Merge clusters based on atomic concept evidence
         self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} labeled clusters for concept extraction")
         merged_clusters = self._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts_result)
+        
+        # Check if we have unassigned clusters that were merged into "Other"
+        has_other_concept = any("Concept: Other" in cluster.description for cluster in merged_clusters)
+        
+        # Add "Other" concept to atomic concepts if unassigned clusters were found
+        if has_other_concept:
+            other_concept = AtomicConcept(
+                concept="Other",
+                description="Miscellaneous responses that don't fit specific concepts",
+                evidence=["other"]  # Placeholder evidence
+            )
+            atomic_concepts_result.atomic_concepts.append(other_concept)
+            self.verbose_reporter.stat_line("Added 'Other' concept for unassigned clusters", bullet="  ")
         
         self.verbose_reporter.stat_line(f"Extracted {len(atomic_concepts_result.atomic_concepts)} atomic concepts")
         self.verbose_reporter.stat_line(f"Merged {len(labeled_clusters)} clusters into {len(merged_clusters)} concept-based clusters")
@@ -621,14 +637,20 @@ class ThematicLabeller:
         
         # Merge clusters for each concept
         for concept, clusters in concept_groups.items():
+            # Collect all original cluster IDs from the clusters being merged
+            all_original_ids = []
+            for cluster in clusters:
+                all_original_ids.extend(cluster.original_cluster_ids)
+            
             if len(clusters) == 1:
-                # Single cluster - just update ID
+                # Single cluster - just update ID but keep original tracking
                 cluster = clusters[0]
                 merged_cluster = ClusterLabel(
                     cluster_id=new_cluster_id,
                     label=cluster.label,
                     description=f"Concept: {concept}",
-                    representatives=cluster.representatives
+                    representatives=cluster.representatives,
+                    original_cluster_ids=all_original_ids
                 )
             else:
                 # Multiple clusters - merge them
@@ -649,30 +671,47 @@ class ThematicLabeller:
                     cluster_id=new_cluster_id,
                     label=primary_label,
                     description=f"Concept: {concept} (merged from {len(clusters)} clusters)",
-                    representatives=top_representatives
+                    representatives=top_representatives,
+                    original_cluster_ids=all_original_ids
                 )
                 
-                self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept}'", bullet="  ")
+                self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept}' (original IDs: {all_original_ids})", bullet="  ")
             
             merged_clusters.append(merged_cluster)
             new_cluster_id += 1
         
-        # Add unassigned clusters
-        for cluster in unassigned_clusters:
-            unassigned_cluster = ClusterLabel(
-                cluster_id=new_cluster_id,
-                label=cluster.label,
-                description="Unassigned to atomic concept",
-                representatives=cluster.representatives
-            )
-            merged_clusters.append(unassigned_cluster)
-            new_cluster_id += 1
-        
+        # Group all unassigned clusters into a single "Other/Miscellaneous" concept
         if unassigned_clusters:
-            self.verbose_reporter.stat_line(f"⚠️ {len(unassigned_clusters)} clusters not assigned to any atomic concept")
-            self.verbose_reporter.stat_line(f"Unassigned cluster IDs: {[c.cluster_id for c in unassigned_clusters]}")
+            # Merge all unassigned clusters into a single "Other" concept
+            all_unassigned_representatives = []
+            all_unassigned_labels = []
+            all_unassigned_original_ids = []
+            
+            for cluster in unassigned_clusters:
+                all_unassigned_representatives.extend(cluster.representatives)
+                all_unassigned_labels.append(cluster.label)
+                all_unassigned_original_ids.extend(cluster.original_cluster_ids)
+            
+            # Sort by similarity and take top k representatives
+            all_unassigned_representatives.sort(key=lambda x: x[1], reverse=True)
+            top_unassigned_representatives = all_unassigned_representatives[:self.config.top_k_representatives]
+            
+            # Create a single merged cluster for all unassigned
+            other_cluster = ClusterLabel(
+                cluster_id=new_cluster_id,
+                label="OTHER_MISCELLANEOUS",  # Standard label for unassigned
+                description=f"Concept: Other (merged from {len(unassigned_clusters)} unassigned clusters)",
+                representatives=top_unassigned_representatives,
+                original_cluster_ids=all_unassigned_original_ids
+            )
+            merged_clusters.append(other_cluster)
+            new_cluster_id += 1
+            
+            self.verbose_reporter.stat_line(f"Merged {len(unassigned_clusters)} unassigned clusters into 'Other' concept (original IDs: {all_unassigned_original_ids})", bullet="  ")
         
-        self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} merged clusters ({len(concept_groups)} concept-based + {len(unassigned_clusters)} unassigned)")
+        # Report final statistics
+        other_count = 1 if unassigned_clusters else 0
+        self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} merged clusters ({len(concept_groups)} concept-based + {other_count} 'Other' concept)")
         return merged_clusters
     
     async def _phase3_group_concepts_into_themes(self, atomic_concepts_result: ExtractedAtomicConceptsResponse) -> GroupedConceptsResponse:
@@ -837,42 +876,33 @@ class ThematicLabeller:
         return asyncio.run(self.process_hierarchy_async(cluster_models, survey_question))
     
     def _create_cluster_mapping(self, original_clusters: List[ClusterLabel], merged_clusters: List[ClusterLabel]) -> Dict[int, int]:
-        """Create mapping from original cluster IDs to merged cluster IDs"""
+        """Create mapping from original cluster IDs to merged cluster IDs using original_cluster_ids tracking"""
         mapping = {}
         
-        # If no merging occurred, check if we have the merger result stored
-        if hasattr(self, 'merger_result'):
-            # Use the merger result to create mapping
-            merger_result = self.merger_result
-            
-            # Map merged groups
-            for group in merger_result.merged_groups:
-                for original_id in group.original_cluster_ids:
-                    mapping[original_id] = group.new_cluster_id
-            
-            # Map unchanged labels
-            for unchanged in merger_result.unchanged_labels:
-                mapping[unchanged.original_cluster_id] = unchanged.new_cluster_id
-        else:
-            # Fallback: assume cluster IDs changed sequentially
-            original_ids = sorted([c.cluster_id for c in original_clusters])
-            merged_ids = sorted([c.cluster_id for c in merged_clusters])
-            
-            if len(original_ids) == len(merged_ids):
-                # No merging occurred, create 1:1 mapping
-                for i, orig_id in enumerate(original_ids):
-                    mapping[orig_id] = merged_ids[i]
-            else:
-                # Merging occurred but we don't have detailed info
-                # This is a fallback that assumes sequential renumbering
-                for orig_cluster in original_clusters:
-                    # Try to find merged cluster with same label
+        # Use the original_cluster_ids field to create precise mapping
+        for merged_cluster in merged_clusters:
+            for original_id in merged_cluster.original_cluster_ids:
+                mapping[original_id] = merged_cluster.cluster_id
+        
+        # Verify that all original clusters are mapped
+        all_original_ids = set(c.cluster_id for c in original_clusters)
+        mapped_ids = set(mapping.keys())
+        missing_ids = all_original_ids - mapped_ids
+        
+        if missing_ids:
+            self.verbose_reporter.stat_line(f"⚠️ Warning: {len(missing_ids)} original cluster IDs not found in mapping: {sorted(missing_ids)}")
+            # Create fallback mapping for missing IDs
+            for missing_id in missing_ids:
+                # Find the original cluster and try to match by label
+                orig_cluster = next((c for c in original_clusters if c.cluster_id == missing_id), None)
+                if orig_cluster:
+                    # Try to find a merged cluster with similar label
                     merged_cluster = next(
-                        (c for c in merged_clusters if c.label == orig_cluster.label), 
-                        None
+                        (c for c in merged_clusters if orig_cluster.label in c.label or c.label in orig_cluster.label),
+                        merged_clusters[0] if merged_clusters else None  # Fallback to first merged cluster
                     )
                     if merged_cluster:
-                        mapping[orig_cluster.cluster_id] = merged_cluster.cluster_id
+                        mapping[missing_id] = merged_cluster.cluster_id
         
         return mapping
     
