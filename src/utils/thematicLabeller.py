@@ -60,28 +60,95 @@ class LabelMergerResponse(BaseModel):
     merged_groups: List[MergedGroup] = Field(default_factory=list)
     unchanged_labels: List[UnchangedLabel] = Field(default_factory=list)
 
-class ExtractedThemesResponse(BaseModel):
-    """Response from Phase 3 theme extraction"""
+# Phase 3 Models
+class AtomicConcept(BaseModel):
+    """Single atomic concept from Phase 3"""
+    concept: str = Field(description="Concept name")
+    description: str = Field(description="What this concept represents")
+    evidence: List[str] = Field(description="Cluster IDs that contain this concept")
+
+class ExtractedAtomicConceptsResponse(BaseModel):
+    """Response from Phase 3 atomic concept extraction"""
     analytical_notes: str = Field(description="Working notes from analysis")
-    themes: List[str] = Field(description="List of main themes identified")
-    conceptual_insights: Dict[str, str] = Field(description="Insights for each theme")
+    atomic_concepts: List[AtomicConcept] = Field(description="List of atomic concepts identified")
+
+# Phase 4 Models
+class AtomicConceptGrouped(BaseModel):
+    """Atomic concept within a theme"""
+    concept_id: str = Field(description="Concept ID like 1.1")
+    label: str = Field(description="Atomic concept name")
+    description: str = Field(description="What this concept covers")
+
+class ThemeGroup(BaseModel):
+    """Theme grouping from Phase 4"""
+    theme_id: str = Field(description="Theme ID")
+    label: str = Field(description="Theme name")
+    description: str = Field(description="What this theme encompasses")
+    atomic_concepts: List[AtomicConceptGrouped] = Field(description="Atomic concepts in this theme")
+
+class GroupedConceptsResponse(BaseModel):
+    """Response from Phase 4 grouping"""
+    themes: List[ThemeGroup] = Field(description="Themes with grouped atomic concepts")
+    unassigned_concepts: List[str] = Field(default_factory=list, description="Any concepts that don't fit well")
 
 class RefinementEntry(BaseModel):
     """Single refinement entry"""
     label: str
     description: str
 
+# Phase 5 Models
+class RefinedAtomicConcept(BaseModel):
+    """Refined atomic concept with examples and statistics"""
+    concept_id: str
+    label: str
+    description: str
+    example_quotes: List[str] = Field(description="Representative quotes")
+    cluster_count: int = Field(description="Number of clusters assigned")
+    percentage: float = Field(description="Percentage of total clusters")
+
+class RefinedTheme(BaseModel):
+    """Refined theme with atomic concepts"""
+    theme_id: str
+    label: str
+    description: str
+    atomic_concepts: List[RefinedAtomicConcept]
+
+class SummaryStatistics(BaseModel):
+    """Summary statistics for the codebook"""
+    total_themes: int
+    total_concepts: int
+    total_clusters: int
+    unassigned_clusters: int
+
+class RefinedCodebook(BaseModel):
+    """Refined codebook structure"""
+    themes: List[RefinedTheme]
+    summary_statistics: SummaryStatistics
+
 class LabelRefinementResponse(BaseModel):
     """Response from Phase 5 label refinement"""
-    refined_themes: Dict[str, RefinementEntry] = Field(description="Refined theme labels by ID")
-    refined_topics: Dict[str, RefinementEntry] = Field(description="Refined topic labels by ID")
-    refined_codes: Dict[str, RefinementEntry] = Field(description="Refined code labels by ID")
+    refined_codebook: RefinedCodebook
+    refinement_notes: str = Field(description="Key refinements made and rationale")
+
+# Phase 6 Models
+class ConceptAssignment(BaseModel):
+    """Assignment to a concept"""
+    theme_id: str
+    concept_id: str
+    confidence: float
+    rationale: str
+
+class AlternativeAssignment(BaseModel):
+    """Alternative assignment option"""
+    concept_id: str
+    confidence: float
+    rationale: str
 
 class AssignmentResponse(BaseModel):
     """Response from Phase 6 assignment"""
-    primary_assignment: Dict[str, str] = Field(description="Direct mapping: theme_id, topic_id, code_id")
-    confidence: float = Field(description="Confidence in assignment")
-    alternatives: Optional[List[Dict]] = Field(default=None, description="Alternative assignments if confidence is low")
+    cluster_id: str
+    primary_assignment: ConceptAssignment
+    alternative_assignments: List[AlternativeAssignment] = Field(default_factory=list)
 
 class ThemeAssignment(BaseModel):
     """Direct assignment for a single cluster"""
@@ -113,6 +180,23 @@ class ThematicLabeller:
         self.captured_phase5 = False
         self.captured_phase6 = False
         
+    def _format_thematic_structure(self, grouped_concepts: GroupedConceptsResponse) -> str:
+        """Format grouped concepts for Phase 6 assignment prompt"""
+        formatted = []
+        formatted.append("THEMATIC STRUCTURE")
+        formatted.append("=" * 50)
+        
+        for theme in grouped_concepts.themes:
+            formatted.append(f"\nTHEME [{theme.theme_id}]: {theme.label}")
+            formatted.append(f"  Description: {theme.description}")
+            formatted.append("  Atomic Concepts:")
+            
+            for concept in theme.atomic_concepts:
+                formatted.append(f"    [{concept.concept_id}] {concept.label}")
+                formatted.append(f"       {concept.description}")
+            
+        return "\n".join(formatted)
+    
     def _get_representatives(self, cluster: models.ClusterModel) -> List[Tuple[str, float]]:
         """Get top N representative descriptions with similarity scores"""
         embeddings = []
@@ -232,7 +316,7 @@ class ThematicLabeller:
         # =============================================================================
 
         self.verbose_reporter.step_start("Phase 3: Atomic Concepts", emoji="🔍")
-        themes = await self._phase3_extract_themes(merged_clusters)
+        atomic_concepts = await self._phase3_extract_atomic_concepts(merged_clusters)
         self.verbose_reporter.step_complete("Atomic concepts extracted")
 
         # =============================================================================
@@ -240,44 +324,68 @@ class ThematicLabeller:
         # =============================================================================
 
         self.verbose_reporter.step_start("Phase 4: Grouping into Themes", emoji="📚")
-        self.codebook = await self._phase4_create_codebook(merged_clusters, themes)
+        grouped_concepts = await self._phase4_group_concepts_into_themes(merged_clusters, atomic_concepts)
         self.verbose_reporter.step_complete("Themes and hierarchy created")
          
         # =============================================================================
-        # Phase 5: Label Refinement  
+        # Phase 5: Initial Cluster Assignment  
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 5: Label Refinement", emoji="✨")
-        await self._phase5_label_refinement(self.codebook)
-        self.verbose_reporter.step_complete("Labels polished")
+        self.verbose_reporter.step_start("Phase 5: Initial Cluster Assignment", emoji="🎯")
+        assignments = await self._phase6_assignment(merged_clusters, grouped_concepts)
+        self.verbose_reporter.step_complete("Clusters assigned to concepts")
         
         # =============================================================================
-        # Phase 6: Assignment
+        # Phase 6: Label Refinement (with assignment statistics)
         # =============================================================================
         
-        self.verbose_reporter.step_start("Phase 6: Assignment", emoji="🎯")
-        assignments = await self._phase6_assignment(merged_clusters, self.codebook)
-        self.verbose_reporter.step_complete("Themes assigned to clusters")
+        self.verbose_reporter.step_start("Phase 6: Label Refinement", emoji="✨")
+        refined_codebook = await self._phase5_label_refinement_with_assignments(grouped_concepts, assignments, merged_clusters)
+        self.verbose_reporter.step_complete("Labels refined with statistics")
         
-        # Remove empty codes after assignment
-        self._remove_empty_codes(self.codebook)
+        # Store results
+        self.assignments = assignments
+        self.refined_codebook = refined_codebook
     
-        # Print codebook
-        self._display_full_codebook(self.codebook)
+        # Print refined codebook
+        self._display_refined_codebook(refined_codebook)
         
         # Create mapping from original to merged cluster IDs
         original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
         
-        # Create final labels using merged clusters but map back to original IDs
-        self.final_labels = self._create_final_labels_with_mapping(merged_clusters, assignments, original_to_merged_mapping)
+        # Create mapping from original to merged cluster IDs
+        original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
         
-        self.verbose_reporter.stat_line("✅ Applying hierarchy to responses...")
-        result = self._apply_hierarchy_to_responses(cluster_models, self.final_labels, self.codebook)
+        # Create final labels using the new concept-based assignments
+        self.final_labels = self._create_final_labels_from_concept_assignments(assignments, original_to_merged_mapping, refined_codebook)
+        
+        self.verbose_reporter.stat_line("✅ Applying concept assignments to responses...")
+        result = self._apply_concept_assignments_to_responses(cluster_models, self.final_labels, refined_codebook)
         self._print_assignment_diagnostics(self.final_labels, initial_clusters)
         self.verbose_reporter.stat_line("🎉 Hierarchical labeling complete!")
-        self._print_summary(self.codebook)
+        self._print_refined_summary(refined_codebook)
 
         return result
+        
+    def _create_final_labels_from_concept_assignments(self, assignments, original_to_merged_mapping, refined_codebook):
+        """Create final labels from concept assignments - stub for now"""
+        # TODO: Implement concept-based label creation
+        return {}
+    
+    def _apply_concept_assignments_to_responses(self, cluster_models, final_labels, refined_codebook):
+        """Apply concept assignments to responses - stub for now"""
+        # TODO: Implement concept-based response application
+        return cluster_models
+    
+    def _print_refined_summary(self, refined_codebook: RefinedCodebook):
+        """Print summary of refined codebook"""
+        stats = refined_codebook.summary_statistics
+        self.verbose_reporter.section_summary({
+            "Themes": stats.total_themes,
+            "Atomic Concepts": stats.total_concepts, 
+            "Clusters assigned": stats.total_clusters,
+            "Unassigned clusters": stats.unassigned_clusters
+        }, emoji="📊")
     
     async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
         """Phase 1: Descriptive codes - Generate thematic labels for clusters"""
@@ -470,17 +578,17 @@ class ThematicLabeller:
             return labeled_clusters
     
     
-    async def _phase3_extract_themes(self, labeled_clusters: List[ClusterLabel]) -> ExtractedThemesResponse:
+    async def _phase3_extract_atomic_concepts(self, labeled_clusters: List[ClusterLabel]) -> ExtractedAtomicConceptsResponse:
         """Phase 3: Atomic concepts - Extract irreducible concepts from codes"""
-        from prompts import PHASE3_EXTRACT_THEMES_PROMPT
+        from prompts import PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT
         
         # Format codes for the prompt
         codes_text = "\n".join([
-            f"[source ID: {c.cluster_id:2d}] {c.label}" 
+            f"[ID: {c.cluster_id:2d}] {c.label}" 
             for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
         ])
         
-        prompt = PHASE3_EXTRACT_THEMES_PROMPT.format(
+        prompt = PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT.format(
             survey_question=self.survey_question,
             codes=codes_text,
             language=self.config.language
@@ -492,7 +600,7 @@ class ThematicLabeller:
                 step_name="hierarchical_labeling",
                 utility_name="ThematicLabeller",
                 prompt_content=prompt,
-                prompt_type="phase3_extract_themes",
+                prompt_type="phase3_extract_atomic_concepts",
                 metadata={
                     "model": self.model_config.get_model_for_phase('phase3_themes'),  # Note: using phase3 model
                     "survey_question": self.survey_question,
@@ -505,38 +613,36 @@ class ThematicLabeller:
         # Use phase3_themes_model (gpt-4o) for this phase
         result = await self._invoke_with_retries(
             prompt, 
-            ExtractedThemesResponse,
+            ExtractedAtomicConceptsResponse,
             phase='phase3_themes'
         )
         
-        self.verbose_reporter.stat_line(f"Extracted {len(result.themes)} main themes")
-        for theme in result.themes:
-            self.verbose_reporter.stat_line(f"• {theme}", bullet="  ")
+        self.verbose_reporter.stat_line(f"Extracted {len(result.atomic_concepts)} atomic concepts")
+        for concept in result.atomic_concepts:
+            evidence_count = len(concept.evidence)
+            self.verbose_reporter.stat_line(f"• {concept.concept} (evidence in {evidence_count} clusters)", bullet="  ")
         
         # Report analytical insights if verbose
-        if self.verbose_reporter.enabled and result.conceptual_insights:
-            self.verbose_reporter.stat_line("Key conceptual insights:", bullet="  ")
-            for theme, insight in result.conceptual_insights.items():
-                self.verbose_reporter.stat_line(f"• {theme}: {insight[:100]}{'...' if len(insight) > 100 else ''}", bullet="    ")
+        if self.verbose_reporter.enabled and result.analytical_notes:
+            self.verbose_reporter.stat_line("Analytical notes:", bullet="  ")
+            self.verbose_reporter.stat_line(f"{result.analytical_notes[:200]}{'...' if len(result.analytical_notes) > 200 else ''}", bullet="    ")
         
         return result
     
-    async def _phase4_create_codebook(self, labeled_clusters: List[ClusterLabel], 
-                                     themes_result: ExtractedThemesResponse) -> Codebook:
-        """Phase 4: Grouping into themes - Organize codes into hierarchical structure"""
-        from prompts import PHASE4_CREATE_CODEBOOK_PROMPT
+    async def _phase4_group_concepts_into_themes(self, labeled_clusters: List[ClusterLabel], 
+                                               atomic_concepts_result: ExtractedAtomicConceptsResponse) -> GroupedConceptsResponse:
+        """Phase 4: Grouping into themes - Organize atomic concepts into themes"""
+        from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
-        # Format themes and codes
-        themes_text = "\n".join([f"- {theme}" for theme in themes_result.themes])
-        codes_text = "\n".join([
-            f"[source ID: {c.cluster_id:2d}] {c.label}" 
-            for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
+        # Format atomic concepts for the prompt
+        concepts_text = "\n".join([
+            f"- {concept.concept}: {concept.description} (evidence: {', '.join(concept.evidence)})"
+            for concept in atomic_concepts_result.atomic_concepts
         ])
         
-        prompt = PHASE4_CREATE_CODEBOOK_PROMPT.format(
+        prompt = PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
             survey_question=self.survey_question,
-            themes=themes_text,
-            merged_clusters=codes_text,
+            atomic_concepts=concepts_text,
             language=self.config.language
         )
         
@@ -546,7 +652,7 @@ class ThematicLabeller:
                 step_name="hierarchical_labeling",
                 utility_name="ThematicLabeller",
                 prompt_content=prompt,
-                prompt_type="phase4_create_codebook",
+                prompt_type="phase4_group_concepts_into_themes",
                 metadata={
                     "model": self.model_config.get_model_for_phase('phase4_codebook'),
                     "survey_question": self.survey_question,
@@ -556,21 +662,18 @@ class ThematicLabeller:
             )
             self.captured_phase4 = True
         
-        # Create a simple response model for parsing
-        class CodebookResponse(BaseModel):
-            themes: List[Dict[str, Any]]
-        
-        result = await self._invoke_with_retries(prompt, CodebookResponse, phase='phase4_codebook')
-        
-        # Parse result into Codebook
-        codebook = self._parse_codebook(result.model_dump())
+        result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase4_codebook')
         
         # Report statistics
-        self.verbose_reporter.stat_line(f"Created codebook with {len(codebook.themes)} themes")
-        self.verbose_reporter.stat_line(f"Organized into {len(codebook.topics)} topics")
-        self.verbose_reporter.stat_line(f"Containing {len(codebook.codes)} codes")
+        total_concepts = sum(len(theme.atomic_concepts) for theme in result.themes)
+        self.verbose_reporter.stat_line(f"Grouped {total_concepts} concepts into {len(result.themes)} themes")
+        for theme in result.themes:
+            self.verbose_reporter.stat_line(f"• {theme.label}: {len(theme.atomic_concepts)} concepts", bullet="  ")
         
-        return codebook
+        if result.unassigned_concepts:
+            self.verbose_reporter.stat_line(f"⚠️ {len(result.unassigned_concepts)} concepts remain unassigned", bullet="  ")
+        
+        return result
     
     async def _phase5_label_refinement(self, codebook: Codebook) -> None:
         """Phase 5: Refine all labels for clarity and consistency"""
@@ -686,12 +789,13 @@ class ThematicLabeller:
             self.verbose_reporter.stat_line(f"⚠️ Label refinement failed: {str(e)}, keeping original labels")
         
         
-    async def _phase6_assignment(self, labeled_clusters: List[ClusterLabel], codebook: Codebook) -> List[ThemeAssignment]:
-        """Phase 6: Assignment - Assign clusters to the refined hierarchy"""
+    async def _phase6_assignment(self, labeled_clusters: List[ClusterLabel], grouped_concepts: GroupedConceptsResponse) -> List[ConceptAssignment]:
+        """Phase 6: Initial cluster assignment - Assign clusters to atomic concepts"""
         assignments = []
         from prompts import PHASE6_ASSIGNMENT_PROMPT
        
-        codebook_text = self.format_codebook_prompt(codebook)
+        # Format thematic structure for prompt
+        thematic_structure = self._format_thematic_structure(grouped_concepts)
         
         # Process each cluster
         tasks = []
@@ -705,12 +809,15 @@ class ThematicLabeller:
                     unique_texts.append(text)
             representatives = '- ' + '\n- '.join(unique_texts)
             
+            cluster_size = len(cluster.representatives)
+            
             prompt = PHASE6_ASSIGNMENT_PROMPT.format(
                 survey_question=self.survey_question,
+                thematic_structure=thematic_structure,
                 cluster_id=cluster.cluster_id,
                 cluster_label=cluster.label,
+                cluster_size=cluster_size,
                 cluster_representatives=representatives,
-                codebook=codebook_text,
                 language=self.config.language)
             
             # Capture Phase 6 prompt only for the first cluster
@@ -746,33 +853,32 @@ class ThematicLabeller:
                 if isinstance(result, Exception):
                     print(f"    ⚠️ Error assigning cluster {cluster.cluster_id}: {str(result)}")
                     # Fallback to "other"
-                    assignment = ThemeAssignment(
+                    assignment = ConceptAssignment(
                         cluster_id=cluster.cluster_id,
                         theme_id="99",
-                        topic_id="99.1",
-                        code_id="99.1.1",
-                        confidence=0.0
+                        concept_id="99.1",
+                        confidence=0.0,
+                        rationale="Assignment failed"
                     )
                 else:
-                    # Direct assignment from LLM
-                    assignment = ThemeAssignment(
+                    # Direct assignment from LLM 
+                    assignment = ConceptAssignment(
                         cluster_id=cluster.cluster_id,
-                        theme_id=result.primary_assignment['theme_id'],
-                        topic_id=result.primary_assignment['topic_id'],
-                        code_id=result.primary_assignment['code_id'],
-                        confidence=result.confidence,
-                        alternative_assignments=result.alternatives
+                        theme_id=result.primary_assignment.theme_id,
+                        concept_id=result.primary_assignment.concept_id,
+                        confidence=result.primary_assignment.confidence,
+                        rationale=result.primary_assignment.rationale
                     )
                     
                     # Check if assigned to "other"
-                    if result.primary_assignment['code_id'] == "99.1.1":
+                    if result.primary_assignment.concept_id == "99.1":
                         other_count += 1
                     else:
                         assigned_count += 1
                         
                 assignments.append(assignment)
         
-        print(f"    ✓ Assigned {assigned_count} clusters to specific codes")
+        print(f"    ✓ Assigned {assigned_count} clusters to specific concepts")
         if other_count > 0:
             print(f"    ℹ️ {other_count} clusters assigned to 'other'")
         
@@ -783,6 +889,111 @@ class ThematicLabeller:
         self._validate_assignments(labeled_clusters, assignments)
         
         return assignments
+    
+    async def _phase5_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
+                                                       assignments: List[ConceptAssignment], 
+                                                       merged_clusters: List[ClusterLabel]) -> RefinedCodebook:
+        """Phase 6: Label refinement with assignment statistics"""
+        from prompts import PHASE5_LABEL_REFINEMENT_PROMPT
+        
+        # Calculate assignment statistics
+        concept_assignments = {}
+        for assignment in assignments:
+            concept_id = assignment.concept_id
+            if concept_id not in concept_assignments:
+                concept_assignments[concept_id] = []
+            concept_assignments[concept_id].append(assignment.cluster_id)
+        
+        # Create codebook with cluster counts for prompt
+        codebook_with_counts = self._format_codebook_with_assignments(grouped_concepts, concept_assignments, merged_clusters)
+        
+        prompt = PHASE5_LABEL_REFINEMENT_PROMPT.format(
+            survey_question=self.survey_question,
+            codebook_with_cluster_counts=codebook_with_counts,
+            language=self.config.language
+        )
+        
+        # Capture prompt
+        if self.prompt_printer and not self.captured_phase5:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller",
+                prompt_content=prompt,
+                prompt_type="phase5_label_refinement_with_stats",
+                metadata={
+                    "model": self.model_config.get_model_for_phase('phase5_refinement'),
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "6/6 - Label Refinement"
+                }
+            )
+            self.captured_phase5 = True
+        
+        result = await self._invoke_with_retries(prompt, LabelRefinementResponse, phase='phase5_refinement')
+        
+        self.verbose_reporter.stat_line(f"Refined {len(result.refined_codebook.themes)} themes")
+        self.verbose_reporter.stat_line(f"Total concepts: {result.refined_codebook.summary_statistics.total_concepts}")
+        self.verbose_reporter.stat_line(f"Total clusters: {result.refined_codebook.summary_statistics.total_clusters}")
+        
+        return result.refined_codebook
+    
+    def _format_codebook_with_assignments(self, grouped_concepts: GroupedConceptsResponse, 
+                                        concept_assignments: dict, merged_clusters: List[ClusterLabel]) -> str:
+        """Format codebook with cluster assignment counts for refinement prompt"""
+        formatted = []
+        formatted.append("CODEBOOK WITH CLUSTER ASSIGNMENTS")
+        formatted.append("=" * 60)
+        
+        total_clusters = len(merged_clusters)
+        cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        
+        for theme in grouped_concepts.themes:
+            formatted.append(f"\nTHEME [{theme.theme_id}]: {theme.label}")
+            formatted.append(f"Description: {theme.description}")
+            formatted.append("")
+            
+            for concept in theme.atomic_concepts:
+                assigned_cluster_ids = concept_assignments.get(concept.concept_id, [])
+                cluster_count = len(assigned_cluster_ids)
+                percentage = (cluster_count / total_clusters * 100) if total_clusters > 0 else 0
+                
+                formatted.append(f"  CONCEPT [{concept.concept_id}]: {concept.label}")
+                formatted.append(f"  Description: {concept.description}")
+                formatted.append(f"  Assigned clusters: {cluster_count} ({percentage:.1f}%)")
+                
+                # Add example quotes from assigned clusters
+                example_quotes = []
+                for cluster_id in assigned_cluster_ids[:2]:  # Take first 2 examples
+                    if cluster_id in cluster_lookup:
+                        cluster = cluster_lookup[cluster_id]
+                        if cluster.representatives:
+                            example_quotes.append(cluster.representatives[0][0])  # First representative
+                
+                if example_quotes:
+                    formatted.append(f"  Examples: {' | '.join(example_quotes[:2])}")
+                formatted.append("")
+        
+        return "\n".join(formatted)
+    
+    def _display_refined_codebook(self, refined_codebook: RefinedCodebook):
+        """Display the final refined codebook"""
+        self.verbose_reporter.section_header("FINAL REFINED CODEBOOK", emoji="📚")
+        
+        for theme in refined_codebook.themes:
+            self.verbose_reporter.stat_line(f"THEME [{theme.theme_id}]: {theme.label}")
+            self.verbose_reporter.stat_line(f"  {theme.description}", bullet="  ")
+            
+            for concept in theme.atomic_concepts:
+                percentage_str = f"({concept.percentage:.1f}%)"
+                self.verbose_reporter.stat_line(
+                    f"[{concept.concept_id}] {concept.label} - {concept.cluster_count} clusters {percentage_str}",
+                    bullet="    "
+                )
+                if concept.example_quotes:
+                    self.verbose_reporter.stat_line(f"Examples: {concept.example_quotes[0]}", bullet="      ")
+        
+        stats = refined_codebook.summary_statistics
+        self.verbose_reporter.stat_line(f"\nSummary: {stats.total_themes} themes, {stats.total_concepts} concepts, {stats.total_clusters} clusters")
     
     def process_hierarchy(self, cluster_models: List[models.ClusterModel], survey_question: str) -> List[models.LabelModel]:
         """Sync wrapper for async processing"""
