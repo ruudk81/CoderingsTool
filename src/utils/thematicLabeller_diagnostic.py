@@ -164,11 +164,17 @@ class DiagnosticThematicLabeller(ThematicLabeller):
             
         # Show original ID tracking summary
         print(f"\n📊 ORIGINAL ID TRACKING:")
+        other_found = False
         for merged_id, original_ids in phase2.get('original_id_tracking', {}).items():
             concept = "Unknown"
             if merged_id in phase2.get('concept_groups', {}):
                 concept = phase2['concept_groups'][merged_id].get('concept', 'Unknown')
+            if concept == "Other":
+                other_found = True
             print(f"  Merged cluster {merged_id} ({concept}): {len(original_ids)} original clusters {original_ids}")
+        
+        if phase2.get('unassigned_count', 0) > 0 and not other_found:
+            print("  ⚠️ WARNING: Unassigned clusters found but no 'Other' concept in tracking!")
         
         print("\n" + "="*60)
 
