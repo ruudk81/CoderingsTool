@@ -222,12 +222,20 @@ class ThematicLabeller:
         self.verbose_reporter.step_complete(f"Merged to {len(merged_clusters)} unique labels")
         
         # =============================================================================
-        # Phase 3-4: Theme Discovery (Extract themes + Create codebook)
+        # Phase 3: Theme Discovery 
         # =============================================================================
-    
-        self.verbose_reporter.step_start("Phase 3-4: Theme Discovery & Codebook Creation", emoji="🔍")
-        self.codebook = await self._phase3_4_theme_discovery(merged_clusters)
-        self.verbose_reporter.step_complete("Hierarchical codebook created")
+
+        self.verbose_reporter.step_start("Phase 3: Theme Discovery", emoji="🔍")
+        themes = await self._phase3_extract_themes(merged_clusters)
+        self.verbose_reporter.step_complete("Themes discovered")
+
+        # =============================================================================
+        # Phase 4: Create codebook
+        # =============================================================================
+
+        self.verbose_reporter.step_start("Phase 4: Codebook Creation", emoji="📚")
+        self.codebook = await self._phase4_create_codebook(merged_clusters, themes)
+        self.verbose_reporter.step_complete("Codebook created")
          
         # =============================================================================
         # Phase 5: Label Refinement  
@@ -450,16 +458,6 @@ class ThematicLabeller:
             
             return labeled_clusters
     
-    async def _phase3_4_theme_discovery(self, labeled_clusters: List[ClusterLabel]) -> Codebook:
-        """Phase 3-4: Extract themes and create codebook"""
-        
-        # Phase 3: Extract themes using gpt-4o
-        themes = await self._phase3_extract_themes(labeled_clusters)
-        
-        # Phase 4: Create codebook using default model
-        codebook = await self._phase4_create_codebook(labeled_clusters, themes)
-        
-        return codebook
     
     async def _phase3_extract_themes(self, labeled_clusters: List[ClusterLabel]) -> ExtractedThemesResponse:
         """Phase 3: Extract themes using better model"""
