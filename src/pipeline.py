@@ -361,9 +361,9 @@ else:
                             print(subitem.segment_description)
         input("\n🔸 Press Enter to continue to the next batch of clusters...")
     
-    # for item in initial_cluster_results:
-    #     print(item)
-    #     break
+    for item in initial_cluster_results:
+        print(item)
+        break
 
 # === STEP 6 ========================================================================================================
 # """thematic labeling"""
@@ -415,24 +415,6 @@ else:
 #     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
 #     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
-
-# # === PROMPT SUMMARY ========================================================================================================
-# """Print all captured prompts after pipeline completion"""
-# if PROMPT_PRINTER and prompt_printer:
-#     print("\n" + "="*80)
-#     print("PIPELINE COMPLETE - PROMPT SUMMARY")
-#     print("="*80)
-    
-#     # Print summary statistics
-#     prompt_printer.print_summary()
-    
-#     # Print all prompts again for review
-#     prompt_printer.print_all_prompts()
-    
-#     # Optional: Save prompts to file
-#     # prompt_printer.save_prompts("pipeline_prompts.json")
-
-###
 # === STEP 6 ========================================================================================================
 
 """debug section"""
@@ -442,10 +424,51 @@ from config import DEFAULT_LABELLER_CONFIG
 thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE)
 labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
+
+# clusters = {}
+# for model in initial_cluster_results:
+#     if model.response_segment:
+#         for segment in model.response_segment:
+#             if segment.initial_cluster is not None:
+#                 cluster_id = segment.initial_cluster
+#                 if cluster_id not in clusters:
+#                     clusters[cluster_id] = {
+#                         'descriptions': [],
+#                         'embeddings': [],
+#                         'codes': []}
+#                 clusters[cluster_id]['descriptions'].append(segment.segment_description)
+#                 if segment.description_embedding is not None:
+#                     clusters[cluster_id]['embeddings'].append(segment.description_embedding)
+#                 clusters[cluster_id]['codes'].append(segment.segment_label)
+
+
+# import numpy as np
+# from sklearn.metrics.pairwise import cosine_similarity
+
+# for cluster_id, cluster_data in sorted(clusters.items()):
+#     if cluster_data['embeddings']:
+#         embeddings = np.array(cluster_data['embeddings'])
+#         centroid = np.mean(embeddings, axis=0)
+#         similarities = cosine_similarity(embeddings, centroid.reshape(1, -1)).flatten()
+#         top_k = min(5, len(cluster_data['descriptions']))
+#         sorted_indices = np.argsort(similarities)[::-1]
+#         seen_descriptions = set()
+#         representatives = []
+#         for idx in sorted_indices:
+#             desc = cluster_data['descriptions'][idx]
+#             if desc not in seen_descriptions:
+#                 seen_descriptions.add(desc)
+#                 representatives.append((desc, float(similarities[idx])))
+#                 if len(representatives) >= top_k:
+#                     break
+#     break
+
+#print("\n".join([f"{i+1}. {desc} (similarity: {sim:.3f})" for i, (desc, sim) in enumerate(representatives)]))
+
 print("\nINITIAL CLUSTERS")  
 cluster_summaries = []
 for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
         cluster_summaries.append(summary)
 cluster_summaries_text = "\n".join(cluster_summaries)
 print(cluster_summaries_text)
@@ -456,24 +479,6 @@ for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster
         merged_summaries.append(summary)
 merged_summaries_text = "\n".join(merged_summaries)
 print(merged_summaries_text)
-print("\nINITIAL THEMES")  
-for theme in thematic_labeller.initial_themes.initial_themes:
-    print(theme.theme_name)  
-
-codebook_initial = thematic_labeller.initial_codebook
-lines_initial = []
-for theme in codebook_initial.themes:
-    lines_initial.append(f"{theme.id}. {theme.label.upper()}")
-    
-    related_topics = [t for t in codebook_initial.topics if t.parent_id == theme.id]
-    for topic in related_topics:
-        lines_initial.append(f"   {topic.id} {topic.label}")
-        
-        related_codes = [c for c in codebook_initial.codes if c.parent_id == topic.id]
-        for code in related_codes:
-            # Include source_codes in the display
-            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-            lines_initial.append(f"      {code.id} {code.label}{source_info}")
 
 codebook_final = thematic_labeller.codebook
 lines_final = []
@@ -490,17 +495,73 @@ for theme in codebook_final.themes:
             source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
             lines_final.append(f"      {code.id} {code.label}{source_info}")
     
-print("\n=== INITIAL CODEBOOK (Phase 2) ===")
-print("\n".join(lines_initial))
-total_sources = sum(len(code.source_codes) for code in codebook_initial.codes)
-print(f"Total clusters assigned: {total_sources}")
-
-            
-print("\n==== FINAL CODEBOOK (After all phases) ===")    
+print("\n==== CODEBOOK (After all phases) ===")    
 print("\n".join(lines_final))
 total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
 print(f"Total clusters assigned: {total_sources}")
 
-print("\nUNUSED CODES")  
-print(thematic_labeller.unused_codes_text)
 ###############
+include_sources= True
+codebook = thematic_labeller.codebook
+
+formatted = []
+formatted.append("HIERARCHICAL CODEBOOK")
+formatted.append("=" * 80)
+formatted.append("Format: [ID] LABEL → Description")
+formatted.append("Note: Focus on LABEL meanings, not ID numbers!")
+formatted.append("=" * 80)
+
+# Group topics and codes by parent
+topics_by_theme = {}
+codes_by_topic = {}
+
+for topic in codebook.topics:
+    if topic.parent_id not in topics_by_theme:
+        topics_by_theme[topic.parent_id] = []
+    topics_by_theme[topic.parent_id].append(topic)
+
+for code in codebook.codes:
+    if code.parent_id not in codes_by_topic:
+        codes_by_topic[code.parent_id] = []
+    codes_by_topic[code.parent_id].append(code)
+
+# Build formatted string with clear visual separation
+for theme in codebook.themes:
+    formatted.append(f"\n{'='*60}")
+    formatted.append(f"THEME [ID: {theme.id}] → \"{theme.label}\"")
+    if theme.description:
+        formatted.append(f"   Description: {theme.description}")
+    formatted.append(f"{'='*60}")
+    
+    for topic in topics_by_theme.get(theme.id, []):
+        formatted.append(f"\n   TOPIC [ID: {topic.id}] → \"{topic.label}\"")
+        if topic.description:
+            formatted.append(f"      Description: {topic.description}")
+        formatted.append(f"   {'-'*50}")
+        
+        for code in codes_by_topic.get(topic.id, []):
+            formatted.append(f"      CODE [ID: {code.id}] → \"{code.label}\"")
+            if code.description:
+                formatted.append(f"         Description: {code.description}")
+            
+            if include_sources and code.source_codes:
+                # Include which clusters this code represents (use merged clusters)
+                source_labels = []
+                for cluster_id in code.source_codes:
+                        cluster = next((c for c in thematic_labeller.merged_clusters if c.cluster_id == cluster_id), None)
+                        if cluster:
+                            source_labels.append(f"source_code {cluster_id}: \"{cluster.label}\"")
+                        else:
+                            source_labels.append(f"source_code {cluster_id}")
+                
+                if source_labels:
+                    formatted.append(f"         Source data: {' | '.join(source_labels)}")
+                    if len(code.source_codes) > 5:
+                        formatted.append(f"                      ... and {len(code.source_codes) - 5} more clusters")
+            formatted.append("")
+
+formatted.append("\n" + "="*80)
+formatted.append("REMINDER: Evaluate based on LABEL meanings, not ID numbers!")
+formatted.append("="*80)
+
+print("\n".join(formatted))
