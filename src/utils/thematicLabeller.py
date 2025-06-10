@@ -554,9 +554,9 @@ class ThematicLabeller:
         """Phase 2: Extract atomic concepts and merge clusters based on concept assignment"""
         from prompts import PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT
         
-        # Format codes for the prompt
+        # Format codes for the prompt - use descriptions for better concept extraction
         codes_text = "\n".join([
-            f"[ID: {c.cluster_id:2d}] {c.label}" 
+            f"[ID: {c.cluster_id:2d}] {c.description or c.label}" 
             for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
         ])
         
@@ -590,9 +590,11 @@ class ThematicLabeller:
         )
         
         # Merge clusters based on atomic concept evidence
+        self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} labeled clusters for concept extraction")
         merged_clusters = self._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts_result)
         
         self.verbose_reporter.stat_line(f"Extracted {len(atomic_concepts_result.atomic_concepts)} atomic concepts")
+        self.verbose_reporter.stat_line(f"Merged {len(labeled_clusters)} clusters into {len(merged_clusters)} concept-based clusters")
         for concept in atomic_concepts_result.atomic_concepts:
             evidence_count = len(concept.evidence)
             self.verbose_reporter.stat_line(f"• {concept.concept} (evidence in {evidence_count} clusters)", bullet="  ")
@@ -609,14 +611,20 @@ class ThematicLabeller:
         """Merge clusters that are assigned to the same atomic concept based on evidence"""
         # Create mapping from cluster ID to atomic concept
         cluster_to_concept = {}
+        total_evidence_entries = 0
+        
         for concept in atomic_concepts_result.atomic_concepts:
+            self.verbose_reporter.stat_line(f"Concept '{concept.concept}' has evidence: {concept.evidence}", bullet="    ")
             for cluster_id_str in concept.evidence:
+                total_evidence_entries += 1
                 cluster_id = int(cluster_id_str)
                 if cluster_id in cluster_to_concept:
                     # Cluster appears in multiple concepts - keep first assignment
                     self.verbose_reporter.stat_line(f"⚠️ Cluster {cluster_id} appears in multiple concepts, keeping first assignment")
                     continue
                 cluster_to_concept[cluster_id] = concept.concept
+        
+        self.verbose_reporter.stat_line(f"Total evidence entries: {total_evidence_entries}, Unique cluster assignments: {len(cluster_to_concept)}")
         
         # Group clusters by concept
         concept_groups = {}
@@ -686,7 +694,9 @@ class ThematicLabeller:
         
         if unassigned_clusters:
             self.verbose_reporter.stat_line(f"⚠️ {len(unassigned_clusters)} clusters not assigned to any atomic concept")
+            self.verbose_reporter.stat_line(f"Unassigned cluster IDs: {[c.cluster_id for c in unassigned_clusters]}")
         
+        self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} merged clusters ({len(concept_groups)} concept-based + {len(unassigned_clusters)} unassigned)")
         return merged_clusters
     
     async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
