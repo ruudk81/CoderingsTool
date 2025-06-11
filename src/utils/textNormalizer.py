@@ -112,23 +112,3 @@ class TextNormalizer:
         
         return results
     
-# Example / test section
-if __name__ == "__main__":
-    
-    import models
-    from utils import csvHandler
-    
-    filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column    = "DLNMID"
-    var_name     = "Q20"
-    
-    csv_handler = csvHandler.CsvHandler()
-    structured_raw_text = csv_handler.load_from_csv(filename, 'data', models.ResponseModel)
-
-    normalizer = TextNormalizer()
-    
-    preprocess_data = [item.to_model(models.PreprocessModel) for item in structured_raw_text]
-    results_list = normalizer.normalize_responses(preprocess_data)
-    print("Results as list:")
-    for result in results_list:
-        print(f"ID: {result.respondent_id}, Text: {result.response}")  

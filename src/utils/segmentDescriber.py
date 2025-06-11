@@ -513,36 +513,3 @@ class SegmentDescriber:
         nest_asyncio.apply()
         return asyncio.run(main())
 
-
-# Example usage
-if __name__ == "__main__":
-    
-    from utils import dataLoader, csvHandler
-    import random
-    
-    filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column    = "DLNMID"
-    var_name     = "Q20"
-
-    csv_handler          = csvHandler.CsvHandler()
-    filepath             = csv_handler.get_filepath(filename, 'preprocessed')
-    data_loader          = dataLoader.DataLoader()
-    var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
-
-    preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
-    input_data            = [item.to_model(models.DescriptiveModel) for item in preprocessed_text]
-
-    coder = SegmentDescriber()
-    results = coder.generate_codes(input_data, var_lab)
-    
-    random_results = random.sample(results, min(10, len(results))) 
-    for result in random_results:
-        print(f"\nRespondent ID: {result.respondent_id}")
-        print(f"Response: {result.response}")
-        print("Descriptive Codes:")
-        codes = result.response_segment or []
-        for code in codes:
-            print(f"  - Segment: {code.segment_response}")
-            print(f"    Code: {code.segment_label}")
-            print(f"    Description: {code.segment_description}")
-        print("\n")

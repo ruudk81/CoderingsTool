@@ -19,6 +19,8 @@ class ClusterLabel(BaseModel):
     description: Optional[str] = Field(default=None, description="Natural description from Phase 1")
     representatives: List[Tuple[str, float]] = Field(description="Representative descriptions with similarity scores")
     original_cluster_ids: List[int] = Field(default_factory=list, description="Original cluster IDs that were merged into this cluster")
+    assigned_concept: Optional[str] = Field(default=None, description="Assigned concept name from Phase 2")
+    assigned_concept_id: Optional[str] = Field(default=None, description="Assigned concept ID for tracking")
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
@@ -56,14 +58,12 @@ class GroupedConceptsResponse(BaseModel):
     unassigned_concepts: List[str] = Field(default_factory=list, description="Any concepts that don't fit well")
 
 class RefinedAtomicConcept(BaseModel):
-    """Refined atomic concept with examples and statistics"""
+    """Refined atomic concept"""
     concept_id: str
     label: str
     description: str
-    example_quotes: List[str] = Field(description="Representative quotes")
-    cluster_count: int = Field(description="Number of clusters assigned")
-    percentage: float = Field(description="Percentage of total clusters")
-
+    stable_id: Optional[str] = Field(default=None, description="Stable ID from Phase 2 for tracking")
+    
 class RefinedTheme(BaseModel):
     """Refined theme with atomic concepts"""
     theme_id: str
@@ -71,23 +71,14 @@ class RefinedTheme(BaseModel):
     description: str
     atomic_concepts: List[RefinedAtomicConcept]
 
-class SummaryStatistics(BaseModel):
-    """Summary statistics for the codebook"""
-    total_themes: int
-    total_concepts: int
-    total_clusters: int
-    unassigned_clusters: int
-
 class RefinedCodebook(BaseModel):
     """Refined codebook structure"""
     themes: List[RefinedTheme]
-    summary_statistics: SummaryStatistics
 
 class LabelRefinementResponse(BaseModel):
     """Response from Phase 4 label refinement"""
     refined_codebook: RefinedCodebook
-    refinement_notes: str = Field(description="Key refinements made and rationale")
-
+    
 
 class ThematicLabeller:
     """Orchestrator for thematic analysis - Simplified 4-phase workflow"""
@@ -217,13 +208,14 @@ class ThematicLabeller:
         
         self.verbose_reporter.step_start("Phase 4: Label Refinement", emoji="✨")
         refined_codebook = await self._phase4_label_refinement_with_assignments(grouped_concepts, merged_clusters)
-        self.verbose_reporter.step_complete("Labels refined with statistics")
+        self.verbose_reporter.step_complete("Labels refined")
       
         self.refined_codebook = refined_codebook
         self._display_refined_codebook(refined_codebook)
         
         # Create mapping from original to merged cluster IDs
         original_to_merged_mapping = self._create_cluster_mapping(labeled_clusters, merged_clusters)
+        self.original_to_merged_mapping = original_to_merged_mapping
         
         # Create final labels using concept-based structure
         self.final_labels = self._create_final_labels_from_merged_clusters(merged_clusters, original_to_merged_mapping, refined_codebook)
@@ -232,79 +224,100 @@ class ThematicLabeller:
         result = self._apply_concept_assignments_to_responses(cluster_models, self.final_labels, refined_codebook)
         self._print_assignment_diagnostics(self.final_labels, initial_clusters)
         self.verbose_reporter.stat_line("🎉 Hierarchical labeling complete!")
-        self._print_refined_summary(refined_codebook)
+        #self._print_refined_summary(refined_codebook)
 
         return result
         
-    def _create_final_labels_from_merged_clusters(self, merged_clusters: List[ClusterLabel],
-                                                 original_to_merged_mapping: Dict[int, int], 
-                                                 refined_codebook: RefinedCodebook) -> Dict[int, Dict]:
-        """Create final labels dictionary mapping original cluster IDs to concept assignments from merged clusters"""
+    
+    def _create_final_labels_from_merged_clusters(self, merged_clusters: List[ClusterLabel], original_to_merged_mapping: Dict[int, int], refined_codebook: RefinedCodebook) -> Dict[int, Dict]:
+        """Create final labels dictionary mapping original cluster IDs to concept assignments"""
         final_labels = {}
         
-        # Create lookup dictionaries
-        #merged_cluster_lookup = {c.cluster_id: c for c in merged_clusters}
-        concept_lookup = {}
-        theme_lookup = {}
+        # Use the Phase 4 tracking if available, otherwise fall back to Phase 3
+        if hasattr(self, 'stable_id_to_phase4_ids'):
+            stable_id_to_final_ids = self.stable_id_to_phase4_ids.copy()
+            self.verbose_reporter.stat_line(f"Using Phase 4 tracking with {len(stable_id_to_final_ids)} mappings")
+        elif hasattr(self, 'concept_name_to_ids_phase3'):
+            stable_id_to_final_ids = self.concept_name_to_ids_phase3.copy()
+            self.verbose_reporter.stat_line(f"Using Phase 3 tracking with {len(stable_id_to_final_ids)} mappings")
+        else:
+            stable_id_to_final_ids = {}
+            self.verbose_reporter.stat_line("⚠️ No tracking found - will use fallback mappings")
         
-        # Build lookup dictionaries from refined codebook
-        for theme in refined_codebook.themes:
-            theme_lookup[theme.theme_id] = theme
-            for concept in theme.atomic_concepts:
-                concept_lookup[concept.concept_id] = (concept, theme)
+        # Handle "Other" concept
+        if "concept_other" not in stable_id_to_final_ids:
+            for theme in refined_codebook.themes:
+                if theme.theme_id == "99" or theme.label.lower() == "other":
+                    for concept in theme.atomic_concepts:
+                        if "other" in concept.label.lower() or "unclassified" in concept.label.lower():
+                            stable_id_to_final_ids["concept_other"] = (theme.theme_id, concept.concept_id)
+                            break
+                    break
         
-        # Reverse the mapping to go from merged back to original
+        # Create reverse mapping: merged_id → [original_ids]
         merged_to_original = {}
         for orig_id, merged_id in original_to_merged_mapping.items():
             if merged_id not in merged_to_original:
                 merged_to_original[merged_id] = []
             merged_to_original[merged_id].append(orig_id)
         
-        # Process each merged cluster and map back to original IDs
+        # Process each merged cluster
+        successfully_mapped = 0
+        fallback_mapped = 0
+        
         for merged_cluster in merged_clusters:
             original_cluster_ids = merged_to_original.get(merged_cluster.cluster_id, [merged_cluster.cluster_id])
+            stable_concept_id = merged_cluster.assigned_concept_id
             
-            # Extract concept from cluster description
-            concept_name = "Unclassified"
-            if "Concept:" in merged_cluster.description:
-                concept_name = merged_cluster.description.split("Concept:")[1].split("(")[0].strip()
-            
-            # Find matching concept in refined codebook
-            concept_info = None
-            for theme in refined_codebook.themes:
-                for concept in theme.atomic_concepts:
-                    if concept.label == concept_name or concept_name in concept.label:
-                        concept_info = (concept, theme)
-                        break
-                if concept_info:
-                    break
-            
-            if concept_info:
-                concept, theme = concept_info
-                label_info = {
-                    'theme': (theme.theme_id, theme.label),
-                    'concept': (concept.concept_id, concept.label),
-                    'confidence': 1.0,
-                    'rationale': "Merged cluster assignment"
-                }
+            if stable_concept_id and stable_concept_id in stable_id_to_final_ids:
+                theme_id, concept_id = stable_id_to_final_ids[stable_concept_id]
+                
+                # Find theme and concept objects
+                theme_obj = next((t for t in refined_codebook.themes if t.theme_id == theme_id), None)
+                concept_obj = None
+                if theme_obj:
+                    concept_obj = next((c for c in theme_obj.atomic_concepts if c.concept_id == concept_id), None)
+                
+                if theme_obj and concept_obj:
+                    label_info = {
+                        'theme': (theme_id, theme_obj.label),
+                        'concept': (concept_id, concept_obj.label),
+                    }
+                    successfully_mapped += len(original_cluster_ids)
+                else:
+                    # Shouldn't happen if tracking is correct
+                    label_info = {
+                        'theme': (theme_id, "Unknown Theme"),
+                        'concept': (concept_id, merged_cluster.assigned_concept or "Unknown"),
+                    }
+                    self.verbose_reporter.stat_line(
+                        f"⚠️ Stable ID '{stable_concept_id}' maps to {theme_id}.{concept_id} but objects not found",
+                        bullet="  "
+                    )
             else:
-                # Fallback for unassigned concepts
+                # Fallback
                 label_info = {
                     'theme': ("99", "Other"),
                     'concept': ("99.1", "Unclassified"),
-                    'confidence': 0.0,
-                    'rationale': "No concept match found"
                 }
+                fallback_mapped += len(original_cluster_ids)
+                
+                if stable_concept_id:
+                    self.verbose_reporter.stat_line(
+                        f"No mapping for stable ID '{stable_concept_id}' - assigning to Other",
+                        bullet="  "
+                    )
             
             # Apply to all original cluster IDs
             for orig_id in original_cluster_ids:
                 final_labels[orig_id] = label_info
         
+        self.verbose_reporter.stat_line(f"Mapping complete: {successfully_mapped} successful, {fallback_mapped} fallback")
+        
         return final_labels
     
-    def _apply_concept_assignments_to_responses(self, cluster_models: List[models.ClusterModel], 
-                                               final_labels: Dict[int, Dict], 
-                                               refined_codebook: RefinedCodebook) -> List[models.LabelModel]:
+        
+    def _apply_concept_assignments_to_responses(self, cluster_models: List[models.ClusterModel], final_labels: Dict[int, Dict], refined_codebook: RefinedCodebook) -> List[models.LabelModel]:
         """Apply concept assignments to response segments"""
         # Create lookup dictionaries from refined codebook
         theme_lookup = {theme.theme_id: theme for theme in refined_codebook.themes}
@@ -318,7 +331,7 @@ class ThematicLabeller:
         for cluster_id, labels in final_labels.items():
             theme_id_str, _ = labels['theme']  # theme_label not used
             concept_id_str, concept_label = labels['concept']
-            confidence = labels['confidence']
+
             
             mapping = models.ClusterMapping(
                 cluster_id=cluster_id,
@@ -326,7 +339,6 @@ class ThematicLabeller:
                 theme_id=theme_id_str,
                 topic_id=concept_id_str,  # Using concept as "topic" for compatibility
                 code_id=concept_id_str,   # Using concept as "code" for compatibility
-                confidence=confidence
             )
             cluster_mappings.append(mapping)
         
@@ -411,16 +423,16 @@ class ThematicLabeller:
         
         return label_models
     
-    def _print_refined_summary(self, refined_codebook: RefinedCodebook):
-        """Print summary of refined codebook"""
-        stats = refined_codebook.summary_statistics
-        assigned_clusters = stats.total_clusters - stats.unassigned_clusters
-        self.verbose_reporter.summary("Final Results", {
-            "Themes": stats.total_themes,
-            "Atomic Concepts": stats.total_concepts, 
-            "Clusters assigned": assigned_clusters,
-            "Unassigned clusters": stats.unassigned_clusters
-        }, emoji="📊")
+    # def _print_refined_summary(self, refined_codebook: RefinedCodebook):
+    #     """Print summary of refined codebook"""
+    #     stats = refined_codebook.summary_statistics
+    #     assigned_clusters = stats.total_clusters - stats.unassigned_clusters
+    #     self.verbose_reporter.summary("Final Results", {
+    #         "Themes": stats.total_themes,
+    #         "Atomic Concepts": stats.total_concepts, 
+    #         "Clusters assigned": assigned_clusters,
+    #         "Unassigned clusters": stats.unassigned_clusters
+    #     }, emoji="📊")
     
     async def _phase1_descriptive_coding(self, initial_clusters: Dict[int, Dict]) -> List[ClusterLabel]:
         """Phase 1: Descriptive codes - Generate thematic labels for clusters"""
@@ -506,12 +518,12 @@ class ThematicLabeller:
     
     async def _phase2_atomic_concepts_and_merging(self, labeled_clusters: List[ClusterLabel]) -> Tuple[ExtractedAtomicConceptsResponse, List[ClusterLabel]]:
         """Phase 2: Extract atomic concepts and merge clusters based on concept assignment"""
-        from prompts import PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT
+        from prompts import PHASE2_EXTRACT_ATOMIC_CONCEPTS_PROMPT
         
         # get atompic concepts
         codes_text = "\n".join([ f"[ID: {c.cluster_id:2d}] {c.description or c.label}" for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)])
         
-        prompt = PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT.format(
+        prompt = PHASE2_EXTRACT_ATOMIC_CONCEPTS_PROMPT.format(
             survey_question=self.survey_question,
             codes=codes_text,
             language=self.config.language)
@@ -555,50 +567,60 @@ class ThematicLabeller:
             self.verbose_reporter.stat_line(f"• {concept.concept} (evidence in {evidence_count} clusters)", bullet="  ")
         
         # Report analytical insights if verbose
-        if self.verbose_reporter.enabled and atomic_concepts_result.analytical_notes:
-            self.verbose_reporter.stat_line("Analytical notes:", bullet="  ")
-            self.verbose_reporter.stat_line(f"{atomic_concepts_result.analytical_notes[:200]}{'...' if len(atomic_concepts_result.analytical_notes) > 200 else ''}", bullet="    ")
+        #if self.verbose_reporter.enabled and atomic_concepts_result.analytical_notes:
+            #self.verbose_reporter.stat_line("Analytical notes:", bullet="  ")
+            #self.verbose_reporter.stat_line(f"{atomic_concepts_result.analytical_notes[:200]}{'...' if len(atomic_concepts_result.analytical_notes) > 200 else ''}", bullet="    ")
         
         return atomic_concepts_result, merged_clusters
-    
+
     def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> List[ClusterLabel]:
         """Merge clusters that are assigned to the same atomic concept based on evidence"""
-        # Create mapping from cluster ID to atomic concept
+        # Create mapping from cluster ID to atomic concept WITH CONCEPT ID
         cluster_to_concept = {}
+        concept_id_mapping = {}  # Maps concept name to a stable ID
         total_evidence_entries = 0
         
-        for concept in atomic_concepts_result.atomic_concepts:
-            self.verbose_reporter.stat_line(f"Concept '{concept.concept}' has evidence: {concept.evidence}", bullet="    ")
+        # First, create stable IDs for concepts
+        for idx, concept in enumerate(atomic_concepts_result.atomic_concepts):
+            concept_id = f"concept_{idx+1}"  # Stable ID that won't change
+            concept_id_mapping[concept.concept] = concept_id
+            
+            #self.verbose_reporter.stat_line(f"Concept '{concept.concept}' (ID: {concept_id}) has evidence: {concept.evidence}", bullet="    ")
             for cluster_id_str in concept.evidence:
                 total_evidence_entries += 1
                 cluster_id = int(cluster_id_str)
                 if cluster_id in cluster_to_concept:
-                    # Cluster appears in multiple concepts - keep first assignment
                     self.verbose_reporter.stat_line(f"⚠️ Cluster {cluster_id} appears in multiple concepts, keeping first assignment")
                     continue
-                cluster_to_concept[cluster_id] = concept.concept
+                cluster_to_concept[cluster_id] = (concept.concept, concept_id)
         
         self.verbose_reporter.stat_line(f"Total evidence entries: {total_evidence_entries}, Unique cluster assignments: {len(cluster_to_concept)}")
+        
+        # Store the concept ID mapping for later use
+        self.concept_id_mapping = concept_id_mapping
         
         # Group clusters by concept
         concept_groups = {}
         unassigned_clusters = []
         
         for cluster in labeled_clusters:
-            concept = cluster_to_concept.get(cluster.cluster_id)
-            if concept:
-                if concept not in concept_groups:
-                    concept_groups[concept] = []
-                concept_groups[concept].append(cluster)
+            concept_info = cluster_to_concept.get(cluster.cluster_id)
+            if concept_info:
+                concept_name, concept_id = concept_info
+                if concept_name not in concept_groups:
+                    concept_groups[concept_name] = []
+                concept_groups[concept_name].append(cluster)
             else:
                 unassigned_clusters.append(cluster)
         
-        # Create merged clustersv
+        # Create merged clusters
         merged_clusters = []
         new_cluster_id = 0
         
         # Merge clusters for each concept
-        for concept, clusters in concept_groups.items():
+        for concept_name, clusters in concept_groups.items():
+            concept_id = concept_id_mapping[concept_name]
+            
             # Collect all original cluster IDs from the clusters being merged
             all_original_ids = []
             for cluster in clusters:
@@ -610,9 +632,11 @@ class ThematicLabeller:
                 merged_cluster = ClusterLabel(
                     cluster_id=new_cluster_id,
                     label=cluster.label,
-                    description=f"Concept: {concept}",
+                    description=f"Concept: {concept_name}",
                     representatives=cluster.representatives,
-                    original_cluster_ids=all_original_ids
+                    original_cluster_ids=all_original_ids,
+                    assigned_concept=concept_name,
+                    assigned_concept_id=concept_id  # Store the stable ID
                 )
             else:
                 # Multiple clusters - merge them
@@ -627,23 +651,29 @@ class ThematicLabeller:
                 top_representatives = all_representatives[:self.config.top_k_representatives]
                 
                 # Use most common label or first one
-                primary_label = all_labels[0] if all_labels else concept
+                primary_label = all_labels[0] if all_labels else concept_name
                 
                 merged_cluster = ClusterLabel(
                     cluster_id=new_cluster_id,
                     label=primary_label,
-                    description=f"Concept: {concept} (merged from {len(clusters)} clusters)",
+                    description=f"Concept: {concept_name} (merged from {len(clusters)} clusters)",
                     representatives=top_representatives,
-                    original_cluster_ids=all_original_ids
+                    original_cluster_ids=all_original_ids,
+                    assigned_concept=concept_name,
+                    assigned_concept_id=concept_id  # Store the stable ID
                 )
                 
-                self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept}' (original IDs: {all_original_ids})", bullet="  ")
+                #self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept_name}' (ID: {concept_id}, original IDs: {all_original_ids})", bullet="  ")
             
             merged_clusters.append(merged_cluster)
             new_cluster_id += 1
         
         # Group all unassigned clusters into a single "Other/Miscellaneous" concept
         if unassigned_clusters:
+            # Create a stable ID for "Other"
+            other_concept_id = "concept_other"
+            self.concept_id_mapping["Other"] = other_concept_id
+            
             # Merge all unassigned clusters into a single "Other" concept
             all_unassigned_representatives = []
             all_unassigned_labels = []
@@ -661,24 +691,57 @@ class ThematicLabeller:
             # Create a single merged cluster for all unassigned
             other_cluster = ClusterLabel(
                 cluster_id=new_cluster_id,
-                label="OTHER_MISCELLANEOUS",  # Standard label for unassigned
+                label="OTHER_MISCELLANEOUS",
                 description=f"Concept: Other (merged from {len(unassigned_clusters)} unassigned clusters)",
                 representatives=top_unassigned_representatives,
-                original_cluster_ids=all_unassigned_original_ids
+                original_cluster_ids=all_unassigned_original_ids,
+                assigned_concept="Other",
+                assigned_concept_id=other_concept_id  # Store the stable ID
             )
             merged_clusters.append(other_cluster)
             new_cluster_id += 1
             
-            self.verbose_reporter.stat_line(f"Merged {len(unassigned_clusters)} unassigned clusters into 'Other' concept (original IDs: {all_unassigned_original_ids})", bullet="  ")
+            self.verbose_reporter.stat_line(f"Merged {len(unassigned_clusters)} unassigned clusters into 'Other' concept (ID: {other_concept_id}, original IDs: {all_unassigned_original_ids})", bullet="  ")
         
         # Report final statistics
         other_count = 1 if unassigned_clusters else 0
         self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} merged clusters ({len(concept_groups)} concept-based + {other_count} 'Other' concept)")
+        
+        # Store merged clusters for tracking
+        self.merged_clusters_by_concept_id = {cluster.assigned_concept_id: cluster for cluster in merged_clusters}
+        
         return merged_clusters
+    
+    def _create_concept_tracking_for_phase3(self, atomic_concepts_result: ExtractedAtomicConceptsResponse, grouped_concepts: GroupedConceptsResponse):
+        """Create a mapping between original concept names and their IDs in the grouped structure"""
+        # This mapping tracks: original_concept_name -> (theme_id, concept_id)
+        concept_name_to_ids = {}
+        
+        for theme in grouped_concepts.themes:
+            for concept in theme.atomic_concepts:
+                # Try to find the original concept name
+                # Look for exact matches first
+                for original_concept in atomic_concepts_result.atomic_concepts:
+                    if original_concept.concept == concept.label:
+                        original_concept_id = self.concept_id_mapping.get(original_concept.concept)
+                        if original_concept_id:
+                            concept_name_to_ids[original_concept_id] = (theme.theme_id, concept.concept_id)
+                        break
+                else:
+                    # If no exact match, try partial matching
+                    for original_concept in atomic_concepts_result.atomic_concepts:
+                        if (original_concept.concept.lower() in concept.label.lower() or 
+                            concept.label.lower() in original_concept.concept.lower()):
+                            original_concept_id = self.concept_id_mapping.get(original_concept.concept)
+                            if original_concept_id:
+                                concept_name_to_ids[original_concept_id] = (theme.theme_id, concept.concept_id)
+                            break
+        
+        return concept_name_to_ids
     
     async def _phase3_group_concepts_into_themes(self, atomic_concepts_result: ExtractedAtomicConceptsResponse) -> GroupedConceptsResponse:
         """Phase 3: Grouping into themes - Organize atomic concepts into themes"""
-        from prompts import PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT
+        from prompts import PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT
         
         # Separate "Other" concepts from meaningful concepts
         meaningful_concepts = []
@@ -690,7 +753,7 @@ class ThematicLabeller:
             else:
                 meaningful_concepts.append(concept)
         
-        self.verbose_reporter.stat_line(f"Phase 3 input: {len(meaningful_concepts)} meaningful concepts (excluding {len(other_concepts)} 'Other' concepts)")
+        self.verbose_reporter.stat_line(f"Phase 3 input: {len(meaningful_concepts)} meaningful concepts")
         
         # Only process meaningful concepts with the LLM if there are any
         if meaningful_concepts:
@@ -700,7 +763,7 @@ class ThematicLabeller:
                 for concept in meaningful_concepts
             ])
             
-            prompt = PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
+            prompt = PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT.format(
                 survey_question=self.survey_question,
                 atomic_concepts=concepts_text,
                 total_concepts=len(meaningful_concepts),
@@ -723,7 +786,9 @@ class ThematicLabeller:
                 )
                 self.captured_phase3 = True
             
-            result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase4_codebook')
+            result = await self._invoke_with_retries(prompt, GroupedConceptsResponse, phase='phase3_codebook')
+            self.concept_name_to_ids_phase3 = self._create_concept_tracking_for_phase3(atomic_concepts_result, result)
+            
         else:
             # No meaningful concepts to group - create empty result
             result = GroupedConceptsResponse(themes=[], unassigned_concepts=[])
@@ -810,9 +875,70 @@ class ThematicLabeller:
         
         return result
     
+    def _prepare_phase4_tracking_prompt(self, grouped_concepts: GroupedConceptsResponse, concept_assignments: dict, merged_clusters: List[ClusterLabel]) -> str:
+        """Prepare codebook for Phase 4 with stable ID tracking"""
+        formatted = []
+        formatted.append("CODEBOOK WITH CLUSTER ASSIGNMENTS AND TRACKING")
+        formatted.append("=" * 60)
+        
+        cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        
+        # Create reverse mapping: concept label → stable ID
+        concept_to_stable_id = {}
+        for stable_id, (theme_id, concept_id) in self.concept_name_to_ids_phase3.items():
+            # Find the concept in grouped_concepts
+            for theme in grouped_concepts.themes:
+                if theme.theme_id == theme_id:
+                    for concept in theme.atomic_concepts:
+                        if concept.concept_id == concept_id:
+                            concept_to_stable_id[concept.label] = stable_id
+                            break
+        
+        for theme in grouped_concepts.themes:
+            formatted.append(f"\nTHEME [{theme.theme_id}]: {theme.label}")
+            formatted.append(f"Description: {theme.description}")
+            formatted.append("")
+            
+            for concept in theme.atomic_concepts:
+                # Get stable ID for this concept
+                stable_id = concept_to_stable_id.get(concept.label, f"unknown_{concept.concept_id}")
+                
+                # Look up cluster assignments
+                assigned_cluster_ids = concept_assignments.get(concept.label, [])
+                
+                # If no direct match, try partial matching
+                if not assigned_cluster_ids:
+                    for concept_name, cluster_ids in concept_assignments.items():
+                        if (concept_name.lower() in concept.label.lower() or 
+                            concept.label.lower() in concept_name.lower()):
+                            assigned_cluster_ids = cluster_ids
+                            break
+                
+                cluster_count = len(assigned_cluster_ids)
+                
+                formatted.append(f"  CONCEPT [{concept.concept_id}]: {concept.label}")
+                formatted.append(f"  Stable ID: {stable_id}")  # Include stable ID in prompt
+                formatted.append(f"  Description: {concept.description}")
+                formatted.append(f"  Assigned clusters: {cluster_count}")
+                
+                # Add example quotes
+                example_quotes = []
+                for cluster_id_str in assigned_cluster_ids[:2]:
+                    cluster_id = int(cluster_id_str)
+                    if cluster_id in cluster_lookup:
+                        cluster = cluster_lookup[cluster_id]
+                        if cluster.representatives:
+                            example_quotes.append(cluster.representatives[0][0])
+                
+                if example_quotes:
+                    formatted.append(f"  Examples: {' | '.join(example_quotes[:2])}")
+                formatted.append("")
+        
+        return "\n".join(formatted)
+        
     async def _phase4_label_refinement_with_assignments(self, grouped_concepts: GroupedConceptsResponse,  merged_clusters: List[ClusterLabel]) -> RefinedCodebook:
         """Phase 4: Label refinement with assignment statistics"""
-        from prompts import PHASE5_LABEL_REFINEMENT_PROMPT
+        from prompts import PHASE4_LABEL_REFINEMENT_PROMPT
         
         # Calculate assignment statistics from merged clusters
         concept_assignments = {}
@@ -825,10 +951,10 @@ class ThematicLabeller:
                 concept_assignments[concept].append(str(cluster.cluster_id))
         
         # Create codebook with cluster counts for prompt
-        codebook_with_counts = self._format_codebook_with_assignments(grouped_concepts, concept_assignments, merged_clusters)
+        codebook_with_counts = self._prepare_phase4_tracking_prompt(grouped_concepts, concept_assignments, merged_clusters)
         self.codebook = codebook_with_counts 
         
-        prompt = PHASE5_LABEL_REFINEMENT_PROMPT.format(
+        prompt = PHASE4_LABEL_REFINEMENT_PROMPT.format(
             survey_question=self.survey_question,
             codebook_with_cluster_counts=codebook_with_counts,
             language=self.config.language
@@ -852,56 +978,56 @@ class ThematicLabeller:
         
         result = await self._invoke_with_retries(prompt, LabelRefinementResponse, phase='phase5_refinement')
         
-        # Calculate correct statistics from actual data rather than trusting LLM
-        actual_total_concepts = sum(len(theme.atomic_concepts) for theme in result.refined_codebook.themes)
-        actual_total_clusters = len(merged_clusters)
+        # Create Phase 4 tracking using stable IDs from the response
+        self.stable_id_to_phase4_ids = {}
         
-        # All merged clusters should be assigned to concepts, so unassigned = 0
-        # (The assignment diagnostics confirm this works correctly)
-        actual_unassigned_clusters = 0
-        
-        # Update the summary statistics with correct values
-        result.refined_codebook.summary_statistics.total_themes = len(result.refined_codebook.themes)
-        result.refined_codebook.summary_statistics.total_concepts = actual_total_concepts
-        result.refined_codebook.summary_statistics.total_clusters = actual_total_clusters
-        result.refined_codebook.summary_statistics.unassigned_clusters = actual_unassigned_clusters
-        
-        # Update cluster counts and percentages for each atomic concept
-        cluster_lookup = {c.cluster_id: c for c in merged_clusters}
+        label_to_stable_id = {}
+        for stable_id, (theme_id, concept_id) in self.concept_name_to_ids_phase3.items():
+            # Find the concept label in grouped_concepts
+            for theme in grouped_concepts.themes:
+                if theme.theme_id == theme_id:
+                    for concept in theme.atomic_concepts:
+                        if concept.concept_id == concept_id:
+                            label_to_stable_id[concept.label.lower()] = stable_id
+                            break
         
         for theme in result.refined_codebook.themes:
             for concept in theme.atomic_concepts:
-                # Look up actual cluster assignments for this concept
-                assigned_cluster_ids = concept_assignments.get(concept.label, [])
+                stable_id = None
                 
-                # If no direct match, try partial matching
-                if not assigned_cluster_ids:
-                    for concept_name, cluster_ids in concept_assignments.items():
-                        if (concept_name.lower() in concept.label.lower() or 
-                            concept.label.lower() in concept_name.lower()):
-                            assigned_cluster_ids = cluster_ids
+                # First, check if LLM provided stable_id
+                if hasattr(concept, 'stable_id') and concept.stable_id:
+                    stable_id = concept.stable_id
+                    # self.verbose_reporter.stat_line(
+                    #     f"Phase 4 mapping: {stable_id} → {theme.theme_id}.{concept.concept_id} ({concept.label})",
+                    #     bullet="  ")
+                else:
+                    # Fallback: try to find stable ID by matching concept labels
+                    # This handles cases where the LLM didn't include stable_id
+                    for orig_label, sid in label_to_stable_id.items():
+                        if (orig_label in concept.label.lower() or 
+                            concept.label.lower() in orig_label):
+                            stable_id = sid
+                            # self.verbose_reporter.stat_line(
+                            #     f"Phase 4 mapping (fallback): {stable_id} → {theme.theme_id}.{concept.concept_id} ({concept.label})",
+                            #     bullet="  ")
                             break
+                    
+                    if not stable_id:
+                        self.verbose_reporter.stat_line(
+                            f"⚠️ No stable_id found for concept {concept.concept_id} ({concept.label})",
+                            bullet="  "
+                        )
                 
-                # Update with correct counts
-                concept.cluster_count = len(assigned_cluster_ids)
-                concept.percentage = (concept.cluster_count / actual_total_clusters * 100) if actual_total_clusters > 0 else 0
-                
-                # Update example quotes from actual assigned clusters
-                example_quotes = []
-                for cluster_id_str in assigned_cluster_ids[:3]:  # Take first 3 examples
-                    cluster_id = int(cluster_id_str)
-                    if cluster_id in cluster_lookup:
-                        cluster = cluster_lookup[cluster_id]
-                        if cluster.representatives:
-                            example_quotes.append(cluster.representatives[0][0])
-                
-                concept.example_quotes = example_quotes
-        
+                if stable_id:
+                    self.stable_id_to_phase4_ids[stable_id] = (theme.theme_id, concept.concept_id)
+    
+        self.verbose_reporter.stat_line(f"Refined {len(self.stable_id_to_phase4_ids)} concepts")
         self.verbose_reporter.stat_line(f"Refined {len(result.refined_codebook.themes)} themes")
-        self.verbose_reporter.stat_line(f"Total concepts: {actual_total_concepts}")
-        self.verbose_reporter.stat_line(f"Total clusters: {actual_total_clusters}")
-        
+            
         return result.refined_codebook
+    
+    
     
     def _format_codebook_with_assignments(self, grouped_concepts: GroupedConceptsResponse, concept_assignments: dict, merged_clusters: List[ClusterLabel]) -> str:
         """Format codebook with cluster assignment counts for refinement prompt"""
@@ -956,19 +1082,17 @@ class ThematicLabeller:
         
         for theme in refined_codebook.themes:
             self.verbose_reporter.stat_line(f"THEME [{theme.theme_id}]: {theme.label}")
-            self.verbose_reporter.stat_line(f"  {theme.description}", bullet="  ")
+            #self.verbose_reporter.stat_line(f"  {theme.description}", bullet="  ")
             
             for concept in theme.atomic_concepts:
-                percentage_str = f"({concept.percentage:.1f}%)"
-                self.verbose_reporter.stat_line(
-                    f"[{concept.concept_id}] {concept.label} - {concept.cluster_count} clusters {percentage_str}",
-                    bullet="    "
-                )
-                if concept.example_quotes:
-                    self.verbose_reporter.stat_line(f"Examples: {concept.example_quotes[0]}", bullet="      ")
+                self.verbose_reporter.stat_line(f"[{concept.concept_id}] {concept.label}",bullet="    ")
+                #self.verbose_reporter.stat_line(f"{concept.description}",bullet="      ")
         
-        stats = refined_codebook.summary_statistics
-        self.verbose_reporter.stat_line(f"\nSummary: {stats.total_themes} themes, {stats.total_concepts} concepts, {stats.total_clusters} clusters")
+        # Count totals
+        total_themes = len(refined_codebook.themes)
+        total_concepts = sum(len(theme.atomic_concepts) for theme in refined_codebook.themes)
+        
+        self.verbose_reporter.stat_line(f"\nSummary: {total_themes} themes, {total_concepts} concepts")
     
     def process_hierarchy(self, cluster_models: List[models.ClusterModel], survey_question: str) -> List[models.LabelModel]:
         """Sync wrapper for async processing"""
@@ -1038,70 +1162,3 @@ class ThematicLabeller:
             self.verbose_reporter.stat_line(f"Clusters assigned to 'other': {theme_other} themes, {concept_other} concepts")
 
 
-# =============================================================================
-# USAGE / TEST SECTION
-# =============================================================================
-
-if __name__ == "__main__":
-    import sys
-    sys.path.append('..')
-    
-    from utils.cacheManager import CacheManager
-    from utils import dataLoader
-    from config import CacheConfig, LabellerConfig
-    import models
-    
-    # Initialize cache manager
-    cache_config = CacheConfig()
-    cache_manager = CacheManager(cache_config)
-    
-    # Test data configuration
-    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    var_name = "Q20"
-    
-    # Load clusters from cache
-    cluster_results = cache_manager.load_from_cache(filename, "initial_clusters", models.ClusterModel)
-    print(f"✅ Loaded {len(cluster_results)} clustered responses from cache")
-    
-    # Count unique micro-clusters
-    unique_clusters = set()
-    for result in cluster_results:
-        if result.response_segment:
-            for segment in result.response_segment:
-                if segment.initial_cluster is not None:
-                    cluster_id = segment.initial_cluster
-                    unique_clusters.add(cluster_id)
-        
-    print(f"📊 Found {len(unique_clusters)} unique micro-clusters to label")
-        
-    # Get variable label
-    data_loader = dataLoader.DataLoader()
-    var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
-    print(f"📌 Survey question: {var_lab}")
-    
-    print("\n=== Running Simplified Thematic Labelling (4 Phases) ===")
-    print("1. Descriptive Coding - Label each micro-cluster")
-    print("2. Atomic Concepts + Merging - Extract concepts and merge clusters")
-    print("3. Grouping into Themes - Organize concepts into themes")
-    print("4. Label Refinement - Polish labels with statistics")
-    print("=" * 50)
-
-    # Initialize thematic labeller with fresh config to avoid caching
-    fresh_config = LabellerConfig()
-    labeller = ThematicLabeller(
-        config=fresh_config,
-        verbose=True)
-    
-    labeled_results = labeller.process_hierarchy(
-        cluster_models=cluster_results,
-        survey_question=var_lab)
-    
-    labeled_clusters = labeller.labeled_clusters  # List[ClusterLabel]
-    refined_codebook = labeller.refined_codebook  # Refined structure with statistics
-    final_labels = labeller.final_labels  # Dict[cluster_id, label_info]
-    
-    print(f"\n✅ Successfully labeled {len(labeled_results)} responses")
-    
-    # Save to cache
-    cache_manager.save_to_cache(labeled_results, filename, "labels")
-    print("💾 Saved labeled results to cache")

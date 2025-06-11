@@ -1,6 +1,6 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-from typing import List, Dict, Set
+from typing import List, Dict
 import models
 from utils.thematicLabeller import ThematicLabeller, ClusterLabel, ExtractedAtomicConceptsResponse
 
@@ -74,7 +74,7 @@ class DiagnosticThematicLabeller(ThematicLabeller):
         assigned_cluster_ids = set(cluster_to_concept.keys())
         unassigned_cluster_ids = all_cluster_ids - assigned_cluster_ids
         
-        print(f"\n=== DIAGNOSTIC: Assignment Summary ===")
+        print("\n=== DIAGNOSTIC: Assignment Summary ===")
         print(f"Total clusters: {len(all_cluster_ids)}")
         print(f"Assigned to concepts: {len(assigned_cluster_ids)}")
         print(f"Unassigned: {len(unassigned_cluster_ids)}")
@@ -83,7 +83,7 @@ class DiagnosticThematicLabeller(ThematicLabeller):
         # Call parent method
         merged_clusters = super()._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts_result)
         
-        print(f"\n=== DIAGNOSTIC: Merge Complete ===")
+        print("\n=== DIAGNOSTIC: Merge Complete ===")
         print(f"Merged clusters: {len(merged_clusters)}")
         print(f"New cluster IDs: {sorted([c.cluster_id for c in merged_clusters])}")
         
@@ -163,7 +163,7 @@ class DiagnosticThematicLabeller(ThematicLabeller):
             print("\n✅ All clusters were assigned to specific concepts - no 'Other' concept needed")
             
         # Show original ID tracking summary
-        print(f"\n📊 ORIGINAL ID TRACKING:")
+        print("\n📊 ORIGINAL ID TRACKING:")
         other_found = False
         for merged_id, original_ids in phase2.get('original_id_tracking', {}).items():
             concept = "Unknown"
@@ -178,30 +178,3 @@ class DiagnosticThematicLabeller(ThematicLabeller):
         
         print("\n" + "="*60)
 
-
-if __name__ == "__main__":
-    # Test with sample data
-    from utils.cacheManager import CacheManager
-    from utils import dataLoader
-    from config import CacheConfig, LabellerConfig
-    
-    cache_config = CacheConfig()
-    cache_manager = CacheManager(cache_config)
-    
-    filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    var_name = "Q20"
-    
-    # Load clusters
-    cluster_results = cache_manager.load_from_cache(filename, "initial_clusters", models.ClusterModel)
-    print(f"Loaded {len(cluster_results)} clustered responses")
-    
-    # Get variable label
-    data_loader = dataLoader.DataLoader()
-    var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
-    
-    # Run diagnostic labeller
-    labeller = DiagnosticThematicLabeller(config=LabellerConfig(), verbose=True)
-    labeled_results = labeller.process_hierarchy(cluster_models=cluster_results[:50], survey_question=var_lab)
-    
-    # Print diagnostic summary
-    labeller.print_diagnostic_summary()

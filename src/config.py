@@ -10,7 +10,6 @@ ALLOWED_EXTENSIONS = ['.sav']
 # HUNSPELL CONFIGURATION
 # =============================================================================
 
-
 current_dir = os.getcwd()
 if os.path.basename(current_dir) == 'utils':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'hunspell'))
@@ -390,14 +389,6 @@ class LabellerConfig:
     max_tokens: int = 16000  # Increased for gpt-4o's higher capacity
     seed: int = 42  # For reproducibility
     api_key: Optional[str] = None  # Will use env var if not provided
-    
-    # NOTE: Phase-specific models are now configured in ModelConfig
-    # Phase 1: Descriptive coding - uses phase1_descriptive_model
-    # Phase 2: Label merger - uses phase2_merger_model
-    # Phase 3: Extract themes - uses phase3_themes_model (gpt-4o)
-    # Phase 4: Create codebook - uses phase4_codebook_model
-    # Phase 5: Label refinement - uses phase5_refinement_model
-    # Phase 6: Assignment - uses phase6_assignment_model
     
     # Language and localization
     language: str = DEFAULT_LANGUAGE
