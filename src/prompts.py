@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Jun 10 07:00:34 2025
-
-@author: RKN
-"""
-
 
 # =============================================================================
 # STEP 2: SPELL CHECKING
@@ -351,59 +344,7 @@ Requirements:
 Remember to provide all output in {language}
 """
 
-PHASE2_LABEL_MERGER_PROMPT = """
-You are an expert in qualitative research working in {language}. 
-Your task is to evaluate and merge descriptive labels from survey response clusters that are semantically identical or meaningfully equivalent in the context of the survey question.
-
-Here is the survey question:
-<survey_question>
-{survey_question}
-</survey_question>
-
-Here are the current labels to evaluate for merging:
-<labels>
-{labels}
-</labels>
-
-Merge labels (YES) ONLY IF:
-- Labels are semantically identical or meaningfully equivalent in light of the survey question ("{survey_question}")
-
-Important guidelines:
-- Be conservative - when in doubt, keep clusters separate.
-- Consider the context of the survey question when evaluating semantic similarity.
-- Pay attention to nuances in meaning that might be important to preserve.
-
-For merged labels:
-1. Choose a label that represents the merged labels as the new merged label
-2. Assign a new sequential cluster ID starting from 0
-3. List all original cluster IDs that are being merged
-
-{{
-  "merged_groups": [
-    {{
-      "new_cluster_id": 0,
-      "merged_label": "Best Representative Label",
-      "original_cluster_ids": [1, 5, 12]
-    }},
-    {{
-      "new_cluster_id": 1,
-      "merged_label": "Another Representative Label", 
-      "original_cluster_ids": [3, 8]
-    }}
-  ],
-  "unchanged_labels": [
-    {{
-      "new_cluster_id": 2,
-      "label": "Unique Label",
-      "original_cluster_id": 7
-    }}
-  ]
-}}
-
-Provide your decisions in the required JSON format.
-"""
-
-PHASE3_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
+PHASE2_EXTRACT_ATOMIC_CONCEPTS_PROMPT = """
 You are an expert in thematic analysis working in {language}.
 Your task is to identify ALL atomic concepts present across descriptive codes derived from survey responses.
 
@@ -423,15 +364,16 @@ Instructions:
 3. Focus on WHAT respondents are talking about (not WHY)
 4. Be COMPLETELY EXHAUSTIVE - capture every meaningful concept, even if it appears only once
 5. Do NOT group or merge similar concepts - keep them separate
-6. Include specific subconcepts (e.g., don't just say "ingredients" if respondents specifically mention "vegetables", "meat", "salt", etc.)
+6. Include specific subconcepts (e.g., Don’t just say “technology” if respondents specifically mention “smartphone”, “WiFi”, or “apps”.
+)
 
 An atomic concept is:
-- A single, indivisible idea (e.g., "price", "salt content", "portion size", "vegetables")
+- A single, indivisible idea (e.g., "battery life”, “screen size”, “weight”, “camera quality”)
 - Cannot be meaningfully broken down further
 - Clear and specific
 
 IMPORTANT: 
-- If respondents mention specific aspects (like "vegetables" or "meat"), list these as separate concepts
+- If respondents mention specific aspects (like “ticket price”, “seat comfort”, “departure time”, “onboard WiFi”), list these as separate concepts
 - Don't combine concepts like "packaging" and "sustainable packaging" - keep them separate
 - Include concepts even if they appear in only one or two codes
 
@@ -460,7 +402,7 @@ CRITICAL: For the "evidence" field, you MUST list ALL source IDs where each conc
 
 Remember: 
 - Keep concepts truly atomic
-- List EVERY concept separately (e.g., "price", "affordability", "cost" as separate concepts if they appear)
+- List EVERY concept separately (e.g., “loading time”, “navigation menu”, “font size”, “error messages” as separate concepts if they appear)
 - Use respondents' exact frame of reference
 - When in doubt, include it as a separate concept
 - The evidence list must be COMPLETE - every source ID where the concept appears
@@ -468,7 +410,7 @@ Remember:
 Return output in {language}.
 """
 
-PHASE4_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
+PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
 You are an expert in qualitative analysis working in {language}.
 Your task is to group atomic concepts into meaningful themes.
 
@@ -490,7 +432,7 @@ Instructions:
 
 Guidelines for themes:
 - Should represent a broad area of response
-- Typically 3-7 themes total
+- Aim for 3-7 themes typically, but let the data guide you. Use more themes if the concepts are truly distinct.
 - Each theme should contain related atomic concepts
 - Theme names should be clear and descriptive
 
@@ -523,8 +465,7 @@ VERIFY: Your output must contain exactly {total_concepts} concepts total (in the
 Return output in {language}.
 """
 
-
-PHASE5_LABEL_REFINEMENT_PROMPT = """
+PHASE4_LABEL_REFINEMENT_PROMPT = """
 You are an expert in creating clear, professional codebooks working in {language}.
 Your task is to refine all labels and descriptions for maximum clarity and usability.
 
@@ -538,6 +479,10 @@ Current codebook with cluster assignments:
 {codebook_with_cluster_counts}
 </codebook_with_assignments>
 
+CRITICAL REQUIREMENT:
+**PRESERVE STABLE IDs**: Each concept has a "Stable ID" (like concept_1, concept_2, concept_other). 
+You MUST include the "stable_id" field in EVERY atomic concept in your response.
+
 Refinement goals:
 1. **Theme Labels**: Clear, broad areas (2-4 words)
 2. **Concept Labels**: Precise, specific ideas (2-4 words)
@@ -549,13 +494,13 @@ Guidelines:
 - Use clear, non-technical language
 - Ensure labels are distinct from each other
 - Descriptions should help coders understand boundaries
-- Include cluster counts to show concept prevalence
 
 DO NOT:
 - Change the structure or assignments
 - Merge or split any items
 - Add new themes or concepts
 - Move concepts between themes
+- Change or omit the stable_id values
 
 Output JSON:
 {{
@@ -570,84 +515,18 @@ Output JSON:
             "concept_id": "1.1",
             "label": "Refined Concept Label",
             "description": "Precise description of this atomic concept",
-            "example_quotes": [
-              "Representative quote from assigned clusters",
-              "Another illustrative example"
-            ],
-            "cluster_count": 5,
-            "percentage": 12.5  // Percentage of total clusters
+            "stable_id": "concept_1"
+          }},
+          {{
+            "concept_id": "1.2",
+            "label": "Another Refined Concept",
+            "description": "Description of this concept",
+            "stable_id": "concept_3"
           }}
         ]
       }}
     ],
-    "summary_statistics": {{
-      "total_themes": 5,
-      "total_concepts": 23,
-      "total_clusters": 40,
-      "unassigned_clusters": 2
     }}
-  }},
-  "refinement_notes": "Key refinements made and rationale"
-}}
-
-Return output in {language}.
-"""
-
-PHASE6_ASSIGNMENT_PROMPT = """
-You are an expert in qualitative coding working in {language}.
-Your task is to assign each cluster to the most appropriate atomic concept in the thematic structure.
-
-Survey question:
-<survey_question>
-{survey_question}
-</survey_question>
-
-Thematic structure:
-<thematic_structure>
-{thematic_structure}
-</thematic_structure>
-
-Cluster to assign:
-<cluster>
-ID: {cluster_id}
-Label: {cluster_label}
-Size: {cluster_size}
-Representative examples:
-{cluster_representatives}
-</cluster>
-
-Instructions:
-1. Read the cluster's representative examples carefully
-2. Identify which atomic concept the cluster best represents
-3. Base your decision on semantic meaning, not just keyword matching
-4. Consider the context of the survey question
-
-Output JSON:
-{{
-  "cluster_id": "{cluster_id}",
-  "primary_assignment": {{
-    "theme_id": "1",
-    "concept_id": "1.2",
-    "confidence": 0.85,
-    "rationale": "Why this assignment makes sense"
-  }},
-  "alternative_assignments": [
-    {{
-      "concept_id": "2.3",
-      "confidence": 0.15,
-      "rationale": "Why this could also fit"
-    }}
-  ]
-}}
-
-If no good match exists:
-{{
-  "cluster_id": "{cluster_id}",
-  "primary_assignment": {{
-    "theme_id": "99",
-    "concept_id": "99.1",
-    "confidence": 0.0,
-    "rationale": "Does not fit existing concepts because..."
   }}
 }}
 

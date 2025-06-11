@@ -256,57 +256,6 @@ class Embedder:
        
         return asyncio.run(self._async_embed_words(words, batch_size, max_concurrent))
 
-
-
-# Example usage
-if __name__ == "__main__":
-    
-    from utils import dataLoader, csvHandler
-    
-    filename                = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column               = "DLNMID"
-    var_name                = "Q20"
-
-    csv_handler             = csvHandler.CsvHandler()
-    filepath                = csv_handler.get_filepath(filename, 'segmented_descriptions')
-    data_loader             = dataLoader.DataLoader()
-    var_lab                 = data_loader.get_varlab(filename=filename, var_name=var_name)
-
-    segmented_text          = csv_handler.load_from_csv(filename, 'segmented_descriptions', models.DescriptiveModel)
-    input_data              = [item.to_model(models.EmbeddingsModel) for item in segmented_text]
-    
-    for response in input_data:
-        print(f"\nRespondent ID: {response.respondent_id}")
-        print(f"Response: {response.response}")
-        print("Descriptive Codes:")
-        response_segments = response.response_segment or []
-        for segment in response_segments:
-            print(f"  - Segment: {segment.segment_response}")
-            print(f"    Code: {segment.segment_label}")
-            
-            print(segment.segment_label.replace("_", " ").title())
-            
-            print(f"    Description: {segment.segment_description}")
-    
-    embedder                = Embedder()
-    
-    code_embeddings        = embedder.get_code_embeddings(input_data)
-    description_embeddings = embedder.get_description_embeddings(input_data, var_lab)
-    combined_embeddings    = embedder.combine_embeddings(code_embeddings, description_embeddings)
-
-    for response in combined_embeddings[:1]:
-        print(f"\nRespondent ID: {response.respondent_id}")
-        print(f"Response: {response.response}")
-        print("Descriptive Codes:")
-        response_segments = response.response_segment or []
-        for segment in response_segments:
-            print(f"  - Segment: {segment.segment_response}")
-            print(f"    Code: {segment.segment_label}")
-            print(f"    Description: {segment.segment_description}")
-            print(f"    Description: {segment.code_embedding}")
-            print(f"    Description: {segment.description_embedding}")
-        print("\n")
-              
     
         
     

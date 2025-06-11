@@ -4,8 +4,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import numpy as np
 from sklearn.metrics import silhouette_score
 from collections import Counter
-from typing import Dict, Any, List
-import hdbscan
+from typing import Dict
 
 class ClusterQualityAnalyzer:
     """Analyze cluster quality metrics."""
@@ -106,28 +105,3 @@ class ClusterQualityAnalyzer:
                 
         return score
 
-# Test section
-if __name__ == "__main__":
-    # Create sample data
-    np.random.seed(42)
-    
-    # Create clustered data
-    cluster1 = np.random.normal(0, 0.5, (50, 10))
-    cluster2 = np.random.normal(3, 0.5, (50, 10))
-    cluster3 = np.random.normal(6, 0.5, (30, 10))
-    noise = np.random.uniform(-2, 8, (20, 10))
-    
-    embeddings = np.vstack([cluster1, cluster2, cluster3, noise])
-    
-    # Create labels (last 20 are noise)
-    labels = np.array([0]*50 + [1]*50 + [2]*30 + [-1]*20)
-    
-    # Analyze quality
-    analyzer = ClusterQualityAnalyzer(embeddings, labels)
-    report = analyzer.get_full_report()
-    quality_score = analyzer.calculate_quality_score(report)
-    
-    print("Quality Report:")
-    for metric, value in report.items():
-        print(f"  {metric}: {value:.3f}")
-    print(f"\nOverall Quality Score: {quality_score:.3f}")

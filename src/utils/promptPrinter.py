@@ -1,8 +1,7 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-import time
 import json
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -67,7 +66,7 @@ class promptPrinter:
         if 'model' in prompt_entry['metadata']:
             print(f"📊 Model: {prompt_entry['metadata']['model']}")
         
-        print(f"📄 Prompt:")
+        print("📄 Prompt:")
         print(f"{'-'*80}")
         print(prompt_entry['prompt_content'])
         print(f"{'-'*80}")
@@ -135,11 +134,11 @@ class promptPrinter:
         print(f"Total prompts captured: {summary['total']}")
         
         if summary['total'] > 0:
-            print(f"\n📍 By Pipeline Step:")
+            print("\n📍 By Pipeline Step:")
             for step, count in summary['by_step'].items():
                 print(f"  • {step}: {count}")
             
-            print(f"\n🔧 By Utility:")
+            print("\n🔧 By Utility:")
             for utility, count in summary['by_utility'].items():
                 print(f"  • {utility}: {count}")
     

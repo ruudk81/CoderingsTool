@@ -562,30 +562,5 @@ class SpellChecker:
         nest_asyncio.apply()
         return asyncio.run(main())
 
-# Example usage:
-if __name__ == "__main__":
-    
-    from utils.testData import TestDataLoader
-    loader = TestDataLoader()
-
-    responses_dicts  = loader.get_test_data(
-       filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav",
-       variable_name = "Q20", 
-       n_samples= 100,
-       as_response_items=True)
-
-    responses = [models.PreprocessModel(respondent_id=item['respondent_id'], response = item['sentence']) for item in responses_dicts]    
-    
-    var_label_dict = loader.list_variables(
-      filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav",
-      string_only = True)
-    
-    var_lab = var_label_dict['Q20']
-        
-    spell_checker = SpellChecker()
-    processed_responses = spell_checker.spell_check(responses, var_lab)
-    
-
-    
     
     

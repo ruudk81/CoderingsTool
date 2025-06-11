@@ -104,20 +104,3 @@ class DataLoader:
         df = pd.read_csv(file_path, delimiter=delimiter)
         return df
 
-# Example:
-if __name__ == "__main__":
-    loader = DataLoader()
-    
-    variables_dict = loader.list_variables(
-        filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav")
-    
-    survey_data_df = loader.get_variable_with_IDs(
-       filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav",
-       id_column = "DLNMID",
-       var_name = "Q20")
-    
-    var_label = loader.get_varlab(
-      filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav",
-      var_name = "Q20")
-   
-

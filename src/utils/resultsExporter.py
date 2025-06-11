@@ -82,7 +82,7 @@ class ResultsExporter:
         excel_path = self._export_to_excel(
             respondent_codes, hierarchical_structure, filename, var_name, export_dir)
         
-        self.verbose_reporter.stat_line(f"✅ Results exported successfully")
+        self.verbose_reporter.stat_line("✅ Results exported successfully")
         self.verbose_reporter.stat_line(f"📊 SPSS file: {spss_path}")
         self.verbose_reporter.stat_line(f"📈 Excel file: {excel_path}")
         
@@ -507,7 +507,7 @@ class ResultsExporter:
         
         # Insert chart image
         try:
-            worksheet.insert_image(f'G2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
+            worksheet.insert_image('G2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
         except Exception as e:
             self.verbose_reporter.stat_line(f"Warning: Could not insert hierarchy chart: {e}")
         

@@ -236,37 +236,3 @@ class Grader:
             "pre_filtered": pre_filtered
         }
 
-# example/test section
-if __name__ == "__main__":
-    
-    from utils import dataLoader, csvHandler
-    
-    filename     = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    id_column    = "DLNMID"
-    var_name     = "Q20"
-
-    csv_handler          = csvHandler.CsvHandler()
-    filepath             = csv_handler.get_filepath(filename, 'preprocessed')
-    data_loader          = dataLoader.DataLoader()
-    var_lab              = data_loader.get_varlab(filename = filename, var_name = var_name)
-
-    preprocessed_text     = csv_handler.load_from_csv(filename, 'preprocessed', models.PreprocessModel)
-
-    config = QualityFilterConfig(
-        batch_size=20,
-        retries=3 )
-
-    grader = Grader(preprocessed_text, var_lab, config)
-    all_results = grader.grade()
-    filtered = grader.filter()
-
-    summary = grader.summary()
-    print("\nSummary:")
-    for key, value in summary.items():
-        print(f"{key}: {value}")
-
-    print("\nAll results:")
-    for r in all_results:
-        if r.quality_filter:
-        #print(r)
-            print(f"{r.respondent_id}: {r.response} ")
