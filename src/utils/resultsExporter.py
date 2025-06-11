@@ -78,7 +78,7 @@ class ResultsExporter:
         
         # Export to SPSS
         spss_path = self._export_to_spss(
-            respondent_codes, filename, id_column, var_name, export_dir)
+            respondent_codes, hierarchical_structure, filename, id_column, var_name, export_dir)
         
         # Export to Excel  
         excel_path = self._export_to_excel(
@@ -98,41 +98,49 @@ class ResultsExporter:
                                        labeled_results: List[models.LabelModel],
                                        hierarchical_structure: Dict) -> Dict[int, Dict[str, Any]]:
         """
-        Create mapping of respondent_id to their assigned codes
+        Create mapping of respondent_id to their assigned codes using binary approach
         
-        For each respondent, determine:
-        - If quality_filter=True: use quality_filter_code for both columns
-        - If quality_filter=False: determine theme/concept from cluster assignments
+        Creates binary variables for:
+        - Each theme (1 if respondent has any segment in theme, 0 otherwise)
+        - Each concept (1 if respondent has any segment in concept, 0 otherwise)  
+        - Quality filter codes (1 if respondent has that filter code, 0 otherwise)
         """
         respondent_codes = {}
         themes = hierarchical_structure['themes']
         cluster_mappings = {mapping.cluster_id: mapping for mapping in hierarchical_structure['cluster_mappings']}
         
-        self.verbose_reporter.step_start("Creating respondent codes mapping")
+        self.verbose_reporter.step_start("Creating respondent codes mapping (binary approach)")
+        
+        # Create list of all possible themes and concepts for binary variables
+        all_themes = [(theme.theme_id, theme.numeric_id) for theme in themes]
+        all_concepts = []
+        for theme in themes:
+            for concept in theme.topics:  # topics are concepts in 2-level hierarchy
+                all_concepts.append((concept.topic_id, concept.numeric_id, theme.theme_id))
+        
+        self.verbose_reporter.stat_line(f"Creating binary variables for {len(all_themes)} themes and {len(all_concepts)} concepts")
         
         for result in labeled_results:
             respondent_id = result.respondent_id
             
-            # Initialize codes for this respondent (2-level hierarchy)
+            # Initialize binary codes for this respondent
             codes = {
-                'theme_code': None,
-                'concept_code': None,  # Changed from 'topic_code' and 'code_code'
                 'quality_filter': result.quality_filter,
-                'quality_filter_code': result.quality_filter_code
+                'quality_filter_code': result.quality_filter_code,
+                'themes_present': set(),  # Set of theme IDs present in segments
+                'concepts_present': set(),  # Set of concept IDs present in segments
             }
             
             # Check if this respondent was filtered out
             if result.quality_filter:
-                # Use quality filter code for both columns
-                filter_code = result.quality_filter_code
-                codes.update({
-                    'theme_code': filter_code,
-                    'concept_code': filter_code
-                })
+                # Quality filtered - no themes/concepts present
+                codes['themes_present'] = set()
+                codes['concepts_present'] = set()
             else:
-                # Find assigned codes from cluster mappings
-                assigned_codes = self._find_respondent_assigned_codes(result, cluster_mappings, themes)
-                codes.update(assigned_codes)
+                # Find all themes/concepts from ALL segments (not just most common)
+                theme_concept_pairs = self._find_all_segment_assignments(result, cluster_mappings, themes)
+                codes['themes_present'] = {pair[0] for pair in theme_concept_pairs}
+                codes['concepts_present'] = {pair[1] for pair in theme_concept_pairs}
             
             respondent_codes[respondent_id] = codes
         
@@ -141,61 +149,58 @@ class ResultsExporter:
         filtered_count = sum(1 for codes in respondent_codes.values() if codes['quality_filter'])
         coded_count = total_respondents - filtered_count
         
+        # Count respondents with multiple themes/concepts
+        multi_theme_count = sum(1 for codes in respondent_codes.values() 
+                               if not codes['quality_filter'] and len(codes['themes_present']) > 1)
+        multi_concept_count = sum(1 for codes in respondent_codes.values() 
+                                 if not codes['quality_filter'] and len(codes['concepts_present']) > 1)
+        
         self.verbose_reporter.stat_line(f"Total respondents: {total_respondents}")
         self.verbose_reporter.stat_line(f"Filtered respondents: {filtered_count}")
         self.verbose_reporter.stat_line(f"Coded respondents: {coded_count}")
+        self.verbose_reporter.stat_line(f"Respondents with multiple themes: {multi_theme_count}")
+        self.verbose_reporter.stat_line(f"Respondents with multiple concepts: {multi_concept_count}")
         
         return respondent_codes
     
-    def _find_respondent_assigned_codes(self, 
-                                      result: models.LabelModel,
-                                      cluster_mappings: Dict[int, models.ClusterMapping],
-                                      themes: List[models.HierarchicalTheme]) -> Dict[str, float]:
+    def _find_all_segment_assignments(self, 
+                                     result: models.LabelModel,
+                                     cluster_mappings: Dict[int, models.ClusterMapping],
+                                     themes: List[models.HierarchicalTheme]) -> List[Tuple[str, str]]:
         """
-        Find the assigned hierarchical codes for a respondent based on their segments
-        Modified for 2-level hierarchy (themes → concepts/topics)
+        Find ALL theme/concept assignments for a respondent's segments (not just most common)
+        
+        Returns:
+            List of (theme_id, concept_id) tuples for all segments
         """
-        assigned_codes = {
-            'theme_code': None,
-            'concept_code': None  # Using topic as concept
-        }
+        theme_concept_pairs = []
         
         if not result.response_segment:
-            return assigned_codes
+            return theme_concept_pairs
         
-        # Get all cluster assignments for this respondent's segments
-        segment_clusters = []
+        # Process ALL segments, not just the most common
         for segment in result.response_segment:
             if hasattr(segment, 'initial_cluster') and segment.initial_cluster is not None:
-                segment_clusters.append(segment.initial_cluster)
-        
-        if not segment_clusters:
-            return assigned_codes
-        
-        # Find the most frequent cluster assignment (or take first if tied)
-        most_common_cluster = max(set(segment_clusters), key=segment_clusters.count)
-        
-        # Look up the hierarchical assignment for this cluster
-        if most_common_cluster in cluster_mappings:
-            mapping = cluster_mappings[most_common_cluster]
-            
-            # Convert IDs to numeric codes
-            theme_id = mapping.theme_id
-            topic_id = mapping.topic_id  # This is actually the concept ID in 2-level hierarchy
-            
-            # Find numeric codes from hierarchical structure
-            for theme in themes:
-                if theme.theme_id == theme_id:
-                    assigned_codes['theme_code'] = theme.numeric_id
+                cluster_id = segment.initial_cluster
+                
+                if cluster_id in cluster_mappings:
+                    mapping = cluster_mappings[cluster_id]
+                    theme_id = mapping.theme_id
+                    concept_id = mapping.topic_id  # concept stored as topic_id
                     
-                    # Find the concept (stored as topic in the structure)
-                    for topic in theme.topics:
-                        if topic.topic_id == topic_id:
-                            assigned_codes['concept_code'] = topic.numeric_id
-                            break
-                    break
+                    # Verify this theme/concept exists in our structure
+                    theme_found = False
+                    for theme in themes:
+                        if theme.theme_id == theme_id:
+                            for concept in theme.topics:
+                                if concept.topic_id == concept_id:
+                                    theme_concept_pairs.append((theme_id, concept_id))
+                                    theme_found = True
+                                    break
+                            if theme_found:
+                                break
         
-        return assigned_codes
+        return theme_concept_pairs
     
     def _setup_export_directory(self, filename: str, var_name: str) -> str:
         """Create and return export directory path"""
@@ -217,24 +222,53 @@ class ResultsExporter:
     
     def _export_to_spss(self, 
                        respondent_codes: Dict[int, Dict[str, Any]],
+                       hierarchical_structure: Dict,
                        filename: str,
                        id_column: str,
                        var_name: str,
                        export_dir: str) -> str:
         """
-        Export codes to SPSS by adding columns to original data
-        Modified for 2-level hierarchy
+        Export codes to SPSS using binary variables approach
+        Creates binary variables for each theme, concept, and quality filter code
         """
-        self.verbose_reporter.step_start("Exporting to SPSS")
+        self.verbose_reporter.step_start("Exporting to SPSS (binary variables)")
         
         # Load original SPSS data
         original_df, meta = self.data_loader.load_sav(filename)
         
-        # Create new columns for codes (2-level hierarchy)
-        new_columns = {
-            f"{var_name}_THEME": [],
-            f"{var_name}_CONCEPT": []  # Changed from TOPIC and CODE
+        # Get themes and concepts from hierarchical structure
+        themes_list = hierarchical_structure['themes']
+        
+        # Extract themes and concepts for binary variables
+        themes = [(theme.theme_id, theme.label) for theme in themes_list]
+        concepts = []
+        for theme in themes_list:
+            for concept in theme.topics:  # topics are concepts in 2-level hierarchy
+                concepts.append((concept.topic_id, concept.label, theme.theme_id))
+        
+        # Create binary columns for themes
+        new_columns = {}
+        
+        # 1. Theme binary variables
+        for theme_id, theme_label in themes:
+            col_name = f"{var_name}_THEME_{theme_id}"
+            new_columns[col_name] = []
+        
+        # 2. Concept binary variables  
+        for concept_id, concept_label, theme_id in concepts:
+            # Use format like Q1_CONCEPT_1_2 for theme 1, concept 2
+            col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
+            new_columns[col_name] = []
+        
+        # 3. Quality filter binary variables
+        quality_filter_columns = {
+            f"{var_name}_USER_MISSING_97": [],
+            f"{var_name}_SYSTEM_MISSING_98": [],
+            f"{var_name}_NO_ANSWER_99": []
         }
+        new_columns.update(quality_filter_columns)
+        
+        self.verbose_reporter.stat_line(f"Creating {len(new_columns)} binary variables")
         
         # Map codes to original data
         for _, row in original_df.iterrows():
@@ -242,12 +276,44 @@ class ResultsExporter:
             
             if respondent_id in respondent_codes:
                 codes = respondent_codes[respondent_id]
-                new_columns[f"{var_name}_THEME"].append(codes['theme_code'])
-                new_columns[f"{var_name}_CONCEPT"].append(codes['concept_code'])
+                
+                # Set theme binary variables
+                for theme_id, theme_label in themes:
+                    col_name = f"{var_name}_THEME_{theme_id}"
+                    value = 1 if theme_id in codes['themes_present'] else 0
+                    new_columns[col_name].append(value)
+                
+                # Set concept binary variables
+                for concept_id, concept_label, theme_id in concepts:
+                    col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
+                    value = 1 if concept_id in codes['concepts_present'] else 0
+                    new_columns[col_name].append(value)
+                
+                # Set quality filter binary variables
+                if codes['quality_filter']:
+                    filter_code = codes['quality_filter_code']
+                    new_columns[f"{var_name}_USER_MISSING_97"].append(1 if filter_code == 99999997 else 0)
+                    new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(1 if filter_code == 99999998 else 0)
+                    new_columns[f"{var_name}_NO_ANSWER_99"].append(1 if filter_code == 99999999 else 0)
+                else:
+                    # Not filtered - all quality filter variables = 0
+                    new_columns[f"{var_name}_USER_MISSING_97"].append(0)
+                    new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(0)
+                    new_columns[f"{var_name}_NO_ANSWER_99"].append(0)
             else:
-                # Respondent not in analysis - mark as system missing
-                new_columns[f"{var_name}_THEME"].append(99999998)
-                new_columns[f"{var_name}_CONCEPT"].append(99999998)
+                # Respondent not in analysis - set all theme/concept to 0, system missing to 1
+                for theme_id, theme_label in themes:
+                    col_name = f"{var_name}_THEME_{theme_id}"
+                    new_columns[col_name].append(0)
+                
+                for concept_id, concept_label, theme_id in concepts:
+                    col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
+                    new_columns[col_name].append(0)
+                
+                # Mark as system missing
+                new_columns[f"{var_name}_USER_MISSING_97"].append(0)
+                new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(1)
+                new_columns[f"{var_name}_NO_ANSWER_99"].append(0)
         
         # Add new columns to dataframe
         for col_name, values in new_columns.items():
@@ -261,7 +327,10 @@ class ResultsExporter:
         # Save to SPSS format
         pyreadstat.write_sav(original_df, output_path)
         
-        self.verbose_reporter.stat_line(f"Added {len(new_columns)} code columns")
+        self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables")
+        self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
+        self.verbose_reporter.stat_line(f"  - {len(concepts)} concept variables") 
+        self.verbose_reporter.stat_line(f"  - 3 quality filter variables")
         self.verbose_reporter.stat_line(f"SPSS file saved: {output_filename}")
         
         return output_path
@@ -473,18 +542,18 @@ class ResultsExporter:
         # Create worksheet
         worksheet = workbook.add_worksheet('Frequencies')
         
-        # Count frequencies for each level
+        # Count frequencies for each level using binary approach
         theme_counts = {}
-        concept_counts = {}  # Changed from topic_counts and code_counts
+        concept_counts = {}
         
         for respondent_id, codes in respondent_codes.items():
-            theme_code = codes['theme_code']
-            if theme_code is not None:
-                theme_counts[theme_code] = theme_counts.get(theme_code, 0) + 1
+            # Count themes present (binary approach)
+            for theme_id in codes['themes_present']:
+                theme_counts[theme_id] = theme_counts.get(theme_id, 0) + 1
             
-            concept_code = codes['concept_code']
-            if concept_code is not None:
-                concept_counts[concept_code] = concept_counts.get(concept_code, 0) + 1
+            # Count concepts present (binary approach)  
+            for concept_id in codes['concepts_present']:
+                concept_counts[concept_id] = concept_counts.get(concept_id, 0) + 1
         
         total_respondents = len(respondent_codes)
         
@@ -493,14 +562,14 @@ class ResultsExporter:
         concept_data = []
         
         for theme in themes:
-            count = theme_counts.get(theme.numeric_id, 0)
+            count = theme_counts.get(theme.theme_id, 0)
             percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
             if count > 0:  # Only include non-zero frequencies
                 theme_data.append((theme.label, count, percentage))
         
         for theme in themes:
             for concept in theme.topics:  # Topics are concepts
-                count = concept_counts.get(concept.numeric_id, 0)
+                count = concept_counts.get(concept.topic_id, 0)
                 percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
                 if count > 0:
                     concept_data.append((concept.label, count, percentage))
@@ -572,14 +641,14 @@ class ResultsExporter:
         
         # Add theme data
         for theme in themes:
-            count = theme_counts.get(theme.numeric_id, 0)
+            count = theme_counts.get(theme.theme_id, 0)
             percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
             all_freq_data.append(['Theme', theme.theme_id, theme.label, count, percentage])
         
         # Add concept data
         for theme in themes:
             for concept in theme.topics:  # Topics are concepts
-                count = concept_counts.get(concept.numeric_id, 0)
+                count = concept_counts.get(concept.topic_id, 0)
                 percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
                 all_freq_data.append(['Concept', concept.topic_id, concept.label, count, percentage])
         
@@ -631,7 +700,7 @@ class ResultsExporter:
             
             for concept in theme.topics:  # Topics are concepts
                 count = sum(1 for codes in respondent_codes.values() 
-                          if codes['concept_code'] == concept.numeric_id)
+                          if concept.topic_id in codes['concepts_present'])
                 
                 if count > 0:
                     theme_concept_frequencies[concept.label] = count
