@@ -28,9 +28,11 @@ class ResultsExporter:
     Export pipeline results to SPSS (.sav) and Excel formats
     
     This class handles:
-    1. Creating codes columns for each respondent (themes, topics, codes)
+    1. Creating codes columns for each respondent (themes and concepts)
     2. Adding codes to original SPSS file and saving as new file
     3. Creating comprehensive Excel report with multiple tabs
+    
+    Modified to support 2-level hierarchy (Themes → Concepts)
     """
     
     def __init__(self, config: ExportConfig = None, verbose: bool = True):
@@ -99,8 +101,8 @@ class ResultsExporter:
         Create mapping of respondent_id to their assigned codes
         
         For each respondent, determine:
-        - If quality_filter=True: use quality_filter_code for all three columns
-        - If quality_filter=False: determine theme/topic/code from cluster assignments
+        - If quality_filter=True: use quality_filter_code for both columns
+        - If quality_filter=False: determine theme/concept from cluster assignments
         """
         respondent_codes = {}
         themes = hierarchical_structure['themes']
@@ -111,23 +113,21 @@ class ResultsExporter:
         for result in labeled_results:
             respondent_id = result.respondent_id
             
-            # Initialize codes for this respondent
+            # Initialize codes for this respondent (2-level hierarchy)
             codes = {
                 'theme_code': None,
-                'topic_code': None, 
-                'code_code': None,
+                'concept_code': None,  # Changed from 'topic_code' and 'code_code'
                 'quality_filter': result.quality_filter,
                 'quality_filter_code': result.quality_filter_code
             }
             
             # Check if this respondent was filtered out
             if result.quality_filter:
-                # Use quality filter code for all three columns
+                # Use quality filter code for both columns
                 filter_code = result.quality_filter_code
                 codes.update({
                     'theme_code': filter_code,
-                    'topic_code': filter_code,
-                    'code_code': filter_code
+                    'concept_code': filter_code
                 })
             else:
                 # Find assigned codes from cluster mappings
@@ -153,11 +153,11 @@ class ResultsExporter:
                                       themes: List[models.HierarchicalTheme]) -> Dict[str, float]:
         """
         Find the assigned hierarchical codes for a respondent based on their segments
+        Modified for 2-level hierarchy (themes → concepts/topics)
         """
         assigned_codes = {
             'theme_code': None,
-            'topic_code': None,
-            'code_code': None
+            'concept_code': None  # Using topic as concept
         }
         
         if not result.response_segment:
@@ -181,22 +181,17 @@ class ResultsExporter:
             
             # Convert IDs to numeric codes
             theme_id = mapping.theme_id
-            topic_id = mapping.topic_id  
-            code_id = mapping.code_id
+            topic_id = mapping.topic_id  # This is actually the concept ID in 2-level hierarchy
             
             # Find numeric codes from hierarchical structure
             for theme in themes:
                 if theme.theme_id == theme_id:
                     assigned_codes['theme_code'] = theme.numeric_id
                     
+                    # Find the concept (stored as topic in the structure)
                     for topic in theme.topics:
                         if topic.topic_id == topic_id:
-                            assigned_codes['topic_code'] = topic.numeric_id
-                            
-                            for code in topic.codes:
-                                if code.code_id == code_id:
-                                    assigned_codes['code_code'] = code.numeric_id
-                                    break
+                            assigned_codes['concept_code'] = topic.numeric_id
                             break
                     break
         
@@ -228,17 +223,17 @@ class ResultsExporter:
                        export_dir: str) -> str:
         """
         Export codes to SPSS by adding columns to original data
+        Modified for 2-level hierarchy
         """
         self.verbose_reporter.step_start("Exporting to SPSS")
         
         # Load original SPSS data
         original_df, meta = self.data_loader.load_sav(filename)
         
-        # Create new columns for codes
+        # Create new columns for codes (2-level hierarchy)
         new_columns = {
             f"{var_name}_THEME": [],
-            f"{var_name}_TOPIC": [],
-            f"{var_name}_CODE": []
+            f"{var_name}_CONCEPT": []  # Changed from TOPIC and CODE
         }
         
         # Map codes to original data
@@ -248,13 +243,11 @@ class ResultsExporter:
             if respondent_id in respondent_codes:
                 codes = respondent_codes[respondent_id]
                 new_columns[f"{var_name}_THEME"].append(codes['theme_code'])
-                new_columns[f"{var_name}_TOPIC"].append(codes['topic_code'])
-                new_columns[f"{var_name}_CODE"].append(codes['code_code'])
+                new_columns[f"{var_name}_CONCEPT"].append(codes['concept_code'])
             else:
                 # Respondent not in analysis - mark as system missing
                 new_columns[f"{var_name}_THEME"].append(99999998)
-                new_columns[f"{var_name}_TOPIC"].append(99999998)
-                new_columns[f"{var_name}_CODE"].append(99999998)
+                new_columns[f"{var_name}_CONCEPT"].append(99999998)
         
         # Add new columns to dataframe
         for col_name, values in new_columns.items():
@@ -316,7 +309,7 @@ class ResultsExporter:
         return output_path
     
     def _create_enhanced_codebook_tab(self, workbook, hierarchical_structure: Dict):
-        """Create enhanced codebook tab with styled formatting"""
+        """Create enhanced codebook tab with styled formatting for 2-level hierarchy"""
         themes = hierarchical_structure['themes']
         
         # Create worksheet
@@ -341,7 +334,7 @@ class ResultsExporter:
             'align': 'left'
         })
         
-        topic_format = workbook.add_format({
+        concept_format = workbook.add_format({
             'font_size': 10,
             'bg_color': '#F2F2F2',
             'border': 1,
@@ -349,14 +342,7 @@ class ResultsExporter:
             'indent': 1
         })
         
-        code_format = workbook.add_format({
-            'font_size': 9,
-            'border': 1,
-            'align': 'left',
-            'indent': 2
-        })
-        
-        # Headers
+        # Headers for 2-level hierarchy
         headers = ['Level', 'ID', 'Numeric_ID', 'Label', 'Description', 'Parent_ID', 'Full_Path']
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, header_format)
@@ -374,27 +360,16 @@ class ResultsExporter:
             worksheet.write(row, 6, theme.label, theme_format)
             row += 1
             
-            for topic in theme.topics:
-                # Topic row
-                worksheet.write(row, 0, 'Topic', topic_format)
-                worksheet.write(row, 1, topic.topic_id, topic_format)
-                worksheet.write(row, 2, topic.numeric_id, topic_format)
-                worksheet.write(row, 3, topic.label, topic_format)
-                worksheet.write(row, 4, topic.description, topic_format)
-                worksheet.write(row, 5, theme.theme_id, topic_format)
-                worksheet.write(row, 6, f"{theme.label} > {topic.label}", topic_format)
+            for topic in theme.topics:  # Topics are actually concepts in 2-level hierarchy
+                # Concept row
+                worksheet.write(row, 0, 'Concept', concept_format)
+                worksheet.write(row, 1, topic.topic_id, concept_format)
+                worksheet.write(row, 2, topic.numeric_id, concept_format)
+                worksheet.write(row, 3, topic.label, concept_format)
+                worksheet.write(row, 4, topic.description, concept_format)
+                worksheet.write(row, 5, theme.theme_id, concept_format)
+                worksheet.write(row, 6, f"{theme.label} > {topic.label}", concept_format)
                 row += 1
-                
-                for code in topic.codes:
-                    # Code row
-                    worksheet.write(row, 0, 'Code', code_format)
-                    worksheet.write(row, 1, code.code_id, code_format)
-                    worksheet.write(row, 2, code.numeric_id, code_format)
-                    worksheet.write(row, 3, code.label, code_format)
-                    worksheet.write(row, 4, code.description, code_format)
-                    worksheet.write(row, 5, topic.topic_id, code_format)
-                    worksheet.write(row, 6, f"{theme.label} > {topic.label} > {code.label}", code_format)
-                    row += 1
         
         # Adjust column widths
         worksheet.set_column('A:A', 8)   # Level
@@ -406,7 +381,7 @@ class ResultsExporter:
         worksheet.set_column('G:G', 50)  # Full_Path
     
     def _create_enhanced_dendrogram_tab(self, workbook, hierarchical_structure: Dict, export_dir: str):
-        """Create dendrogram tab with visual hierarchy and tree diagram"""
+        """Create dendrogram tab with visual hierarchy for 2-level structure"""
         themes = hierarchical_structure['themes']
         
         # Create worksheet
@@ -416,7 +391,7 @@ class ResultsExporter:
         fig, ax = plt.subplots(1, 1, figsize=(self.config.chart_width, self.config.chart_height))
         fig.patch.set_facecolor('white')
         
-        # Create hierarchical tree structure
+        # Create hierarchical tree structure for 2 levels
         y_pos = 0
         y_positions = {}
         
@@ -429,38 +404,24 @@ class ResultsExporter:
             ax.text(0, theme_y, theme.label, fontsize=14, fontweight='bold',
                    bbox=dict(boxstyle="round,pad=0.3", facecolor='lightblue', alpha=0.8))
             
-            topic_start_y = y_pos
-            for topic_idx, topic in enumerate(theme.topics):
+            concept_start_y = y_pos
+            for concept_idx, concept in enumerate(theme.topics):  # Topics are concepts
                 y_pos -= 1
-                topic_y = y_pos
-                y_positions[topic.topic_id] = topic_y
+                concept_y = y_pos
+                y_positions[concept.topic_id] = concept_y
                 
-                # Draw topic box
-                ax.text(1, topic_y, topic.label, fontsize=12,
+                # Draw concept box
+                ax.text(1, concept_y, concept.label, fontsize=12,
                        bbox=dict(boxstyle="round,pad=0.2", facecolor='lightgreen', alpha=0.6))
                 
-                # Draw line from theme to topic
-                ax.plot([0.4, 0.9], [theme_y, topic_y], 'k-', alpha=0.5)
-                
-                code_start_y = y_pos
-                for code_idx, code in enumerate(topic.codes):
-                    y_pos -= 0.7
-                    code_y = y_pos
-                    
-                    # Draw code box
-                    ax.text(2, code_y, code.label, fontsize=10,
-                           bbox=dict(boxstyle="round,pad=0.1", facecolor='lightyellow', alpha=0.6))
-                    
-                    # Draw line from topic to code
-                    ax.plot([1.4, 1.9], [topic_y, code_y], 'k-', alpha=0.3)
-                
-                y_pos -= 0.5  # Space between topics
+                # Draw line from theme to concept
+                ax.plot([0.4, 0.9], [theme_y, concept_y], 'k-', alpha=0.5)
             
             y_pos -= 1  # Space between themes
         
-        ax.set_xlim(-0.5, 3)
+        ax.set_xlim(-0.5, 2)
         ax.set_ylim(y_pos - 1, 1)
-        ax.set_title('Hierarchical Structure: Themes → Topics → Codes', fontsize=16, fontweight='bold')
+        ax.set_title('Hierarchical Structure: Themes → Concepts', fontsize=16, fontweight='bold')
         ax.axis('off')
         
         # Save chart
@@ -475,7 +436,7 @@ class ResultsExporter:
             'align': 'center', 'border': 1
         })
         
-        headers = ['Theme', 'Topic', 'Code', 'Numeric_ID', 'Level']
+        headers = ['Theme', 'Concept', 'Numeric_ID', 'Level']
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, header_format)
         
@@ -484,39 +445,29 @@ class ResultsExporter:
         for theme in themes:
             worksheet.write(row, 0, theme.label, workbook.add_format({'bold': True, 'bg_color': '#D9E1F2'}))
             worksheet.write(row, 1, '', workbook.add_format({'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 2, '', workbook.add_format({'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 3, theme.numeric_id, workbook.add_format({'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 4, 'Theme', workbook.add_format({'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 2, theme.numeric_id, workbook.add_format({'bg_color': '#D9E1F2'}))
+            worksheet.write(row, 3, 'Theme', workbook.add_format({'bg_color': '#D9E1F2'}))
             row += 1
             
-            for topic in theme.topics:
+            for concept in theme.topics:  # Topics are concepts
                 worksheet.write(row, 0, '', workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 1, topic.label, workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 2, '', workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 3, topic.numeric_id, workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 4, 'Topic', workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 1, concept.label, workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 2, concept.numeric_id, workbook.add_format({'bg_color': '#F2F2F2'}))
+                worksheet.write(row, 3, 'Concept', workbook.add_format({'bg_color': '#F2F2F2'}))
                 row += 1
-                
-                for code in topic.codes:
-                    worksheet.write(row, 0, '')
-                    worksheet.write(row, 1, '')
-                    worksheet.write(row, 2, code.label)
-                    worksheet.write(row, 3, code.numeric_id)
-                    worksheet.write(row, 4, 'Code')
-                    row += 1
         
         # Insert chart image
         try:
-            worksheet.insert_image('G2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
+            worksheet.insert_image('F2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
         except Exception as e:
             self.verbose_reporter.stat_line(f"Warning: Could not insert hierarchy chart: {e}")
         
         # Adjust column widths
-        worksheet.set_column('A:E', 20)
-        worksheet.set_column('F:P', 25)  # Space for chart
+        worksheet.set_column('A:D', 20)
+        worksheet.set_column('E:P', 25)  # Space for chart
     
     def _create_enhanced_frequency_tab(self, workbook, respondent_codes: Dict, hierarchical_structure: Dict, export_dir: str):
-        """Create frequency analysis tab with embedded bar charts"""
+        """Create frequency analysis tab with embedded bar charts for 2-level hierarchy"""
         themes = hierarchical_structure['themes']
         
         # Create worksheet
@@ -524,28 +475,22 @@ class ResultsExporter:
         
         # Count frequencies for each level
         theme_counts = {}
-        topic_counts = {}
-        code_counts = {}
+        concept_counts = {}  # Changed from topic_counts and code_counts
         
         for respondent_id, codes in respondent_codes.items():
             theme_code = codes['theme_code']
             if theme_code is not None:
                 theme_counts[theme_code] = theme_counts.get(theme_code, 0) + 1
             
-            topic_code = codes['topic_code']
-            if topic_code is not None:
-                topic_counts[topic_code] = topic_counts.get(topic_code, 0) + 1
-            
-            code_code = codes['code_code']
-            if code_code is not None:
-                code_counts[code_code] = code_counts.get(code_code, 0) + 1
+            concept_code = codes['concept_code']
+            if concept_code is not None:
+                concept_counts[concept_code] = concept_counts.get(concept_code, 0) + 1
         
         total_respondents = len(respondent_codes)
         
         # Prepare data for charts
         theme_data = []
-        topic_data = []
-        code_data = []
+        concept_data = []
         
         for theme in themes:
             count = theme_counts.get(theme.numeric_id, 0)
@@ -554,19 +499,11 @@ class ResultsExporter:
                 theme_data.append((theme.label, count, percentage))
         
         for theme in themes:
-            for topic in theme.topics:
-                count = topic_counts.get(topic.numeric_id, 0)
+            for concept in theme.topics:  # Topics are concepts
+                count = concept_counts.get(concept.numeric_id, 0)
                 percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
                 if count > 0:
-                    topic_data.append((topic.label, count, percentage))
-        
-        for theme in themes:
-            for topic in theme.topics:
-                for code in topic.codes:
-                    count = code_counts.get(code.numeric_id, 0)
-                    percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                    if count > 0:
-                        code_data.append((code.label, count, percentage))
+                    concept_data.append((concept.label, count, percentage))
         
         # Create charts
         chart_paths = []
@@ -595,15 +532,15 @@ class ResultsExporter:
             plt.close()
             chart_paths.append(('Theme Frequencies', theme_chart_path))
         
-        # Topic frequency chart (top 15)
-        if topic_data:
+        # Concept frequency chart (top 20)
+        if concept_data:
             fig, ax = plt.subplots(figsize=(14, 8))
-            sorted_topics = sorted(topic_data, key=lambda x: x[1], reverse=True)[:15]
-            labels, counts, percentages = zip(*sorted_topics)
+            sorted_concepts = sorted(concept_data, key=lambda x: x[1], reverse=True)[:20]
+            labels, counts, percentages = zip(*sorted_concepts)
             bars = ax.bar(range(len(labels)), counts, color='lightgreen', alpha=0.8)
-            ax.set_xlabel('Topics', fontsize=12)
+            ax.set_xlabel('Concepts', fontsize=12)
             ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Top 15 Topic Frequencies', fontsize=14, fontweight='bold')
+            ax.set_title('Top 20 Concept Frequencies', fontsize=14, fontweight='bold')
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels([label[:25] + '...' if len(label) > 25 else label for label in labels], 
                              rotation=45, ha='right')
@@ -614,34 +551,10 @@ class ResultsExporter:
                        f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=8)
             
             plt.tight_layout()
-            topic_chart_path = os.path.join(export_dir, 'topic_frequencies.png')
-            plt.savefig(topic_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
+            concept_chart_path = os.path.join(export_dir, 'concept_frequencies.png')
+            plt.savefig(concept_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
             plt.close()
-            chart_paths.append(('Topic Frequencies', topic_chart_path))
-        
-        # Code frequency chart (top 20)
-        if code_data:
-            fig, ax = plt.subplots(figsize=(16, 10))
-            sorted_codes = sorted(code_data, key=lambda x: x[1], reverse=True)[:20]
-            labels, counts, percentages = zip(*sorted_codes)
-            bars = ax.bar(range(len(labels)), counts, color='lightcoral', alpha=0.8)
-            ax.set_xlabel('Codes', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Top 20 Code Frequencies', fontsize=14, fontweight='bold')
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels([label[:30] + '...' if len(label) > 30 else label for label in labels], 
-                             rotation=45, ha='right')
-            
-            for bar, count, pct in zip(bars, counts, percentages):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=7)
-            
-            plt.tight_layout()
-            code_chart_path = os.path.join(export_dir, 'code_frequencies.png')
-            plt.savefig(code_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
-            plt.close()
-            chart_paths.append(('Code Frequencies', code_chart_path))
+            chart_paths.append(('Concept Frequencies', concept_chart_path))
         
         # Add data table
         header_format = workbook.add_format({
@@ -663,20 +576,12 @@ class ResultsExporter:
             percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
             all_freq_data.append(['Theme', theme.theme_id, theme.label, count, percentage])
         
-        # Add topic data
+        # Add concept data
         for theme in themes:
-            for topic in theme.topics:
-                count = topic_counts.get(topic.numeric_id, 0)
+            for concept in theme.topics:  # Topics are concepts
+                count = concept_counts.get(concept.numeric_id, 0)
                 percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                all_freq_data.append(['Topic', topic.topic_id, topic.label, count, percentage])
-        
-        # Add code data
-        for theme in themes:
-            for topic in theme.topics:
-                for code in topic.codes:
-                    count = code_counts.get(code.numeric_id, 0)
-                    percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                    all_freq_data.append(['Code', code.code_id, code.label, count, percentage])
+                all_freq_data.append(['Concept', concept.topic_id, concept.label, count, percentage])
         
         # Write data
         for data_row in all_freq_data:
@@ -713,7 +618,7 @@ class ResultsExporter:
             'align': 'center', 'border': 1
         })
         
-        headers = ['Theme', 'Code_Label', 'Frequency', 'Weight']
+        headers = ['Theme', 'Concept_Label', 'Frequency', 'Weight']
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, header_format)
         
@@ -722,32 +627,31 @@ class ResultsExporter:
         
         row = 1
         for theme in themes:
-            theme_code_frequencies = {}
+            theme_concept_frequencies = {}
             
-            for topic in theme.topics:
-                for code in topic.codes:
-                    count = sum(1 for codes in respondent_codes.values() 
-                              if codes['code_code'] == code.numeric_id)
+            for concept in theme.topics:  # Topics are concepts
+                count = sum(1 for codes in respondent_codes.values() 
+                          if codes['concept_code'] == concept.numeric_id)
+                
+                if count > 0:
+                    theme_concept_frequencies[concept.label] = count
                     
-                    if count > 0:
-                        theme_code_frequencies[code.label] = count
-                        
-                        # Add to data table
-                        worksheet.write(row, 0, theme.label)
-                        worksheet.write(row, 1, code.label)
-                        worksheet.write(row, 2, count)
-                        worksheet.write(row, 3, count)  # Weight same as frequency
-                        row += 1
+                    # Add to data table
+                    worksheet.write(row, 0, theme.label)
+                    worksheet.write(row, 1, concept.label)
+                    worksheet.write(row, 2, count)
+                    worksheet.write(row, 3, count)  # Weight same as frequency
+                    row += 1
             
             # Create wordcloud for this theme if it has data
-            if theme_code_frequencies:
-                theme_wordclouds[theme.label] = theme_code_frequencies
+            if theme_concept_frequencies:
+                theme_wordclouds[theme.label] = theme_concept_frequencies
         
         # Generate wordcloud images
         wordcloud_paths = []
         
-        for theme_label, code_frequencies in theme_wordclouds.items():
-            if len(code_frequencies) > 0:
+        for theme_label, concept_frequencies in theme_wordclouds.items():
+            if len(concept_frequencies) > 0:
                 try:
                     # Create wordcloud
                     wordcloud = WordCloud(
@@ -758,7 +662,7 @@ class ResultsExporter:
                         colormap='viridis',
                         relative_scaling=0.5,
                         random_state=42
-                    ).generate_from_frequencies(code_frequencies)
+                    ).generate_from_frequencies(concept_frequencies)
                     
                     # Create matplotlib figure
                     fig, ax = plt.subplots(figsize=(12, 8))
