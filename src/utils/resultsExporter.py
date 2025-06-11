@@ -366,9 +366,16 @@ class ResultsExporter:
         output_path = os.path.join(export_dir, output_filename)
         
         # Save to SPSS format with metadata
-        pyreadstat.write_sav(original_df, output_path, 
-                            variable_labels=variable_labels,
-                            value_labels=value_labels)
+        try:
+            # Use correct pyreadstat syntax: column_labels for variable labels, variable_value_labels for value labels
+            pyreadstat.write_sav(original_df, output_path, 
+                                column_labels=variable_labels,
+                                variable_value_labels=value_labels)
+        except TypeError as e:
+            # Fallback: save without metadata if parameters not supported
+            self.verbose_reporter.stat_line(f"⚠️ SPSS metadata error: {str(e)}")
+            self.verbose_reporter.stat_line("  Saving without variable and value labels")
+            pyreadstat.write_sav(original_df, output_path)
         
         self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables with SPSS metadata")
         self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
