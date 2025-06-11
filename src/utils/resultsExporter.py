@@ -202,6 +202,44 @@ class ResultsExporter:
         
         return theme_concept_pairs
     
+    def _create_spss_metadata(self, themes: List[Tuple[str, str]], concepts: List[Tuple[str, str, str]], var_name: str) -> Tuple[Dict[str, str], Dict[str, Dict[int, str]]]:
+        """
+        Create SPSS metadata including variable labels and value labels
+        
+        Returns:
+            Tuple of (variable_labels, value_labels)
+        """
+        variable_labels = {}
+        value_labels = {}
+        
+        # Standard value labels for all binary variables
+        binary_values = {0: "Niet genoemd", 1: "Wel genoemd"}
+        
+        # 1. Theme variable labels and values
+        for theme_id, theme_label in themes:
+            col_name = f"{var_name}_THEME_{theme_id}"
+            variable_labels[col_name] = f"Theme {theme_id}: {theme_label}"
+            value_labels[col_name] = binary_values.copy()
+        
+        # 2. Concept variable labels and values
+        for concept_id, concept_label, theme_id in concepts:
+            col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
+            variable_labels[col_name] = f"Concept {concept_id}: {concept_label}"
+            value_labels[col_name] = binary_values.copy()
+        
+        # 3. Quality filter variable labels and values
+        quality_filter_labels = {
+            f"{var_name}_USER_MISSING_97": "User Missing: Don't know/expressing uncertainty",
+            f"{var_name}_SYSTEM_MISSING_98": "System Missing: Not at Home/Not Available", 
+            f"{var_name}_NO_ANSWER_99": "No Answer: Empty/Single Characters/Numbers/Nonsensical"
+        }
+        
+        for col_name, label in quality_filter_labels.items():
+            variable_labels[col_name] = label
+            value_labels[col_name] = binary_values.copy()
+        
+        return variable_labels, value_labels
+    
     def _setup_export_directory(self, filename: str, var_name: str) -> str:
         """Create and return export directory path"""
         # Get base data directory
@@ -319,18 +357,25 @@ class ResultsExporter:
         for col_name, values in new_columns.items():
             original_df[col_name] = values
         
+        # Create SPSS metadata (variable labels and value labels)
+        variable_labels, value_labels = self._create_spss_metadata(themes, concepts, var_name)
+        
         # Create output filename
         base_name = Path(filename).stem
         output_filename = f"{base_name}{self.config.spss_suffix}.sav"
         output_path = os.path.join(export_dir, output_filename)
         
-        # Save to SPSS format
-        pyreadstat.write_sav(original_df, output_path)
+        # Save to SPSS format with metadata
+        pyreadstat.write_sav(original_df, output_path, 
+                            variable_labels=variable_labels,
+                            value_labels=value_labels)
         
-        self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables")
+        self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables with SPSS metadata")
         self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
         self.verbose_reporter.stat_line(f"  - {len(concepts)} concept variables") 
         self.verbose_reporter.stat_line(f"  - 3 quality filter variables")
+        self.verbose_reporter.stat_line(f"  - Variable labels: descriptive names for each column")
+        self.verbose_reporter.stat_line(f"  - Value labels: 0='Niet genoemd', 1='Wel genoemd'")
         self.verbose_reporter.stat_line(f"SPSS file saved: {output_filename}")
         
         return output_path
