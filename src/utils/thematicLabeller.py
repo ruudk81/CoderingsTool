@@ -272,15 +272,17 @@ class ThematicLabeller:
             stable_id_to_final_ids = {}
             self.verbose_reporter.stat_line("⚠️ No tracking found - will use fallback mappings")
         
-        # Handle "Other" concept
-        if "concept_other" not in stable_id_to_final_ids:
-            for theme in refined_codebook.themes:
-                if theme.theme_id == "99" or theme.label.lower() == "other":
-                    for concept in theme.atomic_concepts:
-                        if "other" in concept.label.lower() or "unclassified" in concept.label.lower():
-                            stable_id_to_final_ids["concept_other"] = (theme.theme_id, concept.concept_id)
-                            break
-                    break
+        # Handle unassigned clusters that were preserved
+        for theme in refined_codebook.themes:
+            if theme.theme_id == "99" or theme.label.lower() == "other":
+                for concept in theme.atomic_concepts:
+                    # Check if this is an unassigned cluster concept
+                    if "unassigned cluster:" in concept.description.lower():
+                        # Extract the stable ID from our mapping
+                        for stable_id, final_id in self.concept_id_mapping.items():
+                            if final_id == concept.concept_id and stable_id.startswith("unassigned_"):
+                                stable_id_to_final_ids[stable_id] = (theme.theme_id, concept.concept_id)
+                break
         
         # Create reverse mapping: merged_id → [original_ids]
         merged_to_original = {}
@@ -1024,55 +1026,31 @@ class ThematicLabeller:
             merged_clusters.append(merged_cluster)
             new_cluster_id += 1
         
-        # Group all unassigned clusters into a single "Other/Miscellaneous" concept
+        # Keep unassigned clusters separate (don't merge) for promotion to theme level
         if unassigned_clusters:
-            # Create a stable ID for "Other"
-            other_concept_id = "concept_other"
-            self.concept_id_mapping["Other"] = other_concept_id
+            self.verbose_reporter.stat_line(f"Preserving {len(unassigned_clusters)} unassigned clusters for 'Other' theme", bullet="  ")
             
-            # Add "Other" concept to atomic concepts if not already present
-            if not any(c.concept == "Other" for c in atomic_concepts_result.atomic_concepts):
-                other_concept = AtomicConcept(
-                    concept="Other",
-                    description="Miscellaneous responses that don't fit specific concepts",
-                    evidence=[str(c.cluster_id) for c in unassigned_clusters]
-                )
-                atomic_concepts_result.atomic_concepts.append(other_concept)
-                self.verbose_reporter.stat_line("Added 'Other' concept for unassigned clusters", bullet="  ")
-            
-            # Merge all unassigned clusters into a single "Other" concept
-            all_unassigned_representatives = []
-            all_unassigned_labels = []
-            all_unassigned_original_ids = []
-            
+            # Keep each unassigned cluster individual
             for cluster in unassigned_clusters:
-                all_unassigned_representatives.extend(cluster.representatives)
-                all_unassigned_labels.append(cluster.label)
-                all_unassigned_original_ids.extend(cluster.original_cluster_ids)
-            
-            # Sort by similarity and take top k representatives
-            all_unassigned_representatives.sort(key=lambda x: x[1], reverse=True)
-            top_unassigned_representatives = all_unassigned_representatives[:self.config.top_k_representatives]
-            
-            # Create a single merged cluster for all unassigned
-            other_cluster = ClusterLabel(
-                cluster_id=new_cluster_id,
-                label="OTHER_MISCELLANEOUS",
-                description=f"Concept: Other (merged from {len(unassigned_clusters)} unassigned clusters)",
-                representatives=top_unassigned_representatives,
-                original_cluster_ids=all_unassigned_original_ids,
-                assigned_concept="Other",
-                assigned_concept_id=other_concept_id,  # Store the stable ID
-                confidence_score=0.0  # Unassigned clusters have 0 confidence by definition
-            )
-            merged_clusters.append(other_cluster)
-            new_cluster_id += 1
-            
-            self.verbose_reporter.stat_line(f"Merged {len(unassigned_clusters)} unassigned clusters into 'Other' concept (ID: {other_concept_id}, original IDs: {all_unassigned_original_ids})", bullet="  ")
+                # Create a preserved cluster that maintains original identity
+                preserved_cluster = ClusterLabel(
+                    cluster_id=new_cluster_id,
+                    label=cluster.label,  # Keep original label
+                    description=f"Unassigned: {cluster.label}",
+                    representatives=cluster.representatives,
+                    original_cluster_ids=cluster.original_cluster_ids,
+                    assigned_concept="Unassigned",  # Mark as unassigned for Phase 3
+                    assigned_concept_id=f"unassigned_{cluster.cluster_id}",  # Unique ID for tracking
+                    confidence_score=0.0  # Unassigned clusters have 0 confidence
+                )
+                merged_clusters.append(preserved_cluster)
+                new_cluster_id += 1
+                
+            self.verbose_reporter.stat_line(f"Preserved {len(unassigned_clusters)} unassigned clusters with original labels", bullet="  ")
         
         # Report final statistics
-        other_count = 1 if unassigned_clusters else 0
-        self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} merged clusters ({len(concept_groups)} concept-based + {other_count} 'Other' concept)")
+        unassigned_count = len(unassigned_clusters)
+        self.verbose_reporter.stat_line(f"Final result: {len(merged_clusters)} clusters ({len(concept_groups)} concept-merged + {unassigned_count} unassigned preserved)")
         
         # Store merged clusters for tracking
         self.merged_clusters_by_concept_id = {cluster.assigned_concept_id: cluster for cluster in merged_clusters}
@@ -1161,7 +1139,7 @@ class ThematicLabeller:
             result = GroupedConceptsResponse(themes=[], unassigned_concepts=[])
             self.verbose_reporter.stat_line("No meaningful concepts to group - creating empty themes")
         
-        # Add "Other" theme if we have other concepts
+        # Add "Other" theme if we have other concepts (from atomic concepts)
         if other_concepts:
             # Create atomic concepts for the "Other" theme
             other_atomic_concepts = []
@@ -1184,6 +1162,42 @@ class ThematicLabeller:
             # Add to results
             result.themes.append(other_theme)
             self.verbose_reporter.stat_line(f"Added 'Other' theme with {len(other_concepts)} concepts")
+        
+        # NEW: Add unassigned clusters as concepts under "Other" theme
+        # Find unassigned clusters from merged_clusters
+        unassigned_clusters = [
+            cluster for cluster in merged_clusters 
+            if cluster.assigned_concept == "Unassigned"
+        ]
+        
+        if unassigned_clusters:
+            # Create or find the "Other" theme
+            other_theme = next((theme for theme in result.themes if theme.theme_id == "99"), None)
+            
+            if not other_theme:
+                # Create "Other" theme if it doesn't exist
+                other_theme = ThemeGroup(
+                    theme_id="99",
+                    label="Other",
+                    description="Unassigned clusters that don't fit into specific thematic categories",
+                    atomic_concepts=[]
+                )
+                result.themes.append(other_theme)
+            
+            # Add each unassigned cluster as a concept
+            existing_concept_count = len(other_theme.atomic_concepts)
+            for idx, cluster in enumerate(unassigned_clusters):
+                concept = AtomicConceptGrouped(
+                    concept_id=f"99.{existing_concept_count + idx + 1}",  # Continue numbering
+                    label=cluster.label,  # Use original cluster label
+                    description=f"Unassigned cluster: {cluster.description}"
+                )
+                other_theme.atomic_concepts.append(concept)
+                
+                # Update tracking for this unassigned cluster
+                self.concept_id_mapping[cluster.assigned_concept_id] = f"99.{existing_concept_count + idx + 1}"
+            
+            self.verbose_reporter.stat_line(f"Added {len(unassigned_clusters)} unassigned clusters as concepts to 'Other' theme")
         
         # Report statistics with proper accounting
         input_concepts = len(atomic_concepts_result.atomic_concepts)
