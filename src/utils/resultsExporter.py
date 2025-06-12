@@ -216,15 +216,15 @@ class ResultsExporter:
         binary_values = {0: "Niet genoemd", 1: "Wel genoemd"}
         
         # 1. Theme variable labels and values
-        for theme_id, theme_label in themes:
+        for theme_id, theme_description in themes:
             col_name = f"{var_name}_THEME_{theme_id}"
-            variable_labels[col_name] = f"Theme {theme_id}: {theme_label}"
+            variable_labels[col_name] = f"Theme {theme_id}: {theme_description}"
             value_labels[col_name] = binary_values.copy()
         
         # 2. Concept variable labels and values
-        for concept_id, concept_label, theme_id in concepts:
+        for concept_id, concept_description, theme_id in concepts:
             col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
-            variable_labels[col_name] = f"Concept {concept_id}: {concept_label}"
+            variable_labels[col_name] = f"Concept {concept_id}: {concept_description}"
             value_labels[col_name] = binary_values.copy()
         
         # 3. Quality filter variable labels and values
@@ -278,22 +278,22 @@ class ResultsExporter:
         themes_list = hierarchical_structure['themes']
         
         # Extract themes and concepts for binary variables
-        themes = [(theme.theme_id, theme.label) for theme in themes_list]
+        themes = [(theme.theme_id, theme.description) for theme in themes_list]
         concepts = []
         for theme in themes_list:
             for concept in theme.topics:  # topics are concepts in 2-level hierarchy
-                concepts.append((concept.topic_id, concept.label, theme.theme_id))
+                concepts.append((concept.topic_id, concept.description, theme.theme_id))
         
         # Create binary columns for themes
         new_columns = {}
         
         # 1. Theme binary variables
-        for theme_id, theme_label in themes:
+        for theme_id, theme_description in themes:
             col_name = f"{var_name}_THEME_{theme_id}"
             new_columns[col_name] = []
         
         # 2. Concept binary variables  
-        for concept_id, concept_label, theme_id in concepts:
+        for concept_id, concept_description, theme_id in concepts:
             # Use format like Q1_CONCEPT_1_2 for theme 1, concept 2
             col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
             new_columns[col_name] = []
@@ -316,13 +316,13 @@ class ResultsExporter:
                 codes = respondent_codes[respondent_id]
                 
                 # Set theme binary variables
-                for theme_id, theme_label in themes:
+                for theme_id, theme_description in themes:
                     col_name = f"{var_name}_THEME_{theme_id}"
                     value = 1 if theme_id in codes['themes_present'] else 0
                     new_columns[col_name].append(value)
                 
                 # Set concept binary variables
-                for concept_id, concept_label, theme_id in concepts:
+                for concept_id, concept_description, theme_id in concepts:
                     col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
                     value = 1 if concept_id in codes['concepts_present'] else 0
                     new_columns[col_name].append(value)
@@ -340,11 +340,11 @@ class ResultsExporter:
                     new_columns[f"{var_name}_NO_ANSWER_99"].append(0)
             else:
                 # Respondent not in analysis - set all theme/concept to 0, system missing to 1
-                for theme_id, theme_label in themes:
+                for theme_id, theme_description in themes:
                     col_name = f"{var_name}_THEME_{theme_id}"
                     new_columns[col_name].append(0)
                 
-                for concept_id, concept_label, theme_id in concepts:
+                for concept_id, concept_description, theme_id in concepts:
                     col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
                     new_columns[col_name].append(0)
                 
