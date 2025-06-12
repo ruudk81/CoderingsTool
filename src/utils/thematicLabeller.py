@@ -588,12 +588,13 @@ class ThematicLabeller:
         
         confidence_scores_by_cluster = {}
         
-        # Step 1: Evidence-based scoring
-        evidence_scores = await self._evaluate_evidence_clusters(labeled_clusters, atomic_concepts_result)
-        confidence_scores_by_cluster.update(evidence_scores)
+        # Run both evaluations concurrently for better performance
+        evidence_task = self._evaluate_evidence_clusters(labeled_clusters, atomic_concepts_result)
+        unassigned_task = self._evaluate_unassigned_clusters(labeled_clusters, atomic_concepts_result)
         
-        # Step 2: Unassigned cluster scoring  
-        unassigned_scores = await self._evaluate_unassigned_clusters(labeled_clusters, atomic_concepts_result)
+        evidence_scores, unassigned_scores = await asyncio.gather(evidence_task, unassigned_task)
+        
+        confidence_scores_by_cluster.update(evidence_scores)
         confidence_scores_by_cluster.update(unassigned_scores)
         
         # Report statistics
