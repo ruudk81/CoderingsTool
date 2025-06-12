@@ -410,6 +410,60 @@ Remember:
 Return output in {language}.
 """
 
+PHASE2_5_CONFIDENCE_SCORING_PROMPT = """
+You are an expert in qualitative analysis working in {language}.
+Your task is to evaluate how well each descriptive code matches each atomic concept.
+
+Survey question:
+<survey_question>
+{survey_question}
+</survey_question>
+
+Atomic concepts identified:
+<atomic_concepts>
+{atomic_concepts}
+</atomic_concepts>
+
+Descriptive codes to evaluate:
+<descriptive_codes>
+{descriptive_codes}
+</descriptive_codes>
+
+Instructions:
+1. For each descriptive code, evaluate its match with EACH atomic concept
+2. Assign a confidence score from 0.0 to 1.0:
+   - 0.0-0.3: No match or very weak connection
+   - 0.4-0.6: Partial match or some elements relate
+   - 0.7-0.8: Good match with most elements aligning
+   - 0.9-1.0: Excellent match, clearly belongs to this concept
+
+3. Provide brief reasoning for each score
+
+IMPORTANT: 
+- Evaluate EVERY code against EVERY concept
+- A code may have high confidence for multiple concepts (assign to highest)
+- Be strict with scoring - only give 0.7+ for clear matches
+- Consider both the description content and the semantic meaning
+
+Output JSON format:
+{{
+  "analytical_notes": "Your analysis process and key observations",
+  "confidence_scores": [
+    {{
+      "cluster_id": 0,
+      "concept": "Concept name",
+      "confidence": 0.85,
+      "reasoning": "Clear match because..."
+    }},
+    // Include ALL cluster-concept combinations
+  ]
+}}
+
+Remember: You must evaluate {num_clusters} clusters against {num_concepts} concepts, resulting in {total_evaluations} confidence scores.
+
+Return output in {language}.
+"""
+
 PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
 You are an expert in qualitative analysis working in {language}.
 Your task is to group atomic concepts into meaningful themes.

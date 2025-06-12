@@ -59,6 +59,7 @@ class ModelConfig:
     labelling_base_model: str = "gpt-4.1-mini"        # Base model for most labelling phases
     phase1_descriptive_model: str = "gpt-4.1-mini"    # Phase 1: Descriptive coding
     phase2_merger_model: str = "gpt-4.1-mini"         # Phase 2: Label merger
+    phase2_5_confidence_model: str = "gpt-4o-mini"    # Phase 2.5: Confidence scoring
     phase3_themes_model: str = "gpt-4o"              # Phase 3: Extract themes (premium model)
     phase4_codebook_model: str = "gpt-4o-mini"       # Phase 4: Create codebook
     phase5_refinement_model: str = "gpt-4o"     # Phase 5: Label refinement
@@ -106,6 +107,7 @@ class ModelConfig:
         phase_models = {
             'phase1_descriptive': self.phase1_descriptive_model,
             'phase2_merger': self.phase2_merger_model,
+            'phase2_5_confidence': self.phase2_5_confidence_model,
             'phase3_themes': self.phase3_themes_model,
             'phase4_codebook': self.phase4_codebook_model,
             'phase5_refinement': self.phase5_refinement_model,
@@ -403,6 +405,11 @@ class LabellerConfig:
     max_retries: int = 3
     concurrent_requests: int = 10  # Increased for better performance
     retry_delay: int = 2  # Seconds between retries
+    
+    # Confidence scoring settings
+    use_confidence_scoring: bool = True  # Enable confidence-based assignment
+    confidence_threshold: float = 0.7  # Minimum confidence for assignment
+    confidence_batch_size: int = 10  # Clusters to process per confidence scoring batch
 
 # =============================================================================
 # EXPORT CONFIGURATION

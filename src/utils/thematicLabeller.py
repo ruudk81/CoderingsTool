@@ -21,6 +21,7 @@ class ClusterLabel(BaseModel):
     original_cluster_ids: List[int] = Field(default_factory=list, description="Original cluster IDs that were merged into this cluster")
     assigned_concept: Optional[str] = Field(default=None, description="Assigned concept name from Phase 2")
     assigned_concept_id: Optional[str] = Field(default=None, description="Assigned concept ID for tracking")
+    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Confidence score for concept assignment")
 
 class DescriptiveCodingResponse(BaseModel):
     """Response from Phase 1 descriptive coding"""
@@ -38,6 +39,18 @@ class ExtractedAtomicConceptsResponse(BaseModel):
     """Response from Phase 2 atomic concept extraction"""
     analytical_notes: str = Field(description="Working notes from analysis")
     atomic_concepts: List[AtomicConcept] = Field(description="List of atomic concepts identified")
+
+class ConceptConfidenceScore(BaseModel):
+    """Confidence score for cluster-concept assignment"""
+    cluster_id: int = Field(description="ID of the cluster being evaluated")
+    concept: str = Field(description="Name of the concept being evaluated")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0-1")
+    reasoning: str = Field(description="Brief explanation for the score")
+
+class ConfidenceScoringResponse(BaseModel):
+    """Response from Phase 2.5 confidence scoring"""
+    analytical_notes: str = Field(description="Working notes from confidence evaluation")
+    confidence_scores: List[ConceptConfidenceScore] = Field(description="Confidence scores for all cluster-concept pairs")
 
 class AtomicConceptGrouped(BaseModel):
     """Atomic concept within a theme"""
@@ -95,6 +108,7 @@ class ThematicLabeller:
         # Track which phase prompts have been captured (only capture first prompt per phase)
         self.captured_phase1 = False
         self.captured_phase2 = False
+        self.captured_phase2_5 = False
         self.captured_phase3 = False
         self.captured_phase4 = False
    
@@ -182,16 +196,30 @@ class ThematicLabeller:
         # =============================================================================
         
         self.verbose_reporter.step_start("Phase 2: Atomic Concepts", emoji="🔍")
-        atomic_concepts, merged_clusters = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
+        atomic_concepts, _ = await self._phase2_atomic_concepts_and_merging(labeled_clusters)
         self.atomic_concepts = atomic_concepts
-        self.merged_clusters = merged_clusters
         
         # Count concepts (including "Other" if present)
         concept_count = len(atomic_concepts.atomic_concepts)
         has_other = any(c.concept == "Other" for c in atomic_concepts.atomic_concepts)
         other_note = " (including 'Other' concept)" if has_other else ""
         
-        self.verbose_reporter.step_complete(f"Extracted {concept_count} concepts{other_note}, merged to {len(merged_clusters)} clusters")
+        self.verbose_reporter.step_complete(f"Extracted {concept_count} concepts{other_note}")
+        
+        # =============================================================================
+        # Phase 2.5: Confidence Scoring (if enabled)
+        # =============================================================================
+        
+        confidence_scores = None
+        if self.config.use_confidence_scoring:
+            self.verbose_reporter.step_start("Phase 2.5: Confidence Scoring", emoji="📊")
+            confidence_scores = await self._phase2_5_confidence_scoring(labeled_clusters, atomic_concepts)
+            self.verbose_reporter.step_complete("Confidence scores calculated")
+        
+        # Merge clusters using confidence scores or evidence
+        merged_clusters = self._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts, confidence_scores)
+        self.merged_clusters = merged_clusters
+        self.verbose_reporter.stat_line(f"Merged to {len(merged_clusters)} concept-based clusters")
 
         # =============================================================================
         # Phase 3: Themes
@@ -517,7 +545,7 @@ class ThematicLabeller:
         return labeled_clusters
     
     async def _phase2_atomic_concepts_and_merging(self, labeled_clusters: List[ClusterLabel]) -> Tuple[ExtractedAtomicConceptsResponse, List[ClusterLabel]]:
-        """Phase 2: Extract atomic concepts and merge clusters based on concept assignment"""
+        """Phase 2: Extract atomic concepts"""
         from prompts import PHASE2_EXTRACT_ATOMIC_CONCEPTS_PROMPT
         
         # get atompic concepts
@@ -543,38 +571,170 @@ class ThematicLabeller:
         
         atomic_concepts_result = await self._invoke_with_retries(prompt, ExtractedAtomicConceptsResponse, phase='phase3_themes')
         
-        # Merge clusters based on atomic concept evidence
-        self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} labeled clusters for concept extraction")
-        merged_clusters = self._merge_clusters_by_concept_evidence(labeled_clusters, atomic_concepts_result)
-        
-        # Check if we have unassigned clusters that were merged into "Other"
-        has_other_concept = any("Concept: Other" in cluster.description for cluster in merged_clusters)
-        
-        # Add "Other" concept to atomic concepts if unassigned clusters were found
-        if has_other_concept:
-            other_concept = AtomicConcept(
-                concept="Other",
-                description="Miscellaneous responses that don't fit specific concepts",
-                evidence=["other"]  # Placeholder evidence
-            )
-            atomic_concepts_result.atomic_concepts.append(other_concept)
-            self.verbose_reporter.stat_line("Added 'Other' concept for unassigned clusters", bullet="  ")
-        
         self.verbose_reporter.stat_line(f"Extracted {len(atomic_concepts_result.atomic_concepts)} atomic concepts")
-        self.verbose_reporter.stat_line(f"Merged {len(labeled_clusters)} clusters into {len(merged_clusters)} concept-based clusters")
         for concept in atomic_concepts_result.atomic_concepts:
             evidence_count = len(concept.evidence)
             self.verbose_reporter.stat_line(f"• {concept.concept} (evidence in {evidence_count} clusters)", bullet="  ")
         
-        # Report analytical insights if verbose
-        #if self.verbose_reporter.enabled and atomic_concepts_result.analytical_notes:
-            #self.verbose_reporter.stat_line("Analytical notes:", bullet="  ")
-            #self.verbose_reporter.stat_line(f"{atomic_concepts_result.analytical_notes[:200]}{'...' if len(atomic_concepts_result.analytical_notes) > 200 else ''}", bullet="    ")
+        # Note: Merging is now done separately after optional confidence scoring
+        return atomic_concepts_result, []
+    
+    async def _phase2_5_confidence_scoring(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
+        """Phase 2.5: Score confidence for each cluster-concept pair"""
+        from prompts import PHASE2_5_CONFIDENCE_SCORING_PROMPT
         
-        return atomic_concepts_result, merged_clusters
+        # Skip if confidence scoring is disabled
+        if not self.config.use_confidence_scoring:
+            self.verbose_reporter.stat_line("Confidence scoring disabled, using binary assignment from Phase 2")
+            return self._create_binary_confidence_scores(labeled_clusters, atomic_concepts_result)
+        
+        # Prepare atomic concepts text
+        concepts_text = "\n".join([
+            f"- {concept.concept}: {concept.description}"
+            for concept in atomic_concepts_result.atomic_concepts
+        ])
+        
+        # Process clusters in batches
+        confidence_scores_by_cluster = {}
+        batch_size = self.config.confidence_batch_size
+        total_batches = (len(labeled_clusters) + batch_size - 1) // batch_size
+        
+        self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} clusters in {total_batches} batches")
+        
+        for batch_idx in range(0, len(labeled_clusters), batch_size):
+            batch_clusters = labeled_clusters[batch_idx:batch_idx + batch_size]
+            batch_num = batch_idx // batch_size + 1
+            
+            # Format descriptive codes for this batch
+            codes_text = "\n".join([
+                f"[ID: {c.cluster_id:2d}] {c.description or c.label}"
+                for c in batch_clusters
+            ])
+            
+            # Calculate expected evaluations
+            num_clusters = len(batch_clusters)
+            num_concepts = len(atomic_concepts_result.atomic_concepts)
+            total_evaluations = num_clusters * num_concepts
+            
+            prompt = PHASE2_5_CONFIDENCE_SCORING_PROMPT.format(
+                survey_question=self.survey_question,
+                atomic_concepts=concepts_text,
+                descriptive_codes=codes_text,
+                num_clusters=num_clusters,
+                num_concepts=num_concepts,
+                total_evaluations=total_evaluations,
+                language=self.config.language
+            )
+            
+            # Capture prompt for first batch only
+            if self.prompt_printer and not self.captured_phase2_5 and batch_idx == 0:
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=prompt,
+                    prompt_type="phase2_5_confidence_scoring",
+                    metadata={
+                        "model": self.model_config.get_model_for_phase('phase2_5_confidence'),
+                        "survey_question": self.survey_question,
+                        "language": self.config.language,
+                        "phase": "2.5/4 - Confidence Scoring",
+                        "batch": f"{batch_num}/{total_batches}"
+                    }
+                )
+                self.captured_phase2_5 = True
+            
+            # Get confidence scores for this batch
+            self.verbose_reporter.stat_line(f"  Batch {batch_num}/{total_batches}: Evaluating {num_clusters} clusters", bullet="  ")
+            
+            try:
+                result = await self._invoke_with_retries(
+                    prompt, 
+                    ConfidenceScoringResponse, 
+                    phase='phase2_5_confidence'
+                )
+                
+                # Process scores
+                for score in result.confidence_scores:
+                    cluster_id = score.cluster_id
+                    if cluster_id not in confidence_scores_by_cluster:
+                        confidence_scores_by_cluster[cluster_id] = {}
+                    confidence_scores_by_cluster[cluster_id][score.concept] = score
+                
+                # Verify we got all expected scores
+                expected_scores = num_clusters * num_concepts
+                actual_scores = len(result.confidence_scores)
+                if actual_scores < expected_scores:
+                    self.verbose_reporter.stat_line(
+                        f"⚠️ Expected {expected_scores} scores, got {actual_scores}",
+                        bullet="    "
+                    )
+                
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"⚠️ Error in batch {batch_num}: {str(e)}", bullet="    ")
+                # Add default low scores for failed batch
+                for cluster in batch_clusters:
+                    if cluster.cluster_id not in confidence_scores_by_cluster:
+                        confidence_scores_by_cluster[cluster.cluster_id] = {}
+                    for concept in atomic_concepts_result.atomic_concepts:
+                        confidence_scores_by_cluster[cluster.cluster_id][concept.concept] = ConceptConfidenceScore(
+                            cluster_id=cluster.cluster_id,
+                            concept=concept.concept,
+                            confidence=0.0,
+                            reasoning="Failed to evaluate - default low score"
+                        )
+        
+        # Report statistics
+        total_scores = sum(len(scores) for scores in confidence_scores_by_cluster.values())
+        high_confidence = sum(
+            1 for scores in confidence_scores_by_cluster.values()
+            for score in scores.values()
+            if score.confidence >= self.config.confidence_threshold
+        )
+        
+        self.verbose_reporter.stat_line(
+            f"Evaluated {total_scores} cluster-concept pairs: "
+            f"{high_confidence} meet threshold ({self.config.confidence_threshold})"
+        )
+        
+        return confidence_scores_by_cluster
+    
+    def _create_binary_confidence_scores(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
+        """Create binary confidence scores from Phase 2 evidence (fallback when confidence scoring disabled)"""
+        confidence_scores_by_cluster = {}
+        
+        # Create concept evidence lookup
+        concept_evidence = {}
+        for concept in atomic_concepts_result.atomic_concepts:
+            concept_evidence[concept.concept] = set(int(cid) for cid in concept.evidence)
+        
+        # Assign binary scores
+        for cluster in labeled_clusters:
+            cluster_id = cluster.cluster_id
+            confidence_scores_by_cluster[cluster_id] = {}
+            
+            for concept in atomic_concepts_result.atomic_concepts:
+                if cluster_id in concept_evidence[concept.concept]:
+                    # High confidence for evidence match
+                    score = ConceptConfidenceScore(
+                        cluster_id=cluster_id,
+                        concept=concept.concept,
+                        confidence=1.0,
+                        reasoning="Direct evidence from Phase 2"
+                    )
+                else:
+                    # Zero confidence for no evidence
+                    score = ConceptConfidenceScore(
+                        cluster_id=cluster_id,
+                        concept=concept.concept,
+                        confidence=0.0,
+                        reasoning="No evidence in Phase 2"
+                    )
+                confidence_scores_by_cluster[cluster_id][concept.concept] = score
+        
+        return confidence_scores_by_cluster
 
-    def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> List[ClusterLabel]:
-        """Merge clusters that are assigned to the same atomic concept based on evidence"""
+    def _merge_clusters_by_concept_evidence(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse, confidence_scores: Optional[Dict[int, Dict[str, ConceptConfidenceScore]]] = None) -> List[ClusterLabel]:
+        """Merge clusters that are assigned to the same atomic concept based on evidence or confidence scores"""
         # Create mapping from cluster ID to atomic concept WITH CONCEPT ID
         cluster_to_concept = {}
         concept_id_mapping = {}  # Maps concept name to a stable ID
@@ -584,15 +744,57 @@ class ThematicLabeller:
         for idx, concept in enumerate(atomic_concepts_result.atomic_concepts):
             concept_id = f"concept_{idx+1}"  # Stable ID that won't change
             concept_id_mapping[concept.concept] = concept_id
+        
+        # Use confidence scores if available, otherwise fall back to evidence
+        if confidence_scores:
+            # Confidence-based assignment
+            assignments_above_threshold = 0
+            assignments_below_threshold = 0
             
-            #self.verbose_reporter.stat_line(f"Concept '{concept.concept}' (ID: {concept_id}) has evidence: {concept.evidence}", bullet="    ")
-            for cluster_id_str in concept.evidence:
-                total_evidence_entries += 1
-                cluster_id = int(cluster_id_str)
-                if cluster_id in cluster_to_concept:
-                    self.verbose_reporter.stat_line(f"⚠️ Cluster {cluster_id} appears in multiple concepts, keeping first assignment")
+            for cluster in labeled_clusters:
+                cluster_id = cluster.cluster_id
+                if cluster_id not in confidence_scores:
+                    self.verbose_reporter.stat_line(f"⚠️ No confidence scores for cluster {cluster_id}")
                     continue
-                cluster_to_concept[cluster_id] = (concept.concept, concept_id)
+                
+                # Find concept with highest confidence
+                best_concept = None
+                best_confidence = 0.0
+                best_concept_id = None
+                
+                for concept_name, score in confidence_scores[cluster_id].items():
+                    if score.confidence > best_confidence:
+                        best_confidence = score.confidence
+                        best_concept = concept_name
+                        best_concept_id = concept_id_mapping.get(concept_name)
+                
+                # Assign if above threshold
+                if best_confidence >= self.config.confidence_threshold and best_concept and best_concept_id:
+                    cluster_to_concept[cluster_id] = (best_concept, best_concept_id)
+                    assignments_above_threshold += 1
+                else:
+                    assignments_below_threshold += 1
+                    if best_concept:
+                        self.verbose_reporter.stat_line(
+                            f"Cluster {cluster_id} best match '{best_concept}' ({best_confidence:.2f}) below threshold",
+                            bullet="  "
+                        )
+            
+            self.verbose_reporter.stat_line(
+                f"Confidence-based assignment: {assignments_above_threshold} above threshold, "
+                f"{assignments_below_threshold} below threshold"
+            )
+        else:
+            # Original evidence-based assignment
+            for concept in atomic_concepts_result.atomic_concepts:
+                concept_id = concept_id_mapping[concept.concept]
+                for cluster_id_str in concept.evidence:
+                    total_evidence_entries += 1
+                    cluster_id = int(cluster_id_str)
+                    if cluster_id in cluster_to_concept:
+                        self.verbose_reporter.stat_line(f"⚠️ Cluster {cluster_id} appears in multiple concepts, keeping first assignment")
+                        continue
+                    cluster_to_concept[cluster_id] = (concept.concept, concept_id)
         
         self.verbose_reporter.stat_line(f"Total evidence entries: {total_evidence_entries}, Unique cluster assignments: {len(cluster_to_concept)}")
         
@@ -629,6 +831,13 @@ class ThematicLabeller:
             if len(clusters) == 1:
                 # Single cluster - just update ID but keep original tracking
                 cluster = clusters[0]
+                # Get confidence score if available
+                confidence = None
+                if confidence_scores and cluster.cluster_id in confidence_scores:
+                    concept_score = confidence_scores[cluster.cluster_id].get(concept_name)
+                    if concept_score:
+                        confidence = concept_score.confidence
+                
                 merged_cluster = ClusterLabel(
                     cluster_id=new_cluster_id,
                     label=cluster.label,
@@ -636,7 +845,8 @@ class ThematicLabeller:
                     representatives=cluster.representatives,
                     original_cluster_ids=all_original_ids,
                     assigned_concept=concept_name,
-                    assigned_concept_id=concept_id  # Store the stable ID
+                    assigned_concept_id=concept_id,  # Store the stable ID
+                    confidence_score=confidence
                 )
             else:
                 # Multiple clusters - merge them
@@ -653,6 +863,18 @@ class ThematicLabeller:
                 # Use most common label or first one
                 primary_label = all_labels[0] if all_labels else concept_name
                 
+                # Get average confidence score for merged clusters
+                confidence = None
+                if confidence_scores:
+                    confidences = []
+                    for cluster in clusters:
+                        if cluster.cluster_id in confidence_scores:
+                            concept_score = confidence_scores[cluster.cluster_id].get(concept_name)
+                            if concept_score:
+                                confidences.append(concept_score.confidence)
+                    if confidences:
+                        confidence = sum(confidences) / len(confidences)
+                
                 merged_cluster = ClusterLabel(
                     cluster_id=new_cluster_id,
                     label=primary_label,
@@ -660,7 +882,8 @@ class ThematicLabeller:
                     representatives=top_representatives,
                     original_cluster_ids=all_original_ids,
                     assigned_concept=concept_name,
-                    assigned_concept_id=concept_id  # Store the stable ID
+                    assigned_concept_id=concept_id,  # Store the stable ID
+                    confidence_score=confidence
                 )
                 
                 #self.verbose_reporter.stat_line(f"Merged {len(clusters)} clusters for concept '{concept_name}' (ID: {concept_id}, original IDs: {all_original_ids})", bullet="  ")
@@ -673,6 +896,16 @@ class ThematicLabeller:
             # Create a stable ID for "Other"
             other_concept_id = "concept_other"
             self.concept_id_mapping["Other"] = other_concept_id
+            
+            # Add "Other" concept to atomic concepts if not already present
+            if not any(c.concept == "Other" for c in atomic_concepts_result.atomic_concepts):
+                other_concept = AtomicConcept(
+                    concept="Other",
+                    description="Miscellaneous responses that don't fit specific concepts",
+                    evidence=[str(c.cluster_id) for c in unassigned_clusters]
+                )
+                atomic_concepts_result.atomic_concepts.append(other_concept)
+                self.verbose_reporter.stat_line("Added 'Other' concept for unassigned clusters", bullet="  ")
             
             # Merge all unassigned clusters into a single "Other" concept
             all_unassigned_representatives = []
@@ -696,7 +929,8 @@ class ThematicLabeller:
                 representatives=top_unassigned_representatives,
                 original_cluster_ids=all_unassigned_original_ids,
                 assigned_concept="Other",
-                assigned_concept_id=other_concept_id  # Store the stable ID
+                assigned_concept_id=other_concept_id,  # Store the stable ID
+                confidence_score=0.0  # Unassigned clusters have 0 confidence by definition
             )
             merged_clusters.append(other_cluster)
             new_cluster_id += 1
