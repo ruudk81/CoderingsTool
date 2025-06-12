@@ -39,6 +39,12 @@ class VerboseReporter:
             return
         print(f"{bullet} {message}")
     
+    def warning(self, message: str) -> None:
+        """Print a warning message."""
+        if not self.enabled:
+            return
+        print(f"⚠️  {message}")
+    
     def sample_list(self, title: str, samples: List[str], max_samples: int = 5) -> None:
         """Print a list of sample items."""
         if not self.enabled or not samples:

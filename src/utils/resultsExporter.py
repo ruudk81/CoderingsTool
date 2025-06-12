@@ -22,6 +22,7 @@ import models
 from .verboseReporter import VerboseReporter
 from .dataLoader import DataLoader
 from config import ExportConfig, DEFAULT_EXPORT_CONFIG
+from .id_validator import validate_id_consistency
 
 class ResultsExporter:
     """
@@ -308,11 +309,40 @@ class ResultsExporter:
         
         self.verbose_reporter.stat_line(f"Creating {len(new_columns)} binary variables")
         
-        # Map codes to original data
-        for _, row in original_df.iterrows():
-            respondent_id = int(row[id_column])
-            
+        # Validate ID matching before mapping
+        validation_results = validate_id_consistency(
+            original_df, 
+            id_column, 
+            labeled_results,
+            verbose=self.verbose
+        )
+        
+        # Check for critical errors
+        if validation_results['only_in_pipeline']:
+            self.verbose_reporter.warning(f"CRITICAL: {len(validation_results['only_in_pipeline'])} IDs from pipeline not found in original SPSS file!")
+            self.verbose_reporter.warning("This indicates a serious ID mismatch problem that will cause incorrect mapping!")
+        
+        # Create a mapping of original row indices to respondent IDs for safer iteration
+        row_to_id_mapping = {}
+        for idx, row in original_df.iterrows():
+            try:
+                respondent_id = int(row[id_column])
+                row_to_id_mapping[idx] = respondent_id
+            except (ValueError, TypeError) as e:
+                self.verbose_reporter.warning(f"Could not convert ID '{row[id_column]}' to integer at row {idx}: {e}")
+                row_to_id_mapping[idx] = None
+        
+        # Map codes to original data using explicit ID matching
+        matched_count = 0
+        for idx, respondent_id in row_to_id_mapping.items():
+            if respondent_id is None:
+                # Skip rows with invalid IDs
+                for col_name in new_columns:
+                    new_columns[col_name].append(0)
+                continue
+                
             if respondent_id in respondent_codes:
+                matched_count += 1
                 codes = respondent_codes[respondent_id]
                 
                 # Set theme binary variables
@@ -364,6 +394,11 @@ class ResultsExporter:
         base_name = Path(filename).stem
         output_filename = f"{base_name}{self.config.spss_suffix}.sav"
         output_path = os.path.join(export_dir, output_filename)
+        
+        # Report final matching statistics
+        self.verbose_reporter.stat_line(f"Successfully matched {matched_count} respondents between pipeline and SPSS")
+        if matched_count < len(original_ids):
+            self.verbose_reporter.warning(f"WARNING: {len(original_ids) - matched_count} respondents have no analysis results")
         
         # Save to SPSS format with metadata
         try:
