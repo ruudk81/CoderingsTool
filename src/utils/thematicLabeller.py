@@ -1166,7 +1166,7 @@ class ThematicLabeller:
         # NEW: Add unassigned clusters as concepts under "Other" theme
         # Find unassigned clusters from merged_clusters
         unassigned_clusters = [
-            cluster for cluster in merged_clusters 
+            cluster for cluster in self.merged_clusters 
             if cluster.assigned_concept == "Unassigned"
         ]
         
