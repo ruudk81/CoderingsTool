@@ -430,7 +430,7 @@ Descriptive codes to evaluate:
 </descriptive_codes>
 
 Instructions:
-1. For each descriptive code, evaluate its match with EACH atomic concept
+1. For each descriptive code, evaluate its match with atomic concepts where the code ID appears in the concept's evidence
 2. Assign a confidence score from 0.0 to 1.0:
    - 0.0-0.3: No match or very weak connection
    - 0.4-0.6: Partial match or some elements relate
@@ -440,7 +440,7 @@ Instructions:
 3. Provide brief reasoning for each score
 
 IMPORTANT: 
-- Evaluate EVERY code against EVERY concept
+- Only evaluate code-concept pairs where the code ID appears in the concept's evidence list
 - A code may have high confidence for multiple concepts (assign to highest)
 - Be strict with scoring - only give 0.7+ for clear matches
 - Consider both the description content and the semantic meaning
@@ -459,7 +459,7 @@ Output JSON format:
   ]
 }}
 
-Remember: You must evaluate {num_clusters} clusters against {num_concepts} concepts, resulting in {total_evaluations} confidence scores.
+Remember: You must evaluate relevant cluster-concept pairs based on evidence relationships, resulting in {total_evaluations} confidence scores.
 
 Return output in {language}.
 """
