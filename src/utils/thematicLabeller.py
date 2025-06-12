@@ -580,136 +580,21 @@ class ThematicLabeller:
         return atomic_concepts_result, []
     
     async def _phase2_5_confidence_scoring(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
-        """Phase 2.5: Score confidence for each cluster-concept pair"""
-        from prompts import PHASE2_5_CONFIDENCE_SCORING_PROMPT
-        
+        """Phase 2.5: Score confidence using separate evidence and unassigned evaluations"""
         # Skip if confidence scoring is disabled
         if not self.config.use_confidence_scoring:
             self.verbose_reporter.stat_line("Confidence scoring disabled, using binary assignment from Phase 2")
             return self._create_binary_confidence_scores(labeled_clusters, atomic_concepts_result)
         
-        # Prepare atomic concepts text
-        concepts_text = "\n".join([
-            f"- {concept.concept}: {concept.description}"
-            for concept in atomic_concepts_result.atomic_concepts
-        ])
-        
-        # Process clusters in batches
         confidence_scores_by_cluster = {}
-        batch_size = self.config.confidence_batch_size
-        total_batches = (len(labeled_clusters) + batch_size - 1) // batch_size
         
-        self.verbose_reporter.stat_line(f"Processing {len(labeled_clusters)} clusters in {total_batches} batches")
+        # Step 1: Evidence-based scoring
+        evidence_scores = await self._evaluate_evidence_clusters(labeled_clusters, atomic_concepts_result)
+        confidence_scores_by_cluster.update(evidence_scores)
         
-        for batch_idx in range(0, len(labeled_clusters), batch_size):
-            batch_clusters = labeled_clusters[batch_idx:batch_idx + batch_size]
-            batch_num = batch_idx // batch_size + 1
-            
-            # Format descriptive codes for this batch
-            codes_text = "\n".join([
-                f"[ID: {c.cluster_id:2d}] {c.description or c.label}"
-                for c in batch_clusters
-            ])
-            
-            # Calculate expected evaluations based on evidence relationships
-            num_clusters = len(batch_clusters)
-            num_concepts = len(atomic_concepts_result.atomic_concepts)
-            
-            # Calculate expected evaluations: relevant pairs + unassigned clusters vs all concepts
-            batch_cluster_ids = {c.cluster_id for c in batch_clusters}
-            
-            # Find clusters that appear in evidence (relevant pairs)
-            clusters_with_evidence = set()
-            relevant_pairs = 0
-            for concept in atomic_concepts_result.atomic_concepts:
-                concept_cluster_ids = {int(cid) for cid in concept.evidence}
-                relevant_clusters_in_batch = batch_cluster_ids.intersection(concept_cluster_ids)
-                clusters_with_evidence.update(relevant_clusters_in_batch)
-                relevant_pairs += len(relevant_clusters_in_batch)
-            
-            # Find unassigned clusters (no evidence anywhere)
-            unassigned_clusters_in_batch = batch_cluster_ids - clusters_with_evidence
-            unassigned_evaluations = len(unassigned_clusters_in_batch) * num_concepts
-            
-            expected_evaluations = relevant_pairs + unassigned_evaluations
-            total_evaluations = expected_evaluations  # Update for prompt
-            
-            # Format unassigned clusters for this batch
-            unassigned_text = ", ".join(str(cid) for cid in sorted(unassigned_clusters_in_batch))
-            if not unassigned_text:
-                unassigned_text = "None in this batch"
-            
-            prompt = PHASE2_5_CONFIDENCE_SCORING_PROMPT.format(
-                survey_question=self.survey_question,
-                atomic_concepts=concepts_text,
-                descriptive_codes=codes_text,
-                unassigned_clusters=unassigned_text,
-                num_clusters=num_clusters,
-                num_concepts=num_concepts,
-                total_evaluations=total_evaluations,
-                language=self.config.language
-            )
-            
-            # Capture prompt for first batch only
-            if self.prompt_printer and not self.captured_phase2_5 and batch_idx == 0:
-                self.prompt_printer.capture_prompt(
-                    step_name="hierarchical_labeling",
-                    utility_name="ThematicLabeller",
-                    prompt_content=prompt,
-                    prompt_type="phase2_5_confidence_scoring",
-                    metadata={
-                        "model": self.model_config.get_model_for_phase('phase2_5_confidence'),
-                        "survey_question": self.survey_question,
-                        "language": self.config.language,
-                        "phase": "2.5/4 - Confidence Scoring",
-                        "batch": f"{batch_num}/{total_batches}"
-                    }
-                )
-                self.captured_phase2_5 = True
-            
-            # Get confidence scores for this batch
-            self.verbose_reporter.stat_line(f"  Batch {batch_num}/{total_batches}: Evaluating {num_clusters} clusters", bullet="  ")
-            
-            try:
-                result = await self._invoke_with_retries(
-                    prompt, 
-                    ConfidenceScoringResponse, 
-                    phase='phase2_5_confidence'
-                )
-                
-                # Process scores
-                for score in result.confidence_scores:
-                    cluster_id = score.cluster_id
-                    if cluster_id not in confidence_scores_by_cluster:
-                        confidence_scores_by_cluster[cluster_id] = {}
-                    confidence_scores_by_cluster[cluster_id][score.concept] = score
-                
-                # Verify we got expected scores (evidence pairs + unassigned vs all)
-                actual_scores = len(result.confidence_scores)
-                if actual_scores < expected_evaluations:
-                    self.verbose_reporter.stat_line(
-                        f"⚠️ Expected {expected_evaluations} scores (evidence + unassigned), got {actual_scores}",
-                        bullet="    "
-                    )
-                elif expected_evaluations > 0:
-                    self.verbose_reporter.stat_line(
-                        f"✅ Received {actual_scores}/{expected_evaluations} expected scores",
-                        bullet="    "
-                    )
-                
-            except Exception as e:
-                self.verbose_reporter.stat_line(f"⚠️ Error in batch {batch_num}: {str(e)}", bullet="    ")
-                # Add default low scores for failed batch
-                for cluster in batch_clusters:
-                    if cluster.cluster_id not in confidence_scores_by_cluster:
-                        confidence_scores_by_cluster[cluster.cluster_id] = {}
-                    for concept in atomic_concepts_result.atomic_concepts:
-                        confidence_scores_by_cluster[cluster.cluster_id][concept.concept] = ConceptConfidenceScore(
-                            cluster_id=cluster.cluster_id,
-                            concept=concept.concept,
-                            confidence=0.0,
-                            reasoning="Failed to evaluate - default low score"
-                        )
+        # Step 2: Unassigned cluster scoring  
+        unassigned_scores = await self._evaluate_unassigned_clusters(labeled_clusters, atomic_concepts_result)
+        confidence_scores_by_cluster.update(unassigned_scores)
         
         # Report statistics
         total_scores = sum(len(scores) for scores in confidence_scores_by_cluster.values())
@@ -725,6 +610,154 @@ class ThematicLabeller:
         )
         
         return confidence_scores_by_cluster
+    
+    async def _evaluate_evidence_clusters(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
+        """Evaluate clusters that appear in concept evidence"""
+        from prompts import PHASE2_5_EVIDENCE_SCORING_PROMPT
+        
+        # Find clusters with evidence
+        clusters_with_evidence = set()
+        for concept in atomic_concepts_result.atomic_concepts:
+            for cluster_id_str in concept.evidence:
+                clusters_with_evidence.add(int(cluster_id_str))
+        
+        evidence_clusters = [c for c in labeled_clusters if c.cluster_id in clusters_with_evidence]
+        
+        if not evidence_clusters:
+            self.verbose_reporter.stat_line("No evidence clusters to evaluate")
+            return {}
+        
+        self.verbose_reporter.stat_line(f"Evaluating {len(evidence_clusters)} evidence clusters")
+        
+        # Prepare data
+        concepts_text = "\n".join([
+            f"- {concept.concept}: {concept.description} (evidence: {concept.evidence})"
+            for concept in atomic_concepts_result.atomic_concepts
+        ])
+        
+        codes_text = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.description or c.label}"
+            for c in evidence_clusters
+        ])
+        
+        # Calculate expected scores
+        expected_scores = sum(
+            sum(1 for cluster_id_str in concept.evidence if int(cluster_id_str) in clusters_with_evidence)
+            for concept in atomic_concepts_result.atomic_concepts
+        )
+        
+        prompt = PHASE2_5_EVIDENCE_SCORING_PROMPT.format(
+            survey_question=self.survey_question,
+            atomic_concepts=concepts_text,
+            descriptive_codes=codes_text,
+            expected_scores=expected_scores,
+            language=self.config.language
+        )
+        
+        # Capture prompt
+        if self.prompt_printer and not self.captured_phase2_5:
+            self.prompt_printer.capture_prompt(
+                step_name="hierarchical_labeling",
+                utility_name="ThematicLabeller", 
+                prompt_content=prompt,
+                prompt_type="phase2_5_evidence_scoring",
+                metadata={
+                    "model": self.model_config.get_model_for_phase('phase2_5_confidence'),
+                    "survey_question": self.survey_question,
+                    "language": self.config.language,
+                    "phase": "2.5A/4 - Evidence Scoring"
+                }
+            )
+            self.captured_phase2_5 = True
+        
+        try:
+            result = await self._invoke_with_retries(prompt, ConfidenceScoringResponse, phase='phase2_5_confidence')
+            
+            # Process scores
+            confidence_scores = {}
+            for score in result.confidence_scores:
+                cluster_id = score.cluster_id
+                if cluster_id not in confidence_scores:
+                    confidence_scores[cluster_id] = {}
+                confidence_scores[cluster_id][score.concept] = score
+            
+            actual_scores = len(result.confidence_scores)
+            if actual_scores == expected_scores:
+                self.verbose_reporter.stat_line(f"✅ Evidence evaluation: {actual_scores}/{expected_scores} scores", bullet="  ")
+            else:
+                self.verbose_reporter.stat_line(f"⚠️ Evidence evaluation: expected {expected_scores}, got {actual_scores}", bullet="  ")
+            
+            return confidence_scores
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️ Error in evidence evaluation: {str(e)}", bullet="  ")
+            return {}
+    
+    async def _evaluate_unassigned_clusters(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
+        """Evaluate clusters not in any evidence against all concepts"""
+        from prompts import PHASE2_5_UNASSIGNED_SCORING_PROMPT
+        
+        # Find unassigned clusters
+        clusters_with_evidence = set()
+        for concept in atomic_concepts_result.atomic_concepts:
+            for cluster_id_str in concept.evidence:
+                clusters_with_evidence.add(int(cluster_id_str))
+        
+        unassigned_clusters = [c for c in labeled_clusters if c.cluster_id not in clusters_with_evidence]
+        
+        if not unassigned_clusters:
+            self.verbose_reporter.stat_line("No unassigned clusters to evaluate")
+            return {}
+        
+        self.verbose_reporter.stat_line(f"Evaluating {len(unassigned_clusters)} unassigned clusters against all concepts")
+        
+        # Prepare data
+        concepts_text = "\n".join([
+            f"- {concept.concept}: {concept.description}"
+            for concept in atomic_concepts_result.atomic_concepts
+        ])
+        
+        unassigned_codes_text = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.description or c.label}"
+            for c in unassigned_clusters
+        ])
+        
+        num_concepts = len(atomic_concepts_result.atomic_concepts)
+        num_unassigned = len(unassigned_clusters)
+        expected_scores = num_unassigned * num_concepts
+        
+        prompt = PHASE2_5_UNASSIGNED_SCORING_PROMPT.format(
+            survey_question=self.survey_question,
+            atomic_concepts=concepts_text,
+            unassigned_codes=unassigned_codes_text,
+            num_unassigned=num_unassigned,
+            num_concepts=num_concepts,
+            expected_scores=expected_scores,
+            language=self.config.language
+        )
+        
+        try:
+            result = await self._invoke_with_retries(prompt, ConfidenceScoringResponse, phase='phase2_5_confidence')
+            
+            # Process scores
+            confidence_scores = {}
+            for score in result.confidence_scores:
+                cluster_id = score.cluster_id
+                if cluster_id not in confidence_scores:
+                    confidence_scores[cluster_id] = {}
+                confidence_scores[cluster_id][score.concept] = score
+            
+            actual_scores = len(result.confidence_scores)
+            if actual_scores == expected_scores:
+                self.verbose_reporter.stat_line(f"✅ Unassigned evaluation: {actual_scores}/{expected_scores} scores", bullet="  ")
+            else:
+                self.verbose_reporter.stat_line(f"⚠️ Unassigned evaluation: expected {expected_scores}, got {actual_scores}", bullet="  ")
+            
+            return confidence_scores
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️ Error in unassigned evaluation: {str(e)}", bullet="  ")
+            return {}
     
     def _create_binary_confidence_scores(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
         """Create binary confidence scores from Phase 2 evidence (fallback when confidence scoring disabled)"""

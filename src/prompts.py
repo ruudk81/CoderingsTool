@@ -410,66 +410,81 @@ Remember:
 Return output in {language}.
 """
 
-PHASE2_5_CONFIDENCE_SCORING_PROMPT = """
+PHASE2_5_EVIDENCE_SCORING_PROMPT = """
 You are an expert in qualitative analysis working in {language}.
-Your task is to evaluate how well each descriptive code matches each atomic concept.
+Your task is to evaluate confidence scores for clusters that appear in concept evidence.
 
-Survey question:
-<survey_question>
-{survey_question}
-</survey_question>
+Survey question: {survey_question}
 
-Atomic concepts identified:
-<atomic_concepts>
+Atomic concepts with evidence:
 {atomic_concepts}
-</atomic_concepts>
 
 Descriptive codes to evaluate:
-<descriptive_codes>
 {descriptive_codes}
-</descriptive_codes>
 
-Unassigned cluster IDs (not in any evidence list):
-<unassigned_clusters>
-{unassigned_clusters}
-</unassigned_clusters>
+INSTRUCTIONS:
+Evaluate ONLY the cluster-concept pairs where the cluster ID appears in the concept's evidence list.
 
-Instructions:
-1. For each descriptive code, evaluate its match with atomic concepts using this logic:
-   - If the code ID appears in a concept's evidence list: evaluate that pairing
-   - If the code ID is listed in unassigned clusters above: evaluate against ALL concepts
-2. Assign a confidence score from 0.0 to 1.0:
-   - 0.0-0.3: No match or very weak connection
-   - 0.4-0.6: Partial match or some elements relate
-   - 0.7-0.8: Good match with most elements aligning
-   - 0.9-1.0: Excellent match, clearly belongs to this concept
-
-3. Provide brief reasoning for each score
-
-IMPORTANT: 
-- Follow the hybrid evaluation logic above (evidence pairs + unassigned vs all)
-- A code may have high confidence for multiple concepts (assign to highest)
-- Be strict with scoring - only give 0.7+ for clear matches
-- Consider both the description content and the semantic meaning
-- Give low scores (0.0-0.3) for poor matches rather than omitting them
+CONFIDENCE SCORING:
+- 0.0-0.3: No match or very weak connection
+- 0.4-0.6: Partial match or some elements relate  
+- 0.7-0.8: Good match with most elements aligning
+- 0.9-1.0: Excellent match, clearly belongs to this concept
 
 Output JSON format:
 {{
-  "analytical_notes": "Your analysis process and key observations",
+  "analytical_notes": "Your analysis process",
   "confidence_scores": [
     {{
       "cluster_id": 0,
       "concept": "Concept name",
       "confidence": 0.85,
-      "reasoning": "Clear match because..."
-    }},
-    // Include ALL cluster-concept combinations
+      "reasoning": "Brief explanation"
+    }}
   ]
 }}
 
-Remember: You must evaluate evidence pairs + unassigned clusters against all concepts, resulting in {total_evaluations} confidence scores.
+Return exactly {expected_scores} confidence scores in {language}.
+"""
 
-Return output in {language}.
+PHASE2_5_UNASSIGNED_SCORING_PROMPT = """
+You are an expert in qualitative analysis working in {language}.
+Your task is to evaluate unassigned clusters against ALL atomic concepts.
+
+Survey question: {survey_question}
+
+Atomic concepts:
+{atomic_concepts}
+
+Unassigned descriptive codes (not in any evidence):
+{unassigned_codes}
+
+INSTRUCTIONS:
+Evaluate EVERY unassigned cluster against EVERY atomic concept.
+
+CONFIDENCE SCORING:
+- 0.0-0.3: No match or very weak connection
+- 0.4-0.6: Partial match or some elements relate  
+- 0.7-0.8: Good match with most elements aligning
+- 0.9-1.0: Excellent match, clearly belongs to this concept
+
+CRITICAL: You must evaluate ALL {num_unassigned} clusters against ALL {num_concepts} concepts.
+Expected output: {expected_scores} confidence scores.
+
+Output JSON format:
+{{
+  "analytical_notes": "Your analysis process",
+  "confidence_scores": [
+    {{
+      "cluster_id": 10,
+      "concept": "Concept name",
+      "confidence": 0.25,
+      "reasoning": "Brief explanation"
+    }}
+  ]
+}}
+
+Return exactly {expected_scores} confidence scores in {language}.
 """
 
 PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
