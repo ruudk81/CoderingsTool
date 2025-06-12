@@ -429,8 +429,15 @@ Descriptive codes to evaluate:
 {descriptive_codes}
 </descriptive_codes>
 
+Unassigned cluster IDs (not in any evidence list):
+<unassigned_clusters>
+{unassigned_clusters}
+</unassigned_clusters>
+
 Instructions:
-1. For each descriptive code, evaluate its match with atomic concepts where the code ID appears in the concept's evidence
+1. For each descriptive code, evaluate its match with atomic concepts using this logic:
+   - If the code ID appears in a concept's evidence list: evaluate that pairing
+   - If the code ID is listed in unassigned clusters above: evaluate against ALL concepts
 2. Assign a confidence score from 0.0 to 1.0:
    - 0.0-0.3: No match or very weak connection
    - 0.4-0.6: Partial match or some elements relate
@@ -440,10 +447,11 @@ Instructions:
 3. Provide brief reasoning for each score
 
 IMPORTANT: 
-- Only evaluate code-concept pairs where the code ID appears in the concept's evidence list
+- Follow the hybrid evaluation logic above (evidence pairs + unassigned vs all)
 - A code may have high confidence for multiple concepts (assign to highest)
 - Be strict with scoring - only give 0.7+ for clear matches
 - Consider both the description content and the semantic meaning
+- Give low scores (0.0-0.3) for poor matches rather than omitting them
 
 Output JSON format:
 {{
@@ -459,7 +467,7 @@ Output JSON format:
   ]
 }}
 
-Remember: You must evaluate relevant cluster-concept pairs based on evidence relationships, resulting in {total_evaluations} confidence scores.
+Remember: You must evaluate evidence pairs + unassigned clusters against all concepts, resulting in {total_evaluations} confidence scores.
 
 Return output in {language}.
 """
