@@ -611,10 +611,19 @@ class ThematicLabeller:
                 for c in batch_clusters
             ])
             
-            # Calculate expected evaluations
+            # Calculate expected evaluations based on evidence relationships
             num_clusters = len(batch_clusters)
             num_concepts = len(atomic_concepts_result.atomic_concepts)
-            total_evaluations = num_clusters * num_concepts
+            
+            # Count actual relevant pairs (cluster appears in concept evidence)
+            expected_evaluations = 0
+            batch_cluster_ids = {c.cluster_id for c in batch_clusters}
+            for concept in atomic_concepts_result.atomic_concepts:
+                concept_cluster_ids = {int(cid) for cid in concept.evidence}
+                relevant_clusters_in_batch = batch_cluster_ids.intersection(concept_cluster_ids)
+                expected_evaluations += len(relevant_clusters_in_batch)
+            
+            total_evaluations = expected_evaluations  # Update for prompt
             
             prompt = PHASE2_5_CONFIDENCE_SCORING_PROMPT.format(
                 survey_question=self.survey_question,
@@ -660,12 +669,16 @@ class ThematicLabeller:
                         confidence_scores_by_cluster[cluster_id] = {}
                     confidence_scores_by_cluster[cluster_id][score.concept] = score
                 
-                # Verify we got all expected scores
-                expected_scores = num_clusters * num_concepts
+                # Verify we got expected scores (only for relevant pairs)
                 actual_scores = len(result.confidence_scores)
-                if actual_scores < expected_scores:
+                if actual_scores < expected_evaluations:
                     self.verbose_reporter.stat_line(
-                        f"⚠️ Expected {expected_scores} scores, got {actual_scores}",
+                        f"⚠️ Expected {expected_evaluations} relevant scores, got {actual_scores}",
+                        bullet="    "
+                    )
+                elif expected_evaluations > 0:
+                    self.verbose_reporter.stat_line(
+                        f"✅ Received {actual_scores}/{expected_evaluations} expected scores",
                         bullet="    "
                     )
                 
