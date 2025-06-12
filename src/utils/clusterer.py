@@ -159,13 +159,13 @@ class ClusterGenerator:
             
         # Use the first description as fallback
         if len(cluster_items) == 1:
-            desc = cluster_items[0].segment_description
+            desc = cluster_items[0].segment_label if self.embedding_type == "code" else cluster_items[0].segment_description
             return desc[:max_length] + "..." if len(desc) > max_length else desc
         
         # For multiple items, find most representative
-        descriptions = [item.segment_description for item in cluster_items]
-        embeddings = [item.description_embedding for item in cluster_items 
-                     if item.description_embedding is not None]
+        descriptions = [item.segment_label if self.embedding_type == "code" else item.segment_description for item in cluster_items]
+        embeddings = [item.code_embedding if self.embedding_type == "code" else item.description_embedding for item in cluster_items 
+                     if (item.code_embedding if self.embedding_type == "code" else item.description_embedding) is not None]
         
         if embeddings:
             # Calculate centroid and find closest description
