@@ -408,7 +408,7 @@ class LabellerConfig:
     
     # Confidence scoring settings
     use_confidence_scoring: bool = True  # Enable confidence-based assignment
-    confidence_threshold: float = 0.7  # Minimum confidence for assignment
+    confidence_threshold: float = 0.49  # Minimum confidence for assignment
     confidence_batch_size: int = 10  # Clusters to process per confidence scoring batch
 
 # =============================================================================

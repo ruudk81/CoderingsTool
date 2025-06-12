@@ -22,10 +22,11 @@ cache_manager = CacheManager(cache_config)
 # Test data 
 filename = "M250285 input voor coderen - met Q18Q19.sav"
 id_column = "respondentid"
-var_name = "Q18Q19"
+var_name = "q19"
+#var_name = "Q18Q19"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -217,12 +218,12 @@ else:
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
-    # import random
-    # n_samples = 5
-    # indices = random.sample(range(len(preprocessed_text)), n_samples)
-    # for i in indices:
-    #     print("Preprocessed:", preprocessed_text[i])
-    #     print("---")
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(preprocessed_text)), n_samples)
+    for i in indices:
+        print("Preprocessed:", preprocessed_text[i])
+        print("---")
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
@@ -267,12 +268,12 @@ else:
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
-    import random
-    n_samples = 5
-    indices = random.sample(range(len(quality_filtered_text)), n_samples)
-    for i in indices:
-        print("Filtered:", quality_filtered_text[i])
-        print("---")
+    # import random
+    # n_samples = 5
+    # indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    # for i in indices:
+    #     print("Filtered:", quality_filtered_text[i])
+    #     print("---")
 
 
 # === STEP 4 ========================================================================================================
@@ -301,13 +302,13 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug
-    import random
-    n_samples = 5
-    sampled_items = random.sample(encoded_text, n_samples)
-    for item in sampled_items:
-        for segment in item.response_segment:
-            print(segment.segment_description)
-    print("\n")
+    # import random
+    # n_samples = 5
+    # sampled_items = random.sample(encoded_text, n_samples)
+    # for item in sampled_items:
+    #     for segment in item.response_segment:
+    #         print(segment.segment_description)
+    # print("\n")
 
 
 # === STEP 5 ========================================================================================================
@@ -349,25 +350,26 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
     #debug 
-    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-    for x in range(1, round(len(cluster_ids) / 20) + 1):
-        y = x * 20
-        print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+    # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    # for x in range(1, round(len(cluster_ids) / 20) + 1):
+    #     y = x * 20
+    #     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
     
-        for z in range(y - 20, y):
-            if z < len(cluster_ids):
-                print(f"\nCluster {z}")
-                for item in initial_cluster_results:
-                    for subitem in item.response_segment:
-                        if subitem.initial_cluster == z:
-                            print(subitem.segment_description)
-        input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    #     for z in range(y - 20, y):
+    #         if z < len(cluster_ids):
+    #             print(f"\nCluster {z}")
+    #             for item in initial_cluster_results:
+    #                 for subitem in item.response_segment:
+    #                     if subitem.initial_cluster == z:
+    #                         print(subitem.segment_description)
+    #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
     
-    for item in initial_cluster_results:
-        print(item)
-        break
+    # for item in initial_cluster_results:
+    #     print(item)
+    #     break
 
 # === STEP 6 ========================================================================================================
+PROMPT_PRINTER = False 
 """thematic labeling"""
 if DEBUG_CLUSTER_TRACKING:
     from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
@@ -395,25 +397,25 @@ else:
 
 
 # # debug
-# print("\nINITIAL CLUSTERS")  
-# cluster_summaries = []
-# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-#         cluster_summaries.append(summary)
-# cluster_summaries_text = "\n".join(cluster_summaries)
-# print(cluster_summaries_text)
-# print("\nAtomic concepts")  
-# for concept in thematic_labeller.atomic_concepts.atomic_concepts:
-#     print(concept.concept)
+print("\nINITIAL CLUSTERS")  
+cluster_summaries = []
+for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
+        cluster_summaries.append(summary)
+cluster_summaries_text = "\n".join(cluster_summaries)
+print(cluster_summaries_text)
+print("\nAtomic concepts")  
+for concept in thematic_labeller.atomic_concepts.atomic_concepts:
+    print(concept.concept)
 
 
-# print("\nMERGED CLUSTERS")  
-# merged_summaries = []
-# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         merged_summaries.append(summary)
-# merged_summaries_text = "\n".join(merged_summaries)
-# print(merged_summaries_text)
+print("\nMERGED CLUSTERS")  
+merged_summaries = []
+for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+        merged_summaries.append(summary)
+merged_summaries_text = "\n".join(merged_summaries)
+print(merged_summaries_text)
 
 # codebook_final = thematic_labeller.refined_codebook
 # lines_final = []
@@ -435,64 +437,65 @@ else:
 # total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
 # print(f"Total clusters assigned: {total_sources}")
 
+# === STEP 6 ========================================================================================================
 
-step_name = "labels"
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+# step_name = "labels"
+# verbose_reporter = VerboseReporter(VERBOSE)
+# prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-    if labeled_results and labeled_results[0].themes:
-        # Get complete hierarchical structure from first result (same for all)
-        first_result = labeled_results[0]
+# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+#     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
+#     if labeled_results and labeled_results[0].themes:
+#         # Get complete hierarchical structure from first result (same for all)
+#         first_result = labeled_results[0]
 
-        # Count themes, topics, and codes from hierarchical structure
-        theme_count = len(first_result.themes)
-        topic_count = sum(len(theme.topics) for theme in first_result.themes)
-        code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
+#         # Count themes, topics, and codes from hierarchical structure
+#         theme_count = len(first_result.themes)
+#         topic_count = sum(len(theme.topics) for theme in first_result.themes)
+#         code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
 
-        # Get cluster mappings
-        cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
+#         # Get cluster mappings
+#         cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
 
-        verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
-            "Themes": theme_count,
-            "Topics": topic_count,
-            "Codes": code_count,
-            "Mapped Clusters": cluster_count
-            })
+#         verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
+#             "Themes": theme_count,
+#             "Topics": topic_count,
+#             "Codes": code_count,
+#             "Mapped Clusters": cluster_count
+#             })
 
-        print("\nExample Theme Structure:")
-        for theme in first_result.themes:  
-            print(f"Theme {theme.theme_id}: {theme.label}")
-            for topic in theme.topics: 
-                print(f"  Topic {topic.topic_id}: {topic.label}")
-                for code in topic.codes: 
-                    print(f"    Code {code.code_id}: {code.label}")
+#         print("\nExample Theme Structure:")
+#         for theme in first_result.themes:  
+#             print(f"Theme {theme.theme_id}: {theme.label}")
+#             for topic in theme.topics: 
+#                 print(f"  Topic {topic.topic_id}: {topic.label}")
+#                 for code in topic.codes: 
+#                     print(f"    Code {code.code_id}: {code.label}")
     
     
-else:
-    verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
-    start_time = time.time()
+# else:
+#     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
+#     start_time = time.time()
     
-    if DEBUG_CLUSTER_TRACKING:
-        from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
-        print("\n" + "="*60)
-        print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
-        print("="*60)
-        thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-        labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-        # Print comprehensive diagnostic summary
-        thematic_labeller.print_diagnostic_summary()
-    else:
-        thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-        labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+#     if DEBUG_CLUSTER_TRACKING:
+#         from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
+#         print("\n" + "="*60)
+#         print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
+#         print("="*60)
+#         thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+#         labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+#         # Print comprehensive diagnostic summary
+#         thematic_labeller.print_diagnostic_summary()
+#     else:
+#         thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+#         labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-    verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
+#     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
+#     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
 # # debug

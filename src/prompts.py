@@ -583,34 +583,37 @@ Return output in {language}.
 """
 
 PHASE4_LABEL_REFINEMENT_PROMPT = """
-You are an expert in creating clear, professional codebooks working in {language}.
-Your task is to refine all labels and descriptions for maximum clarity and usability.
+You are an expert in creating clear, professional codebooks. 
+Your task is to refine all labels and descriptions for maximum clarity and usability. 
 
-Survey question:
+You will be working in the following language:
+<language>
+{language}
+</language>
+
+Here is the survey question you will be working with:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Current codebook with cluster assignments:
+Now, here is the current codebook with cluster assignments:
 <codebook_with_assignments>
 {codebook_with_cluster_counts}
 </codebook_with_assignments>
 
 CRITICAL REQUIREMENT:
-**PRESERVE STABLE IDs**: Each concept has a "Stable ID" (like concept_1, concept_2, concept_other). 
-You MUST include the "stable_id" field in EVERY atomic concept in your response.
+You MUST preserve the "Stable IDs" for each concept (like concept_1, concept_2, concept_other). Include the "stable_id" field in EVERY atomic concept in your response.
 
-Refinement goals:
-1. **Theme Labels**: Clear, broad areas (2-4 words)
-2. **Concept Labels**: Precise, specific ideas (2-4 words)
-3. **Descriptions**: Clear, distinguishable, explain what's included
-4. **Examples**: Add 1-2 representative quotes per concept
-5. **Consistency**: Parallel structure and professional tone
+Your refinement goals are:
+1. Create relevant labels: Clear (2-4 words) and relevant in light of the survey question
+2. Provide clear descriptions: Explain how the label addresses the survey question
+3. Add examples: Include 1-2 representative quotes per concept
+4. Ensure consistency: Use parallel structure and maintain a professional tone
 
-Guidelines:
+Follow these guidelines:
 - Use clear, non-technical language
 - Ensure labels are distinct from each other
-- Descriptions should help coders understand boundaries
+- Descriptions should help coders understand boundaries between concepts
 
 DO NOT:
 - Change the structure or assignments
@@ -619,7 +622,7 @@ DO NOT:
 - Move concepts between themes
 - Change or omit the stable_id values
 
-Output JSON:
+Provide your output in the following JSON format:
 {{
   "refined_codebook": {{
     "themes": [
@@ -646,6 +649,4 @@ Output JSON:
     }}
   }}
 }}
-
-Return output in {language}.
 """
