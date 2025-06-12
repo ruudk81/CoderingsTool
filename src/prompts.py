@@ -607,8 +607,7 @@ You MUST preserve the "Stable IDs" for each concept (like concept_1, concept_2, 
 Your refinement goals are:
 1. Create relevant labels: Clear (2-4 words) and relevant in light of the survey question
 2. Provide clear descriptions: Explain how the label addresses the survey question
-3. Add examples: Include 1-2 representative quotes per concept
-4. Ensure consistency: Use parallel structure and maintain a professional tone
+3. Ensure consistency: Use parallel structure and maintain a professional tone
 
 Follow these guidelines:
 - Use clear, non-technical language
