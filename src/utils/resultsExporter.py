@@ -79,7 +79,7 @@ class ResultsExporter:
         
         # Export to SPSS
         spss_path = self._export_to_spss(
-            respondent_codes, hierarchical_structure, filename, id_column, var_name, export_dir)
+            respondent_codes, hierarchical_structure, labeled_results, filename, id_column, var_name, export_dir)
         
         # Export to Excel  
         excel_path = self._export_to_excel(
@@ -262,6 +262,7 @@ class ResultsExporter:
     def _export_to_spss(self, 
                        respondent_codes: Dict[int, Dict[str, Any]],
                        hierarchical_structure: Dict,
+                       labeled_results: List,
                        filename: str,
                        id_column: str,
                        var_name: str,
