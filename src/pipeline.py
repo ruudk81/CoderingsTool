@@ -26,7 +26,7 @@ var_name = "q19"
 #var_name = "Q18Q19"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -417,25 +417,15 @@ for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster
 merged_summaries_text = "\n".join(merged_summaries)
 print(merged_summaries_text)
 
-# codebook_final = thematic_labeller.refined_codebook
-# lines_final = []
-# for theme in codebook_final.themes:
-#     lines_final.append(f"{theme.id}. {theme.label.upper()}")
-    
-#     related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
-#     for topic in related_topics:
-#         lines_final.append(f"   {topic.id} {topic.label}")
-        
-#         related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
-#         for code in related_codes:
-#             # Include source_codes in the display
-#             source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-#             lines_final.append(f"      {code.id} {code.label}{source_info}")
-    
-# print("\n==== CODEBOOK (After all phases) ===")    
-# print("\n".join(lines_final))
-# total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
-# print(f"Total clusters assigned: {total_sources}")
+codebook = thematic_labeller.refined_codebook
+lines_final = []
+for theme in codebook.themes:
+    lines_final.append(f"{theme.id}. {theme.label.upper()}")
+    for atomic_concept in theme.atomic_concepts:
+        lines_final.append(f"{atomic_concept.id}. {atomic_concept.label.upper()}")
+        lines_final.append(f"{atomic_concept.description}")
+print("\n==== CODEBOOK (After all phases) ===")    
+print("\n".join(lines_final))
 
 # === STEP 6 ========================================================================================================
 
