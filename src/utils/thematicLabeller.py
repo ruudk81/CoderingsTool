@@ -579,23 +579,91 @@ class ThematicLabeller:
         # Note: Merging is now done separately after optional confidence scoring
         return atomic_concepts_result, []
     
+    async def _evaluate_by_concept_batches(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
+        """Evaluate all clusters against each concept in focused batches"""
+        from prompts import PHASE2_5_CONCEPT_FOCUSED_SCORING_PROMPT
+        
+        confidence_scores_by_cluster = {}
+        num_clusters = len(labeled_clusters)
+        num_concepts = len(atomic_concepts_result.atomic_concepts)
+        
+        self.verbose_reporter.stat_line(f"Evaluating {num_clusters} clusters against {num_concepts} concepts using concept-focused batching")
+        
+        # Prepare all cluster codes once
+        all_cluster_codes = "\n".join([
+            f"[ID: {c.cluster_id:2d}] {c.description or c.label}"
+            for c in sorted(labeled_clusters, key=lambda x: x.cluster_id)
+        ])
+        
+        # Create tasks for each concept
+        concept_tasks = []
+        for i, concept in enumerate(atomic_concepts_result.atomic_concepts):
+            prompt = PHASE2_5_CONCEPT_FOCUSED_SCORING_PROMPT.format(
+                survey_question=self.survey_question,
+                concept_name=concept.concept,
+                concept_description=concept.description,
+                all_cluster_codes=all_cluster_codes,
+                expected_scores=num_clusters,
+                language=self.config.language
+            )
+            
+            # Capture prompt only for the first concept
+            if self.prompt_printer and not self.captured_phase2_5:
+                self.prompt_printer.capture_prompt(
+                    step_name="hierarchical_labeling",
+                    utility_name="ThematicLabeller",
+                    prompt_content=prompt,
+                    prompt_type="phase2_5_concept_focused_scoring",
+                    metadata={
+                        "model": self.model_config.get_model_for_phase('phase2_5_confidence'),
+                        "survey_question": self.survey_question,
+                        "language": self.config.language,
+                        "phase": f"2.5/4 - Concept {i+1}/{num_concepts} Focused Scoring",
+                        "concept_name": concept.concept
+                    }
+                )
+                self.captured_phase2_5 = True
+            
+            task = self._invoke_with_retries(prompt, ConfidenceScoringResponse, phase='phase2_5_confidence')
+            concept_tasks.append((concept.concept, task))
+        
+        # Execute concept evaluations with concurrency control
+        self.verbose_reporter.stat_line(f"Processing {len(concept_tasks)} concepts with max {self.config.concurrent_requests} concurrent requests...")
+        
+        for i in range(0, len(concept_tasks), self.config.concurrent_requests):
+            batch = concept_tasks[i:i + self.config.concurrent_requests]
+            batch_results = await asyncio.gather(*[task for _, task in batch], return_exceptions=True)
+            
+            for (concept_name, _), result in zip(batch, batch_results):
+                if isinstance(result, Exception):
+                    self.verbose_reporter.stat_line(f"⚠️ Error evaluating concept '{concept_name}': {str(result)}", bullet="  ")
+                    continue
+                
+                # Process scores for this concept
+                actual_scores = len(result.confidence_scores)
+                if actual_scores == num_clusters:
+                    self.verbose_reporter.stat_line(f"✅ Concept '{concept_name}': {actual_scores}/{num_clusters} scores", bullet="  ")
+                else:
+                    self.verbose_reporter.stat_line(f"⚠️ Concept '{concept_name}': expected {num_clusters}, got {actual_scores}", bullet="  ")
+                
+                # Store scores by cluster
+                for score in result.confidence_scores:
+                    cluster_id = score.cluster_id
+                    if cluster_id not in confidence_scores_by_cluster:
+                        confidence_scores_by_cluster[cluster_id] = {}
+                    confidence_scores_by_cluster[cluster_id][concept_name] = score
+        
+        return confidence_scores_by_cluster
+    
     async def _phase2_5_confidence_scoring(self, labeled_clusters: List[ClusterLabel], atomic_concepts_result: ExtractedAtomicConceptsResponse) -> Dict[int, Dict[str, ConceptConfidenceScore]]:
-        """Phase 2.5: Score confidence using separate evidence and unassigned evaluations"""
+        """Phase 2.5: Score confidence using concept-focused batching approach"""
         # Skip if confidence scoring is disabled
         if not self.config.use_confidence_scoring:
             self.verbose_reporter.stat_line("Confidence scoring disabled, using binary assignment from Phase 2")
             return self._create_binary_confidence_scores(labeled_clusters, atomic_concepts_result)
         
-        confidence_scores_by_cluster = {}
-        
-        # Run both evaluations concurrently for better performance
-        evidence_task = self._evaluate_evidence_clusters(labeled_clusters, atomic_concepts_result)
-        unassigned_task = self._evaluate_unassigned_clusters(labeled_clusters, atomic_concepts_result)
-        
-        evidence_scores, unassigned_scores = await asyncio.gather(evidence_task, unassigned_task)
-        
-        confidence_scores_by_cluster.update(evidence_scores)
-        confidence_scores_by_cluster.update(unassigned_scores)
+        # Use new concept-focused batching approach
+        confidence_scores_by_cluster = await self._evaluate_by_concept_batches(labeled_clusters, atomic_concepts_result)
         
         # Report statistics
         total_scores = sum(len(scores) for scores in confidence_scores_by_cluster.values())
@@ -605,8 +673,11 @@ class ThematicLabeller:
             if score.confidence >= self.config.confidence_threshold
         )
         
+        expected_total = len(labeled_clusters) * len(atomic_concepts_result.atomic_concepts)
+        coverage_rate = (total_scores / expected_total * 100) if expected_total > 0 else 0
+        
         self.verbose_reporter.stat_line(
-            f"Evaluated {total_scores} cluster-concept pairs: "
+            f"Evaluated {total_scores}/{expected_total} cluster-concept pairs ({coverage_rate:.1f}%): "
             f"{high_confidence} meet threshold ({self.config.confidence_threshold})"
         )
         

@@ -487,6 +487,46 @@ Output JSON format:
 Return exactly {expected_scores} confidence scores in {language}.
 """
 
+PHASE2_5_CONCEPT_FOCUSED_SCORING_PROMPT = """
+You are an expert in qualitative analysis working in {language}.
+Your task is to evaluate ALL clusters against a SINGLE atomic concept for focused analysis.
+
+Survey question: {survey_question}
+
+TARGET CONCEPT:
+Name: {concept_name}
+Description: {concept_description}
+
+ALL DESCRIPTIVE CODES TO EVALUATE:
+{all_cluster_codes}
+
+INSTRUCTIONS:
+Evaluate EVERY cluster against ONLY the target concept "{concept_name}".
+
+CONFIDENCE SCORING:
+- 0.0-0.3: No match or very weak connection to {concept_name}
+- 0.4-0.6: Partial match or some elements relate to {concept_name}
+- 0.7-0.8: Good match with most elements aligning with {concept_name}
+- 0.9-1.0: Excellent match, clearly belongs to {concept_name}
+
+CRITICAL: You must provide exactly {expected_scores} confidence scores - one for each cluster listed above.
+
+Output JSON format:
+{{
+  "analytical_notes": "Your analysis process for evaluating all clusters against {concept_name}",
+  "confidence_scores": [
+    {{
+      "cluster_id": 0,
+      "concept": "{concept_name}",
+      "confidence": 0.85,
+      "reasoning": "Brief explanation for this cluster's match to {concept_name}"
+    }}
+  ]
+}}
+
+Return exactly {expected_scores} confidence scores for concept "{concept_name}" in {language}.
+"""
+
 PHASE3_GROUP_CONCEPTS_INTO_THEMES_PROMPT = """
 You are an expert in qualitative analysis working in {language}.
 Your task is to group atomic concepts into meaningful themes.
