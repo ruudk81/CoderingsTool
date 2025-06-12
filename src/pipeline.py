@@ -20,13 +20,13 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
+filename = "M250285 input voor coderen - met Q18Q19.sav"
+id_column = "respondentid"
+var_name = "Q18Q19"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "labels"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
@@ -97,14 +97,14 @@ else:
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug 
-    #import random
+    # import random
     # n_samples = 5
     # indices = random.sample(range(len(raw_unstructued)), n_samples)
     
-    # for i in indices:
-    #     print("Raw unstructured:", raw_unstructued[i])
-    #     print("---")    
-    # print("\n")
+    # # for i in indices:
+    # #     print("Raw unstructured:", raw_unstructued[i])
+    # #     print("---")    
+    # # print("\n")
     # for i in indices:
     #     print("Raw structured:", raw_text_list[i])
     #     print("---")    
@@ -267,12 +267,12 @@ else:
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
-    # import random
-    # n_samples = 5
-    # indices = random.sample(range(len(quality_filtered_text)), n_samples)
-    # for i in indices:
-    #     print("Filtered:", quality_filtered_text[i])
-    #     print("---")
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    for i in indices:
+        print("Filtered:", quality_filtered_text[i])
+        print("---")
 
 
 # === STEP 4 ========================================================================================================
@@ -301,13 +301,13 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
     # debug
-    # import random
-    # n_samples = 5
-    # sampled_items = random.sample(encoded_text, n_samples)
-    # for item in sampled_items:
-    #     for segment in item.response_segment:
-    #         print(segment.segment_description)
-    # print("\n")
+    import random
+    n_samples = 5
+    sampled_items = random.sample(encoded_text, n_samples)
+    for item in sampled_items:
+        for segment in item.response_segment:
+            print(segment.segment_description)
+    print("\n")
 
 
 # === STEP 5 ========================================================================================================
@@ -349,23 +349,23 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
     #debug 
-    # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-    # for x in range(1, round(len(cluster_ids) / 20) + 1):
-    #     y = x * 20
-    #     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    for x in range(1, round(len(cluster_ids) / 20) + 1):
+        y = x * 20
+        print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
     
-    #     for z in range(y - 20, y):
-    #         if z < len(cluster_ids):
-    #             print(f"\nCluster {z}")
-    #             for item in initial_cluster_results:
-    #                 for subitem in item.response_segment:
-    #                     if subitem.initial_cluster == z:
-    #                         print(subitem.segment_description)
-    #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+        for z in range(y - 20, y):
+            if z < len(cluster_ids):
+                print(f"\nCluster {z}")
+                for item in initial_cluster_results:
+                    for subitem in item.response_segment:
+                        if subitem.initial_cluster == z:
+                            print(subitem.segment_description)
+        input("\n🔸 Press Enter to continue to the next batch of clusters...")
     
-    # for item in initial_cluster_results:
-    #     print(item)
-    #     break
+    for item in initial_cluster_results:
+        print(item)
+        break
 
 # === STEP 6 ========================================================================================================
 """thematic labeling"""
@@ -394,49 +394,46 @@ else:
     labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
 
-# debug
-print("\nINITIAL CLUSTERS")  
-cluster_summaries = []
-for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-        cluster_summaries.append(summary)
-cluster_summaries_text = "\n".join(cluster_summaries)
-print(cluster_summaries_text)
-print("\nAtomic concepts")  
-for concept in thematic_labeller.atomic_concepts.atomic_concepts:
-    print(concept.concept)
+# # debug
+# print("\nINITIAL CLUSTERS")  
+# cluster_summaries = []
+# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
+#         cluster_summaries.append(summary)
+# cluster_summaries_text = "\n".join(cluster_summaries)
+# print(cluster_summaries_text)
+# print("\nAtomic concepts")  
+# for concept in thematic_labeller.atomic_concepts.atomic_concepts:
+#     print(concept.concept)
 
 
-print("\nMERGED CLUSTERS")  
-merged_summaries = []
-for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-        merged_summaries.append(summary)
-merged_summaries_text = "\n".join(merged_summaries)
-print(merged_summaries_text)
+# print("\nMERGED CLUSTERS")  
+# merged_summaries = []
+# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+#         merged_summaries.append(summary)
+# merged_summaries_text = "\n".join(merged_summaries)
+# print(merged_summaries_text)
 
-codebook_final = thematic_labeller.refined_codebook
-lines_final = []
-for theme in codebook_final.themes:
-    lines_final.append(f"{theme.id}. {theme.label.upper()}")
+# codebook_final = thematic_labeller.refined_codebook
+# lines_final = []
+# for theme in codebook_final.themes:
+#     lines_final.append(f"{theme.id}. {theme.label.upper()}")
     
-    related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
-    for topic in related_topics:
-        lines_final.append(f"   {topic.id} {topic.label}")
+#     related_topics = [t for t in codebook_final.topics if t.parent_id == theme.id]
+#     for topic in related_topics:
+#         lines_final.append(f"   {topic.id} {topic.label}")
         
-        related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
-        for code in related_codes:
-            # Include source_codes in the display
-            source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
-            lines_final.append(f"      {code.id} {code.label}{source_info}")
+#         related_codes = [c for c in codebook_final.codes if c.parent_id == topic.id]
+#         for code in related_codes:
+#             # Include source_codes in the display
+#             source_info = f" → clusters: {code.source_codes}" if code.source_codes else " → no clusters"
+#             lines_final.append(f"      {code.id} {code.label}{source_info}")
     
-print("\n==== CODEBOOK (After all phases) ===")    
-print("\n".join(lines_final))
-total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
-print(f"Total clusters assigned: {total_sources}")
-
-
-
+# print("\n==== CODEBOOK (After all phases) ===")    
+# print("\n".join(lines_final))
+# total_sources = sum(len(code.source_codes) for code in codebook_final.codes)
+# print(f"Total clusters assigned: {total_sources}")
 
 
 step_name = "labels"
@@ -498,21 +495,21 @@ else:
     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
 
 
-# debug
-print("\nINITIAL CLUSTERS")  
-cluster_summaries = []
-for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-        cluster_summaries.append(summary)
-cluster_summaries_text = "\n".join(cluster_summaries)
-print(cluster_summaries_text)
-print("\nMERGED CLUSTERS")  
-merged_summaries = []
-for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-        merged_summaries.append(summary)
-merged_summaries_text = "\n".join(merged_summaries)
-print(merged_summaries_text)
+# # debug
+# print("\nINITIAL CLUSTERS")  
+# cluster_summaries = []
+# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
+#         cluster_summaries.append(summary)
+# cluster_summaries_text = "\n".join(cluster_summaries)
+# print(cluster_summaries_text)
+# print("\nMERGED CLUSTERS")  
+# merged_summaries = []
+# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
+#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
+#         merged_summaries.append(summary)
+# merged_summaries_text = "\n".join(merged_summaries)
+# print(merged_summaries_text)
 
 
 # === STEP 7 ========================================================================================================

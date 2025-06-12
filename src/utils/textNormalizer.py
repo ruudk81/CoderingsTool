@@ -28,10 +28,10 @@ class TextNormalizer:
     def replace_slash(self, text: str) -> str: 
         return re.sub(r'\s*/\s*|/', ' of ', text) #TODO: remove or if DUTCH
     
-    def remove_symbols(self, text: str) -> str:
-        escaped_punctuation = re.escape(self.config.custom_symbols)
-        text = re.sub(f"[{escaped_punctuation}]", " ", text)
-        return text.strip()
+    # def remove_symbols(self, text: str) -> str:
+    #     escaped_punctuation = re.escape(self.config.custom_symbols)
+    #     text = re.sub(f"[{escaped_punctuation}]", " ", text)
+    #     return text.strip()
     
     def normalize_whitespace(self, text: str) -> str:
         text = " ".join(text.split())
@@ -50,7 +50,7 @@ class TextNormalizer:
                 
             text = text.lower()
             text = self.replace_slash(text)
-            text = self.remove_symbols(text)
+            #text = self.remove_symbols(text)
             text = self.normalize_whitespace(text)
             text = self.handle_empty(text)
             
@@ -87,8 +87,8 @@ class TextNormalizer:
             if isinstance(original, str):
                 if original != original.lower():
                     case_changes += 1
-                if any(symbol in original for symbol in self.config.custom_symbols):
-                    symbol_changes += 1
+                # if any(symbol in original for symbol in self.config.custom_symbols):
+                #     symbol_changes += 1
                 if re.search(r'\s{2,}', original or ''):
                     whitespace_changes += 1
                 if normalized.response == self.config.na_placeholder:
