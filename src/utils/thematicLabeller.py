@@ -615,20 +615,35 @@ class ThematicLabeller:
             num_clusters = len(batch_clusters)
             num_concepts = len(atomic_concepts_result.atomic_concepts)
             
-            # Count actual relevant pairs (cluster appears in concept evidence)
-            expected_evaluations = 0
+            # Calculate expected evaluations: relevant pairs + unassigned clusters vs all concepts
             batch_cluster_ids = {c.cluster_id for c in batch_clusters}
+            
+            # Find clusters that appear in evidence (relevant pairs)
+            clusters_with_evidence = set()
+            relevant_pairs = 0
             for concept in atomic_concepts_result.atomic_concepts:
                 concept_cluster_ids = {int(cid) for cid in concept.evidence}
                 relevant_clusters_in_batch = batch_cluster_ids.intersection(concept_cluster_ids)
-                expected_evaluations += len(relevant_clusters_in_batch)
+                clusters_with_evidence.update(relevant_clusters_in_batch)
+                relevant_pairs += len(relevant_clusters_in_batch)
             
+            # Find unassigned clusters (no evidence anywhere)
+            unassigned_clusters_in_batch = batch_cluster_ids - clusters_with_evidence
+            unassigned_evaluations = len(unassigned_clusters_in_batch) * num_concepts
+            
+            expected_evaluations = relevant_pairs + unassigned_evaluations
             total_evaluations = expected_evaluations  # Update for prompt
+            
+            # Format unassigned clusters for this batch
+            unassigned_text = ", ".join(str(cid) for cid in sorted(unassigned_clusters_in_batch))
+            if not unassigned_text:
+                unassigned_text = "None in this batch"
             
             prompt = PHASE2_5_CONFIDENCE_SCORING_PROMPT.format(
                 survey_question=self.survey_question,
                 atomic_concepts=concepts_text,
                 descriptive_codes=codes_text,
+                unassigned_clusters=unassigned_text,
                 num_clusters=num_clusters,
                 num_concepts=num_concepts,
                 total_evaluations=total_evaluations,
@@ -669,11 +684,11 @@ class ThematicLabeller:
                         confidence_scores_by_cluster[cluster_id] = {}
                     confidence_scores_by_cluster[cluster_id][score.concept] = score
                 
-                # Verify we got expected scores (only for relevant pairs)
+                # Verify we got expected scores (evidence pairs + unassigned vs all)
                 actual_scores = len(result.confidence_scores)
                 if actual_scores < expected_evaluations:
                     self.verbose_reporter.stat_line(
-                        f"⚠️ Expected {expected_evaluations} relevant scores, got {actual_scores}",
+                        f"⚠️ Expected {expected_evaluations} scores (evidence + unassigned), got {actual_scores}",
                         bullet="    "
                     )
                 elif expected_evaluations > 0:
