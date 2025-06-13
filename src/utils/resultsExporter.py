@@ -398,8 +398,8 @@ class ResultsExporter:
         
         # Report final matching statistics
         self.verbose_reporter.stat_line(f"Successfully matched {matched_count} respondents between pipeline and SPSS")
-        if matched_count < len(original_ids):
-            self.verbose_reporter.warning(f"WARNING: {len(original_ids) - matched_count} respondents have no analysis results")
+        if matched_count < len(original_df):
+            self.verbose_reporter.warning(f"WARNING: {len(original_df) - matched_count} respondents have no analysis results")
         
         # Save to SPSS format with metadata
         try:
