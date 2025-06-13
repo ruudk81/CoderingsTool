@@ -324,8 +324,11 @@ class ResultsExporter:
             self.verbose_reporter.warning("This indicates a serious ID mismatch problem that will cause incorrect mapping!")
         
         # Create a mapping of original row indices to respondent IDs for safer iteration
+        self.verbose_reporter.stat_line(f"Processing {len(original_df)} rows for binary variable mapping...")
         row_to_id_mapping = {}
         for idx, row in original_df.iterrows():
+            if idx % 100 == 0 and idx > 0:  # Progress indicator every 100 rows
+                self.verbose_reporter.stat_line(f"  Processed {idx}/{len(original_df)} rows...")
             try:
                 respondent_id = int(row[id_column])
                 row_to_id_mapping[idx] = respondent_id
@@ -403,15 +406,20 @@ class ResultsExporter:
         
         # Save to SPSS format with metadata
         try:
+            self.verbose_reporter.stat_line(f"Writing SPSS file: {len(original_df)} rows, {len(original_df.columns)} columns")
             # Use correct pyreadstat syntax: column_labels for variable labels, variable_value_labels for value labels
             pyreadstat.write_sav(original_df, output_path, 
                                 column_labels=variable_labels,
                                 variable_value_labels=value_labels)
-        except TypeError as e:
-            # Fallback: save without metadata if parameters not supported
-            self.verbose_reporter.stat_line(f"⚠️ SPSS metadata error: {str(e)}")
+        except (TypeError, MemoryError, Exception) as e:
+            # Fallback: save without metadata if parameters not supported or memory issues
+            self.verbose_reporter.stat_line(f"⚠️ SPSS export error: {str(e)}")
             self.verbose_reporter.stat_line("  Saving without variable and value labels")
-            pyreadstat.write_sav(original_df, output_path)
+            try:
+                pyreadstat.write_sav(original_df, output_path)
+            except Exception as fallback_e:
+                self.verbose_reporter.stat_line(f"⚠️ Critical SPSS export failure: {str(fallback_e)}")
+                raise
         
         self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables with SPSS metadata")
         self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
