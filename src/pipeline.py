@@ -417,9 +417,6 @@ else:
         print(f"Question-aware mode enabled: {embedding_config.response_weight:.1f} Response + {embedding_config.question_weight:.1f} Question + {embedding_config.domain_anchor_weight:.1f} Domain")
     
     get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
-    
-    # Note: Question-aware mode will automatically use var_lab when generating embeddings
-    
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
     description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)

@@ -357,16 +357,16 @@ class ClusterMergerConfig:
 class NoiseRescueConfig:
     """Configuration for noise point rescue using cosine similarity or HDBSCAN methods"""
     enabled: bool = True  # Enable hybrid rescue by default
-    rescue_threshold: float = 0.3  # For HDBSCAN methods
+    rescue_threshold: float = 1  # For HDBSCAN methods
     max_rescue_attempts: int = 1000
     
     # Cosine similarity rescue parameters
     use_cosine_rescue: bool = True  # Enable cosine rescue
-    cosine_similarity_threshold: float = 0.7
+    cosine_similarity_threshold: float = 1
     
     # c-TF-IDF rescue parameters
     use_ctfidf_rescue: bool = True  # Enable c-TF-IDF rescue
-    ctfidf_similarity_threshold: float = 0.1
+    ctfidf_similarity_threshold: float = 0.05
     ctfidf_min_topic_size: int = 2
 
 
