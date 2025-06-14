@@ -355,6 +355,12 @@ class ClusterGenerator:
                 cluster_labels.append(cluster)
                 segment_ids.append(item.segment_id)
         
+        # Debug: Check for duplicate segment IDs
+        unique_segment_ids = set(segment_ids)
+        if len(unique_segment_ids) != len(segment_ids):
+            duplicate_count = len(segment_ids) - len(unique_segment_ids)
+            self.verbose_reporter.stat_line(f"⚠️  WARNING: Found {duplicate_count} duplicate segment IDs in c-TF-IDF input")
+        
         # Debug output
         valid_clusters = [c for c in cluster_labels if c != -1]
         unique_clusters = len(set(valid_clusters)) if valid_clusters else 0
@@ -419,8 +425,22 @@ class ClusterGenerator:
         reported_rescued = rescue_results.get('rescued_count', 0)
         self.verbose_reporter.stat_line(f"c-TF-IDF reported: {reported_rescued} rescued, {len(new_assignments)} assignments to apply")
         
+        # Debug: Show what assignments we received
+        if new_assignments:
+            assignment_items = list(new_assignments.items())[:3]  # First 3
+            assignment_texts = [f"seg_id={seg_id} → cluster {cluster}" for seg_id, cluster in assignment_items]
+            self.verbose_reporter.sample_list("Assignments to apply", assignment_texts)
+        
+        # Debug: Track assignment application
+        items_checked = 0
+        items_matched = 0
+        items_was_noise = 0
+        items_was_not_noise = 0
+        
         for item in self.output_list:
+            items_checked += 1
             if item.segment_id in new_assignments:
+                items_matched += 1
                 new_cluster = new_assignments[item.segment_id]
                 
                 # Update the appropriate cluster field
@@ -428,10 +448,22 @@ class ClusterGenerator:
                     if item.initial_code_cluster == -1:  # Only update if it was noise
                         item.initial_code_cluster = new_cluster
                         rescued_count += 1
+                        items_was_noise += 1
+                    else:
+                        items_was_not_noise += 1
                 else:
                     if item.initial_description_cluster == -1:  # Only update if it was noise
                         item.initial_description_cluster = new_cluster
                         rescued_count += 1
+                        items_was_noise += 1
+                    else:
+                        items_was_not_noise += 1
+        
+        # Debug: Report assignment application results
+        self.verbose_reporter.stat_line(f"🔍 DEBUG: Checked {items_checked} items in output_list")
+        self.verbose_reporter.stat_line(f"🔍 DEBUG: Found {items_matched} items with matching segment_ids")
+        self.verbose_reporter.stat_line(f"🔍 DEBUG: Applied to {items_was_noise} noise points")
+        self.verbose_reporter.stat_line(f"🔍 DEBUG: Skipped {items_was_not_noise} non-noise points")
         
         # Debug: Verify final counts
         self.verbose_reporter.stat_line(f"c-TF-IDF assignment result: applied {rescued_count} assignments from {len(new_assignments)} available")
