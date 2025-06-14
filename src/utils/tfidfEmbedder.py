@@ -88,12 +88,24 @@ class TfidfEmbedder:
         
         # Show sample important terms
         if hasattr(self.vectorizer, 'idf_'):
-            # Get top terms by IDF score
+            # Get all terms sorted by IDF score (most important first)
             terms = self.vectorizer.get_feature_names_out()
             idf_scores = self.vectorizer.idf_
-            top_indices = np.argsort(idf_scores)[-20:]  # Top 20 terms
-            top_terms = [terms[i] for i in top_indices]
-            self.verbose_reporter.sample_list("Sample important terms (high IDF)", top_terms[:10])
+            
+            # Sort by IDF score (highest first = most domain-specific)
+            sorted_indices = np.argsort(idf_scores)[::-1]
+            sorted_terms = [terms[i] for i in sorted_indices]
+            sorted_scores = [idf_scores[i] for i in sorted_indices]
+            
+            # Show top terms with their IDF scores
+            self.verbose_reporter.sample_list("Top domain-specific terms (high IDF)", 
+                                            [f"{term} ({score:.2f})" for term, score in zip(sorted_terms[:20], sorted_scores[:20])])
+            
+            # Optionally show all terms if verbose mode and reasonable size
+            if vocab_size <= 50:
+                self.verbose_reporter.sample_list("All TF-IDF vocabulary", sorted_terms)
+            elif self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Full vocabulary available - showing top 20 of {vocab_size} terms")
         
         self.verbose_reporter.step_complete("TF-IDF model fitted")
         return self
@@ -166,3 +178,22 @@ class TfidfEmbedder:
         if not self.is_fitted:
             raise ValueError("TfidfEmbedder must be fitted first")
         return self.vectorizer.get_feature_names_out().tolist()
+    
+    def print_full_vocabulary(self):
+        """Print all vocabulary terms sorted by importance (IDF score)"""
+        if not self.is_fitted:
+            raise ValueError("TfidfEmbedder must be fitted first")
+        
+        terms = self.vectorizer.get_feature_names_out()
+        idf_scores = self.vectorizer.idf_
+        
+        # Sort by IDF score (highest first)
+        sorted_indices = np.argsort(idf_scores)[::-1]
+        sorted_terms = [terms[i] for i in sorted_indices]
+        sorted_scores = [idf_scores[i] for i in sorted_indices]
+        
+        self.verbose_reporter.stat_line(f"Complete TF-IDF vocabulary ({len(terms)} terms):")
+        for i, (term, score) in enumerate(zip(sorted_terms, sorted_scores), 1):
+            print(f"{i:3d}. {term:<30} (IDF: {score:.3f})")
+        
+        return list(zip(sorted_terms, sorted_scores))
