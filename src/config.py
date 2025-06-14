@@ -19,6 +19,9 @@ elif os.path.basename(current_dir) == 'src':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', 'hunspell'))
 elif os.path.basename(current_dir) == 'Coderingstool':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+else:
+    # Default fallback
+    hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
 
 HUNSPELL_PATH = os.path.join(hunspell_dir, "hunspell.exe")
 DUTCH_DICT_PATH = os.path.join(hunspell_dir, "dict", "nl_NL")
@@ -360,6 +363,11 @@ class NoiseRescueConfig:
     # Cosine similarity rescue parameters
     use_cosine_rescue: bool = False
     cosine_similarity_threshold: float = 0.7
+    
+    # c-TF-IDF rescue parameters
+    use_ctfidf_rescue: bool = False
+    ctfidf_similarity_threshold: float = 0.1
+    ctfidf_min_topic_size: int = 2
 
 
 @dataclass
