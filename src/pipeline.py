@@ -35,6 +35,7 @@ DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostic
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
+USE_ENSEMBLE_EMBEDDINGS = False  # Enable ensemble OpenAI + TF-IDF embeddings
 
 # Initialize data loader and get variable label
 data_loader = dataLoader.DataLoader(verbose=False)
@@ -48,6 +49,7 @@ print(f"📊 Data file: {filename}")
 print(f"📌 Variable: {var_name} - {var_lab}")
 print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
 print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
+print(f"🔀 Ensemble embeddings: {USE_ENSEMBLE_EMBEDDINGS}")
 print(f"💬 Verbose mode: {VERBOSE}")
 print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
 print(f"🔍 Debug cluster tracking: {DEBUG_CLUSTER_TRACKING}")
@@ -406,7 +408,28 @@ else:
     start_time = time.time()
     # Step 5a: Generate embeddings
     print("\nEmbedding CODES and DESCRIPTIONS of response segments")
-    get_embeddings = embedder.Embedder(verbose=VERBOSE)
+    
+    # Configure embeddings for ensemble mode if enabled
+    from config import DEFAULT_EMBEDDING_CONFIG
+    embedding_config = DEFAULT_EMBEDDING_CONFIG
+    if USE_ENSEMBLE_EMBEDDINGS:
+        embedding_config.use_ensemble = True
+        print(f"Ensemble mode enabled: {embedding_config.openai_weight:.1f} OpenAI + {embedding_config.tfidf_weight:.1f} TF-IDF")
+    
+    get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
+    
+    # Prepare TF-IDF model if ensemble mode is enabled
+    if get_embeddings.config.use_ensemble:
+        # Collect all segment descriptions for TF-IDF vocabulary
+        all_descriptions = []
+        for item in encoded_text:
+            for segment in item.response_segment:
+                if hasattr(segment, 'segment_description') and segment.segment_description:
+                    all_descriptions.append(segment.segment_description)
+        
+        print(f"Building TF-IDF vocabulary from {len(all_descriptions)} descriptions...")
+        get_embeddings.prepare_tfidf_model(all_descriptions)
+    
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
     description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)

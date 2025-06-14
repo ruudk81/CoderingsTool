@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass, field
 
 # File handling (only keep what's used)
@@ -280,6 +280,20 @@ class SegmentationConfig:
 # =============================================================================
 
 @dataclass
+class TfidfConfig:
+    """Configuration for TF-IDF component of ensemble embeddings"""
+    max_features: int = 1000  # Number of TF-IDF features
+    ngram_range: Tuple[int, int] = (1, 2)  # Unigrams and bigrams
+    min_df: int = 2  # Minimum document frequency
+    max_df: float = 0.95  # Maximum document frequency (remove too common terms)
+    use_idf: bool = True  # Use IDF weighting
+    sublinear_tf: bool = True  # Use log(TF) instead of raw TF
+    # POS tags to keep (None = no filtering)
+    allowed_pos_tags: Optional[List[str]] = field(default_factory=lambda: ['NOUN', 'PROPN', 'ADJ'])
+    # Ensure TF-IDF vectors are normalized
+    norm: str = 'l2'
+
+@dataclass
 class EmbeddingConfig:
     """Configuration for embedding generation step"""
     batch_size: int = 100
@@ -287,6 +301,17 @@ class EmbeddingConfig:
     # Model configuration - will be overridden by ModelConfig
     embedding_model: str = "text-embedding-3-large"  # Fallback model
     max_sample_responses: int = 3  # For verbose output
+    
+    # Ensemble embedding configuration
+    use_ensemble: bool = False  # Enable ensemble embeddings
+    openai_weight: float = 0.7  # Weight for OpenAI embeddings
+    tfidf_weight: float = 0.3  # Weight for TF-IDF embeddings
+    ensemble_combination: str = "weighted_concat"  # Options: "weighted_concat", "weighted_average"
+    reduce_dimensions: bool = True  # Reduce dimensions after concatenation
+    target_dimensions: int = 768  # Target dimensions if reducing
+    
+    # TF-IDF configuration
+    tfidf: TfidfConfig = field(default_factory=TfidfConfig)
 
 
 # =============================================================================

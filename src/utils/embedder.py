@@ -3,11 +3,14 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import os
 import numpy as np
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from openai import AsyncOpenAI
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import models
 from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verboseReporter import VerboseReporter, ProcessingStats
+from .tfidfEmbedder import TfidfEmbedder
 
 class Embedder:
     def __init__(
@@ -26,6 +29,16 @@ class Embedder:
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose)
         self.stats = ProcessingStats()
+        
+        # Initialize TF-IDF embedder if ensemble mode is enabled
+        self.tfidf_embedder = None
+        if self.config.use_ensemble:
+            self.tfidf_embedder = TfidfEmbedder(config=self.config.tfidf, verbose=verbose)
+            self.verbose_reporter.stat_line(f"Initialized ensemble mode with weights: OpenAI {self.config.openai_weight}, TF-IDF {self.config.tfidf_weight}")
+        
+        # For dimension reduction if needed
+        self.pca = None
+        self.scaler = None
         
         self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
     
@@ -120,32 +133,72 @@ class Embedder:
         self.verbose_reporter.stat_line(f"Batch size: {batch_size}, Total batches: {len(batches_responses)}")
         self.verbose_reporter.stat_line(f"Max concurrent requests: {max_concurrent}")
         
-        semaphore = asyncio.Semaphore(max_concurrent)
-        processed_count = 0
+        # For ensemble mode, we need to collect all embeddings first
+        if self.config.use_ensemble and is_description:
+            # Collect all texts and indices for batch processing
+            all_texts = []
+            all_indices = []
+            for batch_texts, batch_indices in zip(batches_responses, batches_indices):
+                all_texts.extend(batch_texts)
+                all_indices.extend(batch_indices)
+            
+            # Get all OpenAI embeddings
+            self.verbose_reporter.stat_line("Generating OpenAI embeddings for ensemble...")
+            openai_embeddings = []
+            
+            semaphore = asyncio.Semaphore(max_concurrent)
+            async def process_openai_batch(batch_responses):
+                async with semaphore:
+                    return await self.process_batches(batch_responses)
+            
+            tasks = [process_openai_batch(batch) for batch in batches_responses]
+            batch_results = await asyncio.gather(*tasks)
+            
+            # Flatten results
+            for batch_embeddings in batch_results:
+                for embedding in batch_embeddings:
+                    openai_embeddings.append(np.array(embedding, dtype=np.float32))
+            
+            openai_embeddings = np.array(openai_embeddings)
+            
+            # Generate ensemble embeddings
+            self.verbose_reporter.stat_line("Generating ensemble embeddings...")
+            ensemble_embeddings = await self._generate_ensemble_embeddings(all_texts, openai_embeddings)
+            
+            # Assign embeddings back to data
+            for (resp_idx, seg_idx), embedding in zip(all_indices, ensemble_embeddings):
+                data[resp_idx].response_segment[seg_idx].description_embedding = embedding
+            
+            self.verbose_reporter.stat_line(f"Completed {len(all_indices)} ensemble embeddings")
         
-        async def process_batch(batch_responses, batch_indices, batch_num):
-            nonlocal processed_count
-            async with semaphore:
-                batch_embeddings = await self.process_batches(batch_responses)
-                
-                for (resp_idx, seg_idx), embedding in zip(batch_indices, batch_embeddings):
-                    # save as array
-                    embedding_array = np.array(embedding, dtype=np.float32)
+        else:
+            # Original non-ensemble processing
+            semaphore = asyncio.Semaphore(max_concurrent)
+            processed_count = 0
+            
+            async def process_batch(batch_responses, batch_indices, batch_num):
+                nonlocal processed_count
+                async with semaphore:
+                    batch_embeddings = await self.process_batches(batch_responses)
                     
-                    if is_description:
-                        data[resp_idx].response_segment[seg_idx].description_embedding = embedding_array
-                    else:
-                        data[resp_idx].response_segment[seg_idx].code_embedding = embedding_array
-                
-                processed_count += len(batch_responses)
-                self.verbose_reporter.stat_line(f"Progress: {processed_count}/{total_segments} segments processed ({processed_count/total_segments*100:.1f}%)")
+                    for (resp_idx, seg_idx), embedding in zip(batch_indices, batch_embeddings):
+                        # save as array
+                        embedding_array = np.array(embedding, dtype=np.float32)
+                        
+                        if is_description:
+                            data[resp_idx].response_segment[seg_idx].description_embedding = embedding_array
+                        else:
+                            data[resp_idx].response_segment[seg_idx].code_embedding = embedding_array
+                    
+                    processed_count += len(batch_responses)
+                    self.verbose_reporter.stat_line(f"Progress: {processed_count}/{total_segments} segments processed ({processed_count/total_segments*100:.1f}%)")
 
-        # Create and run tasks
-        tasks = [
-            process_batch(batch_responses, batch_indices, i+1) 
-            for i, (batch_responses, batch_indices) in enumerate(zip(batches_responses, batches_indices))]
-        
-        await asyncio.gather(*tasks)
+            # Create and run tasks
+            tasks = [
+                process_batch(batch_responses, batch_indices, i+1) 
+                for i, (batch_responses, batch_indices) in enumerate(zip(batches_responses, batches_indices))]
+            
+            await asyncio.gather(*tasks)
         
         return data
     
@@ -255,9 +308,132 @@ class Embedder:
     def embed_words(self, words: List[str], batch_size: int = None, max_concurrent: int = None) -> Dict[str, np.ndarray]:
        
         return asyncio.run(self._async_embed_words(words, batch_size, max_concurrent))
-
     
+    def prepare_tfidf_model(self, all_descriptions: List[str]) -> None:
+        """Fit TF-IDF model on all descriptions (called once before processing)"""
+        if not self.config.use_ensemble:
+            return
         
+        self.verbose_reporter.step_start("Preparing TF-IDF model", emoji="🔧")
+        
+        # Try to load existing model
+        if self.tfidf_embedder.load():
+            self.verbose_reporter.stat_line("Loaded existing TF-IDF model from cache")
+        else:
+            # Fit new model
+            self.tfidf_embedder.fit(all_descriptions)
+            self.tfidf_embedder.save()
+        
+        self.verbose_reporter.step_complete("TF-IDF model ready")
     
+    async def _generate_ensemble_embeddings(
+        self, 
+        texts: List[str], 
+        openai_embeddings: np.ndarray
+    ) -> np.ndarray:
+        """Generate ensemble embeddings by combining OpenAI and TF-IDF"""
+        
+        # Generate TF-IDF embeddings
+        tfidf_embeddings = self.tfidf_embedder.transform(texts)
+        
+        # Report dimensions
+        self.verbose_reporter.stat_line(f"OpenAI embedding dims: {openai_embeddings.shape[1]}")
+        self.verbose_reporter.stat_line(f"TF-IDF embedding dims: {tfidf_embeddings.shape[1]}")
+        
+        if self.config.ensemble_combination == "weighted_concat":
+            # Concatenate embeddings with weights
+            ensemble_embeddings = self._weighted_concatenate(
+                openai_embeddings, 
+                tfidf_embeddings,
+                self.config.openai_weight,
+                self.config.tfidf_weight
+            )
+        else:  # weighted_average
+            # Average embeddings (requires same dimensions)
+            ensemble_embeddings = self._weighted_average(
+                openai_embeddings,
+                tfidf_embeddings,
+                self.config.openai_weight,
+                self.config.tfidf_weight
+            )
+        
+        # Reduce dimensions if configured
+        if self.config.reduce_dimensions and ensemble_embeddings.shape[1] > self.config.target_dimensions:
+            ensemble_embeddings = self._reduce_dimensions(
+                ensemble_embeddings,
+                self.config.target_dimensions
+            )
+        
+        self.verbose_reporter.stat_line(f"Final ensemble embedding dims: {ensemble_embeddings.shape[1]}")
+        return ensemble_embeddings
     
+    def _weighted_concatenate(
+        self,
+        openai_emb: np.ndarray,
+        tfidf_emb: np.ndarray,
+        openai_weight: float,
+        tfidf_weight: float
+    ) -> np.ndarray:
+        """Concatenate embeddings with weights applied"""
+        # Apply weights
+        weighted_openai = openai_emb * openai_weight
+        weighted_tfidf = tfidf_emb * tfidf_weight
+        
+        # Normalize TF-IDF to similar scale as OpenAI
+        tfidf_norm = np.linalg.norm(weighted_tfidf, axis=1, keepdims=True)
+        openai_norm = np.linalg.norm(weighted_openai, axis=1, keepdims=True)
+        
+        # Avoid division by zero
+        tfidf_norm = np.where(tfidf_norm == 0, 1, tfidf_norm)
+        openai_norm = np.where(openai_norm == 0, 1, openai_norm)
+        
+        # Scale TF-IDF to match OpenAI magnitude
+        scale_factor = np.mean(openai_norm) / np.mean(tfidf_norm)
+        weighted_tfidf = weighted_tfidf * scale_factor
+        
+        # Concatenate
+        return np.concatenate([weighted_openai, weighted_tfidf], axis=1)
     
+    def _weighted_average(
+        self,
+        openai_emb: np.ndarray,
+        tfidf_emb: np.ndarray,
+        openai_weight: float,
+        tfidf_weight: float
+    ) -> np.ndarray:
+        """Average embeddings with weights (requires dimension alignment)"""
+        # Reduce TF-IDF to match OpenAI dimensions
+        if tfidf_emb.shape[1] != openai_emb.shape[1]:
+            target_dim = openai_emb.shape[1]
+            tfidf_emb = self.tfidf_embedder.reduce_dimensions(tfidf_emb, target_dim)
+        
+        # Weighted average
+        return (openai_emb * openai_weight + tfidf_emb * tfidf_weight) / (openai_weight + tfidf_weight)
+    
+    def _reduce_dimensions(self, embeddings: np.ndarray, target_dim: int) -> np.ndarray:
+        """Reduce embedding dimensions using PCA"""
+        if self.pca is None or self.pca.n_components != target_dim:
+            self.verbose_reporter.stat_line(f"Reducing dimensions from {embeddings.shape[1]} to {target_dim}")
+            
+            # Standardize before PCA
+            if self.scaler is None:
+                self.scaler = StandardScaler()
+                embeddings_scaled = self.scaler.fit_transform(embeddings)
+            else:
+                embeddings_scaled = self.scaler.transform(embeddings)
+            
+            # Apply PCA
+            if self.pca is None or self.pca.n_components != target_dim:
+                self.pca = PCA(n_components=target_dim, random_state=42)
+                reduced = self.pca.fit_transform(embeddings_scaled)
+            else:
+                reduced = self.pca.transform(embeddings_scaled)
+            
+            # Report variance explained
+            variance_explained = np.sum(self.pca.explained_variance_ratio_)
+            self.verbose_reporter.stat_line(f"PCA variance explained: {variance_explained:.2%}")
+            
+            return reduced
+        else:
+            embeddings_scaled = self.scaler.transform(embeddings)
+            return self.pca.transform(embeddings_scaled)
