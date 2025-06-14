@@ -183,7 +183,11 @@ class Grader:
                 else:
                     quality_counts["low"] += 1
             
-            if result.quality_filter and len(filtered_examples) < self.config.max_filter_examples:
+            # Only show examples for user-missing (97) or no-answer (99) codes, not system-missing (98)
+            if (result.quality_filter and 
+                len(filtered_examples) < self.config.max_filter_examples and
+                result.quality_filter_code is not None and
+                (result.quality_filter_code % 100 == 97 or result.quality_filter_code % 100 == 99)):
                 filtered_examples.append(f'"{result.response}" (quality filter: meaningless)')
         
         self._stats.output_count = len([r for r in self._results if not r.quality_filter])
