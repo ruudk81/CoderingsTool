@@ -429,6 +429,11 @@ else:
         
         print(f"Building TF-IDF vocabulary from {len(all_descriptions)} descriptions...")
         get_embeddings.prepare_tfidf_model(all_descriptions)
+        
+        # Optionally print full vocabulary for inspection
+        if VERBOSE:
+            print("\n=== TF-IDF VOCABULARY ===")
+            get_embeddings.tfidf_embedder.print_full_vocabulary()
     
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
