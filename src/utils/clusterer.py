@@ -377,6 +377,18 @@ class ClusterGenerator:
             self.verbose_reporter.stat_line("❌ No valid clusters for c-TF-IDF comparison")
             return 0
         
+        # Fit vectorizer on all documents if not already fitted
+        try:
+            # Test if vectorizer is fitted
+            self.vectorizer_model.get_feature_names_out()
+            self.verbose_reporter.stat_line("✅ Vectorizer already fitted")
+        except:
+            # Fit vectorizer on all available documents
+            self.verbose_reporter.stat_line("Fitting vectorizer on all documents...")
+            self.vectorizer_model.fit(documents)
+            vocab_size = len(self.vectorizer_model.get_feature_names_out())
+            self.verbose_reporter.stat_line(f"Vectorizer fitted: {vocab_size} features")
+        
         # Configure c-TF-IDF rescue
         ctfidf_config = CtfidfNoiseRescueConfig(
             enabled=True,
@@ -385,7 +397,7 @@ class ClusterGenerator:
             verbose=self.verbose
         )
         
-        # Initialize c-TF-IDF noise reducer with existing vectorizer
+        # Initialize c-TF-IDF noise reducer with fitted vectorizer
         ctfidf_reducer = CtfidfNoiseReducer(
             vectorizer=self.vectorizer_model,
             config=ctfidf_config,

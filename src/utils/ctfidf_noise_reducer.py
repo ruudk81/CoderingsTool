@@ -157,11 +157,17 @@ class CtfidfNoiseReducer:
         
         # Vectorize aggregated documents
         try:
+            # Check if vectorizer is fitted
+            try:
+                self.feature_names = self.vectorizer.get_feature_names_out()
+                self.verbose_reporter.stat_line(f"Using fitted vectorizer with {len(self.feature_names)} features")
+            except Exception as e:
+                raise ValueError(f"Vectorizer not fitted. Please fit vectorizer before calling c-TF-IDF rescue. Error: {e}")
+            
             aggregated_docs = topic_docs['aggregated_document'].tolist()
             self.verbose_reporter.stat_line(f"Vectorizing {len(aggregated_docs)} aggregated documents...")
             
             X_topics = self.vectorizer.transform(aggregated_docs)
-            self.feature_names = self.vectorizer.get_feature_names_out()
             
             self.verbose_reporter.stat_line(f"Topic matrix shape: {X_topics.shape}")
             self.verbose_reporter.stat_line(f"Vocabulary size: {len(self.feature_names)}")
