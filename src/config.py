@@ -291,11 +291,15 @@ class EmbeddingConfig:
     embedding_model: str = "text-embedding-3-large"  # Fallback model
     max_sample_responses: int = 3  # For verbose output
     
-    # Question-aware embedding configuration
-    use_question_aware: bool = True  # Enable question-aware embeddings
-    response_weight: float = 0.6  # Weight for response embeddings
-    question_weight: float = 0.3  # Weight for question embeddings
-    domain_anchor_weight: float = 0.1  # Weight for domain-relative positioning
+    # Question-aware ensemble embedding configuration
+    # This creates weighted embeddings: 0.6*response + 0.3*question + 0.1*domain_anchor
+    use_question_aware: bool = True  # Enable ensemble embeddings (RECOMMENDED for clustering)
+    response_weight: float = 0.6  # Weight for response segment content (60%)
+    question_weight: float = 0.3  # Weight for question context (30%)
+    domain_anchor_weight: float = 0.1  # Weight for domain anchoring (10%)
+    
+    # NOTE: When use_question_aware=True, the original description_embedding field 
+    # gets REPLACED with the ensemble embedding. This is used for clustering.
 
 
 # =============================================================================
@@ -390,6 +394,9 @@ class ClusteringConfig:
     
     # Debugging settings
     enable_similarity_diagnostics: bool = False  # Enable detailed c-TF-IDF vs embedding comparison
+    
+    # IMPORTANT: c-TF-IDF comparison now uses UMAP-reduced embeddings (same dimensional space as clustering)
+    # This ensures fair comparison between text-based (c-TF-IDF) and embedding-based similarity methods
     
     # General settings
     verbose: bool = True
