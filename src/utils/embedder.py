@@ -5,8 +5,6 @@ import numpy as np
 import asyncio
 from typing import List, Dict, Optional
 from openai import AsyncOpenAI
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import models
 from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -36,9 +34,6 @@ class Embedder:
             self.tfidf_embedder = TfidfEmbedder(config=self.config.tfidf, verbose=verbose)
             self.verbose_reporter.stat_line(f"Initialized ensemble mode with weights: OpenAI {self.config.openai_weight}, TF-IDF {self.config.tfidf_weight}")
         
-        # For dimension reduction if needed
-        self.pca = None
-        self.scaler = None
         
         self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
     
@@ -357,12 +352,7 @@ class Embedder:
                 self.config.tfidf_weight
             )
         
-        # Reduce dimensions if configured
-        if self.config.reduce_dimensions and ensemble_embeddings.shape[1] > self.config.target_dimensions:
-            ensemble_embeddings = self._reduce_dimensions(
-                ensemble_embeddings,
-                self.config.target_dimensions
-            )
+        # No dimension reduction here - let UMAP handle it
         
         self.verbose_reporter.stat_line(f"Final ensemble embedding dims: {ensemble_embeddings.shape[1]}")
         return ensemble_embeddings
@@ -410,44 +400,3 @@ class Embedder:
         # Weighted average
         return (openai_emb * openai_weight + tfidf_emb * tfidf_weight) / (openai_weight + tfidf_weight)
     
-    def _reduce_dimensions(self, embeddings: np.ndarray, target_dim: int) -> np.ndarray:
-        """Reduce embedding dimensions using PCA"""
-        n_samples, n_features = embeddings.shape
-        
-        # Adjust target dimensions to be valid for PCA
-        max_components = min(n_samples, n_features)
-        actual_target_dim = min(target_dim, max_components)
-        
-        if actual_target_dim != target_dim:
-            self.verbose_reporter.stat_line(f"Adjusted target dimensions from {target_dim} to {actual_target_dim} (limited by sample size)")
-        
-        # Skip reduction if we're already at or below target dimensions
-        if n_features <= actual_target_dim:
-            self.verbose_reporter.stat_line(f"Skipping PCA: current dims ({n_features}) <= target ({actual_target_dim})")
-            return embeddings
-        
-        if self.pca is None or self.pca.n_components != actual_target_dim:
-            self.verbose_reporter.stat_line(f"Reducing dimensions from {n_features} to {actual_target_dim}")
-            
-            # Standardize before PCA
-            if self.scaler is None:
-                self.scaler = StandardScaler()
-                embeddings_scaled = self.scaler.fit_transform(embeddings)
-            else:
-                embeddings_scaled = self.scaler.transform(embeddings)
-            
-            # Apply PCA
-            if self.pca is None or self.pca.n_components != actual_target_dim:
-                self.pca = PCA(n_components=actual_target_dim, random_state=42)
-                reduced = self.pca.fit_transform(embeddings_scaled)
-            else:
-                reduced = self.pca.transform(embeddings_scaled)
-            
-            # Report variance explained
-            variance_explained = np.sum(self.pca.explained_variance_ratio_)
-            self.verbose_reporter.stat_line(f"PCA variance explained: {variance_explained:.2%}")
-            
-            return reduced
-        else:
-            embeddings_scaled = self.scaler.transform(embeddings)
-            return self.pca.transform(embeddings_scaled)
