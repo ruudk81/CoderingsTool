@@ -97,7 +97,7 @@ class CtfidfNoiseReducer:
     def _compare_ctfidf_vs_embedding_similarities(self, ctfidf_results: Dict, embedding_similarities: Dict, cluster_labels: List[int]) -> None:
         """Compare c-TF-IDF and embedding-based similarities for the same outlier points."""
         
-        self.verbose_reporter.step_start("c-TF-IDF vs Embedding Similarity Comparison", "🔬")
+        self.verbose_reporter.step_start("c-TF-IDF vs ORIGINAL Embedding Similarity Comparison", "🔬")
         
         # Find noise points for comparison
         noise_indices = [i for i, label in enumerate(cluster_labels) if label == -1]

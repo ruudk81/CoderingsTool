@@ -363,31 +363,52 @@ class ClusterGenerator:
         return similarities
 
     def _original_response_embedding_similarity(self, noise_indices: np.ndarray, labels: np.ndarray) -> Dict:
-        """Calculate similarities using SAME dimensional space as clustering for fair c-TF-IDF comparison"""
+        """Calculate similarities using ORIGINAL description embeddings reduced to 5D for fair c-TF-IDF comparison"""
         from sklearn.metrics.pairwise import cosine_similarity
         
-        # CRITICAL FIX: Use SAME dimensional space as clustering (UMAP-reduced embeddings)
-        # This ensures fair comparison between c-TF-IDF and embedding approaches
-        if self.embedding_type == "code":
-            embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
-            self.verbose_reporter.stat_line("🔬 Using UMAP-reduced code embeddings (same space as clustering)")
-        else:
-            embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
-            self.verbose_reporter.stat_line("🔬 Using UMAP-reduced description embeddings (same space as clustering)")
+        # NEW APPROACH: Use ORIGINAL response embeddings (before ensemble) but UMAP-reduce them to 5D
+        # This creates centroids from pure response content (not ensemble) in same dimensional space as clustering
+        try:
+            # Get original embeddings from the input models (before ensemble processing)
+            original_embeddings = []
+            for item in self.original_input_list:
+                for segment in item.response_segment:
+                    if self.embedding_type == "code":
+                        original_embeddings.append(segment.code_embedding)
+                    else:
+                        original_embeddings.append(segment.description_embedding)
+            
+            original_embeddings = np.array(original_embeddings)
+            self.verbose_reporter.stat_line(f"🔬 Retrieved {len(original_embeddings)} ORIGINAL embeddings from input models")
+            self.verbose_reporter.stat_line(f"🔍 Original embedding dimensions: {original_embeddings.shape[1]}D (before UMAP reduction)")
+            
+            # UMAP-reduce the original embeddings to 5D (same space as clustering)
+            original_reduced = self.dim_reduction_model.transform(original_embeddings)
+            self.verbose_reporter.stat_line(f"🔬 Reduced original embeddings to {original_reduced.shape[1]}D (matches clustering space)")
+            
+            # Verify we have the right number of embeddings
+            if len(original_reduced) != len(self.output_list):
+                self.verbose_reporter.stat_line(f"⚠️  Mismatch: {len(original_reduced)} original vs {len(self.output_list)} processed")
+                raise ValueError("Original embedding count mismatch")
+            
+            embeddings = original_reduced
+            self.verbose_reporter.stat_line("✅ Using ORIGINAL response embeddings reduced to 5D (pure content, no ensemble)")
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️  Could not access original embeddings ({e}), falling back to current approach")
+            # Fallback to current ensemble embeddings
+            if self.embedding_type == "code":
+                embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
+                self.verbose_reporter.stat_line("🔬 Fallback: Using UMAP-reduced code embeddings")
+            else:
+                embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+                self.verbose_reporter.stat_line("🔬 Fallback: Using UMAP-reduced ensemble description embeddings")
         
         # Debug: Show dimensional consistency
         if embeddings.size > 0:
-            self.verbose_reporter.stat_line(f"🔍 Embedding dimensions: {embeddings.shape[1]}D (matches clustering space)")
-            
-            # Show how clustering used these same embeddings
-            if self.embedding_type == "description":
-                cluster_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
-                if np.array_equal(embeddings, cluster_embeddings):
-                    self.verbose_reporter.stat_line("✅ Using IDENTICAL embeddings as clustering (fair comparison)")
-                else:
-                    self.verbose_reporter.stat_line("⚠️  Using DIFFERENT embeddings than clustering (unfair comparison)")
+            self.verbose_reporter.stat_line(f"🔍 Final embedding dimensions: {embeddings.shape[1]}D")
         
-        # Calculate centroids in same space as clustering
+        # Calculate centroids from the selected embeddings (original or fallback)
         centroids = {}
         unique_labels = np.unique(labels)
         
@@ -404,7 +425,7 @@ class ClusterGenerator:
         cluster_ids = list(centroids.keys())
         centroid_vectors = np.array(list(centroids.values()))
         
-        self.verbose_reporter.stat_line(f"📊 Calculated {len(centroids)} centroids in {centroid_vectors.shape[1]}D space")
+        self.verbose_reporter.stat_line(f"📊 Calculated {len(centroids)} centroids in {centroid_vectors.shape[1]}D space from ORIGINAL embeddings")
         
         similarities = {}
         for noise_idx in noise_indices:
