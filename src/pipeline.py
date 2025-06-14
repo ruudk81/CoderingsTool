@@ -35,7 +35,7 @@ DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostic
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
-USE_ENSEMBLE_EMBEDDINGS = True  # Enable ensemble OpenAI + TF-IDF embeddings
+USE_QUESTION_AWARE_EMBEDDINGS = True  # Enable question-aware embeddings
 
 # Initialize data loader and get variable label
 data_loader = dataLoader.DataLoader(verbose=False)
@@ -49,7 +49,7 @@ print(f"📊 Data file: {filename}")
 print(f"📌 Variable: {var_name} - {var_lab}")
 print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
 print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
-print(f"🔀 Ensemble embeddings: {USE_ENSEMBLE_EMBEDDINGS}")
+print(f"🔀 Question-aware embeddings: {USE_QUESTION_AWARE_EMBEDDINGS}")
 print(f"💬 Verbose mode: {VERBOSE}")
 print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
 print(f"🔍 Debug cluster tracking: {DEBUG_CLUSTER_TRACKING}")
@@ -409,31 +409,16 @@ else:
     # Step 5a: Generate embeddings
     print("\nEmbedding CODES and DESCRIPTIONS of response segments")
     
-    # Configure embeddings for ensemble mode if enabled
+    # Configure embeddings for question-aware mode if enabled
     from config import DEFAULT_EMBEDDING_CONFIG
     embedding_config = DEFAULT_EMBEDDING_CONFIG
-    if USE_ENSEMBLE_EMBEDDINGS:
-        embedding_config.use_ensemble = True
-        print(f"Ensemble mode enabled: {embedding_config.openai_weight:.1f} OpenAI + {embedding_config.tfidf_weight:.1f} TF-IDF + {embedding_config.domain_anchor_weight:.1f} Domain")
+    if USE_QUESTION_AWARE_EMBEDDINGS:
+        embedding_config.use_question_aware = True
+        print(f"Question-aware mode enabled: {embedding_config.response_weight:.1f} Response + {embedding_config.question_weight:.1f} Question + {embedding_config.domain_anchor_weight:.1f} Domain")
     
     get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
     
-    # Prepare TF-IDF model if ensemble mode is enabled
-    if get_embeddings.config.use_ensemble:
-        # Collect all segment descriptions for TF-IDF vocabulary
-        all_descriptions = []
-        for item in encoded_text:
-            for segment in item.response_segment:
-                if hasattr(segment, 'segment_description') and segment.segment_description:
-                    all_descriptions.append(segment.segment_description)
-        
-        print(f"Building TF-IDF vocabulary from {len(all_descriptions)} descriptions...")
-        get_embeddings.prepare_tfidf_model(all_descriptions)
-        
-        # Optionally print full vocabulary for inspection
-        if VERBOSE:
-            print("\n=== TF-IDF VOCABULARY ===")
-            get_embeddings.tfidf_embedder.print_full_vocabulary()
+    # Note: Question-aware mode will automatically use var_lab when generating embeddings
     
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     code_embeddings = get_embeddings.get_code_embeddings(input_data)
