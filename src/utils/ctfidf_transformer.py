@@ -65,6 +65,10 @@ class ClassTfidfTransformer(TfidfTransformer):
             # Calculate the average number of samples as regularization (BERTopic's way)
             avg_nr_samples = int(X.sum(axis=1).mean())
             
+            # Handle zero document frequencies to prevent division by zero
+            # This can happen when vectorizer creates features that don't appear in aggregated docs
+            df = np.where(df == 0, 1e-10, df)  # Replace zeros with tiny value
+            
             # BM25-inspired weighting procedure
             if self.bm25_weighting:
                 idf = np.log(1 + ((avg_nr_samples - df + 0.5) / (df + 0.5)))
@@ -136,12 +140,28 @@ class CtfidfTransformer:
         avg_nr_samples = int(X.sum(axis=1).mean())
         df = np.squeeze(np.asarray(X.sum(axis=0)))
         
+        # Debug zero document frequencies
+        zero_df_count = np.sum(df == 0)
+        if zero_df_count > 0:
+            self.verbose_reporter.stat_line(f"⚠️  Warning: {zero_df_count} features have zero document frequency")
+        
         self.verbose_reporter.stat_line(f"c-TF-IDF input: {X.shape[0]} topics, {n_features} features")
         self.verbose_reporter.stat_line(f"Average samples per topic: {avg_nr_samples}")
         self.verbose_reporter.stat_line(f"Document frequency range: {np.min(df):.1f} to {np.max(df):.1f}")
         
         # Use BERTopic's exact implementation
         result = self.transformer.fit_transform(X, multiplier)
+        
+        # Check for problematic values in result
+        if sp.issparse(result):
+            has_inf = np.isinf(result.data).any()
+            has_nan = np.isnan(result.data).any()
+        else:
+            has_inf = np.isinf(result).any()
+            has_nan = np.isnan(result).any()
+        
+        if has_inf or has_nan:
+            self.verbose_reporter.stat_line(f"⚠️  c-TF-IDF result has inf: {has_inf}, nan: {has_nan}")
         
         self.verbose_reporter.stat_line(f"c-TF-IDF output shape: {result.shape}")
         return result
