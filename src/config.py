@@ -388,6 +388,9 @@ class ClusteringConfig:
     filter_na_items: bool = True
     remap_cluster_ids: bool = True
     
+    # Debugging settings
+    enable_similarity_diagnostics: bool = False  # Enable detailed c-TF-IDF vs embedding comparison
+    
     # General settings
     verbose: bool = True
 

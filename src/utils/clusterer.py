@@ -334,24 +334,28 @@ class ClusterGenerator:
         return rescued_count
     
     def _ctfidf_rescue(self, current_labels: np.ndarray) -> int:
-        """Rescue remaining noise points using c-TF-IDF similarity"""
+        """Rescue remaining noise points using c-TF-IDF similarity with embedding comparison"""
         
-        # Prepare documents and labels for c-TF-IDF rescue
+        # Prepare documents, embeddings, and labels for hybrid rescue
         documents = []
-        cluster_labels = []
+        embeddings = []
+        cluster_labels = []        
         segment_ids = []
         
         for item in self.output_list:
             # Use description for text analysis (more content than labels)
             if self.embedding_type == "code":
                 text = item.segment_label or ""
+                embedding = item.code_embedding
                 cluster = item.initial_code_cluster
             else:
                 text = item.segment_description or ""
+                embedding = item.description_embedding
                 cluster = item.initial_description_cluster
             
-            if text and len(text.strip()) > 0:  # Only include non-empty texts
+            if text and len(text.strip()) > 0 and embedding is not None:  # Require both text and embedding
                 documents.append(text)
+                embeddings.append(embedding)
                 cluster_labels.append(cluster)
                 segment_ids.append(item.segment_id)
         
@@ -420,7 +424,7 @@ class ClusterGenerator:
             vocab_size = len(self.vectorizer_model.get_feature_names_out())
             self.verbose_reporter.stat_line(f"Vectorizer fitted: {vocab_size} features")
         
-        # Configure c-TF-IDF rescue
+        # Configure c-TF-IDF rescue with embedding comparison
         ctfidf_config = CtfidfNoiseRescueConfig(
             enabled=True,
             similarity_threshold=self.config.noise_rescue.ctfidf_similarity_threshold,
@@ -428,16 +432,17 @@ class ClusterGenerator:
             verbose=self.verbose
         )
         
-        # Initialize c-TF-IDF noise reducer with fitted vectorizer
+        # Initialize enhanced c-TF-IDF noise reducer with fitted vectorizer
         ctfidf_reducer = CtfidfNoiseReducer(
             vectorizer=self.vectorizer_model,
             config=ctfidf_config,
             verbose=self.verbose
         )
         
-        # Perform c-TF-IDF rescue
-        rescue_results = ctfidf_reducer.rescue_noise_points(
+        # Perform hybrid c-TF-IDF + embedding similarity rescue
+        rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
             documents=documents,
+            embeddings=np.array(embeddings),
             cluster_labels=cluster_labels,
             segment_ids=segment_ids
         )
@@ -496,6 +501,183 @@ class ClusterGenerator:
             self.verbose_reporter.stat_line(f"⚠️  Assignment mismatch: some segment_ids in new_assignments were not found in output_list or were not noise points")
         
         return rescued_count
+    
+    def run_similarity_diagnostics(self) -> Dict:
+        """
+        Run comprehensive diagnostics to compare c-TF-IDF vs embedding similarities.
+        This method helps identify why c-TF-IDF similarities are low.
+        """
+        self.verbose_reporter.section_header("SIMILARITY DIAGNOSTICS", "🔬")
+        
+        # Collect documents and embeddings for analysis
+        documents = []
+        embeddings = []
+        cluster_labels = []
+        
+        for item in self.output_list:
+            if self.embedding_type == "code":
+                text = item.segment_label or ""
+                embedding = item.code_embedding 
+                cluster = item.initial_code_cluster
+            else:
+                text = item.segment_description or ""
+                embedding = item.description_embedding
+                cluster = item.initial_description_cluster
+            
+            if text and len(text.strip()) > 0 and embedding is not None:
+                documents.append(text)
+                embeddings.append(embedding)
+                cluster_labels.append(cluster)
+        
+        if not documents:
+            self.verbose_reporter.stat_line("❌ No valid documents for diagnostics")
+            return {'error': 'No valid documents'}
+        
+        # 1. Verify c-TF-IDF implementation against BERTopic
+        self.verbose_reporter.step_start("Step 1: Verifying c-TF-IDF implementation", "🔍")
+        
+        try:
+            # Fit vectorizer if not already fitted
+            try:
+                self.vectorizer_model.get_feature_names_out()
+            except:
+                self.vectorizer_model.fit(documents)
+            
+            # Initialize c-TF-IDF transformer
+            from .ctfidf_transformer import CtfidfTransformer, CtfidfConfig
+            ctfidf_config = CtfidfConfig(verbose=True)
+            ctfidf_transformer = CtfidfTransformer(ctfidf_config, verbose=True)
+            
+            # Run BERTopic verification
+            verification_result = ctfidf_transformer.verify_bertopic_implementation(documents[:20])  # Use sample
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"❌ c-TF-IDF verification failed: {e}")
+            verification_result = {'error': str(e)}
+        
+        # 2. Analyze embedding properties
+        self.verbose_reporter.step_start("Step 2: Analyzing ensemble embeddings", "📊")
+        
+        embeddings_array = np.array(embeddings)
+        self.verbose_reporter.stat_line(f"Embedding shape: {embeddings_array.shape}")
+        self.verbose_reporter.stat_line(f"Embedding stats - Mean: {np.mean(embeddings_array):.4f}, Std: {np.std(embeddings_array):.4f}")
+        
+        # Check for ensemble embedding characteristics
+        embedding_norms = np.linalg.norm(embeddings_array, axis=1)
+        self.verbose_reporter.stat_line(f"Embedding norms - Min: {np.min(embedding_norms):.4f}, Max: {np.max(embedding_norms):.4f}")
+        
+        # 3. Compare approaches on actual noise points
+        self.verbose_reporter.step_start("Step 3: Comparing approaches on noise points", "🔍")
+        
+        noise_indices = [i for i, label in enumerate(cluster_labels) if label == -1]
+        if noise_indices:
+            noise_sample = noise_indices[:10]  # Sample first 10 noise points
+            
+            self.verbose_reporter.stat_line(f"Analyzing {len(noise_sample)} noise points out of {len(noise_indices)} total")
+            
+            # This will trigger the detailed comparison in the enhanced rescue method
+            try:
+                # Prepare sample data
+                sample_docs = [documents[i] for i in noise_sample]
+                sample_embeddings = embeddings_array[noise_sample]
+                sample_labels = [cluster_labels[i] for i in noise_sample]
+                sample_ids = [f"diagnostic_{i}" for i in range(len(sample_docs))]
+                
+                # Use the enhanced rescue method for detailed analysis
+                from .ctfidf_noise_reducer import CtfidfNoiseReducer, CtfidfNoiseRescueConfig
+                
+                config = CtfidfNoiseRescueConfig(
+                    similarity_threshold=0.05,  # Lower threshold for diagnostic
+                    verbose=True,
+                    show_examples=True,
+                    max_examples=5
+                )
+                
+                reducer = CtfidfNoiseReducer(self.vectorizer_model, config, verbose=True)
+                
+                # Run enhanced rescue for diagnostic purposes
+                diagnostic_result = reducer.rescue_noise_points_with_embedding_comparison(
+                    documents=documents,  # Full document set for proper c-TF-IDF
+                    embeddings=embeddings_array,
+                    cluster_labels=cluster_labels,
+                    segment_ids=[f"diag_{i}" for i in range(len(documents))]
+                )
+                
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"❌ Comparative analysis failed: {e}")
+                diagnostic_result = {'error': str(e)}
+        else:
+            self.verbose_reporter.stat_line("No noise points found for comparison")
+            diagnostic_result = {'no_noise': True}
+        
+        # 4. Analyze text vs embedding semantic gap
+        self.verbose_reporter.step_start("Step 4: Analyzing semantic gap", "🕰️")
+        
+        # Sample document analysis
+        if len(documents) >= 5:
+            sample_indices = np.random.choice(len(documents), 5, replace=False)
+            
+            self.verbose_reporter.stat_line("Sample document analysis:")
+            for i, idx in enumerate(sample_indices):
+                doc = documents[idx]
+                doc_preview = doc[:80] + "..." if len(doc) > 80 else doc
+                
+                # Analyze text characteristics
+                word_count = len(doc.split())
+                char_count = len(doc)
+                
+                self.verbose_reporter.stat_line(f"  {i+1}. '{doc_preview}'")
+                self.verbose_reporter.stat_line(f"      Words: {word_count}, Chars: {char_count}, Cluster: {cluster_labels[idx]}")
+        
+        # Summary and recommendations
+        self.verbose_reporter.step_start("Step 5: Summary and recommendations", "📜")
+        
+        recommendations = []
+        
+        if verification_result.get('matrices_identical', False):
+            recommendations.append("✅ c-TF-IDF implementation is correct")
+        else:
+            recommendations.append("⚠️ c-TF-IDF implementation may have issues")
+        
+        # Check embedding properties
+        avg_norm = np.mean(embedding_norms)
+        if avg_norm < 0.5:
+            recommendations.append("⚠️ Embeddings have low norms - may indicate scaling issues")
+        elif avg_norm > 2.0:
+            recommendations.append("⚠️ Embeddings have high norms - may need normalization")
+        else:
+            recommendations.append("✅ Embedding norms appear reasonable")
+        
+        # Check noise ratio
+        noise_ratio = len(noise_indices) / len(cluster_labels) if cluster_labels else 0
+        if noise_ratio > 0.5:
+            recommendations.append(f"⚠️ High noise ratio ({noise_ratio:.1%}) suggests clustering issues")
+        elif noise_ratio > 0.3:
+            recommendations.append(f"⚠️ Moderate noise ratio ({noise_ratio:.1%}) - rescue methods helpful")
+        else:
+            recommendations.append(f"✅ Low noise ratio ({noise_ratio:.1%}) indicates good clustering")
+        
+        # Ensemble embedding considerations
+        recommendations.append("💡 Ensemble embeddings (0.6 response + 0.3 question + 0.1 domain) may differ semantically from raw text")
+        recommendations.append("💡 c-TF-IDF uses raw text while similarities use ensemble embeddings - this creates semantic gap")
+        recommendations.append("💡 Consider adjusting similarity thresholds or using embedding-based rescue as primary method")
+        
+        self.verbose_reporter.sample_list("Diagnostic recommendations", recommendations)
+        
+        self.verbose_reporter.section_header("DIAGNOSTICS COMPLETE", "✅")
+        
+        return {
+            'verification_result': verification_result,
+            'diagnostic_result': diagnostic_result,
+            'embedding_stats': {
+                'shape': embeddings_array.shape,
+                'mean': np.mean(embeddings_array),
+                'std': np.std(embeddings_array),
+                'avg_norm': np.mean(embedding_norms)
+            },
+            'noise_ratio': noise_ratio,
+            'recommendations': recommendations
+        }
 
     def rescue_noise_points(self) -> Dict[str, int]:
         """Rescue noise points using hybrid strategy: cosine similarity → c-TF-IDF"""
@@ -694,7 +876,11 @@ class ClusterGenerator:
         # Step 2: Perform initial clustering
         self.add_initial_clusters()
         
-        # Step 2.5: Rescue noise points (if enabled)
+        # Step 2.5: Run similarity diagnostics (if in debug mode)
+        if self.config.enable_similarity_diagnostics:
+            self.diagnostic_results = self.run_similarity_diagnostics()
+        
+        # Step 2.6: Rescue noise points (if enabled)
         self.rescue_stats = self.rescue_noise_points()
         
         # Step 3: Calculate and display quality metrics (if enabled)

@@ -8,6 +8,7 @@ from sklearn.preprocessing import normalize
 from sklearn.utils import check_array
 from sklearn.metrics.pairwise import cosine_similarity
 from dataclasses import dataclass
+from typing import List, Dict
 
 from .verboseReporter import VerboseReporter
 
@@ -175,3 +176,92 @@ class CtfidfTransformer:
         similarity = cosine_similarity(X_outliers, X_topics)
         self.verbose_reporter.stat_line(f"Calculated similarity for {X_outliers.shape[0]} outliers vs {X_topics.shape[0]} topics")
         return similarity
+    
+    def verify_bertopic_implementation(self, test_documents: List[str]) -> Dict:
+        """
+        Verify our c-TF-IDF implementation matches BERTopic's exactly.
+        
+        This method creates test topic representations and compares our implementation
+        with BERTopic's reference implementation from the source code.
+        """
+        self.verbose_reporter.step_start("Verifying c-TF-IDF implementation against BERTopic", "🔬")
+        
+        try:
+            from sklearn.feature_extraction.text import CountVectorizer
+            
+            # Create a simple test case
+            # Simulate topic documents (aggregated per cluster)
+            topic_docs = [
+                " ".join(test_documents[:len(test_documents)//3]),  # Topic 0
+                " ".join(test_documents[len(test_documents)//3:2*len(test_documents)//3]),  # Topic 1
+                " ".join(test_documents[2*len(test_documents)//3:])  # Topic 2
+            ]
+            
+            # Create vectorizer and count matrix
+            vectorizer = CountVectorizer(min_df=1, ngram_range=(1, 2))
+            X_counts = vectorizer.fit_transform(topic_docs)
+            
+            self.verbose_reporter.stat_line(f"Test setup: {X_counts.shape[0]} topics, {X_counts.shape[1]} features")
+            
+            # Test our implementation
+            our_result = self.transformer.fit_transform(X_counts)
+            
+            # Compare with reference BERTopic implementation
+            from bertopic.vectorizers._ctfidf import ClassTfidfTransformer as BertopicTransformer
+            
+            bertopic_transformer = BertopicTransformer(
+                bm25_weighting=self.config.bm25_weighting,
+                reduce_frequent_words=self.config.reduce_frequent_words,
+                seed_words=self.config.seed_words,
+                seed_multiplier=self.config.seed_multiplier
+            )
+            
+            bertopic_result = bertopic_transformer.fit_transform(X_counts)
+            
+            # Compare results
+            if sp.issparse(our_result):
+                our_dense = our_result.toarray()
+            else:
+                our_dense = our_result
+                
+            if sp.issparse(bertopic_result):
+                bertopic_dense = bertopic_result.toarray()
+            else:
+                bertopic_dense = bertopic_result
+            
+            # Calculate differences
+            max_diff = np.max(np.abs(our_dense - bertopic_dense))
+            mean_diff = np.mean(np.abs(our_dense - bertopic_dense))
+            
+            # Check if matrices are practically identical
+            are_identical = np.allclose(our_dense, bertopic_dense, atol=1e-10)
+            
+            verification_results = {
+                'matrices_identical': are_identical,
+                'max_difference': max_diff,
+                'mean_difference': mean_diff,
+                'our_shape': our_result.shape,
+                'bertopic_shape': bertopic_result.shape,
+                'our_nonzero': np.count_nonzero(our_dense),
+                'bertopic_nonzero': np.count_nonzero(bertopic_dense)
+            }
+            
+            self.verbose_reporter.stat_line(f"Implementation verification:")
+            self.verbose_reporter.stat_line(f"  Matrices identical: {are_identical}")
+            self.verbose_reporter.stat_line(f"  Max difference: {max_diff:.2e}")
+            self.verbose_reporter.stat_line(f"  Mean difference: {mean_diff:.2e}")
+            
+            if are_identical:
+                self.verbose_reporter.stat_line("✅ Our c-TF-IDF implementation matches BERTopic exactly!")
+            else:
+                self.verbose_reporter.stat_line("⚠️ Implementation differences detected - investigation needed")
+            
+            self.verbose_reporter.step_complete("c-TF-IDF verification completed")
+            return verification_results
+            
+        except ImportError as e:
+            self.verbose_reporter.stat_line(f"❌ Cannot import BERTopic for verification: {e}")
+            return {'error': 'BERTopic import failed'}
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"❌ Verification failed: {e}")
+            return {'error': str(e)}

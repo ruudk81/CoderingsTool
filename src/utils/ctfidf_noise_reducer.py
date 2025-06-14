@@ -5,6 +5,7 @@ import pandas as pd
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict, Counter
 from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from dataclasses import dataclass
 
 from .ctfidf_transformer import CtfidfTransformer, CtfidfConfig
@@ -341,6 +342,276 @@ class CtfidfNoiseReducer:
             'new_assignments': new_assignments,
             'method': 'c-tf-idf'
         }
+    
+    def rescue_noise_points_with_embedding_comparison(self, 
+                                                    documents: List[str],
+                                                    embeddings: np.ndarray,
+                                                    cluster_labels: List[int],
+                                                    segment_ids: List[str] = None) -> Dict:
+        """
+        Enhanced rescue that compares c-TF-IDF and embedding-based similarities.
+        
+        This method implements the debugging approach to compare:
+        1. c-TF-IDF similarity (text-based, used by BERTopic)
+        2. Embedding-based cosine similarity (using ensemble embeddings)
+        
+        The goal is to identify discrepancies and understand the semantic gap.
+        """
+        self.verbose_reporter.step_start("Enhanced c-TF-IDF + embedding comparison rescue", "🔍")
+        
+        # Prepare data
+        df = pd.DataFrame({
+            'document': documents,
+            'embedding': list(embeddings),
+            'cluster': cluster_labels,
+            'segment_id': segment_ids if segment_ids else range(len(documents))
+        })
+        
+        # Filter out very short documents
+        df = df[df['document'].str.len() >= self.config.min_doc_length]
+        
+        # Identify topics and outliers
+        topics_df = df[df['cluster'] != -1]
+        outliers_df = df[df['cluster'] == -1]
+        
+        self.verbose_reporter.stat_line(f"Total documents: {len(df)}")
+        self.verbose_reporter.stat_line(f"Valid topics: {len(topics_df)}")
+        self.verbose_reporter.stat_line(f"Outliers to rescue: {len(outliers_df)}")
+        
+        if len(outliers_df) == 0:
+            self.verbose_reporter.stat_line("No outliers to rescue")
+            self.verbose_reporter.step_complete("Enhanced rescue completed")
+            return self._create_results(0, 0, {})
+        
+        # Limit rescue attempts
+        if len(outliers_df) > self.config.max_rescue_attempts:
+            self.verbose_reporter.stat_line(f"Limiting rescue to {self.config.max_rescue_attempts} attempts")
+            outliers_df = outliers_df.head(self.config.max_rescue_attempts)
+        
+        # Build both c-TF-IDF and embedding representations
+        topic_info = self._build_topic_representations(topics_df)
+        if not topic_info:
+            self.verbose_reporter.stat_line("No valid topics for comparison")
+            self.verbose_reporter.step_complete("Enhanced rescue completed")
+            return self._create_results(0, len(outliers_df), {})
+        
+        # Calculate embedding-based centroids
+        embedding_centroids = self._calculate_embedding_centroids(topics_df, topic_info['cluster_ids'])
+        
+        # Perform dual similarity rescue
+        rescue_results = self._rescue_outliers_with_comparison(outliers_df, topic_info, embedding_centroids)
+        
+        self.verbose_reporter.step_complete("Enhanced c-TF-IDF + embedding comparison rescue completed")
+        return rescue_results
+    
+    def _calculate_embedding_centroids(self, topics_df: pd.DataFrame, cluster_ids: List[int]) -> Dict[int, np.ndarray]:
+        """Calculate cluster centroids from ensemble embeddings"""
+        self.verbose_reporter.stat_line("Calculating embedding centroids...")
+        
+        centroids = {}
+        for cluster_id in cluster_ids:
+            cluster_embeddings = topics_df[topics_df['cluster'] == cluster_id]['embedding'].tolist()
+            if cluster_embeddings:
+                # Convert to numpy array and calculate mean
+                embeddings_array = np.array(cluster_embeddings)
+                centroids[cluster_id] = np.mean(embeddings_array, axis=0)
+        
+        self.verbose_reporter.stat_line(f"Calculated {len(centroids)} embedding centroids")
+        return centroids
+    
+    def _rescue_outliers_with_comparison(self, outliers_df: pd.DataFrame, 
+                                       topic_info: Dict, 
+                                       embedding_centroids: Dict[int, np.ndarray]) -> Dict:
+        """Rescue outliers while comparing c-TF-IDF and embedding similarities"""
+        self.verbose_reporter.stat_line("Calculating both c-TF-IDF and embedding similarities...")
+        
+        # Get outlier data
+        outlier_docs = outliers_df['document'].tolist()
+        outlier_embeddings = np.array(outliers_df['embedding'].tolist())
+        
+        # Calculate c-TF-IDF similarities (existing approach)
+        try:
+            X_outliers = self.vectorizer.transform(outlier_docs)
+            X_outliers_ctfidf = self.ctfidf_transformer.transform(X_outliers)
+            ctfidf_similarities = self.ctfidf_transformer.calculate_similarity(
+                X_outliers_ctfidf, topic_info['topic_representations']
+            )
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"❌ Error calculating c-TF-IDF similarities: {e}")
+            return self._create_results(0, len(outliers_df), {})
+        
+        # Calculate embedding-based similarities
+        cluster_ids = topic_info['cluster_ids']
+        centroid_embeddings = np.array([embedding_centroids[cid] for cid in cluster_ids])
+        embedding_similarities = cosine_similarity(outlier_embeddings, centroid_embeddings)
+        
+        # Compare and analyze similarities
+        self._analyze_similarity_comparison(ctfidf_similarities, embedding_similarities, 
+                                          outlier_docs, cluster_ids)
+        
+        # Apply rescue using both approaches
+        rescue_results = self._apply_dual_rescue(outliers_df, ctfidf_similarities, 
+                                               embedding_similarities, cluster_ids)
+        
+        return rescue_results
+    
+    def _analyze_similarity_comparison(self, ctfidf_sims: np.ndarray, 
+                                     embedding_sims: np.ndarray,
+                                     outlier_docs: List[str],
+                                     cluster_ids: List[int]) -> None:
+        """Detailed analysis comparing c-TF-IDF vs embedding similarities"""
+        self.verbose_reporter.stat_line("")
+        self.verbose_reporter.stat_line("=== SIMILARITY COMPARISON ANALYSIS ===")
+        
+        # Calculate best similarities for each approach
+        ctfidf_best = np.max(ctfidf_sims, axis=1)
+        embedding_best = np.max(embedding_sims, axis=1)
+        
+        # Basic statistics
+        self.verbose_reporter.stat_line(f"c-TF-IDF similarities:")
+        self.verbose_reporter.stat_line(f"  Min: {np.min(ctfidf_best):.4f}, Max: {np.max(ctfidf_best):.4f}")
+        self.verbose_reporter.stat_line(f"  Mean: {np.mean(ctfidf_best):.4f}, Std: {np.std(ctfidf_best):.4f}")
+        
+        self.verbose_reporter.stat_line(f"Embedding similarities:")
+        self.verbose_reporter.stat_line(f"  Min: {np.min(embedding_best):.4f}, Max: {np.max(embedding_best):.4f}")
+        self.verbose_reporter.stat_line(f"  Mean: {np.mean(embedding_best):.4f}, Std: {np.std(embedding_best):.4f}")
+        
+        # Threshold analysis
+        ctfidf_threshold = self.config.similarity_threshold
+        
+        ctfidf_above_thresh = np.sum(ctfidf_best >= ctfidf_threshold)
+        embedding_above_thresh = np.sum(embedding_best >= ctfidf_threshold)
+        
+        self.verbose_reporter.stat_line(f"")
+        self.verbose_reporter.stat_line(f"Above threshold ({ctfidf_threshold}):")
+        self.verbose_reporter.stat_line(f"  c-TF-IDF: {ctfidf_above_thresh}/{len(ctfidf_best)} ({ctfidf_above_thresh/len(ctfidf_best):.1%})")
+        self.verbose_reporter.stat_line(f"  Embedding: {embedding_above_thresh}/{len(embedding_best)} ({embedding_above_thresh/len(embedding_best):.1%})")
+        
+        # Correlation analysis
+        correlation = np.corrcoef(ctfidf_best, embedding_best)[0, 1]
+        self.verbose_reporter.stat_line(f"Correlation between approaches: {correlation:.4f}")
+        
+        # Show examples of high discrepancy cases
+        differences = np.abs(ctfidf_best - embedding_best)
+        high_discrepancy_indices = np.argsort(differences)[-3:]  # Top 3 discrepancies
+        
+        self.verbose_reporter.stat_line(f"")
+        self.verbose_reporter.stat_line(f"HIGH DISCREPANCY EXAMPLES:")
+        for i, idx in enumerate(high_discrepancy_indices):
+            doc_preview = outlier_docs[idx][:60] + "..." if len(outlier_docs[idx]) > 60 else outlier_docs[idx]
+            
+            # Find best clusters for each approach
+            ctfidf_best_cluster_idx = np.argmax(ctfidf_sims[idx])
+            embedding_best_cluster_idx = np.argmax(embedding_sims[idx])
+            
+            ctfidf_best_cluster = cluster_ids[ctfidf_best_cluster_idx]
+            embedding_best_cluster = cluster_ids[embedding_best_cluster_idx]
+            
+            self.verbose_reporter.stat_line(f"  Example {i+1}: '{doc_preview}'")
+            self.verbose_reporter.stat_line(f"    c-TF-IDF: {ctfidf_best[idx]:.4f} → cluster {ctfidf_best_cluster}")
+            self.verbose_reporter.stat_line(f"    Embedding: {embedding_best[idx]:.4f} → cluster {embedding_best_cluster}")
+            self.verbose_reporter.stat_line(f"    Difference: {differences[idx]:.4f}")
+        
+        # Agreement analysis
+        ctfidf_best_clusters = [cluster_ids[np.argmax(ctfidf_sims[i])] for i in range(len(ctfidf_sims))]
+        embedding_best_clusters = [cluster_ids[np.argmax(embedding_sims[i])] for i in range(len(embedding_sims))]
+        
+        agreement = np.sum(np.array(ctfidf_best_clusters) == np.array(embedding_best_clusters))
+        self.verbose_reporter.stat_line(f"")
+        self.verbose_reporter.stat_line(f"Cluster assignment agreement: {agreement}/{len(ctfidf_best_clusters)} ({agreement/len(ctfidf_best_clusters):.1%})")
+        
+        self.verbose_reporter.stat_line("=== END SIMILARITY COMPARISON ===")
+        self.verbose_reporter.stat_line("")
+    
+    def _apply_dual_rescue(self, outliers_df: pd.DataFrame,
+                          ctfidf_sims: np.ndarray,
+                          embedding_sims: np.ndarray,
+                          cluster_ids: List[int]) -> Dict:
+        """Apply rescue using primary c-TF-IDF with embedding as fallback"""
+        rescued_count = 0
+        new_assignments = {}
+        rescue_examples = []
+        
+        threshold = self.config.similarity_threshold
+        
+        # Track rescue methods
+        ctfidf_rescues = 0
+        embedding_rescues = 0
+        both_rescues = 0
+        
+        for i, (idx, row) in enumerate(outliers_df.iterrows()):
+            ctfidf_scores = ctfidf_sims[i]
+            embedding_scores = embedding_sims[i]
+            
+            ctfidf_best_idx = np.argmax(ctfidf_scores)
+            embedding_best_idx = np.argmax(embedding_scores)
+            
+            ctfidf_best_sim = ctfidf_scores[ctfidf_best_idx]
+            embedding_best_sim = embedding_scores[embedding_best_idx]
+            
+            # Primary: Use c-TF-IDF if above threshold
+            if ctfidf_best_sim >= threshold:
+                new_cluster = cluster_ids[ctfidf_best_idx]
+                rescue_method = "c-TF-IDF"
+                best_sim = ctfidf_best_sim
+                ctfidf_rescues += 1
+                
+                # Check if embedding would also rescue
+                if embedding_best_sim >= threshold:
+                    both_rescues += 1
+                    if cluster_ids[embedding_best_idx] == new_cluster:
+                        rescue_method = "both (agree)"
+                    else:
+                        rescue_method = "both (disagree)"
+            
+            # Fallback: Use embedding if c-TF-IDF failed but embedding succeeds
+            elif embedding_best_sim >= threshold:
+                new_cluster = cluster_ids[embedding_best_idx]
+                rescue_method = "embedding"
+                best_sim = embedding_best_sim
+                embedding_rescues += 1
+            
+            else:
+                # Neither approach rescues this point
+                continue
+            
+            # Record the rescue
+            new_assignments[row['segment_id']] = new_cluster
+            rescued_count += 1
+            
+            # Collect examples for reporting
+            if self.config.show_examples and len(rescue_examples) < self.config.max_examples:
+                rescue_examples.append({
+                    'document': row['document'][:60] + "..." if len(row['document']) > 60 else row['document'],
+                    'cluster': new_cluster,
+                    'similarity': best_sim,
+                    'method': rescue_method,
+                    'ctfidf_sim': ctfidf_best_sim,
+                    'embedding_sim': embedding_best_sim
+                })
+        
+        # Report results
+        total_outliers = len(outliers_df)
+        success_rate = rescued_count / total_outliers if total_outliers > 0 else 0.0
+        
+        self.verbose_reporter.stat_line(f"")
+        self.verbose_reporter.stat_line(f"=== DUAL RESCUE RESULTS ===")
+        self.verbose_reporter.stat_line(f"Total rescued: {rescued_count}/{total_outliers} ({success_rate:.1%})")
+        self.verbose_reporter.stat_line(f"c-TF-IDF rescues: {ctfidf_rescues}")
+        self.verbose_reporter.stat_line(f"Embedding rescues: {embedding_rescues}")
+        self.verbose_reporter.stat_line(f"Both methods agreed: {ctfidf_rescues - (both_rescues - embedding_rescues)}")
+        self.verbose_reporter.stat_line(f"Both methods disagreed: {both_rescues - (ctfidf_rescues - (both_rescues - embedding_rescues))}")
+        
+        # Show rescue examples
+        if rescue_examples:
+            example_texts = []
+            for ex in rescue_examples:
+                example_texts.append(
+                    f"→ Cluster {ex['cluster']} via {ex['method']} (c-TF-IDF: {ex['ctfidf_sim']:.3f}, emb: {ex['embedding_sim']:.3f}): {ex['document']}"
+                )
+            self.verbose_reporter.sample_list("Dual rescue examples", example_texts)
+        
+        return self._create_results(rescued_count, total_outliers, new_assignments)
     
     def get_topic_terms(self, topic_cluster_id: int, top_k: int = 10) -> List[Tuple[str, float]]:
         """Get top terms for a specific topic based on c-TF-IDF scores."""
