@@ -97,18 +97,13 @@ else:
         print(f"{data_type}: {count} items")
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
-    # debug 
-    # import random
-    # n_samples = 5
-    # indices = random.sample(range(len(raw_unstructued)), n_samples)
-    
-    # # for i in indices:
-    # #     print("Raw unstructured:", raw_unstructued[i])
-    # #     print("---")    
-    # # print("\n")
-    # for i in indices:
-    #     print("Raw structured:", raw_text_list[i])
-    #     print("---")    
+# debug 
+# import random
+# n_samples = 5
+# indices = random.sample(range(len(raw_text_list)), n_samples)
+# for i in indices:
+#     print("Raw structured:", raw_text_list[i])
+#     print("---")        
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
@@ -117,7 +112,7 @@ from utils import textNormalizer, spellChecker, textFinalizer
 from utils.verboseReporter import VerboseReporter
 from utils.promptPrinter import promptPrinter
 
-FORCE = True
+FORCE = False
 
 step_name        = "preprocessed"
 if  FORCE:
@@ -144,7 +139,7 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     for code, count in code_counts.items():
         verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
     verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
-    
+else:    
     verbose_reporter.section_header("PREPROCESSING PHASE")
     # intialize utils
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
@@ -235,20 +230,20 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-    #debug
-    # import random
-    # n_samples = 5
-    # indices = random.sample(range(len(preprocessed_text)), n_samples)
-    # for i in indices:
-    #     if preprocessed_text[i].quality_filter_code == None:
-    #         print("Preprocessed:", preprocessed_text[i].response)
-    #         print("---")
+#debug
+# import random
+# n_samples = 5
+# indices = random.sample(range(len(preprocessed_text)), n_samples)
+# for i in indices:
+#     if preprocessed_text[i].quality_filter_code == None:
+#         print("Preprocessed:", preprocessed_text[i].response)
+#         print("---")    
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
 from utils import qualityFilter
 
-FORCE = True
+FORCE = False
 
 step_name        = "quality_filter"
 if  FORCE:
@@ -260,10 +255,18 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     quality_filtered_text = cache_manager.load_from_cache(filename, step_name, models.QualityFilteredModel)
-    filtered = [item.quality_filter for item in quality_filtered_text if item.quality_filter]
-    qualified = len([item.quality_filter for item in quality_filtered_text if not item.quality_filter])
-    filtering_rate = 100 * (len(filtered)/len(quality_filtered_text))
-    verbose_reporter.summary("QUALITY FILTERED RESPONSES FROM CACHE", {f"Input: {len(preprocessed_text)} responses → Output": f"{qualified} responses", "Filtering rate": f"{filtering_rate:.1f}%"})
+    input_len = len([item.response for item in quality_filtered_text if item.quality_filter_code != 99999998] )
+    filtered_len = len([item.quality_filter for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999998])
+    code_counts = {}
+    for item in quality_filtered_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    verbose_reporter.summary("QUALIFIED RESPONESES FROM CACHE", {"• Input" : f"{input_len} responses"})
+    for code, count in code_counts.items():
+            if code != 99999998:
+                verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
+    verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
 else:
     verbose_reporter.section_header("QUALITY FILTERING PHASE")
     start_time = time.time()
@@ -291,20 +294,25 @@ else:
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
-    #debug
-    # import random
-    # n_samples = 5
-    # indices = random.sample(range(len(quality_filtered_text)), n_samples)
-    # for i in indices:
-    #     print("Filtered:", quality_filtered_text[i])
-    #     print("---")
+#debug
+# import random
+# n_samples = 5
+# indices = random.sample(range(len(quality_filtered_text)), n_samples)
+# for i in indices:
+#     print("Filtered:", quality_filtered_text[i])
+#     print("---")    
 
 
 # === STEP 4 ========================================================================================================
 """describe and segment data"""
 from utils import segmentDescriber
 
+FORCE = True
+
 step_name        = "segmented_descriptions"
+if  FORCE:
+    FORCE_STEP   = step_name
+
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
@@ -325,14 +333,25 @@ else:
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
-    # debug
-    # import random
-    # n_samples = 5
-    # sampled_items = random.sample(encoded_text, n_samples)
-    # for item in sampled_items:
-    #     for segment in item.response_segment:
-    #         print(segment.segment_description)
-    # print("\n")
+
+# debug 1 - per response
+# import random
+# sampled_items = random.sample(encoded_text, 1)
+# print(f"Q: {var_lab}\n")
+# for item in sampled_items:
+#     print(f"A: {item.response}\n")
+#     for segment in item.response_segment:
+#         print(f"-    {segment.segment_description}")
+
+# debug 2 - example outputs
+# import random
+# n_samples = 5
+# sampled_items = random.sample(encoded_text, n_samples)
+# for item in sampled_items:
+#     for segment in item.response_segment:
+#         print(segment.segment_description)
+# print("\n")    
+    
 
 
 # === STEP 5 ========================================================================================================
