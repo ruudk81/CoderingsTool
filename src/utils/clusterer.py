@@ -370,8 +370,16 @@ class ClusterGenerator:
         try:
             original_embeddings = np.array([item.description_embedding for item in self.output_list])
             self.verbose_reporter.stat_line("🔬 Calculating similarities with original response embeddings")
-        except:
-            self.verbose_reporter.stat_line("⚠️  Original embeddings not available, using ensemble embeddings")
+            
+            # Debug: Check if these are actually different from ensemble embeddings
+            if self.embedding_type == "description":
+                test_ensemble = np.array([item.reduced_description_embedding for item in self.output_list[:5]])
+                test_original = original_embeddings[:5]
+                diff = np.mean(np.abs(test_ensemble - test_original))
+                self.verbose_reporter.stat_line(f"🔍 Debug: Average difference between original and ensemble embeddings: {diff:.6f}")
+                
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"⚠️  Original embeddings not available ({e}), using ensemble embeddings")
             if self.embedding_type == "code":
                 original_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
             else:
@@ -637,12 +645,16 @@ class ClusterGenerator:
         
         # Perform hybrid c-TF-IDF + embedding similarity rescue
         try:
-            rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
-                documents=documents,
-                cluster_labels=cluster_labels,
-                segment_ids=segment_ids,
-                embedding_similarities=original_similarities  # Use original embeddings for fairer comparison
-            )
+            # Check if enhanced method exists
+            if hasattr(ctfidf_reducer, 'rescue_noise_points_with_embedding_comparison'):
+                rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
+                    documents=documents,
+                    cluster_labels=cluster_labels,
+                    segment_ids=segment_ids,
+                    embedding_similarities=original_similarities  # Use original embeddings for fairer comparison
+                )
+            else:
+                raise AttributeError("Enhanced method not available")
         except TypeError as e:
             self.verbose_reporter.stat_line(f"⚠️  Enhanced rescue failed: {e}")
             self.verbose_reporter.stat_line("Falling back to standard c-TF-IDF rescue")

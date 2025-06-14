@@ -20,10 +20,27 @@ def verify_bertopic_implementation():
     print("=" * 50)
     
     try:
-        # Read BERTopic source
-        bertopic_source_path = "/workspaces/CoderingsTool/bertopic/vectorizers/_ctfidf.py"
-        with open(bertopic_source_path, 'r') as f:
-            bertopic_source = f.read()
+        # Read BERTopic source - handle both relative and absolute paths
+        import os
+        possible_paths = [
+            "/workspaces/CoderingsTool/bertopic/vectorizers/_ctfidf.py",
+            "../bertopic/vectorizers/_ctfidf.py",
+            "../../bertopic/vectorizers/_ctfidf.py",
+            os.path.join(os.path.dirname(__file__), "..", "..", "bertopic", "vectorizers", "_ctfidf.py")
+        ]
+        
+        bertopic_source = None
+        for path in possible_paths:
+            try:
+                with open(path, 'r') as f:
+                    bertopic_source = f.read()
+                    print(f"✅ Found BERTopic source at: {path}")
+                    break
+            except FileNotFoundError:
+                continue
+        
+        if not bertopic_source:
+            raise FileNotFoundError("Could not find BERTopic source file in any expected location")
         
         # Check key implementation details
         checks = [
