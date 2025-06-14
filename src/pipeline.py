@@ -511,6 +511,7 @@ else:
 
     thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
     labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
+    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
 
 
 # # debug
