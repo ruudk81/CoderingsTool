@@ -307,7 +307,7 @@ class EmbeddingConfig:
     openai_weight: float = 0.7  # Weight for OpenAI embeddings
     tfidf_weight: float = 0.3  # Weight for TF-IDF embeddings
     ensemble_combination: str = "weighted_concat"  # Options: "weighted_concat", "weighted_average"
-    reduce_dimensions: bool = True  # Reduce dimensions after concatenation
+    reduce_dimensions: bool = False  # Let UMAP handle dimensionality reduction
     target_dimensions: int = 768  # Target dimensions if reducing
     
     # TF-IDF configuration
