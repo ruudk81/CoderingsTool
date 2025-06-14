@@ -1,21 +1,33 @@
 # === FOLDERS TO IGNORE ===
+data/
+data/cache/
+data/exports/
 backup/
 env/
 hunspell/
+__pycache__/
 
 # === SPECIFIC FILES TO IGNORE === 
 Coderingstool
 Features.xlsx
 Technical description.docx
 
-# === IGNORE EVERYTHING IN data/, EXCEPT .sav FILES ===
-data/*
-data/**/
-!data/*.sav
+# === MODEL / CACHE FILES ===
+*.pkl
+*.joblib
+*.npy
+*.npz
+*.pt
+*.h5
 
-# === PYTHON CACHE FILES ===
-__pycache__/
+# === PYTHON BYTECODE FILES ===
 *.pyc
 *.pyo
 *.pyd
-.Pythonclaude-edits.zip
+
+# === JUPYTER NOTEBOOK CHECKPOINTS ===
+.ipynb_checkpoints/
+
+# === MISC ===
+.Python
+claude-edits.zip
