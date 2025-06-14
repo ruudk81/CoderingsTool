@@ -175,13 +175,8 @@ class CtfidfNoiseReducer:
                 sample_vocab = list(self.feature_names[:10])
                 self.verbose_reporter.sample_list("Sample vocabulary", sample_vocab)
             
-            # Calculate samples per topic for proper IDF
-            n_samples_per_topic = [topic_sizes[cluster] for cluster in topic_docs['cluster']]
-            
-            # Transform to c-TF-IDF
-            self.topic_representations = self.ctfidf_transformer.fit_transform(
-                X_topics, n_samples_per_topic
-            )
+            # Transform to c-TF-IDF using BERTopic's exact method
+            self.topic_representations = self.ctfidf_transformer.fit_transform(X_topics)
             
             return {
                 'cluster_ids': topic_docs['cluster'].tolist(),

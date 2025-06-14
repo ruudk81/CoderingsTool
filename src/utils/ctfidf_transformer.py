@@ -3,8 +3,9 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import numpy as np
 import scipy.sparse as sp
 from typing import Union, List, Optional
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.preprocessing import normalize
+from sklearn.utils import check_array
 from sklearn.metrics.pairwise import cosine_similarity
 from dataclasses import dataclass
 
@@ -16,172 +17,141 @@ class CtfidfConfig:
     """Configuration for c-TF-IDF transformer"""
     bm25_weighting: bool = False  # Use BM25-inspired weighting
     reduce_frequent_words: bool = False  # Apply square root to frequent words
+    seed_words: List[str] = None  # Specific words to boost
+    seed_multiplier: float = 2  # Multiplier for seed words
     verbose: bool = True
 
 
-class CtfidfTransformer:
+class ClassTfidfTransformer(TfidfTransformer):
     """
-    Class-based TF-IDF transformer adapted from BERTopic implementation.
+    Exact implementation of BERTopic's ClassTfidfTransformer.
     
-    This transformer calculates TF-IDF scores for topics by treating each topic
-    as a single document (created by aggregating all documents in that topic).
+    A Class-based TF-IDF procedure using scikit-learns TfidfTransformer as a base.
+    c-TF-IDF can best be explained as a TF-IDF formula adopted for multiple classes
+    by joining all documents per class.
     """
+    
+    def __init__(
+        self,
+        bm25_weighting: bool = False,
+        reduce_frequent_words: bool = False,
+        seed_words: List[str] = None,
+        seed_multiplier: float = 2,
+    ):
+        self.bm25_weighting = bm25_weighting
+        self.reduce_frequent_words = reduce_frequent_words
+        self.seed_words = seed_words
+        self.seed_multiplier = seed_multiplier
+        super(ClassTfidfTransformer, self).__init__()
+        
+    def fit(self, X: sp.csr_matrix, multiplier: np.ndarray = None):
+        """Learn the idf vector (global term weights) - exact BERTopic implementation.
+        
+        Arguments:
+            X: A matrix of term/token counts.
+            multiplier: A multiplier for increasing/decreasing certain IDF scores
+        """
+        X = check_array(X, accept_sparse=("csr", "csc"))
+        if not sp.issparse(X):
+            X = sp.csr_matrix(X)
+        dtype = np.float64
+        
+        if self.use_idf:
+            _, n_features = X.shape
+            
+            # Calculate the frequency of words across all classes (BERTopic's way)
+            df = np.squeeze(np.asarray(X.sum(axis=0)))
+            
+            # Calculate the average number of samples as regularization (BERTopic's way)
+            avg_nr_samples = int(X.sum(axis=1).mean())
+            
+            # BM25-inspired weighting procedure
+            if self.bm25_weighting:
+                idf = np.log(1 + ((avg_nr_samples - df + 0.5) / (df + 0.5)))
+            
+            # Divide the average number of samples by the word frequency
+            # +1 is added to force values to be positive
+            else:
+                idf = np.log((avg_nr_samples / df) + 1)
+            
+            # Multiplier to increase/decrease certain idf scores
+            if multiplier is not None:
+                idf = idf * multiplier
+            
+            self._idf_diag = sp.diags(
+                idf,
+                offsets=0,
+                shape=(n_features, n_features),
+                format="csr",
+                dtype=dtype,
+            )
+        
+        return self
+    
+    def transform(self, X: sp.csr_matrix):
+        """Transform a count-based matrix to c-TF-IDF - exact BERTopic implementation.
+        
+        Arguments:
+            X (sparse matrix): A matrix of term/token counts.
+        
+        Returns:
+            X (sparse matrix): A c-TF-IDF matrix
+        """
+        if self.use_idf:
+            X = normalize(X, axis=1, norm="l1", copy=False)
+            
+            if self.reduce_frequent_words:
+                X.data = np.sqrt(X.data)
+            
+            X = X * self._idf_diag
+        
+        return X
+    
+    def fit_transform(self, X: sp.csr_matrix, multiplier: np.ndarray = None) -> sp.csr_matrix:
+        """Fit the transformer and transform the data in one step."""
+        return self.fit(X, multiplier).transform(X)
+    
+
+
+# Wrapper class with verbose reporting for easier integration
+class CtfidfTransformer:
+    """Wrapper around ClassTfidfTransformer with verbose reporting"""
     
     def __init__(self, config: CtfidfConfig = None, verbose: bool = False):
         self.config = config or CtfidfConfig()
         self.verbose_reporter = VerboseReporter(verbose or self.config.verbose)
         
-        # Will be set during fit
-        self.idf_diag = None
-        self.vocabulary_size = None
-        self.fitted = False
+        # Initialize the actual BERTopic transformer
+        self.transformer = ClassTfidfTransformer(
+            bm25_weighting=self.config.bm25_weighting,
+            reduce_frequent_words=self.config.reduce_frequent_words,
+            seed_words=self.config.seed_words,
+            seed_multiplier=self.config.seed_multiplier
+        )
         
-    def fit(self, X: Union[sp.csr_matrix, np.ndarray], n_samples_per_topic: List[int] = None):
-        """
-        Fit the c-TF-IDF transformer.
+    def fit_transform(self, X: sp.csr_matrix, multiplier: np.ndarray = None) -> sp.csr_matrix:
+        """Fit and transform with verbose reporting"""
+        # Report input statistics
+        _, n_features = X.shape
+        avg_nr_samples = int(X.sum(axis=1).mean())
+        df = np.squeeze(np.asarray(X.sum(axis=0)))
         
-        Parameters:
-        -----------
-        X : sparse matrix or array, shape (n_topics, n_features)
-            Topic-term matrix where each row represents aggregated term counts for a topic
-        n_samples_per_topic : list of int, optional
-            Number of documents per topic for proper IDF calculation
-        """
-        if sp.issparse(X):
-            X = X.toarray()
-            
-        self.vocabulary_size = X.shape[1]
+        self.verbose_reporter.stat_line(f"c-TF-IDF input: {X.shape[0]} topics, {n_features} features")
+        self.verbose_reporter.stat_line(f"Average samples per topic: {avg_nr_samples}")
+        self.verbose_reporter.stat_line(f"Document frequency range: {np.min(df):.1f} to {np.max(df):.1f}")
         
-        # Calculate document frequency (how many topics contain each term)
-        df = np.sum(X > 0, axis=0)
+        # Use BERTopic's exact implementation
+        result = self.transformer.fit_transform(X, multiplier)
         
-        # Calculate average number of samples per topic for IDF
-        if n_samples_per_topic is not None:
-            avg_nr_samples = np.mean(n_samples_per_topic)
-        else:
-            # Fallback: use number of topics as proxy
-            avg_nr_samples = X.shape[0]
-        
-        self.verbose_reporter.stat_line(f"Calculating IDF for {len(df)} terms across {X.shape[0]} topics")
-        self.verbose_reporter.stat_line(f"Average samples per topic: {avg_nr_samples:.1f}")
-        
-        # Calculate IDF using BERTopic's formula
-        if self.config.bm25_weighting:
-            # BM25-inspired weighting: log(1 + (avg - df + 0.5) / (df + 0.5))
-            idf = np.log(1 + ((avg_nr_samples - df + 0.5) / (df + 0.5)))
-            self.verbose_reporter.stat_line("Using BM25-inspired IDF weighting")
-        else:
-            # Standard c-TF-IDF: log((avg + 1) / (df + 1))
-            idf = np.log((avg_nr_samples / df) + 1)
-            self.verbose_reporter.stat_line("Using standard c-TF-IDF weighting")
-        
-        # Create diagonal matrix for efficient multiplication
-        self.idf_diag = sp.diags(idf, shape=(self.vocabulary_size, self.vocabulary_size))
-        
-        # Report IDF statistics
-        self.verbose_reporter.stat_line(f"IDF range: {np.min(idf):.3f} to {np.max(idf):.3f}")
-        self.verbose_reporter.stat_line(f"Mean IDF: {np.mean(idf):.3f}")
-        
-        self.fitted = True
-        return self
+        self.verbose_reporter.stat_line(f"c-TF-IDF output shape: {result.shape}")
+        return result
     
-    def transform(self, X: Union[sp.csr_matrix, np.ndarray]) -> sp.csr_matrix:
-        """
-        Transform topic-term matrix to c-TF-IDF representation.
-        
-        Parameters:
-        -----------
-        X : sparse matrix or array, shape (n_topics, n_features)
-            Topic-term matrix
-            
-        Returns:
-        --------
-        c_tf_idf : sparse matrix, shape (n_topics, n_features)
-            c-TF-IDF transformed matrix
-        """
-        if not self.fitted:
-            raise ValueError("CtfidfTransformer must be fitted before transform")
-        
-        # Convert to sparse matrix if needed
-        if not sp.issparse(X):
-            X = sp.csr_matrix(X)
-        
-        self.verbose_reporter.stat_line(f"Transforming {X.shape[0]} topics with {X.shape[1]} features")
-        
-        # Step 1: L1 normalization (TF calculation)
-        # This ensures term frequencies sum to 1 per topic
-        X_normalized = normalize(X, axis=1, norm='l1', copy=True)
-        
-        # Step 2: Optional frequency reduction (square root)
-        if self.config.reduce_frequent_words:
-            X_normalized.data = np.sqrt(X_normalized.data)
-            self.verbose_reporter.stat_line("Applied square root frequency reduction")
-        
-        # Step 3: Apply IDF weighting
-        c_tf_idf = X_normalized * self.idf_diag
-        
-        self.verbose_reporter.stat_line("c-TF-IDF transformation completed")
-        
-        return c_tf_idf
+    def transform(self, X: sp.csr_matrix) -> sp.csr_matrix:
+        """Transform using fitted transformer"""
+        return self.transformer.transform(X)
     
-    def fit_transform(self, X: Union[sp.csr_matrix, np.ndarray], 
-                     n_samples_per_topic: List[int] = None) -> sp.csr_matrix:
-        """Fit the transformer and transform the data in one step."""
-        return self.fit(X, n_samples_per_topic).transform(X)
-    
-    def get_feature_importance(self, topic_idx: int, X_transformed: sp.csr_matrix, 
-                              feature_names: List[str], top_k: int = 10) -> List[tuple]:
-        """
-        Get top features for a specific topic based on c-TF-IDF scores.
-        
-        Parameters:
-        -----------
-        topic_idx : int
-            Index of the topic
-        X_transformed : sparse matrix
-            c-TF-IDF transformed matrix
-        feature_names : list of str
-            Feature names (vocabulary)
-        top_k : int
-            Number of top features to return
-            
-        Returns:
-        --------
-        top_features : list of tuples (feature_name, score)
-            Top features with their c-TF-IDF scores
-        """
-        if topic_idx >= X_transformed.shape[0]:
-            raise ValueError(f"Topic index {topic_idx} out of range")
-        
-        # Get c-TF-IDF scores for the topic
-        scores = X_transformed[topic_idx].toarray().flatten()
-        
-        # Get top indices
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        
-        # Create list of (feature, score) tuples
-        top_features = [(feature_names[idx], scores[idx]) for idx in top_indices if scores[idx] > 0]
-        
-        return top_features
-    
-    def calculate_similarity(self, X_outliers: Union[sp.csr_matrix, np.ndarray],
-                           X_topics: sp.csr_matrix) -> np.ndarray:
-        """
-        Calculate cosine similarity between outlier documents and topic representations.
-        
-        Parameters:
-        -----------
-        X_outliers : sparse matrix or array
-            c-TF-IDF representations of outlier documents
-        X_topics : sparse matrix
-            c-TF-IDF representations of topics
-            
-        Returns:
-        --------
-        similarity : array, shape (n_outliers, n_topics)
-            Cosine similarity matrix
-        """
+    def calculate_similarity(self, X_outliers: sp.csr_matrix, X_topics: sp.csr_matrix) -> np.ndarray:
+        """Calculate cosine similarity between outlier documents and topic representations"""
         similarity = cosine_similarity(X_outliers, X_topics)
         self.verbose_reporter.stat_line(f"Calculated similarity for {X_outliers.shape[0]} outliers vs {X_topics.shape[0]} topics")
-        
         return similarity
