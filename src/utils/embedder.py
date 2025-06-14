@@ -333,8 +333,9 @@ class Embedder:
             self.domain_anchor = np.mean(response_embeddings, axis=0)
             self.verbose_reporter.stat_line("Calculated domain anchor from response embeddings")
         
-        # Generate domain-relative embeddings (distance from domain center)
-        domain_relative = response_embeddings - self.domain_anchor
+        # For domain anchoring, we'll use the domain anchor itself (not relative)
+        # This provides a consistent semantic baseline for all embeddings
+        domain_anchor_array = np.tile(self.domain_anchor, (num_responses, 1))
         
         # Create question embedding array matching response count
         num_responses = response_embeddings.shape[0]
@@ -343,13 +344,13 @@ class Embedder:
         # Report dimensions
         self.verbose_reporter.stat_line(f"Response embedding dims: {response_embeddings.shape[1]}")
         self.verbose_reporter.stat_line(f"Question embedding dims: {question_embeddings.shape[1]}")
-        self.verbose_reporter.stat_line(f"Domain-relative embedding dims: {domain_relative.shape[1]}")
+        self.verbose_reporter.stat_line(f"Domain anchor embedding dims: {domain_anchor_array.shape[1]}")
         
-        # Concatenate embeddings with weights
-        question_aware_embeddings = self._weighted_concatenate_question_aware(
+        # Weighted average of embeddings
+        question_aware_embeddings = self._weighted_average_question_aware(
             response_embeddings, 
             question_embeddings,
-            domain_relative,
+            domain_anchor_array,
             self.config.response_weight,
             self.config.question_weight,
             self.config.domain_anchor_weight
@@ -358,21 +359,33 @@ class Embedder:
         self.verbose_reporter.stat_line(f"Final question-aware embedding dims: {question_aware_embeddings.shape[1]}")
         return question_aware_embeddings
     
-    def _weighted_concatenate_question_aware(
+    def _weighted_average_question_aware(
         self,
         response_emb: np.ndarray,
         question_emb: np.ndarray,
-        domain_relative: np.ndarray,
+        domain_anchor: np.ndarray,
         response_weight: float,
         question_weight: float,
         domain_weight: float
     ) -> np.ndarray:
-        """Concatenate response, question, and domain embeddings with weights"""
-        # Apply weights
-        weighted_response = response_emb * response_weight
-        weighted_question = question_emb * question_weight
-        weighted_domain = domain_relative * domain_weight
+        """Weighted average of response, question, and domain embeddings"""
+        # Ensure all weights sum to 1.0 for proper averaging
+        total_weight = response_weight + question_weight + domain_weight
         
-        # Concatenate all three components
-        return np.concatenate([weighted_response, weighted_question, weighted_domain], axis=1)
+        # Normalize weights if they don't sum to 1
+        if abs(total_weight - 1.0) > 0.001:  # Allow small floating point errors
+            self.verbose_reporter.stat_line(f"Normalizing weights: {response_weight}/{question_weight}/{domain_weight} -> ", end="")
+            response_weight = response_weight / total_weight
+            question_weight = question_weight / total_weight
+            domain_weight = domain_weight / total_weight
+            self.verbose_reporter.stat_line(f"{response_weight:.3f}/{question_weight:.3f}/{domain_weight:.3f}")
+        
+        # Apply weighted average
+        weighted_embedding = (
+            response_emb * response_weight + 
+            question_emb * question_weight + 
+            domain_anchor * domain_weight
+        )
+        
+        return weighted_embedding
     
