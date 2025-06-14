@@ -415,6 +415,10 @@ class ClusterGenerator:
         rescued_count = 0
         new_assignments = rescue_results.get('new_assignments', {})
         
+        # Debug: Report what we received from c-TF-IDF rescue
+        reported_rescued = rescue_results.get('rescued_count', 0)
+        self.verbose_reporter.stat_line(f"c-TF-IDF reported: {reported_rescued} rescued, {len(new_assignments)} assignments to apply")
+        
         for item in self.output_list:
             if item.segment_id in new_assignments:
                 new_cluster = new_assignments[item.segment_id]
@@ -428,6 +432,11 @@ class ClusterGenerator:
                     if item.initial_description_cluster == -1:  # Only update if it was noise
                         item.initial_description_cluster = new_cluster
                         rescued_count += 1
+        
+        # Debug: Verify final counts
+        self.verbose_reporter.stat_line(f"c-TF-IDF assignment result: applied {rescued_count} assignments from {len(new_assignments)} available")
+        if rescued_count != len(new_assignments):
+            self.verbose_reporter.stat_line(f"⚠️  Assignment mismatch: some segment_ids in new_assignments were not found in output_list or were not noise points")
         
         return rescued_count
 

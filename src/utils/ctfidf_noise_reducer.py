@@ -241,12 +241,28 @@ class CtfidfNoiseReducer:
         threshold = self.config.similarity_threshold
         cluster_ids = topic_info['cluster_ids']
         
+        # Debug: Track assignment decisions
+        above_threshold_count = 0
+        assignment_decisions = []
+        
         for i, (idx, row) in enumerate(outliers_df.iterrows()):
             sim_scores = similarities[i]
             best_topic_idx = np.argmax(sim_scores)
             best_similarity = sim_scores[best_topic_idx]
             
+            # Track all decisions for debugging
+            decision = {
+                'index': i,
+                'df_idx': idx,
+                'segment_id': row['segment_id'],
+                'best_similarity': best_similarity,
+                'threshold': threshold,
+                'above_threshold': best_similarity >= threshold
+            }
+            assignment_decisions.append(decision)
+            
             if best_similarity >= threshold:
+                above_threshold_count += 1
                 new_cluster = cluster_ids[best_topic_idx]
                 new_assignments[row['segment_id']] = new_cluster
                 rescued_count += 1
@@ -267,12 +283,13 @@ class CtfidfNoiseReducer:
         self.verbose_reporter.stat_line(f"Used similarity threshold: {threshold}")
         
         # Show confidence distribution
+        statistical_above_threshold = 0
         if len(similarities) > 0:
             max_sims = np.max(similarities, axis=1)
-            above_threshold = np.sum(max_sims >= threshold)
+            statistical_above_threshold = np.sum(max_sims >= threshold)
             
             self.verbose_reporter.stat_line(f"Similarity scores - Min: {np.min(max_sims):.3f}, Max: {np.max(max_sims):.3f}, Mean: {np.mean(max_sims):.3f}")
-            self.verbose_reporter.stat_line(f"Points above threshold ({threshold}): {above_threshold}/{len(max_sims)}")
+            self.verbose_reporter.stat_line(f"Points above threshold ({threshold}): {statistical_above_threshold}/{len(max_sims)}")
         
         # Show rescue examples
         if rescue_examples:
@@ -281,6 +298,37 @@ class CtfidfNoiseReducer:
                 for ex in rescue_examples
             ]
             self.verbose_reporter.sample_list("c-TF-IDF rescue examples", example_texts)
+        
+        # Debug: Verify assignment count matches rescued count
+        actual_assignments = len(new_assignments)
+        
+        # Report detailed assignment analysis
+        self.verbose_reporter.stat_line(f"Assignment loop analysis:")
+        self.verbose_reporter.stat_line(f"  - Total outliers processed: {len(assignment_decisions)}")
+        self.verbose_reporter.stat_line(f"  - Above threshold in loop: {above_threshold_count}")
+        self.verbose_reporter.stat_line(f"  - rescued_count: {rescued_count}")
+        self.verbose_reporter.stat_line(f"  - new_assignments length: {actual_assignments}")
+        
+        if actual_assignments != rescued_count:
+            self.verbose_reporter.stat_line(f"⚠️  CRITICAL BUG: rescued_count={rescued_count} but new_assignments has {actual_assignments} entries!")
+            self.verbose_reporter.stat_line(f"new_assignments keys: {list(new_assignments.keys())[:10]}")
+        
+        if above_threshold_count != rescued_count:
+            self.verbose_reporter.stat_line(f"⚠️  CRITICAL BUG: above_threshold_count={above_threshold_count} but rescued_count={rescued_count}!")
+        
+        if statistical_above_threshold != above_threshold_count:
+            self.verbose_reporter.stat_line(f"⚠️  CRITICAL BUG: statistical_above_threshold={statistical_above_threshold} but loop above_threshold_count={above_threshold_count}!")
+        
+        # Show a few assignment decisions for debugging
+        if len(assignment_decisions) > 0:
+            sample_decisions = assignment_decisions[:5]
+            decision_texts = [
+                f"idx={d['index']}, seg_id={d['segment_id']}, sim={d['best_similarity']:.4f}, above_thresh={d['above_threshold']}"
+                for d in sample_decisions
+            ]
+            self.verbose_reporter.sample_list("Assignment decisions (first 5)", decision_texts)
+        
+        self.verbose_reporter.stat_line(f"✅ c-TF-IDF rescue verification: {rescued_count} rescued, {actual_assignments} assignments")
         
         return self._create_results(rescued_count, total_outliers, new_assignments)
     
