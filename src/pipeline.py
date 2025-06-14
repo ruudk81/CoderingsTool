@@ -27,7 +27,7 @@ var_name = "q19"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
+FORCE_STEP = "segmentation"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
