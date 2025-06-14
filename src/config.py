@@ -352,7 +352,7 @@ class NoiseRescueConfig:
     max_rescue_attempts: int = 1000
     
     # Cosine similarity rescue parameters
-    use_cosine_rescue: bool = True
+    use_cosine_rescue: bool = False
     cosine_similarity_threshold: float = 0.7
 
 
