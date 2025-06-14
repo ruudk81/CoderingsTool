@@ -30,9 +30,10 @@ class Embedder:
         
         # Initialize TF-IDF embedder if ensemble mode is enabled
         self.tfidf_embedder = None
+        self.domain_anchor = None
         if self.config.use_ensemble:
             self.tfidf_embedder = TfidfEmbedder(config=self.config.tfidf, verbose=verbose)
-            self.verbose_reporter.stat_line(f"Initialized ensemble mode with weights: OpenAI {self.config.openai_weight}, TF-IDF {self.config.tfidf_weight}")
+            self.verbose_reporter.stat_line(f"Initialized ensemble mode with weights: OpenAI {self.config.openai_weight}, TF-IDF {self.config.tfidf_weight}, Domain {self.config.domain_anchor_weight}")
         
         
         self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
@@ -326,30 +327,43 @@ class Embedder:
         texts: List[str], 
         openai_embeddings: np.ndarray
     ) -> np.ndarray:
-        """Generate ensemble embeddings by combining OpenAI and TF-IDF"""
+        """Generate ensemble embeddings by combining OpenAI, TF-IDF, and domain anchor"""
         
         # Generate TF-IDF embeddings
         tfidf_embeddings = self.tfidf_embedder.transform(texts)
         
+        # Calculate domain anchor (mean of OpenAI embeddings for this dataset)
+        if self.domain_anchor is None:
+            self.domain_anchor = np.mean(openai_embeddings, axis=0)
+            self.verbose_reporter.stat_line("Calculated domain anchor from OpenAI embeddings")
+        
+        # Generate domain-relative embeddings (distance from domain center)
+        domain_relative = openai_embeddings - self.domain_anchor
+        
         # Report dimensions
         self.verbose_reporter.stat_line(f"OpenAI embedding dims: {openai_embeddings.shape[1]}")
         self.verbose_reporter.stat_line(f"TF-IDF embedding dims: {tfidf_embeddings.shape[1]}")
+        self.verbose_reporter.stat_line(f"Domain-relative embedding dims: {domain_relative.shape[1]}")
         
         if self.config.ensemble_combination == "weighted_concat":
             # Concatenate embeddings with weights
-            ensemble_embeddings = self._weighted_concatenate(
+            ensemble_embeddings = self._weighted_concatenate_with_domain(
                 openai_embeddings, 
                 tfidf_embeddings,
+                domain_relative,
                 self.config.openai_weight,
-                self.config.tfidf_weight
+                self.config.tfidf_weight,
+                self.config.domain_anchor_weight
             )
         else:  # weighted_average
             # Average embeddings (requires same dimensions)
-            ensemble_embeddings = self._weighted_average(
+            ensemble_embeddings = self._weighted_average_with_domain(
                 openai_embeddings,
                 tfidf_embeddings,
+                domain_relative,
                 self.config.openai_weight,
-                self.config.tfidf_weight
+                self.config.tfidf_weight,
+                self.config.domain_anchor_weight
             )
         
         # No dimension reduction here - let UMAP handle it
@@ -384,6 +398,36 @@ class Embedder:
         # Concatenate
         return np.concatenate([weighted_openai, weighted_tfidf], axis=1)
     
+    def _weighted_concatenate_with_domain(
+        self,
+        openai_emb: np.ndarray,
+        tfidf_emb: np.ndarray,
+        domain_relative: np.ndarray,
+        openai_weight: float,
+        tfidf_weight: float,
+        domain_weight: float
+    ) -> np.ndarray:
+        """Concatenate embeddings with domain anchoring"""
+        # Apply weights
+        weighted_openai = openai_emb * openai_weight
+        weighted_tfidf = tfidf_emb * tfidf_weight
+        weighted_domain = domain_relative * domain_weight
+        
+        # Normalize TF-IDF to similar scale as OpenAI
+        tfidf_norm = np.linalg.norm(weighted_tfidf, axis=1, keepdims=True)
+        openai_norm = np.linalg.norm(weighted_openai, axis=1, keepdims=True)
+        
+        # Avoid division by zero
+        tfidf_norm = np.where(tfidf_norm == 0, 1, tfidf_norm)
+        openai_norm = np.where(openai_norm == 0, 1, openai_norm)
+        
+        # Scale TF-IDF to match OpenAI magnitude
+        scale_factor = np.mean(openai_norm) / np.mean(tfidf_norm)
+        weighted_tfidf = weighted_tfidf * scale_factor
+        
+        # Concatenate all three components
+        return np.concatenate([weighted_openai, weighted_tfidf, weighted_domain], axis=1)
+    
     def _weighted_average(
         self,
         openai_emb: np.ndarray,
@@ -399,4 +443,25 @@ class Embedder:
         
         # Weighted average
         return (openai_emb * openai_weight + tfidf_emb * tfidf_weight) / (openai_weight + tfidf_weight)
+    
+    def _weighted_average_with_domain(
+        self,
+        openai_emb: np.ndarray,
+        tfidf_emb: np.ndarray,
+        domain_relative: np.ndarray,
+        openai_weight: float,
+        tfidf_weight: float,
+        domain_weight: float
+    ) -> np.ndarray:
+        """Average embeddings with domain anchoring (requires dimension alignment)"""
+        # Reduce TF-IDF to match OpenAI dimensions
+        if tfidf_emb.shape[1] != openai_emb.shape[1]:
+            target_dim = openai_emb.shape[1]
+            tfidf_emb = self.tfidf_embedder.reduce_dimensions(tfidf_emb, target_dim)
+        
+        # Weighted average of all three components
+        total_weight = openai_weight + tfidf_weight + domain_weight
+        return (openai_emb * openai_weight + 
+                tfidf_emb * tfidf_weight + 
+                domain_relative * domain_weight) / total_weight
     

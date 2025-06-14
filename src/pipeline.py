@@ -414,7 +414,7 @@ else:
     embedding_config = DEFAULT_EMBEDDING_CONFIG
     if USE_ENSEMBLE_EMBEDDINGS:
         embedding_config.use_ensemble = True
-        print(f"Ensemble mode enabled: {embedding_config.openai_weight:.1f} OpenAI + {embedding_config.tfidf_weight:.1f} TF-IDF")
+        print(f"Ensemble mode enabled: {embedding_config.openai_weight:.1f} OpenAI + {embedding_config.tfidf_weight:.1f} TF-IDF + {embedding_config.domain_anchor_weight:.1f} Domain")
     
     get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
     

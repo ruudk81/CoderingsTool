@@ -304,8 +304,9 @@ class EmbeddingConfig:
     
     # Ensemble embedding configuration
     use_ensemble: bool = False  # Enable ensemble embeddings
-    openai_weight: float = 0.7  # Weight for OpenAI embeddings
+    openai_weight: float = 0.5  # Weight for OpenAI embeddings
     tfidf_weight: float = 0.3  # Weight for TF-IDF embeddings
+    domain_anchor_weight: float = 0.2  # Weight for domain-relative positioning
     ensemble_combination: str = "weighted_concat"  # Options: "weighted_concat", "weighted_average"
     
     # TF-IDF configuration
