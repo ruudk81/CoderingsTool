@@ -362,6 +362,53 @@ class ClusterGenerator:
         
         return similarities
 
+    def _original_response_embedding_similarity(self, noise_indices: np.ndarray, labels: np.ndarray) -> Dict:
+        """Calculate similarities using ORIGINAL response embeddings for fairer c-TF-IDF comparison"""
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        # Get ORIGINAL response embeddings (before ensemble weighting)
+        try:
+            original_embeddings = np.array([item.description_embedding for item in self.output_list])
+            self.verbose_reporter.stat_line("🔬 Calculating similarities with original response embeddings")
+        except:
+            self.verbose_reporter.stat_line("⚠️  Original embeddings not available, using ensemble embeddings")
+            if self.embedding_type == "code":
+                original_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
+            else:
+                original_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+        
+        # Calculate centroids from ORIGINAL embeddings (not ensemble)
+        centroids = {}
+        unique_labels = np.unique(labels)
+        
+        for cluster_id in unique_labels:
+            if cluster_id != -1:  # Skip noise points
+                cluster_mask = labels == cluster_id
+                cluster_embeddings = original_embeddings[cluster_mask]
+                centroids[cluster_id] = np.mean(cluster_embeddings, axis=0)
+        
+        if not centroids:
+            return {}
+        
+        cluster_ids = list(centroids.keys())
+        centroid_vectors = np.array(list(centroids.values()))
+        
+        similarities = {}
+        for noise_idx in noise_indices:
+            noise_embedding = original_embeddings[noise_idx].reshape(1, -1)
+            sim_scores = cosine_similarity(noise_embedding, centroid_vectors)[0]
+            best_cluster_idx = np.argmax(sim_scores)
+            best_similarity = sim_scores[best_cluster_idx]
+            best_cluster_id = cluster_ids[best_cluster_idx]
+            
+            similarities[noise_idx] = {
+                'best_cluster': best_cluster_id,
+                'similarity': best_similarity,
+                'all_similarities': dict(zip(cluster_ids, sim_scores))
+            }
+        
+        return similarities
+
     def _manual_embedding_comparison(self, embedding_similarities: Dict, ctfidf_results: Dict) -> None:
         """Manual comparison of embedding vs c-TF-IDF similarities when enhanced method fails."""
         
@@ -404,6 +451,55 @@ class ClusterGenerator:
                 self.verbose_reporter.stat_line("✅ c-TF-IDF and embedding similarities are reasonably aligned")
         
         self.verbose_reporter.step_complete("Similarity analysis completed")
+
+    def _enhanced_manual_comparison(self, ensemble_similarities: Dict, original_similarities: Dict, ctfidf_results: Dict) -> None:
+        """Enhanced comparison showing both ensemble and original embedding similarities vs c-TF-IDF."""
+        
+        self.verbose_reporter.step_start("Enhanced Embedding vs c-TF-IDF Analysis", "🔬")
+        
+        # Compare ensemble embeddings (current clustering basis)
+        if ensemble_similarities:
+            ensemble_sims = [data['similarity'] for data in ensemble_similarities.values()]
+            ensemble_above_threshold = sum(1 for sim in ensemble_sims if sim >= 0.7)
+            
+            self.verbose_reporter.stat_line(f"📊 Ensemble embeddings - Min: {np.min(ensemble_sims):.3f}, Max: {np.max(ensemble_sims):.3f}, Mean: {np.mean(ensemble_sims):.3f}")
+            self.verbose_reporter.stat_line(f"🔍 Ensemble above threshold (0.7): {ensemble_above_threshold}/{len(ensemble_sims)}")
+        
+        # Compare original response embeddings (fairer comparison to c-TF-IDF)
+        if original_similarities:
+            original_sims = [data['similarity'] for data in original_similarities.values()]
+            original_above_threshold = sum(1 for sim in original_sims if sim >= 0.7)
+            
+            self.verbose_reporter.stat_line(f"📊 Original response embeddings - Min: {np.min(original_sims):.3f}, Max: {np.max(original_sims):.3f}, Mean: {np.mean(original_sims):.3f}")
+            self.verbose_reporter.stat_line(f"🔍 Original embeddings above threshold (0.7): {original_above_threshold}/{len(original_sims)}")
+            
+            # Compare c-TF-IDF performance
+            ctfidf_rescued = ctfidf_results.get('rescued_count', 0)
+            total_noise = len(original_sims)
+            
+            self.verbose_reporter.stat_line(f"🔍 c-TF-IDF rescued: {ctfidf_rescued}/{total_noise}")
+            
+            # Analysis
+            if original_above_threshold > ctfidf_rescued:
+                ratio = original_above_threshold / max(ctfidf_rescued, 1)
+                self.verbose_reporter.stat_line(f"⚠️  DISCREPANCY (vs original embeddings): {ratio:.1f}x more points could be rescued")
+                self.verbose_reporter.stat_line("💡 Even with original embeddings, text-based c-TF-IDF underperforms")
+            else:
+                self.verbose_reporter.stat_line("✅ c-TF-IDF performance aligns better with original embeddings")
+            
+            # Show the difference between ensemble and original similarities
+            if ensemble_similarities and len(ensemble_sims) == len(original_sims):
+                mean_diff = np.mean(ensemble_sims) - np.mean(original_sims)
+                self.verbose_reporter.stat_line(f"📈 Ensemble boost: {mean_diff:+.3f} average similarity increase from question context")
+                
+                # Show examples of both
+                for i, (ensemble_idx, original_idx) in enumerate(zip(list(ensemble_similarities.keys())[:3], list(original_similarities.keys())[:3])):
+                    ensemble_sim = ensemble_similarities[ensemble_idx]['similarity']
+                    original_sim = original_similarities[original_idx]['similarity']
+                    boost = ensemble_sim - original_sim
+                    self.verbose_reporter.stat_line(f"  Example {i+1}: Original={original_sim:.3f} → Ensemble={ensemble_sim:.3f} (boost: {boost:+.3f})")
+        
+        self.verbose_reporter.step_complete("Enhanced similarity analysis completed")
 
     def _ctfidf_rescue(self, current_labels: np.ndarray) -> int:
         """Rescue remaining noise points using c-TF-IDF similarity with embedding comparison"""
@@ -501,13 +597,27 @@ class ClusterGenerator:
         noise_indices = np.where(noise_mask)[0]
         
         # Get embeddings for noise points comparison
+        # Use ORIGINAL response embeddings instead of ensemble embeddings for fairer comparison
         if self.embedding_type == "code":
             rescue_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
         else:
-            rescue_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+            # Try to get original response embeddings before ensemble weighting
+            try:
+                # Access original response embeddings if available
+                rescue_embeddings = np.array([item.description_embedding for item in self.output_list])
+                self.verbose_reporter.stat_line("🔬 Using original response embeddings for comparison (before ensemble weighting)")
+            except:
+                # Fallback to reduced ensemble embeddings
+                rescue_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+                self.verbose_reporter.stat_line("⚠️  Using ensemble embeddings for comparison (original not available)")
         
-        embedding_similarities = self._embedding_based_similarity_comparison(
+        # Calculate both ensemble and original response embedding similarities for comparison
+        ensemble_similarities = self._embedding_based_similarity_comparison(
             noise_indices, rescue_embeddings, current_labels
+        )
+        
+        original_similarities = self._original_response_embedding_similarity(
+            noise_indices, current_labels
         )
         
         # Configure c-TF-IDF rescue with embedding comparison
@@ -531,7 +641,7 @@ class ClusterGenerator:
                 documents=documents,
                 cluster_labels=cluster_labels,
                 segment_ids=segment_ids,
-                embedding_similarities=embedding_similarities
+                embedding_similarities=original_similarities  # Use original embeddings for fairer comparison
             )
         except TypeError as e:
             self.verbose_reporter.stat_line(f"⚠️  Enhanced rescue failed: {e}")
@@ -542,8 +652,8 @@ class ClusterGenerator:
                 segment_ids=segment_ids
             )
             
-            # Add manual embedding comparison
-            self._manual_embedding_comparison(embedding_similarities, rescue_results)
+            # Add manual embedding comparison (with both ensemble and original)
+            self._enhanced_manual_comparison(ensemble_similarities, original_similarities, rescue_results)
             
             # Verify BERTopic implementation
             from .ctfidf_transformer import verify_bertopic_implementation
