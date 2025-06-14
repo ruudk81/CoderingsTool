@@ -333,12 +333,14 @@ class Embedder:
             self.domain_anchor = np.mean(response_embeddings, axis=0)
             self.verbose_reporter.stat_line("Calculated domain anchor from response embeddings")
         
+        # Get number of responses
+        num_responses = response_embeddings.shape[0]
+        
         # For domain anchoring, we'll use the domain anchor itself (not relative)
         # This provides a consistent semantic baseline for all embeddings
         domain_anchor_array = np.tile(self.domain_anchor, (num_responses, 1))
         
         # Create question embedding array matching response count
-        num_responses = response_embeddings.shape[0]
         question_embeddings = np.tile(question_embedding, (num_responses, 1))
         
         # Report dimensions
