@@ -371,7 +371,7 @@ class ClusterMergerConfig:
 @dataclass
 class NoiseRescueConfig:
     """Configuration for noise point rescue using cosine similarity or HDBSCAN methods"""
-    enabled: bool = True
+    enabled: bool = False
     rescue_threshold: float = 0.3  # For HDBSCAN methods
     max_rescue_attempts: int = 1000
     

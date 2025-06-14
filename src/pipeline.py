@@ -35,7 +35,7 @@ DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostic
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
-USE_ENSEMBLE_EMBEDDINGS = False  # Enable ensemble OpenAI + TF-IDF embeddings
+USE_ENSEMBLE_EMBEDDINGS = True  # Enable ensemble OpenAI + TF-IDF embeddings
 
 # Initialize data loader and get variable label
 data_loader = dataLoader.DataLoader(verbose=False)
