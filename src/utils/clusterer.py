@@ -368,15 +368,28 @@ class ClusterGenerator:
         
         # Get PURE description embeddings (100% from segment descriptions, no ensemble weighting)
         try:
+            # Debug: Check what embeddings are available
+            sample_item = self.output_list[0] if self.output_list else None
+            if sample_item:
+                available_attrs = [attr for attr in dir(sample_item) if 'embedding' in attr.lower()]
+                self.verbose_reporter.stat_line(f"🔍 Available embedding attributes: {available_attrs}")
+            
             original_embeddings = np.array([item.description_embedding for item in self.output_list])
             self.verbose_reporter.stat_line("🔬 Using pure 100% description embeddings for centroid calculation")
             
             # Debug: Verify these are different from ensemble embeddings
             if self.embedding_type == "description":
-                test_ensemble = np.array([item.reduced_description_embedding for item in self.output_list[:5]])
-                test_original = original_embeddings[:5]
-                diff = np.mean(np.abs(test_ensemble - test_original))
-                self.verbose_reporter.stat_line(f"🔍 Difference between pure description and ensemble embeddings: {diff:.6f}")
+                try:
+                    test_ensemble = np.array([item.reduced_description_embedding for item in self.output_list[:5]])
+                    test_original = original_embeddings[:5]
+                    # Ensure both arrays have the same shape
+                    if test_ensemble.shape == test_original.shape:
+                        diff = np.mean(np.abs(test_ensemble - test_original))
+                        self.verbose_reporter.stat_line(f"🔍 Difference between pure description and ensemble embeddings: {diff:.6f}")
+                    else:
+                        self.verbose_reporter.stat_line(f"🔍 Shape mismatch: ensemble {test_ensemble.shape} vs original {test_original.shape}")
+                except Exception as e:
+                    self.verbose_reporter.stat_line(f"🔍 Debug comparison failed: {e}")
                 
         except Exception as e:
             self.verbose_reporter.stat_line(f"⚠️  Pure description embeddings not available ({e}), falling back to ensemble embeddings")
@@ -643,33 +656,19 @@ class ClusterGenerator:
             verbose=self.verbose
         )
         
-        # Perform hybrid c-TF-IDF + embedding similarity rescue
-        try:
-            # Check if enhanced method exists
-            if hasattr(ctfidf_reducer, 'rescue_noise_points_with_embedding_comparison'):
-                rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
-                    documents=documents,
-                    cluster_labels=cluster_labels,
-                    segment_ids=segment_ids,
-                    embedding_similarities=original_similarities  # Use original embeddings for fairer comparison
-                )
-            else:
-                raise AttributeError("Enhanced method not available")
-        except TypeError as e:
-            self.verbose_reporter.stat_line(f"⚠️  Enhanced rescue failed: {e}")
-            self.verbose_reporter.stat_line("Falling back to standard c-TF-IDF rescue")
-            rescue_results = ctfidf_reducer.rescue_noise_points(
-                documents=documents,
-                cluster_labels=cluster_labels,
-                segment_ids=segment_ids
-            )
-            
-            # Add manual embedding comparison (with both ensemble and original)
-            self._enhanced_manual_comparison(ensemble_similarities, original_similarities, rescue_results)
-            
-            # Verify BERTopic implementation
-            from .ctfidf_transformer import verify_bertopic_implementation
-            verify_bertopic_implementation()
+        # Perform standard c-TF-IDF rescue with embedding comparison
+        rescue_results = ctfidf_reducer.rescue_noise_points(
+            documents=documents,
+            cluster_labels=cluster_labels,
+            segment_ids=segment_ids
+        )
+        
+        # Add manual embedding comparison (with both ensemble and original)
+        self._enhanced_manual_comparison(ensemble_similarities, original_similarities, rescue_results)
+        
+        # Verify BERTopic implementation
+        from .ctfidf_transformer import verify_bertopic_implementation
+        verify_bertopic_implementation()
         
         # Apply rescue results to output_list
         rescued_count = 0
