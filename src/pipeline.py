@@ -454,19 +454,19 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
 
-#debug  1 - print random clusters
-import random
-cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for item in initial_cluster_results:
-    for segment in item.response_segment:
-        if segment.initial_cluster == sampled_cluster:
-            cluster_segments.append(segment.segment_description)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
+# #debug  1 - print random clusters
+# import random
+# cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
+# sampled_cluster = random.sample(cluster_ids, 1)[0]
+# print(f"\nCluster {sampled_cluster}:\n")
+# cluster_segments = []
+# for item in initial_cluster_results:
+#     for segment in item.response_segment:
+#         if segment.initial_cluster == sampled_cluster:
+#             cluster_segments.append(segment.segment_description)
+# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+# for segment_desc in sampled_segments:
+#     print(f"-    {segment_desc}")
     
     
 #debug  2  print all clusters
@@ -521,6 +521,18 @@ for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluste
         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
         cluster_summaries.append(summary)
 cluster_summaries_text = "\n".join(cluster_summaries)
+import random
+import re
+sampled_results = random.sample(labeled_results, 1)
+for result in sampled_results:
+    print(f"Q: {var_lab}\n")  # Assuming var_lab is defined elsewhere
+    print(f"A: {result.response}\n")  # Assuming result has a 'response' attribute
+    for item in result.response_segment:
+        #print(f"-    {item.segment_description}")
+        if isinstance(item.initial_cluster, int):
+            cluster = re.sub(r'\[.*?\]', '', cluster_summaries[item.initial_cluster]).strip()
+            print(f"-    {cluster}")
+
 print(cluster_summaries_text)
 print("\nAtomic concepts")  
 for concept in thematic_labeller.atomic_concepts.atomic_concepts:
