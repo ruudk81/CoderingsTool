@@ -366,20 +366,20 @@ class ClusterGenerator:
         """Calculate similarities using ORIGINAL response embeddings for fairer c-TF-IDF comparison"""
         from sklearn.metrics.pairwise import cosine_similarity
         
-        # Get ORIGINAL response embeddings (before ensemble weighting)
+        # Get PURE description embeddings (100% from segment descriptions, no ensemble weighting)
         try:
             original_embeddings = np.array([item.description_embedding for item in self.output_list])
-            self.verbose_reporter.stat_line("🔬 Calculating similarities with original response embeddings")
+            self.verbose_reporter.stat_line("🔬 Using pure 100% description embeddings for centroid calculation")
             
-            # Debug: Check if these are actually different from ensemble embeddings
+            # Debug: Verify these are different from ensemble embeddings
             if self.embedding_type == "description":
                 test_ensemble = np.array([item.reduced_description_embedding for item in self.output_list[:5]])
                 test_original = original_embeddings[:5]
                 diff = np.mean(np.abs(test_ensemble - test_original))
-                self.verbose_reporter.stat_line(f"🔍 Debug: Average difference between original and ensemble embeddings: {diff:.6f}")
+                self.verbose_reporter.stat_line(f"🔍 Difference between pure description and ensemble embeddings: {diff:.6f}")
                 
         except Exception as e:
-            self.verbose_reporter.stat_line(f"⚠️  Original embeddings not available ({e}), using ensemble embeddings")
+            self.verbose_reporter.stat_line(f"⚠️  Pure description embeddings not available ({e}), falling back to ensemble embeddings")
             if self.embedding_type == "code":
                 original_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
             else:
@@ -473,27 +473,27 @@ class ClusterGenerator:
             self.verbose_reporter.stat_line(f"📊 Ensemble embeddings - Min: {np.min(ensemble_sims):.3f}, Max: {np.max(ensemble_sims):.3f}, Mean: {np.mean(ensemble_sims):.3f}")
             self.verbose_reporter.stat_line(f"🔍 Ensemble above threshold (0.7): {ensemble_above_threshold}/{len(ensemble_sims)}")
         
-        # Compare original response embeddings (fairer comparison to c-TF-IDF)
+        # Compare pure description embeddings (fairer comparison to c-TF-IDF)
         if original_similarities:
             original_sims = [data['similarity'] for data in original_similarities.values()]
             original_above_threshold = sum(1 for sim in original_sims if sim >= 0.7)
             
-            self.verbose_reporter.stat_line(f"📊 Original response embeddings - Min: {np.min(original_sims):.3f}, Max: {np.max(original_sims):.3f}, Mean: {np.mean(original_sims):.3f}")
-            self.verbose_reporter.stat_line(f"🔍 Original embeddings above threshold (0.7): {original_above_threshold}/{len(original_sims)}")
+            self.verbose_reporter.stat_line(f"📊 Pure description embeddings vs pure description centroids - Min: {np.min(original_sims):.3f}, Max: {np.max(original_sims):.3f}, Mean: {np.mean(original_sims):.3f}")
+            self.verbose_reporter.stat_line(f"🔍 Pure description embeddings above threshold (0.7): {original_above_threshold}/{len(original_sims)}")
             
             # Compare c-TF-IDF performance
             ctfidf_rescued = ctfidf_results.get('rescued_count', 0)
             total_noise = len(original_sims)
             
-            self.verbose_reporter.stat_line(f"🔍 c-TF-IDF rescued: {ctfidf_rescued}/{total_noise}")
+            self.verbose_reporter.stat_line(f"🔍 c-TF-IDF (description text) rescued: {ctfidf_rescued}/{total_noise}")
             
             # Analysis
             if original_above_threshold > ctfidf_rescued:
                 ratio = original_above_threshold / max(ctfidf_rescued, 1)
-                self.verbose_reporter.stat_line(f"⚠️  DISCREPANCY (vs original embeddings): {ratio:.1f}x more points could be rescued")
-                self.verbose_reporter.stat_line("💡 Even with original embeddings, text-based c-TF-IDF underperforms")
+                self.verbose_reporter.stat_line(f"⚠️  DISCREPANCY: Pure embedding similarity {ratio:.1f}x more effective than c-TF-IDF")
+                self.verbose_reporter.stat_line("💡 Same text content, different similarity calculation methods")
             else:
-                self.verbose_reporter.stat_line("✅ c-TF-IDF performance aligns better with original embeddings")
+                self.verbose_reporter.stat_line("✅ c-TF-IDF and pure description embeddings show similar performance")
             
             # Show the difference between ensemble and original similarities
             if ensemble_similarities and len(ensemble_sims) == len(original_sims):
