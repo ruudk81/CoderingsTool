@@ -335,22 +335,22 @@ else:
     
 
 # debug 1 - per response-label/code
-# import random
-# sampled_items = random.sample(encoded_text, 1)
-# print(f"Q: {var_lab}\n")
-# for item in sampled_items:
-#     print(f"A: {item.response}\n")
-#     for segment in item.response_segment:
-#         print(f"-    {segment.segment_label}")
-
-# debug 2 - per description
 import random
 sampled_items = random.sample(encoded_text, 1)
 print(f"Q: {var_lab}\n")
 for item in sampled_items:
     print(f"A: {item.response}\n")
     for segment in item.response_segment:
-        print(f"-    {segment.segment_description}")
+        print(f"-    {segment.segment_label}")
+
+# debug 2 - per description
+# import random
+# sampled_items = random.sample(encoded_text, 1)
+# print(f"Q: {var_lab}\n")
+# for item in sampled_items:
+#     print(f"A: {item.response}\n")
+#     for segment in item.response_segment:
+#         print(f"-    {segment.segment_description}")
         
 # debug 2 - per description tokens
 # import spacy
@@ -425,7 +425,23 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
-#debug 
+
+#debug  1 - print random clusters
+import random
+cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for item in initial_cluster_results:
+    for segment in item.response_segment:
+        if segment.initial_cluster == sampled_cluster:
+            cluster_segments.append(segment.segment_description)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
+    
+    
+#debug  2  print all clusters
 # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
 # for x in range(1, round(len(cluster_ids) / 20) + 1):
 #     y = x * 20
@@ -440,9 +456,6 @@ else:
 #                         print(subitem.segment_description)
 #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
 
-# for item in initial_cluster_results:
-#     print(item)
-#     break    
 
 # === STEP 6 ========================================================================================================
 PROMPT_PRINTER = False 

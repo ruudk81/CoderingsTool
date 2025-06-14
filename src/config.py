@@ -296,10 +296,10 @@ class EmbeddingConfig:
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 5
-    n_components: int = 10
+    n_neighbors: int = 15 #5
+    n_components: int = 3 #10
     min_dist: float = 0.0
-    metric: str = "cosine"
+    metric: str = "euclidean" # vs "cosine"
     random_state: int = 42
     n_jobs: int = 1
     low_memory: bool = True
