@@ -412,8 +412,22 @@ class Embedder:
     
     def _reduce_dimensions(self, embeddings: np.ndarray, target_dim: int) -> np.ndarray:
         """Reduce embedding dimensions using PCA"""
-        if self.pca is None or self.pca.n_components != target_dim:
-            self.verbose_reporter.stat_line(f"Reducing dimensions from {embeddings.shape[1]} to {target_dim}")
+        n_samples, n_features = embeddings.shape
+        
+        # Adjust target dimensions to be valid for PCA
+        max_components = min(n_samples, n_features)
+        actual_target_dim = min(target_dim, max_components)
+        
+        if actual_target_dim != target_dim:
+            self.verbose_reporter.stat_line(f"Adjusted target dimensions from {target_dim} to {actual_target_dim} (limited by sample size)")
+        
+        # Skip reduction if we're already at or below target dimensions
+        if n_features <= actual_target_dim:
+            self.verbose_reporter.stat_line(f"Skipping PCA: current dims ({n_features}) <= target ({actual_target_dim})")
+            return embeddings
+        
+        if self.pca is None or self.pca.n_components != actual_target_dim:
+            self.verbose_reporter.stat_line(f"Reducing dimensions from {n_features} to {actual_target_dim}")
             
             # Standardize before PCA
             if self.scaler is None:
@@ -423,8 +437,8 @@ class Embedder:
                 embeddings_scaled = self.scaler.transform(embeddings)
             
             # Apply PCA
-            if self.pca is None or self.pca.n_components != target_dim:
-                self.pca = PCA(n_components=target_dim, random_state=42)
+            if self.pca is None or self.pca.n_components != actual_target_dim:
+                self.pca = PCA(n_components=actual_target_dim, random_state=42)
                 reduced = self.pca.fit_transform(embeddings_scaled)
             else:
                 reduced = self.pca.transform(embeddings_scaled)
