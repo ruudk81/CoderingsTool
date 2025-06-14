@@ -127,10 +127,24 @@ force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 
+code_meanings = {
+    99999997: "User missing: Don't know/only expressing uncertainty", 
+    99999998: "System missing: NA",
+    99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+
+
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, models.PreprocessedModel)
-    verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {f"Input: {len(raw_text_list)} responses → Output": f"{len(preprocessed_text)} responses", "Overall success rate": f"{(len(preprocessed_text) / len(raw_text_list) * 100):.1f}%"})
-else: 
+    code_counts = {}
+    for item in preprocessed_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {"• Input" : f"{len(raw_text_list)} responses"})
+    for code, count in code_counts.items():
+        verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
+    verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
+    
     verbose_reporter.section_header("PREPROCESSING PHASE")
     # intialize utils
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
@@ -268,7 +282,7 @@ else:
             code_counts[code] = code_counts.get(code, 0) + 1
     code_meanings = {
         99999997: "User missing: Don't know/only expressing uncertainty", 
-        99999998: "System missing: NAt",
+        99999998: "System missing: NA",
         99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"}
     for code, count in sorted(code_counts.items()):
         meaning = code_meanings.get(code, "Unknown code")
