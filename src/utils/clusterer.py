@@ -357,9 +357,34 @@ class ClusterGenerator:
         
         # Debug: Check for duplicate segment IDs
         unique_segment_ids = set(segment_ids)
-        if len(unique_segment_ids) != len(segment_ids):
-            duplicate_count = len(segment_ids) - len(unique_segment_ids)
+        duplicate_count = len(segment_ids) - len(unique_segment_ids)
+        
+        if duplicate_count > 0:
             self.verbose_reporter.stat_line(f"⚠️  WARNING: Found {duplicate_count} duplicate segment IDs in c-TF-IDF input")
+            
+            # Show format analysis
+            compound_format = sum(1 for sid in segment_ids if '_' in str(sid))
+            simple_format = sum(1 for sid in segment_ids if str(sid).isdigit())
+            
+            self.verbose_reporter.stat_line(f"📊 Format analysis: {compound_format} compound, {simple_format} simple format")
+            
+            # Show sample duplicates
+            from collections import Counter
+            segment_counts = Counter(segment_ids)
+            duplicates = [(sid, count) for sid, count in segment_counts.items() if count > 1]
+            if duplicates[:3]:  # Show first 3 duplicates
+                dup_texts = [f"'{sid}': {count}x" for sid, count in duplicates[:3]]
+                self.verbose_reporter.sample_list("Sample duplicates", dup_texts)
+        else:
+            self.verbose_reporter.stat_line(f"✅ SEGMENT ID VALIDATION: All {len(segment_ids)} segment IDs are unique!")
+            
+            # Show format verification
+            compound_format = sum(1 for sid in segment_ids if '_' in str(sid))
+            if compound_format == len(segment_ids):
+                self.verbose_reporter.stat_line(f"✅ All segment IDs use proper compound format (respondent_id_segment)")
+            else:
+                simple_format = sum(1 for sid in segment_ids if str(sid).isdigit())
+                self.verbose_reporter.stat_line(f"📊 Format mix: {compound_format} compound, {simple_format} simple format")
         
         # Debug output
         valid_clusters = [c for c in cluster_labels if c != -1]
