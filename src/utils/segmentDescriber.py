@@ -333,11 +333,21 @@ class SegmentDescriber:
                     "language": DEFAULT_LANGUAGE
                     })    
          
+                # Transform segment IDs to be globally unique
+                segments_with_unique_ids = []
+                for seg in result:
+                    # Create a copy of the segment data
+                    seg_data = dict(seg)
+                    # Transform segment_id to be globally unique: respondent_id_original_segment_id
+                    original_segment_id = seg_data.get('segment_id', '1')
+                    seg_data['segment_id'] = f"{respondent_id}_{original_segment_id}"
+                    segments_with_unique_ids.append(models.DescriptiveSubmodel(**seg_data))
+                
                 return models.DescriptiveModel(
                 respondent_id=respondent_id,
                 response=response_text,
                 quality_filter=None,
-                response_segment=[models.DescriptiveSubmodel(**seg) for seg in result]
+                response_segment=segments_with_unique_ids
                 )
             
             except Exception as e:
@@ -348,7 +358,7 @@ class SegmentDescriber:
                     quality_filter=None,
                     response_segment=[
                         models.DescriptiveSubmodel(
-                            segment_id="1",
+                            segment_id=f"{respondent_id}_1",  # Generate unique fallback ID
                             segment_response=response_text,
                             segment_label="NA",
                             segment_description="NA"
@@ -395,7 +405,7 @@ class SegmentDescriber:
                     quality_filter=None,
                     response_segment=[
                         models.DescriptiveSubmodel(
-                            segment_id="1",
+                            segment_id=f"{respondent_id}_1",  # Generate unique fallback ID
                             segment_response=response_text,
                             segment_label="PROCESSING_ERROR",
                             segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
