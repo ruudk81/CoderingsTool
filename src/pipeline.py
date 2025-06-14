@@ -307,7 +307,7 @@ else:
 """describe and segment data"""
 from utils import segmentDescriber
 
-FORCE = True
+FORCE = False
 
 step_name        = "segmented_descriptions"
 if  FORCE:
@@ -334,7 +334,28 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-# debug 1 - per response
+# debug 1 - per response-label/code
+# import random
+# sampled_items = random.sample(encoded_text, 1)
+# print(f"Q: {var_lab}\n")
+# for item in sampled_items:
+#     print(f"A: {item.response}\n")
+#     for segment in item.response_segment:
+#         print(f"-    {segment.segment_label}")
+
+# debug 2 - per description
+import random
+sampled_items = random.sample(encoded_text, 1)
+print(f"Q: {var_lab}\n")
+for item in sampled_items:
+    print(f"A: {item.response}\n")
+    for segment in item.response_segment:
+        print(f"-    {segment.segment_description}")
+        
+# debug 2 - per description tokens
+# import spacy
+# nlp = spacy.load("nl_core_news_lg")
+
 # import random
 # sampled_items = random.sample(encoded_text, 1)
 # print(f"Q: {var_lab}\n")
@@ -342,8 +363,16 @@ else:
 #     print(f"A: {item.response}\n")
 #     for segment in item.response_segment:
 #         print(f"-    {segment.segment_description}")
-
-# debug 2 - example outputs
+#         doc = nlp(segment.segment_description)
+#         topic_tokens = []
+#         for token in doc:
+#             if (token.pos_ in ['NOUN', 'PROPN'] or
+#                 (token.pos_ == 'ADJ' and token.head.pos_ in ['NOUN', 'PROPN'])) and \
+#                not token.is_stop and not token.is_punct:
+#                 topic_tokens.append(token.lemma_)
+#         print(" ".join(topic_tokens))
+    
+# debug 4 - example outputs
 # import random
 # n_samples = 5
 # sampled_items = random.sample(encoded_text, n_samples)
@@ -353,12 +382,16 @@ else:
 # print("\n")    
     
 
-
 # === STEP 5 ========================================================================================================
 """get initial clusters"""
 from utils import embedder, clusterer
 
+FORCE = True
+
 step_name        = "initial_clusters"
+if  FORCE:
+    FORCE_STEP   = step_name
+
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
@@ -392,24 +425,24 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
-    #debug 
-    # cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-    # for x in range(1, round(len(cluster_ids) / 20) + 1):
-    #     y = x * 20
-    #     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
-    
-    #     for z in range(y - 20, y):
-    #         if z < len(cluster_ids):
-    #             print(f"\nCluster {z}")
-    #             for item in initial_cluster_results:
-    #                 for subitem in item.response_segment:
-    #                     if subitem.initial_cluster == z:
-    #                         print(subitem.segment_description)
-    #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
-    
-    # for item in initial_cluster_results:
-    #     print(item)
-    #     break
+#debug 
+# cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+# for x in range(1, round(len(cluster_ids) / 20) + 1):
+#     y = x * 20
+#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+
+#     for z in range(y - 20, y):
+#         if z < len(cluster_ids):
+#             print(f"\nCluster {z}")
+#             for item in initial_cluster_results:
+#                 for subitem in item.response_segment:
+#                     if subitem.initial_cluster == z:
+#                         print(subitem.segment_description)
+#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+
+# for item in initial_cluster_results:
+#     print(item)
+#     break    
 
 # === STEP 6 ========================================================================================================
 PROMPT_PRINTER = False 
