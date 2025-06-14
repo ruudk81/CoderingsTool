@@ -263,7 +263,7 @@ class CtfidfNoiseReducer:
         total_outliers = len(outliers_df)
         success_rate = rescued_count / total_outliers if total_outliers > 0 else 0.0
         
-        self.verbose_reporter.stat_line(f"Rescued {rescued_count}/{total_outliers} outliers ({success_rate:.1%} success rate)")
+        self.verbose_reporter.stat_line(f"c-TF-IDF rescued {rescued_count}/{total_outliers} remaining outliers ({success_rate:.1%} success rate for Phase 2)")
         self.verbose_reporter.stat_line(f"Used similarity threshold: {threshold}")
         
         # Show confidence distribution

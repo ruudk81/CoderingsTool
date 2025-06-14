@@ -437,6 +437,7 @@ class ClusterGenerator:
             return {"rescued_count": 0, "total_noise": 0, "success_rate": 0.0}
             
         self.verbose_reporter.step_start("Hybrid noise rescue", "🚀")
+        self.verbose_reporter.stat_line("Two-phase rescue strategy: Phase 1 (cosine similarity) → Phase 2 (c-TF-IDF)")
         
         # Get current cluster labels and embeddings based on embedding type
         if self.embedding_type == "code":
@@ -487,9 +488,10 @@ class ClusterGenerator:
                 remaining_noise_count = remaining_noise_mask.sum()
                 
                 if remaining_noise_count > 0:
-                    self.verbose_reporter.stat_line(f"Phase 2: c-TF-IDF rescue ({remaining_noise_count} remaining noise points)")
+                    self.verbose_reporter.stat_line(f"Phase 2: c-TF-IDF rescue ({remaining_noise_count} remaining noise points after cosine rescue)")
                     ctfidf_rescued = self._ctfidf_rescue(labels)
                     total_rescued += ctfidf_rescued
+                    self.verbose_reporter.stat_line(f"Phase 2 result: {ctfidf_rescued} additional points rescued via c-TF-IDF")
                 else:
                     self.verbose_reporter.stat_line("Phase 2: No remaining noise points for c-TF-IDF rescue")
                 
