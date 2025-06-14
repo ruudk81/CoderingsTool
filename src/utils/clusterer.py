@@ -355,8 +355,26 @@ class ClusterGenerator:
                 cluster_labels.append(cluster)
                 segment_ids.append(item.segment_id)
         
+        # Debug output
+        valid_clusters = [c for c in cluster_labels if c != -1]
+        unique_clusters = len(set(valid_clusters)) if valid_clusters else 0
+        noise_count = cluster_labels.count(-1)
+        
+        self.verbose_reporter.stat_line(f"c-TF-IDF input: {len(documents)} documents")
+        self.verbose_reporter.stat_line(f"Valid clusters: {unique_clusters}, Noise points: {noise_count}")
+        self.verbose_reporter.stat_line(f"Embedding type: {self.embedding_type}")
+        
+        # Sample document check
+        if documents:
+            sample_doc = documents[0]
+            self.verbose_reporter.stat_line(f"Sample document: '{sample_doc[:60]}...' (cluster: {cluster_labels[0]})")
+        
         if not documents:
-            self.verbose_reporter.stat_line("No valid documents for c-TF-IDF rescue")
+            self.verbose_reporter.stat_line("❌ No valid documents for c-TF-IDF rescue")
+            return 0
+        
+        if unique_clusters == 0:
+            self.verbose_reporter.stat_line("❌ No valid clusters for c-TF-IDF comparison")
             return 0
         
         # Configure c-TF-IDF rescue

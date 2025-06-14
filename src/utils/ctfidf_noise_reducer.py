@@ -97,6 +97,15 @@ class CtfidfNoiseReducer:
         self.verbose_reporter.stat_line(f"Valid topics: {len(topics_df)}")
         self.verbose_reporter.stat_line(f"Outliers to rescue: {len(outliers_df)}")
         
+        # Debug: Show document length distribution
+        doc_lengths = df['document'].str.len()
+        self.verbose_reporter.stat_line(f"Document lengths - Min: {doc_lengths.min()}, Max: {doc_lengths.max()}, Mean: {doc_lengths.mean():.1f}")
+        
+        # Debug: Show sample documents
+        if len(df) > 0:
+            sample_docs = df['document'].head(3).tolist()
+            self.verbose_reporter.sample_list("Sample documents", [f"'{doc[:80]}..." for doc in sample_docs])
+        
         if len(outliers_df) == 0:
             self.verbose_reporter.stat_line("No outliers to rescue")
             self.verbose_reporter.step_complete("c-TF-IDF rescue completed")
@@ -139,13 +148,32 @@ class CtfidfNoiseReducer:
         
         self.verbose_reporter.stat_line(f"Creating representations for {len(topic_docs)} topics")
         
+        # Debug: Show topic sizes and sample aggregated docs
+        self.verbose_reporter.stat_line(f"Topic sizes: {dict(topic_sizes[topic_sizes >= self.config.min_topic_size])}")
+        if len(topic_docs) > 0:
+            sample_topic_doc = topic_docs['aggregated_document'].iloc[0]
+            self.verbose_reporter.stat_line(f"Sample aggregated doc length: {len(sample_topic_doc)} chars")
+            self.verbose_reporter.stat_line(f"Sample: '{sample_topic_doc[:100]}...'")
+        
         # Vectorize aggregated documents
         try:
-            X_topics = self.vectorizer.transform(topic_docs['aggregated_document'])
+            aggregated_docs = topic_docs['aggregated_document'].tolist()
+            self.verbose_reporter.stat_line(f"Vectorizing {len(aggregated_docs)} aggregated documents...")
+            
+            X_topics = self.vectorizer.transform(aggregated_docs)
             self.feature_names = self.vectorizer.get_feature_names_out()
             
             self.verbose_reporter.stat_line(f"Topic matrix shape: {X_topics.shape}")
             self.verbose_reporter.stat_line(f"Vocabulary size: {len(self.feature_names)}")
+            
+            # Debug: Check if matrix is empty
+            non_zero_topics = np.sum(X_topics.sum(axis=1) > 0)
+            self.verbose_reporter.stat_line(f"Topics with non-zero terms: {non_zero_topics}/{X_topics.shape[0]}")
+            
+            # Debug: Show sample vocabulary
+            if len(self.feature_names) > 0:
+                sample_vocab = list(self.feature_names[:10])
+                self.verbose_reporter.sample_list("Sample vocabulary", sample_vocab)
             
             # Calculate samples per topic for proper IDF
             n_samples_per_topic = [topic_sizes[cluster] for cluster in topic_docs['cluster']]
@@ -162,7 +190,10 @@ class CtfidfNoiseReducer:
             }
             
         except Exception as e:
-            self.verbose_reporter.stat_line(f"Error building topic representations: {e}")
+            self.verbose_reporter.stat_line(f"❌ Error building topic representations: {e}")
+            self.verbose_reporter.stat_line(f"Error type: {type(e).__name__}")
+            import traceback
+            self.verbose_reporter.stat_line(f"Traceback: {traceback.format_exc()[-200:]}")
             return None
     
     def _rescue_outliers(self, outliers_df: pd.DataFrame, topic_info: Dict) -> Dict:
@@ -171,7 +202,14 @@ class CtfidfNoiseReducer:
         
         # Vectorize outlier documents
         outlier_docs = outliers_df['document'].tolist()
-        X_outliers = self.vectorizer.transform(outlier_docs)
+        self.verbose_reporter.stat_line(f"Vectorizing {len(outlier_docs)} outlier documents...")
+        
+        try:
+            X_outliers = self.vectorizer.transform(outlier_docs)
+            self.verbose_reporter.stat_line(f"Outlier matrix shape: {X_outliers.shape}")
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"❌ Error vectorizing outliers: {e}")
+            return self._create_results(0, len(outliers_df), {})
         
         # Transform to c-TF-IDF using the fitted transformer
         X_outliers_ctfidf = self.ctfidf_transformer.transform(X_outliers)
@@ -180,6 +218,19 @@ class CtfidfNoiseReducer:
         similarities = self.ctfidf_transformer.calculate_similarity(
             X_outliers_ctfidf, topic_info['topic_representations']
         )
+        
+        # Debug: Check similarity matrix
+        if len(similarities) > 0:
+            max_sims = np.max(similarities, axis=1)
+            self.verbose_reporter.stat_line(f"Similarity matrix shape: {similarities.shape}")
+            self.verbose_reporter.stat_line(f"Max similarities - Min: {np.min(max_sims):.4f}, Max: {np.max(max_sims):.4f}, Mean: {np.mean(max_sims):.4f}")
+            
+            # Show distribution around threshold
+            threshold = self.config.similarity_threshold
+            above_threshold = np.sum(max_sims >= threshold)
+            above_half_threshold = np.sum(max_sims >= threshold/2)
+            self.verbose_reporter.stat_line(f"Above threshold ({threshold}): {above_threshold}/{len(max_sims)}")
+            self.verbose_reporter.stat_line(f"Above half threshold ({threshold/2}): {above_half_threshold}/{len(max_sims)}")
         
         # Apply threshold and assign topics
         rescued_count = 0
