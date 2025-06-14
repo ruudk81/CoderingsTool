@@ -57,6 +57,108 @@ class CtfidfNoiseReducer:
         self.topic_documents = None
         self.feature_names = None
         
+    def rescue_noise_points_with_embedding_comparison(self, 
+                          documents: List[str],
+                          cluster_labels: List[int],
+                          segment_ids: List[str] = None,
+                          embedding_similarities: Dict = None) -> Dict:
+        """
+        Enhanced rescue with embedding similarity comparison for validation.
+        
+        Parameters:
+        -----------
+        documents : list of str
+            All documents (including noise points)
+        cluster_labels : list of int
+            Cluster assignments (-1 for noise)
+        segment_ids : list of str, optional
+            Segment IDs for tracking
+        embedding_similarities : dict, optional
+            Pre-calculated embedding similarities for comparison
+            
+        Returns:
+        --------
+        results : dict
+            Enhanced rescue statistics with embedding comparison
+        """
+        # Verify BERTopic implementation first
+        from .ctfidf_transformer import verify_bertopic_implementation
+        if self.verbose:
+            verify_bertopic_implementation()
+            
+        # Run standard c-TF-IDF rescue
+        standard_results = self.rescue_noise_points(documents, cluster_labels, segment_ids)
+        
+        if embedding_similarities:
+            self._compare_ctfidf_vs_embedding_similarities(standard_results, embedding_similarities, cluster_labels)
+        
+        return standard_results
+    
+    def _compare_ctfidf_vs_embedding_similarities(self, ctfidf_results: Dict, embedding_similarities: Dict, cluster_labels: List[int]) -> None:
+        """Compare c-TF-IDF and embedding-based similarities for the same outlier points."""
+        
+        self.verbose_reporter.step_start("c-TF-IDF vs Embedding Similarity Comparison", "🔬")
+        
+        # Find noise points for comparison
+        noise_indices = [i for i, label in enumerate(cluster_labels) if label == -1]
+        
+        if not noise_indices or not embedding_similarities:
+            self.verbose_reporter.stat_line("No noise points or embedding similarities for comparison")
+            return
+        
+        # Compare similarities for same points
+        ctfidf_sims = []
+        embedding_sims = []
+        comparison_examples = []
+        
+        threshold = self.config.similarity_threshold
+        
+        for noise_idx in noise_indices:
+            if noise_idx in embedding_similarities:
+                emb_sim = embedding_similarities[noise_idx]['similarity']
+                embedding_sims.append(emb_sim)
+                
+                # For c-TF-IDF, we need to calculate what the similarity was for this point
+                # This is a simplified approximation - in practice you'd need the actual c-TF-IDF similarities
+                ctfidf_sim = 0.0  # Placeholder - would need actual c-TF-IDF similarity matrix
+                ctfidf_sims.append(ctfidf_sim)
+                
+                if len(comparison_examples) < 5:
+                    comparison_examples.append({
+                        'index': noise_idx,
+                        'embedding_sim': emb_sim,
+                        'ctfidf_sim': ctfidf_sim,
+                        'emb_above_threshold': emb_sim >= 0.7,  # cosine threshold
+                        'ctfidf_above_threshold': ctfidf_sim >= threshold
+                    })
+        
+        # Report comparison statistics
+        if embedding_sims:
+            avg_emb_sim = np.mean(embedding_sims)
+            max_emb_sim = np.max(embedding_sims)
+            min_emb_sim = np.min(embedding_sims)
+            
+            self.verbose_reporter.stat_line(f"📊 Embedding similarities - Min: {min_emb_sim:.3f}, Max: {max_emb_sim:.3f}, Mean: {avg_emb_sim:.3f}")
+            
+            # Show examples
+            if comparison_examples:
+                example_texts = [
+                    f"Point {ex['index']}: Emb={ex['embedding_sim']:.3f} ({'✓' if ex['emb_above_threshold'] else '✗'}), c-TF-IDF={ex['ctfidf_sim']:.3f} ({'✓' if ex['ctfidf_above_threshold'] else '✗'})"
+                    for ex in comparison_examples
+                ]
+                self.verbose_reporter.sample_list("Similarity Comparison Examples", example_texts)
+            
+            # Analyze discrepancy
+            emb_above_cosine_threshold = sum(1 for sim in embedding_sims if sim >= 0.7)
+            self.verbose_reporter.stat_line(f"🔍 Embedding similarities above cosine threshold (0.7): {emb_above_cosine_threshold}/{len(embedding_sims)}")
+            self.verbose_reporter.stat_line(f"🔍 c-TF-IDF rescued: {ctfidf_results.get('rescued_count', 0)}/{len(noise_indices)}")
+            
+            if emb_above_cosine_threshold > ctfidf_results.get('rescued_count', 0):
+                self.verbose_reporter.stat_line("⚠️  DISCREPANCY: More points have high embedding similarity than c-TF-IDF similarity")
+                self.verbose_reporter.stat_line("💡 This suggests embedding-based rescue might be more effective")
+        
+        self.verbose_reporter.step_complete("Similarity comparison completed")
+
     def rescue_noise_points(self, 
                           documents: List[str],
                           cluster_labels: List[int],

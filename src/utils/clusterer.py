@@ -333,6 +333,35 @@ class ClusterGenerator:
         
         return rescued_count
     
+    def _embedding_based_similarity_comparison(self, noise_indices: np.ndarray, embeddings: np.ndarray, labels: np.ndarray) -> Dict:
+        """Calculate embedding-based similarities for comparison with c-TF-IDF"""
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        # Calculate cluster centroids (same as in cosine rescue)
+        centroids = self._calculate_cluster_centroids(embeddings, labels)
+        
+        if not centroids:
+            return {}
+        
+        cluster_ids = list(centroids.keys())
+        centroid_vectors = np.array(list(centroids.values()))
+        
+        similarities = {}
+        for noise_idx in noise_indices:
+            noise_embedding = embeddings[noise_idx].reshape(1, -1)
+            sim_scores = cosine_similarity(noise_embedding, centroid_vectors)[0]
+            best_cluster_idx = np.argmax(sim_scores)
+            best_similarity = sim_scores[best_cluster_idx]
+            best_cluster_id = cluster_ids[best_cluster_idx]
+            
+            similarities[noise_idx] = {
+                'best_cluster': best_cluster_id,
+                'similarity': best_similarity,
+                'all_similarities': dict(zip(cluster_ids, sim_scores))
+            }
+        
+        return similarities
+
     def _ctfidf_rescue(self, current_labels: np.ndarray) -> int:
         """Rescue remaining noise points using c-TF-IDF similarity with embedding comparison"""
         
@@ -424,6 +453,20 @@ class ClusterGenerator:
             vocab_size = len(self.vectorizer_model.get_feature_names_out())
             self.verbose_reporter.stat_line(f"Vectorizer fitted: {vocab_size} features")
         
+        # Calculate embedding-based similarities for comparison
+        noise_mask = np.array(cluster_labels) == -1
+        noise_indices = np.where(noise_mask)[0]
+        
+        # Get embeddings for noise points comparison
+        if self.embedding_type == "code":
+            rescue_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
+        else:
+            rescue_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
+        
+        embedding_similarities = self._embedding_based_similarity_comparison(
+            noise_indices, rescue_embeddings, current_labels
+        )
+        
         # Configure c-TF-IDF rescue with embedding comparison
         ctfidf_config = CtfidfNoiseRescueConfig(
             enabled=True,
@@ -442,9 +485,9 @@ class ClusterGenerator:
         # Perform hybrid c-TF-IDF + embedding similarity rescue
         rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
             documents=documents,
-            embeddings=np.array(embeddings),
             cluster_labels=cluster_labels,
-            segment_ids=segment_ids
+            segment_ids=segment_ids,
+            embedding_similarities=embedding_similarities
         )
         
         # Apply rescue results to output_list
