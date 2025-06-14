@@ -112,11 +112,17 @@ else:
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
+
 from utils import textNormalizer, spellChecker, textFinalizer
 from utils.verboseReporter import VerboseReporter
 from utils.promptPrinter import promptPrinter
 
-step_name = "preprocessed"
+FORCE = True
+
+step_name        = "preprocessed"
+if  FORCE:
+    FORCE_STEP   = step_name
+
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
@@ -162,10 +168,10 @@ else:
             # Convert to PreprocessedModel to add quality_filter_code
             desc_item = item.to_model(models.PreprocessedModel)
             # Categorize based on type and content
-            if item.response_type == 'nan':
+            if item.response == 'nan':
                 desc_item.quality_filter_code = 99999998  # System missing
                 desc_item.quality_filter = True
-            elif item.response_type == 'numeric':
+            elif isinstance(item.response, int):
                 # Check if it's a known missing code
                 if item.response in [99999997, 99999998, 99999999]:
                     desc_item.quality_filter_code = int(item.response)
@@ -174,9 +180,9 @@ else:
                     # Regular numeric response - will be evaluated by qualityFilter
                     desc_item.quality_filter_code = None
                     desc_item.quality_filter = None
-            elif item.response_type == 'string':
-                if item.response == '<NA>' or (isinstance(item.response, str) and item.response.strip() == ''):
-                    desc_item.quality_filter_code = 99999999  # empty strings
+            elif isinstance(item.response, str):
+                if item.response.strip() == '':
+                    desc_item.quality_filter_code = 99999999   
                     desc_item.quality_filter = True
                 else:
                     # Text response - will be evaluated by qualityFilter
@@ -184,13 +190,11 @@ else:
                     desc_item.quality_filter = None
             preprocessed_text.append(desc_item)
         else:
-            # If not in processed_map, it was filtered out during normalization
-            # Create a PreprocessedModel with system missing code
             preprocessed_text.append(models.PreprocessedModel(
                 respondent_id=original.respondent_id,
                 response='<NA>',
-                response_type=original.response_type,
-                quality_filter_code=99999999,  # no answer, etc. only numbers, 1 character or empty
+                response_type='nan',
+                quality_filter_code=99999998,  # no answer, etc. only numbers, 1 character or empty
                 quality_filter=True))
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -206,7 +210,7 @@ else:
     
     code_meanings = {
         99999997: "User missing: Don't know/only expressing uncertainty", 
-        99999998: "System missing: NAt",
+        99999998: "System missing: NA",
         99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
     
     for code, count in sorted(code_counts.items()):
@@ -218,18 +222,24 @@ else:
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     #debug
-    import random
-    n_samples = 5
-    indices = random.sample(range(len(preprocessed_text)), n_samples)
-    for i in indices:
-        print("Preprocessed:", preprocessed_text[i])
-        print("---")
+    # import random
+    # n_samples = 5
+    # indices = random.sample(range(len(preprocessed_text)), n_samples)
+    # for i in indices:
+    #     if preprocessed_text[i].quality_filter_code == None:
+    #         print("Preprocessed:", preprocessed_text[i].response)
+    #         print("---")
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
 from utils import qualityFilter
 
+FORCE = True
+
 step_name        = "quality_filter"
+if  FORCE:
+    FORCE_STEP   = step_name
+
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True) 
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
