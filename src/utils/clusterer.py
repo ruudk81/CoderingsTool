@@ -362,6 +362,49 @@ class ClusterGenerator:
         
         return similarities
 
+    def _manual_embedding_comparison(self, embedding_similarities: Dict, ctfidf_results: Dict) -> None:
+        """Manual comparison of embedding vs c-TF-IDF similarities when enhanced method fails."""
+        
+        if not embedding_similarities:
+            return
+            
+        self.verbose_reporter.step_start("Embedding vs c-TF-IDF Similarity Analysis", "🔬")
+        
+        # Extract embedding similarity statistics
+        embedding_sims = [data['similarity'] for data in embedding_similarities.values()]
+        
+        if embedding_sims:
+            avg_emb_sim = np.mean(embedding_sims)
+            max_emb_sim = np.max(embedding_sims) 
+            min_emb_sim = np.min(embedding_sims)
+            
+            self.verbose_reporter.stat_line(f"📊 Embedding similarities - Min: {min_emb_sim:.3f}, Max: {max_emb_sim:.3f}, Mean: {avg_emb_sim:.3f}")
+            
+            # Count embeddings above cosine threshold
+            emb_above_threshold = sum(1 for sim in embedding_sims if sim >= 0.7)
+            total_noise = len(embedding_sims)
+            
+            self.verbose_reporter.stat_line(f"🔍 Embedding similarities above cosine threshold (0.7): {emb_above_threshold}/{total_noise}")
+            self.verbose_reporter.stat_line(f"🔍 c-TF-IDF rescued: {ctfidf_results.get('rescued_count', 0)}/{total_noise}")
+            
+            # Analysis
+            if emb_above_threshold > ctfidf_results.get('rescued_count', 0):
+                ratio = emb_above_threshold / max(ctfidf_results.get('rescued_count', 0), 1)
+                self.verbose_reporter.stat_line(f"⚠️  DISCREPANCY: Embedding-based rescue could rescue {ratio:.1f}x more points")
+                self.verbose_reporter.stat_line("💡 Consider using embedding-based rescue as primary method")
+                
+                # Show example high-embedding, low-ctfidf points
+                high_emb_examples = [(idx, data) for idx, data in embedding_similarities.items() 
+                                   if data['similarity'] >= 0.7][:3]
+                if high_emb_examples:
+                    example_texts = [f"Point {idx}: {data['similarity']:.3f} similarity to cluster {data['best_cluster']}" 
+                                   for idx, data in high_emb_examples]
+                    self.verbose_reporter.sample_list("High embedding similarity examples", example_texts)
+            else:
+                self.verbose_reporter.stat_line("✅ c-TF-IDF and embedding similarities are reasonably aligned")
+        
+        self.verbose_reporter.step_complete("Similarity analysis completed")
+
     def _ctfidf_rescue(self, current_labels: np.ndarray) -> int:
         """Rescue remaining noise points using c-TF-IDF similarity with embedding comparison"""
         
@@ -483,12 +526,28 @@ class ClusterGenerator:
         )
         
         # Perform hybrid c-TF-IDF + embedding similarity rescue
-        rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
-            documents=documents,
-            cluster_labels=cluster_labels,
-            segment_ids=segment_ids,
-            embedding_similarities=embedding_similarities
-        )
+        try:
+            rescue_results = ctfidf_reducer.rescue_noise_points_with_embedding_comparison(
+                documents=documents,
+                cluster_labels=cluster_labels,
+                segment_ids=segment_ids,
+                embedding_similarities=embedding_similarities
+            )
+        except TypeError as e:
+            self.verbose_reporter.stat_line(f"⚠️  Enhanced rescue failed: {e}")
+            self.verbose_reporter.stat_line("Falling back to standard c-TF-IDF rescue")
+            rescue_results = ctfidf_reducer.rescue_noise_points(
+                documents=documents,
+                cluster_labels=cluster_labels,
+                segment_ids=segment_ids
+            )
+            
+            # Add manual embedding comparison
+            self._manual_embedding_comparison(embedding_similarities, rescue_results)
+            
+            # Verify BERTopic implementation
+            from .ctfidf_transformer import verify_bertopic_implementation
+            verify_bertopic_implementation()
         
         # Apply rescue results to output_list
         rescued_count = 0
