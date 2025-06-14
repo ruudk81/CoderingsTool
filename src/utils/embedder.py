@@ -8,7 +8,6 @@ from openai import AsyncOpenAI
 import models
 from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verboseReporter import VerboseReporter, ProcessingStats
-from .tfidfEmbedder import TfidfEmbedder
 
 class Embedder:
     def __init__(
@@ -28,12 +27,11 @@ class Embedder:
         self.verbose_reporter = VerboseReporter(verbose)
         self.stats = ProcessingStats()
         
-        # Initialize TF-IDF embedder if ensemble mode is enabled
-        self.tfidf_embedder = None
+        # Initialize domain anchor for question-aware embeddings
         self.domain_anchor = None
-        if self.config.use_ensemble:
-            self.tfidf_embedder = TfidfEmbedder(config=self.config.tfidf, verbose=verbose)
-            self.verbose_reporter.stat_line(f"Initialized ensemble mode with weights: OpenAI {self.config.openai_weight}, TF-IDF {self.config.tfidf_weight}, Domain {self.config.domain_anchor_weight}")
+        self.question_embedding_cache = {}  # Cache for question embeddings
+        if self.config.use_question_aware:
+            self.verbose_reporter.stat_line(f"Initialized question-aware mode with weights: Response {self.config.response_weight}, Question {self.config.question_weight}, Domain {self.config.domain_anchor_weight}")
         
         
         self.verbose_reporter.stat_line(f"Initialized Embedder with {provider} provider and {self.embedding_model} model")
@@ -46,7 +44,7 @@ class Embedder:
         if self.var_lab:
             for resp_idx, resp_item in enumerate(data):
                 for seg_idx, segment in enumerate(resp_item.response_segment):
-                    text_to_embed = self.var_lab + segment.segment_description
+                    text_to_embed = segment.segment_description
                     all_segments.append(text_to_embed)
                     segment_indices.append((resp_idx, seg_idx))
         else:
@@ -129,8 +127,8 @@ class Embedder:
         self.verbose_reporter.stat_line(f"Batch size: {batch_size}, Total batches: {len(batches_responses)}")
         self.verbose_reporter.stat_line(f"Max concurrent requests: {max_concurrent}")
         
-        # For ensemble mode, we need to collect all embeddings first
-        if self.config.use_ensemble and is_description:
+        # For question-aware mode, we need to collect all embeddings first
+        if self.config.use_question_aware and is_description and self.var_lab:
             # Collect all texts and indices for batch processing
             all_texts = []
             all_indices = []
@@ -138,37 +136,37 @@ class Embedder:
                 all_texts.extend(batch_texts)
                 all_indices.extend(batch_indices)
             
-            # Get all OpenAI embeddings
-            self.verbose_reporter.stat_line("Generating OpenAI embeddings for ensemble...")
-            openai_embeddings = []
+            # Get all response embeddings
+            self.verbose_reporter.stat_line("Generating response embeddings for question-aware mode...")
+            response_embeddings = []
             
             semaphore = asyncio.Semaphore(max_concurrent)
-            async def process_openai_batch(batch_responses):
+            async def process_response_batch(batch_responses):
                 async with semaphore:
                     return await self.process_batches(batch_responses)
             
-            tasks = [process_openai_batch(batch) for batch in batches_responses]
+            tasks = [process_response_batch(batch) for batch in batches_responses]
             batch_results = await asyncio.gather(*tasks)
             
             # Flatten results
             for batch_embeddings in batch_results:
                 for embedding in batch_embeddings:
-                    openai_embeddings.append(np.array(embedding, dtype=np.float32))
+                    response_embeddings.append(np.array(embedding, dtype=np.float32))
             
-            openai_embeddings = np.array(openai_embeddings)
+            response_embeddings = np.array(response_embeddings)
             
-            # Generate ensemble embeddings
-            self.verbose_reporter.stat_line("Generating ensemble embeddings...")
-            ensemble_embeddings = await self._generate_ensemble_embeddings(all_texts, openai_embeddings)
+            # Generate question-aware embeddings
+            self.verbose_reporter.stat_line("Generating question-aware embeddings...")
+            question_aware_embeddings = await self._generate_question_aware_embeddings(response_embeddings, self.var_lab)
             
             # Assign embeddings back to data
-            for (resp_idx, seg_idx), embedding in zip(all_indices, ensemble_embeddings):
+            for (resp_idx, seg_idx), embedding in zip(all_indices, question_aware_embeddings):
                 data[resp_idx].response_segment[seg_idx].description_embedding = embedding
             
-            self.verbose_reporter.stat_line(f"Completed {len(all_indices)} ensemble embeddings")
+            self.verbose_reporter.stat_line(f"Completed {len(all_indices)} question-aware embeddings")
         
         else:
-            # Original non-ensemble processing
+            # Standard embedding processing (for codes or when question-aware is disabled)
             semaphore = asyncio.Semaphore(max_concurrent)
             processed_count = 0
             
@@ -305,163 +303,76 @@ class Embedder:
        
         return asyncio.run(self._async_embed_words(words, batch_size, max_concurrent))
     
-    def prepare_tfidf_model(self, all_descriptions: List[str]) -> None:
-        """Fit TF-IDF model on all descriptions (called once before processing)"""
-        if not self.config.use_ensemble:
-            return
+    async def _get_question_embedding(self, question: str) -> np.ndarray:
+        """Get embedding for a question, using cache if available"""
+        if question in self.question_embedding_cache:
+            return self.question_embedding_cache[question]
         
-        self.verbose_reporter.step_start("Preparing TF-IDF model", emoji="🔧")
+        # Generate embedding for the question
+        response = await self.client.embeddings.create(
+            input=question,
+            model=self.embedding_model
+        )
         
-        # Try to load existing model
-        if self.tfidf_embedder.load():
-            self.verbose_reporter.stat_line("Loaded existing TF-IDF model from cache")
-        else:
-            # Fit new model
-            self.tfidf_embedder.fit(all_descriptions)
-            self.tfidf_embedder.save()
-        
-        self.verbose_reporter.step_complete("TF-IDF model ready")
+        embedding = np.array(response.data[0].embedding, dtype=np.float32)
+        self.question_embedding_cache[question] = embedding
+        return embedding
     
-    async def _generate_ensemble_embeddings(
+    async def _generate_question_aware_embeddings(
         self, 
-        texts: List[str], 
-        openai_embeddings: np.ndarray
+        response_embeddings: np.ndarray,
+        question: str
     ) -> np.ndarray:
-        """Generate ensemble embeddings by combining OpenAI, TF-IDF, and domain anchor"""
+        """Generate question-aware embeddings by combining response, question, and domain anchor"""
         
-        # Generate TF-IDF embeddings
-        tfidf_embeddings = self.tfidf_embedder.transform(texts)
+        # Get question embedding
+        question_embedding = await self._get_question_embedding(question)
         
-        # Calculate domain anchor (mean of OpenAI embeddings for this dataset)
+        # Calculate domain anchor (mean of response embeddings for this dataset)
         if self.domain_anchor is None:
-            self.domain_anchor = np.mean(openai_embeddings, axis=0)
-            self.verbose_reporter.stat_line("Calculated domain anchor from OpenAI embeddings")
+            self.domain_anchor = np.mean(response_embeddings, axis=0)
+            self.verbose_reporter.stat_line("Calculated domain anchor from response embeddings")
         
         # Generate domain-relative embeddings (distance from domain center)
-        domain_relative = openai_embeddings - self.domain_anchor
+        domain_relative = response_embeddings - self.domain_anchor
+        
+        # Create question embedding array matching response count
+        num_responses = response_embeddings.shape[0]
+        question_embeddings = np.tile(question_embedding, (num_responses, 1))
         
         # Report dimensions
-        self.verbose_reporter.stat_line(f"OpenAI embedding dims: {openai_embeddings.shape[1]}")
-        self.verbose_reporter.stat_line(f"TF-IDF embedding dims: {tfidf_embeddings.shape[1]}")
+        self.verbose_reporter.stat_line(f"Response embedding dims: {response_embeddings.shape[1]}")
+        self.verbose_reporter.stat_line(f"Question embedding dims: {question_embeddings.shape[1]}")
         self.verbose_reporter.stat_line(f"Domain-relative embedding dims: {domain_relative.shape[1]}")
         
-        if self.config.ensemble_combination == "weighted_concat":
-            # Concatenate embeddings with weights
-            ensemble_embeddings = self._weighted_concatenate_with_domain(
-                openai_embeddings, 
-                tfidf_embeddings,
-                domain_relative,
-                self.config.openai_weight,
-                self.config.tfidf_weight,
-                self.config.domain_anchor_weight
-            )
-        else:  # weighted_average
-            # Average embeddings (requires same dimensions)
-            ensemble_embeddings = self._weighted_average_with_domain(
-                openai_embeddings,
-                tfidf_embeddings,
-                domain_relative,
-                self.config.openai_weight,
-                self.config.tfidf_weight,
-                self.config.domain_anchor_weight
-            )
+        # Concatenate embeddings with weights
+        question_aware_embeddings = self._weighted_concatenate_question_aware(
+            response_embeddings, 
+            question_embeddings,
+            domain_relative,
+            self.config.response_weight,
+            self.config.question_weight,
+            self.config.domain_anchor_weight
+        )
         
-        # No dimension reduction here - let UMAP handle it
-        
-        self.verbose_reporter.stat_line(f"Final ensemble embedding dims: {ensemble_embeddings.shape[1]}")
-        return ensemble_embeddings
+        self.verbose_reporter.stat_line(f"Final question-aware embedding dims: {question_aware_embeddings.shape[1]}")
+        return question_aware_embeddings
     
-    def _weighted_concatenate(
+    def _weighted_concatenate_question_aware(
         self,
-        openai_emb: np.ndarray,
-        tfidf_emb: np.ndarray,
-        openai_weight: float,
-        tfidf_weight: float
-    ) -> np.ndarray:
-        """Concatenate embeddings with weights applied"""
-        # Apply weights
-        weighted_openai = openai_emb * openai_weight
-        weighted_tfidf = tfidf_emb * tfidf_weight
-        
-        # Normalize TF-IDF to similar scale as OpenAI
-        tfidf_norm = np.linalg.norm(weighted_tfidf, axis=1, keepdims=True)
-        openai_norm = np.linalg.norm(weighted_openai, axis=1, keepdims=True)
-        
-        # Avoid division by zero
-        tfidf_norm = np.where(tfidf_norm == 0, 1, tfidf_norm)
-        openai_norm = np.where(openai_norm == 0, 1, openai_norm)
-        
-        # Scale TF-IDF to match OpenAI magnitude
-        scale_factor = np.mean(openai_norm) / np.mean(tfidf_norm)
-        weighted_tfidf = weighted_tfidf * scale_factor
-        
-        # Concatenate
-        return np.concatenate([weighted_openai, weighted_tfidf], axis=1)
-    
-    def _weighted_concatenate_with_domain(
-        self,
-        openai_emb: np.ndarray,
-        tfidf_emb: np.ndarray,
+        response_emb: np.ndarray,
+        question_emb: np.ndarray,
         domain_relative: np.ndarray,
-        openai_weight: float,
-        tfidf_weight: float,
+        response_weight: float,
+        question_weight: float,
         domain_weight: float
     ) -> np.ndarray:
-        """Concatenate embeddings with domain anchoring"""
+        """Concatenate response, question, and domain embeddings with weights"""
         # Apply weights
-        weighted_openai = openai_emb * openai_weight
-        weighted_tfidf = tfidf_emb * tfidf_weight
+        weighted_response = response_emb * response_weight
+        weighted_question = question_emb * question_weight
         weighted_domain = domain_relative * domain_weight
         
-        # Normalize TF-IDF to similar scale as OpenAI
-        tfidf_norm = np.linalg.norm(weighted_tfidf, axis=1, keepdims=True)
-        openai_norm = np.linalg.norm(weighted_openai, axis=1, keepdims=True)
-        
-        # Avoid division by zero
-        tfidf_norm = np.where(tfidf_norm == 0, 1, tfidf_norm)
-        openai_norm = np.where(openai_norm == 0, 1, openai_norm)
-        
-        # Scale TF-IDF to match OpenAI magnitude
-        scale_factor = np.mean(openai_norm) / np.mean(tfidf_norm)
-        weighted_tfidf = weighted_tfidf * scale_factor
-        
         # Concatenate all three components
-        return np.concatenate([weighted_openai, weighted_tfidf, weighted_domain], axis=1)
-    
-    def _weighted_average(
-        self,
-        openai_emb: np.ndarray,
-        tfidf_emb: np.ndarray,
-        openai_weight: float,
-        tfidf_weight: float
-    ) -> np.ndarray:
-        """Average embeddings with weights (requires dimension alignment)"""
-        # Reduce TF-IDF to match OpenAI dimensions
-        if tfidf_emb.shape[1] != openai_emb.shape[1]:
-            target_dim = openai_emb.shape[1]
-            tfidf_emb = self.tfidf_embedder.reduce_dimensions(tfidf_emb, target_dim)
-        
-        # Weighted average
-        return (openai_emb * openai_weight + tfidf_emb * tfidf_weight) / (openai_weight + tfidf_weight)
-    
-    def _weighted_average_with_domain(
-        self,
-        openai_emb: np.ndarray,
-        tfidf_emb: np.ndarray,
-        domain_relative: np.ndarray,
-        openai_weight: float,
-        tfidf_weight: float,
-        domain_weight: float
-    ) -> np.ndarray:
-        """Average embeddings with domain anchoring (requires dimension alignment)"""
-        # Reduce TF-IDF to match OpenAI dimensions
-        if tfidf_emb.shape[1] != openai_emb.shape[1]:
-            target_dim = openai_emb.shape[1]
-            tfidf_emb = self.tfidf_embedder.reduce_dimensions(tfidf_emb, target_dim)
-        
-        # Weighted average of all three components
-        total_weight = openai_weight + tfidf_weight + domain_weight
-        return (openai_emb * openai_weight + 
-                tfidf_emb * tfidf_weight + 
-                domain_relative * domain_weight) / total_weight
+        return np.concatenate([weighted_response, weighted_question, weighted_domain], axis=1)
     
