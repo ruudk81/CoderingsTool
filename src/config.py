@@ -377,8 +377,8 @@ class ClusteringConfig:
     
     # Quality and filtering settings
     enable_quality_metrics: bool = True
-    filter_na_items: bool = False  # Changed: Keep all items to avoid misalignment
-    remap_cluster_ids: bool = False  # Changed: Keep original cluster IDs
+    filter_na_items: bool = True  # Filter out noise clusters and NA-only clusters
+    remap_cluster_ids: bool = True  # Remap to sequential IDs for cleaner output
     
     # General settings
     verbose: bool = True
