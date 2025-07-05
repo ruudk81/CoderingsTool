@@ -543,46 +543,63 @@ class ClusterGenerator:
             clusters = [item.initial_description_cluster for item in self.output_list]
             items = [item.segment_description for item in self.output_list]
         
-        # Get IDs for filtering
-        respondent_ids = [item.respondent_id for item in self.output_list]
-        segment_ids = [item.segment_id for item in self.output_list]
+        # Step 1: Identify clusters to filter out entirely
+        cluster_items = {}
+        for i, (cluster, item) in enumerate(zip(clusters, items)):
+            if cluster not in cluster_items:
+                cluster_items[cluster] = []
+            cluster_items[cluster].append((i, item))
         
-        # Filter out outliers (cluster -1) and NA items
-        filtered_respondent_ids = []
-        filtered_segment_ids = []
-        filtered_clusters = []
-        filtered_items = []
+        clusters_to_remove = set()
         
-        for r_id, s_id, cluster, item in zip(respondent_ids, segment_ids, clusters, items):
-            if cluster != -1 and item.lower() != "na":
-                filtered_respondent_ids.append(r_id)
-                filtered_segment_ids.append(s_id)
-                filtered_clusters.append(cluster)
-                filtered_items.append(item)
+        # Remove cluster -1 (noise) if filter_na_items is enabled
+        if self.config.filter_na_items and -1 in cluster_items:
+            clusters_to_remove.add(-1)
         
-        self.verbose_reporter.stat_line(f"Filtered out {len(clusters) - len(filtered_clusters)} items (noise or NA)")
+        # Remove clusters that contain ONLY "NA" items if filter_na_items is enabled
+        if self.config.filter_na_items:
+            for cluster_id, cluster_data in cluster_items.items():
+                if cluster_id != -1:  # Already handled
+                    all_na = all(item.lower() == "na" for _, item in cluster_data)
+                    if all_na:
+                        clusters_to_remove.add(cluster_id)
         
-        # Remap cluster IDs to be sequential
-        unique_clusters = sorted(set(filtered_clusters))
-        mapping = {original: new for new, original in enumerate(unique_clusters)}
-        remapped_clusters = [mapping[cluster] for cluster in filtered_clusters]
+        if clusters_to_remove:
+            self.verbose_reporter.stat_line(f"Clusters to remove: {sorted(clusters_to_remove)}")
         
-        # Create mapping for updating output_list
-        updated_clusters = {}
-        for r_id, s_id, cluster in zip(filtered_respondent_ids, filtered_segment_ids, remapped_clusters):
-            updated_clusters[(r_id, s_id)] = cluster
+        # Step 2: Create mapping for remaining clusters if remap_cluster_ids is enabled
+        if self.config.remap_cluster_ids:
+            remaining_clusters = sorted([c for c in cluster_items.keys() if c not in clusters_to_remove])
+            mapping = {original: new for new, original in enumerate(remaining_clusters)}
+            self.verbose_reporter.stat_line(f"Cluster remapping: {mapping}")
+        else:
+            # No remapping - keep original IDs
+            mapping = {c: c for c in cluster_items.keys() if c not in clusters_to_remove}
         
-        # Update output_list with remapped clusters
-        # Items not in filtered list will get None
-        for item in self.output_list:
-            key = (item.respondent_id, item.segment_id)
-            if self.embedding_type == "code":
-                # Store remapped cluster, or None if filtered out
-                item.initial_code_cluster = updated_clusters.get(key, None)
+        # Step 3: Update all items
+        for i, item in enumerate(self.output_list):
+            current_cluster = clusters[i]
+            
+            if current_cluster in clusters_to_remove:
+                # This entire cluster is filtered out
+                new_cluster = None
             else:
-                item.initial_description_cluster = updated_clusters.get(key, None)
+                # Either remap to sequential ID or keep original
+                new_cluster = mapping.get(current_cluster, current_cluster)
+            
+            if self.embedding_type == "code":
+                item.initial_code_cluster = new_cluster
+            else:
+                item.initial_description_cluster = new_cluster
         
-        self.verbose_reporter.stat_line(f"Remapped {len(unique_clusters)} clusters to sequential IDs (0-{len(unique_clusters)-1})")
+        # Report results
+        filtered_count = sum(1 for c in clusters if c in clusters_to_remove)
+        if filtered_count > 0:
+            self.verbose_reporter.stat_line(f"Filtered out {filtered_count} items from {len(clusters_to_remove)} clusters")
+        
+        if self.config.remap_cluster_ids and mapping:
+            self.verbose_reporter.stat_line(f"Remapped {len(mapping)} clusters to sequential IDs")
+        
         self.verbose_reporter.step_complete("Filter and remap completed")
 
     def run_pipeline(self, embedding_type: str = None) -> None:
