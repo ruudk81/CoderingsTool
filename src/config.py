@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
 # File handling (only keep what's used)
@@ -289,7 +289,7 @@ class EmbeddingConfig:
     max_sample_responses: int = 3  # For verbose output
     
     # Question-aware embedding configuration
-    use_question_aware: bool = True  # Enable question-aware embeddings
+    use_question_aware: bool = False  # Enable question-aware embeddings
     response_weight: float = 0.6  # Weight for response embeddings
     question_weight: float = 0.3  # Weight for question embeddings
     domain_anchor_weight: float = 0.1  # Weight for domain-relative positioning

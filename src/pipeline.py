@@ -28,7 +28,7 @@ var_name = "q19"
 #var_name = "Q18Q19"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -338,7 +338,7 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-# debug 1 - per response-label/code
+# #debug 1 - per response-label/code
 # import random
 # sampled_items = random.sample(encoded_text, 1)
 # print(f"Q: {var_lab}\n")
@@ -347,7 +347,7 @@ else:
 #     for segment in item.response_segment:
 #         print(f"-    {segment.segment_label}")
 
-# debug 2 - per description
+# # debug 2 - per description
 # import random
 # sampled_items = random.sample(encoded_text, 1)
 # print(f"Q: {var_lab}\n")
@@ -356,7 +356,7 @@ else:
 #     for segment in item.response_segment:
 #         print(f"-    {segment.segment_description}")
         
-# debug 2 - per description tokens
+# # debug 2 - per description tokens
 # import spacy
 # nlp = spacy.load("nl_core_news_lg")
 
@@ -376,7 +376,7 @@ else:
 #                 topic_tokens.append(token.lemma_)
 #         print(" ".join(topic_tokens))
     
-# debug 4 - example outputs
+# # debug 4 - example outputs
 # import random
 # n_samples = 5
 # sampled_items = random.sample(encoded_text, n_samples)
@@ -441,19 +441,19 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
 
-# #debug  1 - print random clusters
-# import random
-# cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
-# sampled_cluster = random.sample(cluster_ids, 1)[0]
-# print(f"\nCluster {sampled_cluster}:\n")
-# cluster_segments = []
-# for item in initial_cluster_results:
-#     for segment in item.response_segment:
-#         if segment.initial_cluster == sampled_cluster:
-#             cluster_segments.append(segment.segment_description)
-# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-# for segment_desc in sampled_segments:
-#     print(f"-    {segment_desc}")
+#debug  1 - print random clusters
+import random
+cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for item in initial_cluster_results:
+    for segment in item.response_segment:
+        if segment.initial_cluster == sampled_cluster:
+            cluster_segments.append(segment.segment_description)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
     
     
 #debug  2  print all clusters
