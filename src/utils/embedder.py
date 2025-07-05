@@ -3,7 +3,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import os
 import numpy as np
 import asyncio
-from typing import List, Dict, Optional
+from typing import List, Dict
 from openai import AsyncOpenAI
 import models
 from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
