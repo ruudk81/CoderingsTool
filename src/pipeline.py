@@ -457,6 +457,7 @@ for item in initial_cluster_results:
     for segment in item.response_segment:
         if segment.initial_cluster == sampled_cluster:
             cluster_segments.append(segment.segment_description)
+            #cluster_segments.append(segment.segment_label)
 sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
 for segment_desc in sampled_segments:
     print(f"-    {segment_desc}")

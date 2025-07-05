@@ -302,9 +302,9 @@ class EmbeddingConfig:
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 5 #5
+    n_neighbors: int = 15 #5
     n_components: int = 5 #10
-    min_dist: float = 0.0
+    min_dist: float = 0.1
     metric: str = "cosine" # vs "cosine"
     random_state: int = 42
     n_jobs: int = 1
@@ -315,8 +315,8 @@ class UMAPConfig:
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = None  # Use algorithm default if None
-    min_samples: Optional[int] = None  # Use algorithm default if None
+    min_cluster_size: Optional[int] = 5  # Use algorithm default if None
+    min_samples: Optional[int] = 3  # Use algorithm default if None
     metric: str = "euclidean"
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
@@ -327,7 +327,7 @@ class HDBSCANConfig:
 @dataclass
 class VectorizerConfig:
     """Configuration for CountVectorizer"""
-    ngram_range: Tuple[int, int] = (1, 3)
+    ngram_range: Tuple[int, int] = (1, 1)
     min_df: int = 1
     max_df: float = 1.0
     max_features: Optional[int] = None
