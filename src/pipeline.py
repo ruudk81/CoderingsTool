@@ -440,6 +440,12 @@ else:
         embedding_type=EMBEDDING_TYPE,
         verbose=VERBOSE)
     cluster_gen.run_pipeline()
+    
+    # Debug: Check alignment before converting to cluster model
+    if DEBUG_CLUSTER_TRACKING:
+        from debug_cluster_alignment import debug_cluster_alignment
+        debug_cluster_alignment(cluster_gen, sample_size=10)
+    
     initial_cluster_results = cluster_gen.to_cluster_model()
     end_time = time.time()
     elapsed_time = end_time - start_time
