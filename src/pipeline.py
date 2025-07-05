@@ -412,11 +412,17 @@ else:
     print("\nEmbedding CODES and DESCRIPTIONS of response segments")
     
     # Configure embeddings for question-aware mode if enabled
-    from config import DEFAULT_EMBEDDING_CONFIG
-    embedding_config = DEFAULT_EMBEDDING_CONFIG
+    from config import EmbeddingConfig
+    # Create a fresh config instance to avoid modifying the shared default
+    embedding_config = EmbeddingConfig()
+    
+    # Override question-aware setting based on pipeline flag
+    embedding_config.use_question_aware = USE_QUESTION_AWARE_EMBEDDINGS
+    
     if USE_QUESTION_AWARE_EMBEDDINGS:
-        embedding_config.use_question_aware = True
         print(f"Question-aware mode enabled: {embedding_config.response_weight:.1f} Response + {embedding_config.question_weight:.1f} Question + {embedding_config.domain_anchor_weight:.1f} Domain")
+    else:
+        print("Question-aware mode disabled")
     
     get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
     

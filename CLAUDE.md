@@ -62,3 +62,5 @@ python pipeline.py
 - **User tests**: The user will pull the updates and test code in Spyder, locally
 - **Iterative refinement**: Based on test results, Claude will update and improve the code
 
+### Workflow Guidelines
+- Add, commit and push modifications to the GitHub repo when completed a task and have modified a .py module or util
