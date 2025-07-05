@@ -37,7 +37,7 @@ DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostic
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
-USE_QUESTION_AWARE_EMBEDDINGS = True  # Enable question-aware embeddings
+USE_QUESTION_AWARE_EMBEDDINGS = False  # Enable question-aware embeddings
 
 # Initialize data loader and get variable label
 data_loader = dataLoader.DataLoader(verbose=False)
