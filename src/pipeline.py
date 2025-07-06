@@ -607,6 +607,14 @@ if len(pipeline_embeddings) > 0 and len(fresh_embeddings) > 0:
 else:
     print("❌ Could not compare embeddings - missing data")
 
+print("\n" + "="*80)
+print("CLUSTER ALIGNMENT VERIFICATION")
+print("="*80)
+
+exec(open('verify_cluster_alignment.py').read())
+cluster_contents = verify_cluster_content_alignment(initial_cluster_results, sample_cluster_id=18)
+consistency_check = cross_reference_cluster_assignments(initial_cluster_results)
+
 for cluster_id in cluster_ids:
     if cluster_id == sampled_cluster:
         print(f"\nCluster ID {cluster_id}:")
