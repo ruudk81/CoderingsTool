@@ -333,11 +333,19 @@ class SegmentDescriber:
                     "language": DEFAULT_LANGUAGE
                     })    
          
+                # Create globally unique segment IDs
+                segments_with_unique_ids = []
+                for i, seg in enumerate(result):
+                    seg_copy = seg.copy()
+                    # Create unique ID: respondent_id_segmentNumber
+                    seg_copy['segment_id'] = f"{respondent_id}_{i+1}"
+                    segments_with_unique_ids.append(models.DescriptiveSubmodel(**seg_copy))
+                
                 return models.DescriptiveModel(
                 respondent_id=respondent_id,
                 response=response_text,
                 quality_filter=None,
-                response_segment=[models.DescriptiveSubmodel(**seg) for seg in result]
+                response_segment=segments_with_unique_ids
                 )
             
             except Exception as e:
@@ -348,7 +356,7 @@ class SegmentDescriber:
                     quality_filter=None,
                     response_segment=[
                         models.DescriptiveSubmodel(
-                            segment_id="1",
+                            segment_id=f"{respondent_id}_1",  # Unique ID even for errors
                             segment_response=response_text,
                             segment_label="NA",
                             segment_description="NA"
@@ -395,7 +403,7 @@ class SegmentDescriber:
                     quality_filter=None,
                     response_segment=[
                         models.DescriptiveSubmodel(
-                            segment_id="1",
+                            segment_id=f"{respondent_id}_1",  # Unique ID for error cases
                             segment_response=response_text,
                             segment_label="PROCESSING_ERROR",
                             segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
