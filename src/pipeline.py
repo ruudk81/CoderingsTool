@@ -494,16 +494,7 @@ else:
         from utils.order_verification import run_order_verification
         run_order_verification(initial_cluster_results)
 
-exec(open('quick_id_check.py').read())
-id_match = quick_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
-desc_match = quick_description_check(encoded_text, segment_lookup)
-
-exec(open('test_clustering_determinism.py').read())
-cluster_labels = test_clustering_determinism(embedded_text)
-
-exec(open('compare_processing_order.py').read())
-order_match = compare_processing_orders(encoded_text, embedded_text)
-clean_order = compare_with_clusterer_extraction(encoded_text)    
+    
     
 
 #debug  1
@@ -536,6 +527,18 @@ cluster_to_keys = defaultdict(list)
 for k, v in clean_cluster_map.items():
     if v is not None:
         cluster_to_keys[v].append(k)
+
+# Run diagnostics after segment_lookup is defined
+exec(open('quick_id_check.py').read())
+id_match = quick_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
+desc_match = quick_description_check(encoded_text, segment_lookup)
+
+exec(open('test_clustering_determinism.py').read())
+cluster_labels = test_clustering_determinism(embedded_text)
+
+exec(open('compare_processing_order.py').read())
+order_match = compare_processing_orders(encoded_text, embedded_text)
+clean_order = compare_with_clusterer_extraction(encoded_text)
 
 for cluster_id in cluster_ids:
     if cluster_id == sampled_cluster:
