@@ -681,10 +681,29 @@ class ClusterGenerator:
         if not self.output_list:
             raise ValueError("Output list is empty. Nothing to convert.")
             
-        # Group output items by respondent_id
+        # Group output items by respondent_id while preserving original order
         items_by_respondent = defaultdict(list)
         for item in self.output_list:
             items_by_respondent[item.respondent_id].append(item)
+        
+        # Sort segments within each respondent to match original order from input
+        for respondent_id in items_by_respondent:
+            # Find the original order of segments for this respondent
+            original_segment_order = []
+            for original_item in self.original_input_list:
+                if original_item.respondent_id == respondent_id and original_item.response_segment:
+                    for segment in original_item.response_segment:
+                        original_segment_order.append(segment.segment_id)
+                    break
+            
+            # Sort the clustered segments to match original order
+            def get_segment_order(item):
+                try:
+                    return original_segment_order.index(item.segment_id)
+                except ValueError:
+                    return 999  # Put unmatched segments at the end
+            
+            items_by_respondent[respondent_id].sort(key=get_segment_order)
         
         # Create mapping of respondent_id to original response data
         response_mapping = {}
@@ -696,47 +715,54 @@ class ClusterGenerator:
                     segment_key = (original_item.respondent_id, segment.segment_id)
                     segment_mapping[segment_key] = segment.segment_response
         
-        # Create ClusterModel instances
+        # Create ClusterModel instances in original respondent order
         result_models = []
         
-        for respondent_id, items in items_by_respondent.items():
-            # Get the original response from mapping
-            response = response_mapping.get(respondent_id, "")
-            
-            # Create submodels for each segment
-            submodels = []
-            for item in items:
-                # Get original segment response
-                segment_key = (respondent_id, item.segment_id)
-                segment_response = segment_mapping.get(segment_key, "")
+        # Process respondents in the original order from input
+        for original_item in self.original_input_list:
+            respondent_id = original_item.respondent_id
+            if respondent_id in items_by_respondent:
+                items = items_by_respondent[respondent_id]
+                # Get the original response from mapping
+                response = response_mapping.get(respondent_id, "")
                 
-                # Store initial cluster ID
-                initial_cluster = None
-                if self.embedding_type == "code" and item.initial_code_cluster is not None:
-                    initial_cluster = item.initial_code_cluster
-                elif self.embedding_type == "description" and item.initial_description_cluster is not None:
-                    initial_cluster = item.initial_description_cluster
+                # Create submodels for each segment
+                submodels = []
+                for item in items:
+                    # Get original segment response
+                    segment_key = (respondent_id, item.segment_id)
+                    segment_response = segment_mapping.get(segment_key, "")
+                    
+                    # Store initial cluster ID
+                    initial_cluster = None
+                    if self.embedding_type == "code" and item.initial_code_cluster is not None:
+                        initial_cluster = item.initial_code_cluster
+                    elif self.embedding_type == "description" and item.initial_description_cluster is not None:
+                        initial_cluster = item.initial_description_cluster
+                    
+                    # Create submodel with embeddings and initial cluster
+                    submodel = models.ClusterSubmodel(
+                        segment_id=item.segment_id,
+                        segment_response=segment_response,
+                        segment_label=item.segment_label,
+                        segment_description=item.segment_description,
+                        code_embedding=item.code_embedding,
+                        description_embedding=item.description_embedding,
+                        initial_cluster=initial_cluster  # Single cluster ID
+                    )
+                    
+                    submodels.append(submodel)
                 
-                # Create submodel with embeddings and initial cluster
-                submodel = models.ClusterSubmodel(
-                    segment_id=item.segment_id,
-                    segment_response=segment_response,
-                    segment_label=item.segment_label,
-                    segment_description=item.segment_description,
-                    code_embedding=item.code_embedding,
-                    description_embedding=item.description_embedding,
-                    initial_cluster=initial_cluster  # Single cluster ID
+                # Create ClusterModel
+                model = models.ClusterModel(
+                    respondent_id=respondent_id,
+                    response=response,
+                    response_segment=submodels
                 )
                 
-                submodels.append(submodel)
-            
-            # Create ClusterModel
-            model = models.ClusterModel(
-                respondent_id=respondent_id,
-                response=response,
-                response_segment=submodels
-            )
-            
-            result_models.append(model)
+                result_models.append(model)
+                
+                # Remove from dict to avoid processing duplicates
+                del items_by_respondent[respondent_id]
         
         return result_models    
