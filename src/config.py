@@ -315,8 +315,8 @@ class UMAPConfig:
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = None  # Larger clusters for better coherence
-    min_samples: Optional[int] = None # Higher threshold for more selective clustering
+    min_cluster_size: Optional[int] = 8  # Explicit value for deterministic clustering
+    min_samples: Optional[int] = 5 # Explicit value for deterministic clustering
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
