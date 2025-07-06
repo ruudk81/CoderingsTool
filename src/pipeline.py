@@ -477,6 +477,13 @@ else:
         from config import DEFAULT_CLUSTERING_CONFIG
         clean_cluster_map = run_clean_clustering_test(initial_cluster_results, DEFAULT_CLUSTERING_CONFIG)
         compare_with_original_clusters(initial_cluster_results, clean_cluster_map)
+        
+        # Run order verification to identify where scrambling occurs
+        print("\n" + "="*60)
+        print("Running order verification diagnostic...")
+        print("="*60)
+        from utils.order_verification import run_order_verification
+        run_order_verification(initial_cluster_results)
     
 
 #debug  1 - print random clusters
