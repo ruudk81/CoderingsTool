@@ -149,13 +149,16 @@ class EnhancedEmbedder:
         
         batch_results = await asyncio.gather(*tasks)
         
-        # Flatten results 
-        all_embeddings = []
-        all_identifiers = []
+        # Flatten results while preserving exact original order using array_index
+        all_embeddings = [None] * len(segment_identifiers)
+        all_identifiers = [None] * len(segment_identifiers)
+        
         for batch_result in batch_results:
             for identifier, embedding in batch_result:
-                all_embeddings.append(embedding)
-                all_identifiers.append(identifier)
+                # Use array_index to restore exact original order
+                original_index = identifier.array_index
+                all_embeddings[original_index] = embedding
+                all_identifiers[original_index] = identifier
         
         # Apply question-aware processing if enabled and processing descriptions
         if (self.config.use_question_aware and 
