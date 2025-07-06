@@ -22,14 +22,14 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-# filename = "M250285 input voor coderen - met Q18Q19.sav"
-# id_column = "respondentid"
-# var_name = "q19"
+filename = "M250285 input voor coderen - met Q18Q19.sav"
+id_column = "respondentid"
+var_name = "q19"
 #var_name = "Q18Q19"
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
+# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Q20"
 
 
 # Pipeline behavior flags
@@ -495,7 +495,8 @@ else:
         run_order_verification(initial_cluster_results)
     
 
-#debug  1 - print random clusters
+#debug  1
+#print from initial_cluster_results
 import random
 cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
 sampled_cluster = random.sample(cluster_ids, 1)[0]
@@ -509,6 +510,31 @@ for item in initial_cluster_results:
 sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
 for segment_desc in sampled_segments:
     print(f"-    {segment_desc}")
+    
+
+#print from clean_cluster_map
+from collections import defaultdict
+segment_lookup = {}
+
+for record in encoded_text:
+    for seg in record.response_segment:
+        segment_lookup[seg.segment_id] = seg.segment_description
+
+cluster_ids = sorted({v for v in clean_cluster_map.values() if v is not None})
+cluster_to_keys = defaultdict(list)
+for k, v in clean_cluster_map.items():
+    if v is not None:
+        cluster_to_keys[v].append(k)
+
+for cluster_id in cluster_ids:
+    if cluster_id == sampled_cluster:
+        print(f"\nCluster ID {cluster_id}:")
+        for seg_id in cluster_to_keys[cluster_id]:
+            description = segment_lookup.get(seg_id)
+            if description:
+                print(f"  {seg_id}: {description}")
+            else:
+                print(f"  {seg_id}: [description not found]")
     
     
 #debug  2  print all clusters

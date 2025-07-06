@@ -302,8 +302,8 @@ class EmbeddingConfig:
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 30  # Higher for better global structure preservation
-    n_components: int = 10  # More dimensions to preserve semantic distinctions
+    n_neighbors: int = 15  # Higher for better global structure preservation
+    n_components: int = 5  # More dimensions to preserve semantic distinctions
     min_dist: float = 0.0  # Tighter clusters for better separation
     metric: str = "cosine"  # Consistent with HDBSCAN for semantic similarity
     random_state: int = 42
@@ -315,8 +315,8 @@ class UMAPConfig:
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = 8  # Larger clusters for better coherence
-    min_samples: Optional[int] = 5  # Higher threshold for more selective clustering
+    min_cluster_size: Optional[int] = None  # Larger clusters for better coherence
+    min_samples: Optional[int] = None # Higher threshold for more selective clustering
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
