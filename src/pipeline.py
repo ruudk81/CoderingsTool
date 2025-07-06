@@ -28,8 +28,8 @@ cache_manager = CacheManager(cache_config)
 #var_name = "Q18Q19"
 
 filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "xDLNMID"
-var_name = "xQ21"
+id_column = "DLNMID"
+var_name = "Q20"
 
 
 # Pipeline behavior flags
