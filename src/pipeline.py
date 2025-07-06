@@ -33,7 +33,7 @@ var_name = "q19"
 
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -493,6 +493,17 @@ else:
         print("="*60)
         from utils.order_verification import run_order_verification
         run_order_verification(initial_cluster_results)
+
+exec(open('quick_id_check.py').read())
+id_match = quick_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
+desc_match = quick_description_check(encoded_text, segment_lookup)
+
+exec(open('test_clustering_determinism.py').read())
+cluster_labels = test_clustering_determinism(embedded_text)
+
+exec(open('compare_processing_order.py').read())
+order_match = compare_processing_orders(encoded_text, embedded_text)
+clean_order = compare_with_clusterer_extraction(encoded_text)    
     
 
 #debug  1
