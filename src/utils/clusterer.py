@@ -686,24 +686,9 @@ class ClusterGenerator:
         for item in self.output_list:
             items_by_respondent[item.respondent_id].append(item)
         
-        # Sort segments within each respondent to match original order from input
-        for respondent_id in items_by_respondent:
-            # Find the original order of segments for this respondent
-            original_segment_order = []
-            for original_item in self.original_input_list:
-                if original_item.respondent_id == respondent_id and original_item.response_segment:
-                    for segment in original_item.response_segment:
-                        original_segment_order.append(segment.segment_id)
-                    break
-            
-            # Sort the clustered segments to match original order
-            def get_segment_order(item):
-                try:
-                    return original_segment_order.index(item.segment_id)
-                except ValueError:
-                    return 999  # Put unmatched segments at the end
-            
-            items_by_respondent[respondent_id].sort(key=get_segment_order)
+        # CRITICAL: Do NOT sort - preserve exact order from populate_from_input_list!
+        # The output_list order MUST match the original order used during clustering
+        # because cluster assignments were made by array index position
         
         # Create mapping of respondent_id to original response data
         response_mapping = {}
@@ -715,13 +700,14 @@ class ClusterGenerator:
                     segment_key = (original_item.respondent_id, segment.segment_id)
                     segment_mapping[segment_key] = segment.segment_response
         
-        # Create ClusterModel instances in original respondent order
+        # Create ClusterModel instances preserving exact output_list order
         result_models = []
+        processed_respondents = set()
         
-        # Process respondents in the original order from input
-        for original_item in self.original_input_list:
-            respondent_id = original_item.respondent_id
-            if respondent_id in items_by_respondent:
+        # Process in the exact order segments appear in output_list to preserve clustering alignment
+        for item in self.output_list:
+            respondent_id = item.respondent_id
+            if respondent_id not in processed_respondents:
                 items = items_by_respondent[respondent_id]
                 # Get the original response from mapping
                 response = response_mapping.get(respondent_id, "")
@@ -761,8 +747,6 @@ class ClusterGenerator:
                 )
                 
                 result_models.append(model)
-                
-                # Remove from dict to avoid processing duplicates
-                del items_by_respondent[respondent_id]
+                processed_respondents.add(respondent_id)
         
         return result_models    
