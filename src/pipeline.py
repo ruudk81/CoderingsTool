@@ -478,6 +478,15 @@ else:
         clean_cluster_map = run_clean_clustering_test(initial_cluster_results, DEFAULT_CLUSTERING_CONFIG)
         compare_with_original_clusters(initial_cluster_results, clean_cluster_map)
         
+        # Run segment ID verification to ensure consistency across pipeline stages
+        print("\n" + "="*60)
+        print("Running segment ID verification diagnostic...")
+        print("="*60)
+        from utils.segment_id_verification import run_segment_id_verification
+        verification_passed = run_segment_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
+        if not verification_passed:
+            print("⚠️  WARNING: Segment ID verification failed - there may be data integrity issues!")
+        
         # Run order verification to identify where scrambling occurs
         print("\n" + "="*60)
         print("Running order verification diagnostic...")
