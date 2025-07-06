@@ -145,10 +145,11 @@ class Embedder:
                 async with semaphore:
                     return await self.process_batches(batch_responses)
             
+            # Process batches sequentially to maintain order
             tasks = [process_response_batch(batch) for batch in batches_responses]
             batch_results = await asyncio.gather(*tasks)
             
-            # Flatten results
+            # Flatten results in the correct order (batch_results maintains order from asyncio.gather)
             for batch_embeddings in batch_results:
                 for embedding in batch_embeddings:
                     response_embeddings.append(np.array(embedding, dtype=np.float32))
@@ -175,24 +176,32 @@ class Embedder:
                 async with semaphore:
                     batch_embeddings = await self.process_batches(batch_responses)
                     
+                    # Create list of updates to apply after all batches complete
+                    updates = []
                     for (resp_idx, seg_idx), embedding in zip(batch_indices, batch_embeddings):
-                        # save as array
                         embedding_array = np.array(embedding, dtype=np.float32)
-                        
-                        if is_description:
-                            data[resp_idx].response_segment[seg_idx].description_embedding = embedding_array
-                        else:
-                            data[resp_idx].response_segment[seg_idx].code_embedding = embedding_array
+                        updates.append((resp_idx, seg_idx, embedding_array))
                     
                     processed_count += len(batch_responses)
                     self.verbose_reporter.stat_line(f"Progress: {processed_count}/{total_segments} segments processed ({processed_count/total_segments*100:.1f}%)")
+                    
+                    return updates
 
             # Create and run tasks
             tasks = [
                 process_batch(batch_responses, batch_indices, i+1) 
                 for i, (batch_responses, batch_indices) in enumerate(zip(batches_responses, batches_indices))]
             
-            await asyncio.gather(*tasks)
+            # Wait for all batches to complete and collect updates
+            batch_results = await asyncio.gather(*tasks)
+            
+            # Apply all updates sequentially to ensure correct assignment
+            for updates in batch_results:
+                for resp_idx, seg_idx, embedding_array in updates:
+                    if is_description:
+                        data[resp_idx].response_segment[seg_idx].description_embedding = embedding_array
+                    else:
+                        data[resp_idx].response_segment[seg_idx].code_embedding = embedding_array
         
         return data
     
