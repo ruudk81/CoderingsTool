@@ -468,6 +468,14 @@ else:
             embedded=embedded_text,
             clustered=initial_cluster_results
         )
+        
+        # Run clean clusterer test to check semantic coherence
+        print("\n" + "="*60)
+        print("Running clean clusterer test...")
+        print("="*60)
+        from utils.clean_clusterer import run_clean_clustering_test, compare_with_original_clusters
+        clean_cluster_map = run_clean_clustering_test(initial_cluster_results, DEFAULT_CLUSTERING_CONFIG)
+        compare_with_original_clusters(initial_cluster_results, clean_cluster_map)
     
 
 #debug  1 - print random clusters
