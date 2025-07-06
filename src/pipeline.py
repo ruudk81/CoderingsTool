@@ -540,6 +540,73 @@ exec(open('compare_processing_order.py').read())
 order_match = compare_processing_orders(encoded_text, embedded_text)
 clean_order = compare_with_clusterer_extraction(encoded_text)
 
+print("\n" + "="*80)
+print("EMBEDDING COMPARISON TEST")
+print("="*80)
+
+# Extract pipeline embeddings (from Enhanced Embedder)
+pipeline_embeddings = []
+pipeline_segment_ids = []
+for resp in embedded_text:
+    if resp.response_segment:
+        for seg in resp.response_segment:
+            if seg.description_embedding is not None:
+                pipeline_embeddings.append(seg.description_embedding)
+                pipeline_segment_ids.append(seg.segment_id)
+
+# Generate fresh embeddings (like clean clusterer does)
+descriptions = [seg.segment_description for resp in encoded_text for seg in resp.response_segment if resp.response_segment]
+
+from openai import OpenAI
+from config import OPENAI_API_KEY
+import numpy as np
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+print("Generating fresh embeddings for comparison...")
+response = client.embeddings.create(
+    input=descriptions,
+    model="text-embedding-3-large"
+)
+
+fresh_embeddings = [np.array(item.embedding, dtype=np.float32) for item in response.data]
+
+# Compare embeddings
+print(f"Pipeline embeddings: {len(pipeline_embeddings)}")
+print(f"Fresh embeddings: {len(fresh_embeddings)}")
+
+if len(pipeline_embeddings) > 0 and len(fresh_embeddings) > 0:
+    # Compare first embedding
+    cosine_sim = np.dot(pipeline_embeddings[0], fresh_embeddings[0]) / (
+        np.linalg.norm(pipeline_embeddings[0]) * np.linalg.norm(fresh_embeddings[0])
+    )
+    print(f"Cosine similarity between first embeddings: {cosine_sim:.6f}")
+    
+    # Compare a few more embeddings
+    similarities = []
+    for i in range(min(10, len(pipeline_embeddings), len(fresh_embeddings))):
+        sim = np.dot(pipeline_embeddings[i], fresh_embeddings[i]) / (
+            np.linalg.norm(pipeline_embeddings[i]) * np.linalg.norm(fresh_embeddings[i])
+        )
+        similarities.append(sim)
+    
+    avg_similarity = np.mean(similarities)
+    min_similarity = np.min(similarities)
+    max_similarity = np.max(similarities)
+    
+    print(f"Average cosine similarity (first 10): {avg_similarity:.6f}")
+    print(f"Min similarity: {min_similarity:.6f}")
+    print(f"Max similarity: {max_similarity:.6f}")
+    
+    if avg_similarity < 0.999:
+        print("❌ EMBEDDINGS DIFFER - This explains the clustering differences!")
+        print("The Enhanced Embedder and fresh embedding calls produce different results")
+    else:
+        print("✅ Embeddings are nearly identical")
+        print("The clustering differences must be due to something else")
+else:
+    print("❌ Could not compare embeddings - missing data")
+
 for cluster_id in cluster_ids:
     if cluster_id == sampled_cluster:
         print(f"\nCluster ID {cluster_id}:")
