@@ -681,14 +681,8 @@ class ClusterGenerator:
         if not self.output_list:
             raise ValueError("Output list is empty. Nothing to convert.")
             
-        # Group output items by respondent_id while preserving original order
-        items_by_respondent = defaultdict(list)
-        for item in self.output_list:
-            items_by_respondent[item.respondent_id].append(item)
-        
-        # CRITICAL: Do NOT sort - preserve exact order from populate_from_input_list!
-        # The output_list order MUST match the original order used during clustering
-        # because cluster assignments were made by array index position
+        # CRITICAL FIX: Create result models in the EXACT order of output_list
+        # to preserve alignment between clustering results and segments
         
         # Create mapping of respondent_id to original response data
         response_mapping = {}
@@ -700,53 +694,54 @@ class ClusterGenerator:
                     segment_key = (original_item.respondent_id, segment.segment_id)
                     segment_mapping[segment_key] = segment.segment_response
         
-        # Create ClusterModel instances preserving exact output_list order
+        # Build result models preserving exact output_list order
         result_models = []
-        processed_respondents = set()
+        respondent_models = {}  # Track models by respondent_id
         
-        # Process in the exact order segments appear in output_list to preserve clustering alignment
-        for item in self.output_list:
-            respondent_id = item.respondent_id
-            if respondent_id not in processed_respondents:
-                items = items_by_respondent[respondent_id]
-                # Get the original response from mapping
+        # Process each item in output_list order to preserve clustering alignment
+        for output_item in self.output_list:
+            respondent_id = output_item.respondent_id
+            
+            # Create or get the model for this respondent
+            if respondent_id not in respondent_models:
                 response = response_mapping.get(respondent_id, "")
-                
-                # Create submodels for each segment
-                submodels = []
-                for item in items:
-                    # Get original segment response
-                    segment_key = (respondent_id, item.segment_id)
-                    segment_response = segment_mapping.get(segment_key, "")
-                    
-                    # Store initial cluster ID
-                    initial_cluster = None
-                    if self.embedding_type == "code" and item.initial_code_cluster is not None:
-                        initial_cluster = item.initial_code_cluster
-                    elif self.embedding_type == "description" and item.initial_description_cluster is not None:
-                        initial_cluster = item.initial_description_cluster
-                    
-                    # Create submodel with embeddings and initial cluster
-                    submodel = models.ClusterSubmodel(
-                        segment_id=item.segment_id,
-                        segment_response=segment_response,
-                        segment_label=item.segment_label,
-                        segment_description=item.segment_description,
-                        code_embedding=item.code_embedding,
-                        description_embedding=item.description_embedding,
-                        initial_cluster=initial_cluster  # Single cluster ID
-                    )
-                    
-                    submodels.append(submodel)
-                
-                # Create ClusterModel
-                model = models.ClusterModel(
-                    respondent_id=respondent_id,
-                    response=response,
-                    response_segment=submodels
-                )
-                
-                result_models.append(model)
-                processed_respondents.add(respondent_id)
+                respondent_models[respondent_id] = {
+                    'model': models.ClusterModel(
+                        respondent_id=respondent_id,
+                        response=response,
+                        response_segment=[]
+                    ),
+                    'added_to_result': False
+                }
+            
+            # Create submodel for this segment
+            segment_key = (respondent_id, output_item.segment_id)
+            segment_response = segment_mapping.get(segment_key, "")
+            
+            # Store initial cluster ID
+            initial_cluster = None
+            if self.embedding_type == "code" and output_item.initial_code_cluster is not None:
+                initial_cluster = output_item.initial_code_cluster
+            elif self.embedding_type == "description" and output_item.initial_description_cluster is not None:
+                initial_cluster = output_item.initial_description_cluster
+            
+            # Create submodel with embeddings and initial cluster
+            submodel = models.ClusterSubmodel(
+                segment_id=output_item.segment_id,
+                segment_response=segment_response,
+                segment_label=output_item.segment_label,
+                segment_description=output_item.segment_description,
+                code_embedding=output_item.code_embedding,
+                description_embedding=output_item.description_embedding,
+                initial_cluster=initial_cluster  # Single cluster ID
+            )
+            
+            # Add submodel to the respondent's model in exact output_list order
+            respondent_models[respondent_id]['model'].response_segment.append(submodel)
+            
+            # Add model to result list on first encounter (preserves respondent order)
+            if not respondent_models[respondent_id]['added_to_result']:
+                result_models.append(respondent_models[respondent_id]['model'])
+                respondent_models[respondent_id]['added_to_result'] = True
         
         return result_models    
