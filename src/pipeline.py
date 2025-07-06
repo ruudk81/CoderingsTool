@@ -393,7 +393,7 @@ else:
 
 # === STEP 5 ========================================================================================================
 """get initial clusters"""
-from utils import embedder, clusterer
+from utils import clusterer
 
 FORCE = True
 
@@ -429,14 +429,14 @@ else:
     else:
         print("Question-aware mode disabled")
     
-    get_embeddings = embedder.Embedder(config=embedding_config, verbose=VERBOSE)
+    # Use enhanced embedder for bulletproof ID tracking
+    from utils.enhanced_embedder import EnhancedEmbedder
+    get_embeddings = EnhancedEmbedder(config=embedding_config, verbose=VERBOSE)
     
-    # Note: Question-aware mode will automatically use var_lab when generating embeddings
+    # Note: Enhanced embedder tracks actual respondent_id and segment_id through async operations
     
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
-    code_embeddings = get_embeddings.get_code_embeddings(input_data)
-    description_embeddings = get_embeddings.get_description_embeddings(input_data, var_lab)
-    embedded_text = get_embeddings.combine_embeddings(code_embeddings, description_embeddings)
+    embedded_text = get_embeddings.get_combined_embeddings_with_tracking(input_data, var_lab)
     # Step 5b: Generate initial clusters
     print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
