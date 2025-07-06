@@ -22,13 +22,18 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-filename = "M250285 input voor coderen - met Q18Q19.sav"
-id_column = "respondentid"
-var_name = "q19"
+# filename = "M250285 input voor coderen - met Q18Q19.sav"
+# id_column = "respondentid"
+# var_name = "q19"
 #var_name = "Q18Q19"
 
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+id_column = "xDLNMID"
+var_name = "xQ21"
+
+
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
