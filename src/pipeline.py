@@ -457,15 +457,13 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
-    # Run ID alignment diagnostic
+    # Run comprehensive alignment diagnostic
     if DEBUG_CLUSTER_TRACKING:
         print("\n" + "="*60)
-        print("Running ID alignment diagnostic...")
+        print("Running comprehensive alignment diagnostic...")
         print("="*60)
-        from utils.id_alignment_diagnostic import run_diagnostic
-        run_diagnostic(
-            raw_data=raw_text_list,
-            preprocessed=preprocessed_text,
+        from utils.comprehensive_alignment_diagnostic import run_comprehensive_diagnostic
+        tracker = run_comprehensive_diagnostic(
             segmented=encoded_text,
             embedded=embedded_text,
             clustered=initial_cluster_results
