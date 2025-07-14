@@ -3,10 +3,6 @@ from pydantic import BaseModel, ConfigDict
 import numpy as np
 import numpy.typing as npt
 
-class ResponseSegmentModel(BaseModel):
-    segment_id: str
-    segment_response: str
-    model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
 
 class ResponseModel(BaseModel):
     respondent_id: Any
@@ -38,10 +34,13 @@ class IdeaModel(QualityFilteredModel):
     response_ideas: Optional[List[IdeaSubmodel]] = None
     idea_count: int = 0
 
-class SegmentSubmodel(ResponseSegmentModel):
+class SegmentSubmodel(BaseModel):
     """Submodel for response segments with labels and descriptions"""
+    segment_id: str
+    segment_response: str
     segment_label: Optional[str] = None
     segment_description: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class SegmentedModel(QualityFilteredModel):
     """Model for Step 4: Segmented responses with codes and descriptions"""
@@ -75,14 +74,6 @@ class LabelSubmodel(ClusterSubmodel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)  # Force model rebuild
 
-class HierarchicalCode(BaseModel):
-    """Represents a single code in the hierarchical structure"""
-    code_id: str  # e.g., "1.1.1"
-    numeric_id: float  # e.g., 1.11
-    label: str
-    description: str
-    parent_id: str  # e.g., "1.1"
-    level: int  # 3 for codes
     
 class HierarchicalTopic(BaseModel):
     """Represents a single topic in the hierarchical structure"""
@@ -92,7 +83,6 @@ class HierarchicalTopic(BaseModel):
     description: str
     parent_id: str  # e.g., "1"
     level: int  # 2 for topics
-    codes: List[HierarchicalCode] = []
     
 class HierarchicalTheme(BaseModel):
     """Represents a single theme in the hierarchical structure"""
