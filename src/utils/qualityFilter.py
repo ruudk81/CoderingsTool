@@ -17,7 +17,7 @@ client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY))
 class Grader:
     def __init__(
         self, 
-        responses: List[models.DescriptiveModel], 
+        responses: List[models.PreprocessedModel], 
         var_lab: str,
         config: Optional[QualityFilterConfig] = None,
         verbose: bool = False,
@@ -28,7 +28,7 @@ class Grader:
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
         self.client = client
         self.grader_instructions = GRADER_INSTRUCTIONS 
-        self._results: List[models.DescriptiveModel] = []
+        self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()  # For accessing seed
@@ -47,7 +47,7 @@ class Grader:
             var_lab=var_lab,
             responses=responses_text)
 
-    async def _call_openai_api(self, prompt: str) -> List[models.DescriptiveModel]:
+    async def _call_openai_api(self, prompt: str) -> List[models.QualityFilteredModel]:
         tries = 0
         max_tries = self.config.retries
         
@@ -60,7 +60,7 @@ class Grader:
                     functools.partial(
                         self.client.chat.completions.create,
                         model=self.config.model,
-                        response_model=List[models.DescriptiveModel],
+                        response_model=List[models.QualityFilteredModel],
                         max_retries=self.config.instructor_retries,   
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
@@ -81,7 +81,7 @@ class Grader:
                 await asyncio.sleep(2 ** tries)
                 continue
 
-    async def _grade_batch(self, batch: List[tuple], batch_index: int) -> List[models.DescriptiveModel]:
+    async def _grade_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
         prompt = self._build_prompt(self.question, batch)
         
         # Capture prompt only for the first batch
@@ -122,7 +122,7 @@ class Grader:
         if total_failures > 0 and not self.verbose_reporter.enabled:
             print(f"{total_failures} out of {len(batches)} batches failed completely after all retries")
 
-    def grade(self) -> List[models.DescriptiveModel]:
+    def grade(self) -> List[models.QualityFilteredModel]:
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
         
@@ -219,7 +219,7 @@ class Grader:
         
         return self._results
 
-    def filter(self) -> List[models.DescriptiveModel]:
+    def filter(self) -> List[models.QualityFilteredModel]:
         return [r for r in self._results if not r.quality_filter]
 
     def summary(self) -> Dict[str, Union[int, float]]:
