@@ -334,8 +334,16 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-        
-# # debug 2 - per description tokens
+# debug - example outputs
+# import random
+# n_samples = 5
+# sampled_items = random.sample(encoded_text, n_samples)
+# for item in sampled_items:
+#     for segment in item.response_segment:
+#         print(segment.segment_description)
+# print("\n")    
+    
+# # debug - per description tokens
 # import spacy
 # nlp = spacy.load("nl_core_news_lg")
 
@@ -355,15 +363,7 @@ else:
 #                 topic_tokens.append(token.lemma_)
 #         print(" ".join(topic_tokens))
     
-# # debug 4 - example outputs
-# import random
-# n_samples = 5
-# sampled_items = random.sample(encoded_text, n_samples)
-# for item in sampled_items:
-#     for segment in item.response_segment:
-#         print(segment.segment_description)
-# print("\n")    
-    
+
 
 # === STEP 5 ========================================================================================================
 """get initial clusters"""
@@ -428,17 +428,37 @@ else:
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
         
+# #debug - print random clusters
+# import random
+# cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
+# sampled_cluster = random.sample(cluster_ids, 1)[0]
+# print(f"\nCluster {sampled_cluster}:\n")
+# cluster_segments = []
+# for item in initial_cluster_results:
+#     for segment in item.response_segment:
+#         if segment.initial_cluster == sampled_cluster:
+#             cluster_segments.append(segment.segment_description)
+# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+# for segment_desc in sampled_segments:
+#     print(f"-    {segment_desc}")
+    
+    
+#debug - print all clusters
+# cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+# for x in range(1, round(len(cluster_ids) / 20) + 1):
+#     y = x * 20
+#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+
+#     for z in range(y - 20, y):
+#         if z < len(cluster_ids):
+#             print(f"\nCluster {z}")
+#             for item in initial_cluster_results:
+#                 for subitem in item.response_segment:
+#                     if subitem.initial_cluster == z:
+#                         print(subitem.segment_description)
+#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
-
     
-    
-
-    
-
-
-
-
-
 # === STEP 6 ========================================================================================================
 PROMPT_PRINTER = False 
 """thematic labeling"""
