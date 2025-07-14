@@ -128,8 +128,52 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 """
 
 # =============================================================================
-# STEP 4: SEGMENTATION AND DESCRIPTION
-# =========================================
+# STEP 4A: GATOS IDEA EXTRACTION (Alternative to Segmentation)
+# =============================================================================
+
+GATOS_IDEA_EXTRACTION_PROMPT = """
+You are an expert text analyst reading survey responses collected about {var_lab}. I need you to use your expertise to analyze the provided response and extract distinct ideas from it.
+
+Your task is to identify and extract the key ideas discussed in the survey response. When a response contains multiple ideas, extract each one separately. You MUST remove anyone's names and *use gender neutral pronouns* for deidentification purposes.
+
+Rules:
+1. Extract each distinct idea as a short descriptive phrase (maximum 10 words)
+2. Remove any names and replace pronouns with gender-neutral alternatives
+3. Do not make up information that is not in the input text
+4. If the response is very short or says "nothing", extract what is actually present
+5. Each idea should be a standalone concept that answers the survey question
+
+Here is the response to analyze:
+<respondent_info>
+Respondent ID: {respondent_id}
+Response: {response}
+</respondent_info>
+
+Your output must be a JSON array with these fields for each extracted idea:
+- "respondent_id": The exact respondent ID provided
+- "idea_id": A sequential number as string ("1", "2", etc.)
+- "idea_summary": The extracted idea as a short descriptive phrase
+
+Example output format:
+[
+  {{
+    "respondent_id": "{respondent_id}",
+    "idea_id": "1", 
+    "idea_summary": "Better interaction with instructor"
+  }},
+  {{
+    "respondent_id": "{respondent_id}",
+    "idea_id": "2",
+    "idea_summary": "More engaging course materials"
+  }}
+]
+
+Analyze the response carefully and provide the final output formatted as a JSON array as specified above.
+"""
+
+# =============================================================================
+# STEP 4B: SEGMENTATION AND DESCRIPTION (Original approach)
+# =============================================================================
 
 SEGMENTATION_PROMPT = """
 You are a helpful {language} language expert in analyzing survey responses. 
