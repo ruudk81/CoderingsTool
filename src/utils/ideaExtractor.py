@@ -69,7 +69,8 @@ class LangChainPipeline :
                 formatted_prompt = IDEA_EXTRACTION_PROMPT.format(
                     respondent_id=inputs.get("respondent_id", ""),
                     response=inputs.get("response", ""),
-                    var_lab=inputs.get("var_lab", "")
+                    var_lab=inputs.get("var_lab", ""),
+                    language=inputs.get("language", "")
                 )
                 self.prompt_printer.capture_prompt(
                     step_name="idea_extraction",
@@ -91,7 +92,8 @@ class LangChainPipeline :
             {
                 "respondent_id": lambda x: x["respondent_id"],
                 "response": lambda x: x["response"],
-                "var_lab": lambda x: x["var_lab"]
+                "var_lab": lambda x: x["var_lab"],
+                "language": lambda x: x["language"]
             }
             # GATOS Step 1: Idea Extraction
             | RunnableLambda(capture_idea_extraction_prompt)
