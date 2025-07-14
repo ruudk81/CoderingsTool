@@ -64,3 +64,11 @@ python pipeline.py
 
 ### Workflow Guidelines
 - Add, commit and push modifications to the GitHub repo when completed a task and have modified a .py module or util
+
+### Collaboration Workflow
+- Our workflow: 
+  * I suggest ideas for modification
+  * Claude proposes strategies, plans and todo lists
+  * User approves
+  * Claude implements and adds, commits and pushes modification to the GitHub repo
+  * User pulls to test modification locally
