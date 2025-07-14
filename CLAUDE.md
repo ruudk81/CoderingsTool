@@ -4,16 +4,6 @@
 
 CoderingsTool is a sophisticated text analysis pipeline for processing survey responses from SPSS files. The system performs text preprocessing, quality filtering, embedding generation, clustering, and hierarchical labeling of open-ended survey responses to identify themes and patterns.
 
-### Pipeline Progress
-
-Steps 1-5: 
-1. **✅ Data Loading** - SPSS (.sav) files → ResponseModel objects
-2. **✅ Preprocessing** - Text normalization, spell checking, finalization  
-3. **✅ Segmentation** - Quality filtering, descriptive code generation
-4. **✅ Embeddings** - OpenAI-based code and description embeddings
-5. **✅ Initial clustering** - Two-phase HDBSCAN clustering with LLM-based merging producing micro clusters
-6: **🔄 IN PROGRESS** - Hierarchical labbeling
-
 
 ## Key Architecture Patterns  
 
@@ -55,19 +45,10 @@ cd src
 python pipeline.py
 ```
 
-## Development Workflow
-
-### Collaboration Rules
-- **Claude develops**: Claude develops, refines and updates code, which will be added, committed and pushed to the GitHub repo
-- **User tests**: The user will pull the updates and test code in Spyder, locally
-- **Iterative refinement**: Based on test results, Claude will update and improve the code
-
-### Workflow Guidelines
-- Add, commit and push modifications to the GitHub repo when completed a task and have modified a .py module or util
 
 ### Collaboration Workflow
 - Our workflow: 
-  * I suggest ideas for modification
+  * Users suggests ideas for modification
   * Claude proposes strategies, plans and todo lists
   * User approves
   * Claude implements and adds, commits and pushes modification to the GitHub repo
