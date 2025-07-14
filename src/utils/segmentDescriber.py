@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
-from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT, GATOS_IDEA_EXTRACTION_PROMPT
+from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT, IDEA_EXTRACTION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
@@ -61,12 +61,12 @@ class LangChainPipeline :
     def build_enhanced_chain(self):
         
         # Use GATOS idea extraction instead of segmentation
-        gatos_idea_prompt = PromptTemplate.from_template(GATOS_IDEA_EXTRACTION_PROMPT)
+        gatos_idea_prompt = PromptTemplate.from_template(IDEA_EXTRACTION_PROMPT)
         
         # Prompt capture function for GATOS idea extraction
         def capture_idea_extraction_prompt(inputs):
             if self.prompt_printer and not self.captured_segmentation:
-                formatted_prompt = GATOS_IDEA_EXTRACTION_PROMPT.format(
+                formatted_prompt = IDEA_EXTRACTION_PROMPT.format(
                     respondent_id=inputs.get("respondent_id", ""),
                     response=inputs.get("response", ""),
                     var_lab=inputs.get("var_lab", "")
@@ -182,8 +182,9 @@ class SegmentDescriber:
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
         # Calculate token budget for GATOS idea extraction
-        idea_prompt = GATOS_IDEA_EXTRACTION_PROMPT 
+        idea_prompt = IDEA_EXTRACTION_PROMPT 
         idea_prompt = idea_prompt.replace("{var_lab}", var_lab)
+        idea_prompt = idea_prompt.replace("{language}", self.language)
         idea_prompt = idea_prompt.replace("{response}", "")
         prompt = idea_prompt
         

@@ -131,8 +131,8 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # STEP 4A: GATOS IDEA EXTRACTION (Alternative to Segmentation)
 # =============================================================================
 
-GATOS_IDEA_EXTRACTION_PROMPT = """
-You are an expert text analyst reading survey responses collected about {var_lab}. I need you to use your expertise to analyze the provided response and extract distinct ideas from it.
+IDEA_EXTRACTION_PROMPT = """
+You are an {language} language text analyst reading survey responses collected about {var_lab}. I need you to use your expertise to analyze the provided response and extract distinct ideas from it.
 
 Your task is to identify and extract the key ideas discussed in the survey response. When a response contains multiple ideas, extract each one separately. You MUST remove anyone's names and *use gender neutral pronouns* for deidentification purposes.
 
@@ -169,6 +169,7 @@ Example output format:
 ]
 
 Analyze the response carefully and provide the final output formatted as a JSON array as specified above.
+Ensure that your output is returned in the following langue: {language}.
 """
 
 # =============================================================================
