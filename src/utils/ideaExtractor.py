@@ -25,8 +25,7 @@ class LangChainPipeline :
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
         self.prompt_printer = prompt_printer
-        
-        # Track which prompts have been captured
+
         self.captured_segmentation = False
         self.captured_coding = False
         self.captured_description = False
@@ -60,10 +59,7 @@ class LangChainPipeline :
 
     def build_enhanced_chain(self):
         
-        # Use GATOS idea extraction instead of segmentation
         gatos_idea_prompt = PromptTemplate.from_template(IDEA_EXTRACTION_PROMPT)
-        
-        # Prompt capture function for GATOS idea extraction
         def capture_idea_extraction_prompt(inputs):
             if self.prompt_printer and not self.captured_segmentation:
                 formatted_prompt = IDEA_EXTRACTION_PROMPT.format(
@@ -85,17 +81,14 @@ class LangChainPipeline :
                 )
                 self.captured_segmentation = True
             return inputs
-            
-        # Simple GATOS idea extraction chain
+    
         chain = (
-            # Input mapping for GATOS idea extraction
-            {
+             {
                 "respondent_id": lambda x: x["respondent_id"],
                 "response": lambda x: x["response"],
                 "var_lab": lambda x: x["var_lab"],
                 "language": lambda x: x["language"]
             }
-            # GATOS Step 1: Idea Extraction
             | RunnableLambda(capture_idea_extraction_prompt)
             | gatos_idea_prompt
             | self.llm
@@ -132,21 +125,19 @@ class IdeaExtractor:
         verbose: bool = False,
         model_config: ModelConfig = None,
         prompt_printer = None):  
-        
-        # Use provided config or create default
+     
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
         self.model_config = model_config or ModelConfig()
         
         self.provider = provider.lower()
         self.openai_api_key = api_key or OPENAI_API_KEY
-        # Use model from config for segmentation/description stage
         self.openai_model = model or self.config.model
         self.max_tokens = self.config.max_tokens
         self.completion_reserve = self.config.completion_reserve
         self.max_batch_size = self.config.max_batch_size
         self._debug_print_first_prompt = True
         self.varlab = var_lab
-        self.language = DEFAULT_LANGUAGE  # Add language attribute
+        self.language = DEFAULT_LANGUAGE  
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
@@ -173,18 +164,13 @@ class IdeaExtractor:
         else:
             raise ValueError(f"Unsupported provider: {provider}")
         
-        #print(f"Initialized DescriptiveCoder with {provider} provider and {self.openai_model} model")
-    
     def create_batches(self, responses: List[models.QualityFilteredModel], var_lab: str) -> List[CodingBatch]:
-        #encoding = tiktoken.encoding_for_model(self.openai_model)
-        
         try:
             encoding = tiktoken.encoding_for_model(self.openai_model)
         except KeyError:
             encoding = tiktoken.get_encoding("cl100k_base")  # This is the encoding used by GPT-4
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
-        # Calculate token budget for GATOS idea extraction
         idea_prompt = IDEA_EXTRACTION_PROMPT 
         idea_prompt = idea_prompt.replace("{var_lab}", var_lab)
         idea_prompt = idea_prompt.replace("{language}", self.language)
@@ -193,28 +179,22 @@ class IdeaExtractor:
         
         prompt_length = len(encoding.encode(prompt))
         token_budget = self.max_tokens - prompt_length - self.completion_reserve
-        
-        # Skip calculation if no responses
+     
         if not responses:
             return []
         
-        # Calculate average tokens per response for adaptive batching
         avg_tokens_per_response = sum(len(encoding.encode(r.response)) for r in responses) / max(1, len(responses))
         adaptive_max_batch_size = min(self.max_batch_size, max(1, int(token_budget / max(1, avg_tokens_per_response))))
-        
-        #print(f"estimated number of tokens= {prompt_length + avg_tokens_per_response}")
         
         batches = []
         current_batch_tasks = []
         current_batch_tokens = 0
         
-        #print(f"Creating batches with token budget: {token_budget}, adaptive max batch size: {adaptive_max_batch_size}")
         
         for response in responses:
             respondent_id = response.respondent_id
             response_text = response.response
             
-            # Same format as used in process_batch function
             task_text = (
                 f"Item:\n"
                 f"Respondent ID: {respondent_id}\n"   
@@ -222,13 +202,11 @@ class IdeaExtractor:
                     
             task_tokens = len(encoding.encode(task_text))
             
-            # Handle oversized individual responses
             if task_tokens > token_budget and not current_batch_tasks:
                 print(f"Warning: Response from respondent {respondent_id} exceeds token budget ({task_tokens} > {token_budget}). Processing as single item batch.")
                 batches.append(CodingBatch(tasks=[response.model_dump()]))  # Convert to dict for Pydantic v2
                 continue
                 
-            # Start a new batch if current one would exceed limits
             if (current_batch_tokens + task_tokens > token_budget or 
                 len(current_batch_tasks) >= adaptive_max_batch_size):
                 if current_batch_tasks:  # Only add batch if it's not empty
@@ -236,15 +214,12 @@ class IdeaExtractor:
                     current_batch_tasks = []
                     current_batch_tokens = 0
                 
-            # Add the response to the current batch
             current_batch_tasks.append(response.model_dump())  
             current_batch_tokens += task_tokens
         
-        # Add the last batch if not empty
         if current_batch_tasks:
             batches.append(CodingBatch(tasks=current_batch_tasks))
         
-        #print(f"Created {len(batches)} batches from {len(responses)} responses")
         return batches
 
     async def process_response(self, respondent_id, response_text, var_lab, max_retries=3):
@@ -259,7 +234,6 @@ class IdeaExtractor:
                     "language": DEFAULT_LANGUAGE
                     })    
          
-                # Create globally unique idea IDs  
                 ideas_with_unique_ids = []
                 for i, idea in enumerate(result):
                     # Create unique ID: respondent_id_ideaNumber (following your pattern)
@@ -285,7 +259,7 @@ class IdeaExtractor:
                     quality_filter=None,
                     response_ideas=[
                         models.IdeaSubmodel(
-                            idea_id=f"{respondent_id}_1",  # Unique ID even for errors
+                            idea_id=f"{respondent_id}_1",  
                             idea_summary="Error in idea extraction"
                         )],
                     idea_count=1
@@ -295,25 +269,20 @@ class IdeaExtractor:
         """Process a batch of responses using two-step approach"""
         tasks = []
         
-        # Create tasks for each response in the batch
         for task_dict in batch.tasks:
-            # Convert dict back to QualityFilteredModel if needed
             if isinstance(task_dict, dict):
                 task = models.QualityFilteredModel(**task_dict)
             else:
                 task = task_dict
-                
-            # Add task to process list
+  
             tasks.append(self.process_response(
                 task.respondent_id, 
                 task.response, 
                 var_lab, 
                 max_retries))
         
-        # Process all tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Handle any exceptions in results
         processed_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -332,7 +301,7 @@ class IdeaExtractor:
                     quality_filter=None,
                     response_ideas=[
                         models.IdeaSubmodel(
-                            idea_id=f"{respondent_id}_1",  # Unique ID for error cases
+                            idea_id=f"{respondent_id}_1",  
                             idea_summary="PROCESSING_ERROR"
                         )
                     ],
@@ -354,10 +323,7 @@ class IdeaExtractor:
         if not batches:
             print("No batches created. Returning original responses.")
             return responses
-            
-        #total_batches = len(batches)
-        #print(f"Processing {total_batches} batches with max {max_retries} retries per batch if needed")
-        
+         
         # Process batches concurrently
         all_results = []
         
@@ -388,11 +354,7 @@ class IdeaExtractor:
         
         self._stats.end_timing()
         self._stats.output_count = len(all_results)
-        
-        # Calculate statistics
-        # total_responses = len(responses)
-        # processed_responses = len(all_results)
-        
+          
         # Collect sample ideas for verbose output
         idea_examples = []
         unique_ideas = set()
@@ -440,7 +402,6 @@ class IdeaExtractor:
         self.var_lab = var_lab
         self.langchain_pipeline.var_lab = var_lab
         
-        #print(f"\nThe survey question: {var_lab}\n")
     
         async def main():
             return await self.generate_codes_async(responses, var_lab, max_retries)
