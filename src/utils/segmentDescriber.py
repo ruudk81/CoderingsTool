@@ -328,18 +328,20 @@ class SegmentDescriber:
                     respondent_id = task_dict.respondent_id
                     response_text = task_dict.response
                     
-                processed_results.append(models.DescriptiveModel(
+                processed_results.append(models.IdeaModel(
                     respondent_id=respondent_id,
                     response=response_text,
                     quality_filter=None,
-                    response_segment=[
-                        models.DescriptiveSubmodel(
-                            segment_id=f"{respondent_id}_1",  # Unique ID for error cases
-                            segment_response=response_text,
-                            segment_label="PROCESSING_ERROR",
-                            segment_description="Er kon geen betekenisvolle analyse worden gegenereerd voor deze respons."
+                    response_ideas=[
+                        models.IdeaSubmodel(
+                            idea_id=f"{respondent_id}_1",  # Unique ID for error cases
+                            idea_summary="PROCESSING_ERROR",
+                            original_response=response_text,
+                            deidentified=False
                         )
-                    ]
+                    ],
+                    idea_count=1,
+                    extraction_successful=False
                 ))
             else:
                 processed_results.append(result)
@@ -383,10 +385,10 @@ class SegmentDescriber:
                 
             successful_batches += 1
             
-            # Count how many responses have codes
+            # Count how many responses have ideas extracted
             for resp in result:
                 all_results.append(resp)
-                if resp.response_segment and len(resp.response_segment) > 0:
+                if resp.response_ideas and len(resp.response_ideas) > 0:
                     responses_with_codes += 1
         
         self._stats.end_timing()
@@ -396,42 +398,42 @@ class SegmentDescriber:
         # total_responses = len(responses)
         # processed_responses = len(all_results)
         
-        # Collect sample codes for verbose output
-        code_examples = []
-        unique_codes = set()
-        multi_code_responses = 0
-        total_code_length = 0
-        code_count = 0
+        # Collect sample ideas for verbose output
+        idea_examples = []
+        unique_ideas = set()
+        multi_idea_responses = 0
+        total_idea_length = 0
+        idea_count = 0
         
         for resp in all_results:
-            if resp.response_segment and len(resp.response_segment) > 0:
-                if len(resp.response_segment) > 1:
-                    multi_code_responses += 1
+            if resp.response_ideas and len(resp.response_ideas) > 0:
+                if len(resp.response_ideas) > 1:
+                    multi_idea_responses += 1
                     
-                for segment in resp.response_segment:
-                    if segment.segment_label and segment.segment_label not in ["NA", "PROCESSING_ERROR"]:
-                        unique_codes.add(segment.segment_label)
-                        code_words = segment.segment_label.split()
-                        total_code_length += len(code_words)
-                        code_count += 1
+                for idea in resp.response_ideas:
+                    if idea.idea_summary and idea.idea_summary not in ["NA", "PROCESSING_ERROR"]:
+                        unique_ideas.add(idea.idea_summary)
+                        idea_words = idea.idea_summary.split()
+                        total_idea_length += len(idea_words)
+                        idea_count += 1
                         
                         # Collect examples
-                        if len(code_examples) < self.config.max_code_examples and segment.segment_response:
-                            code_examples.append(f'"{segment.segment_response}" → "{segment.segment_label}"')
+                        if len(idea_examples) < self.config.max_code_examples:
+                            idea_examples.append(f'"{idea.original_response}" → "{idea.idea_summary}"')
         
-        avg_code_length = total_code_length / code_count if code_count > 0 else 0
+        avg_idea_length = total_idea_length / idea_count if idea_count > 0 else 0
         
         # Report statistics
-        self.verbose_reporter.stat_line(f"Unique themes identified: {len(unique_codes)}")
-        self.verbose_reporter.stat_line(f"Average code length: {avg_code_length:.1f} words")
-        if multi_code_responses > 0:
-            self.verbose_reporter.stat_line(f"Responses with multiple codes: {multi_code_responses}")
+        self.verbose_reporter.stat_line(f"Unique ideas identified: {len(unique_ideas)}")
+        self.verbose_reporter.stat_line(f"Average idea length: {avg_idea_length:.1f} words")
+        if multi_idea_responses > 0:
+            self.verbose_reporter.stat_line(f"Responses with multiple ideas: {multi_idea_responses}")
         
-        # Show code examples
-        if code_examples:
-            self.verbose_reporter.sample_list("Sample generated codes", code_examples)
+        # Show idea examples
+        if idea_examples:
+            self.verbose_reporter.sample_list("Sample extracted ideas", idea_examples)
         
-        self.verbose_reporter.step_complete("Segment processing completed")
+        self.verbose_reporter.step_complete("GATOS idea extraction completed")
         
         return all_results
     
