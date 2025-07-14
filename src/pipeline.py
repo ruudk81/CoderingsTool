@@ -307,7 +307,7 @@ else:
 """describe and segment data"""
 from utils import segmentDescriber
 
-FORCE = False
+FORCE = True
 
 step_name        = "segmented_descriptions"
 if  FORCE:
@@ -334,14 +334,18 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
+for text in encoded_text:
+    print(text)
+    break
+
 # debug - example outputs
-# import random
-# n_samples = 5
-# sampled_items = random.sample(encoded_text, n_samples)
-# for item in sampled_items:
-#     for segment in item.response_segment:
-#         print(segment.segment_description)
-# print("\n")    
+import random
+n_samples = 5
+sampled_items = random.sample(encoded_text, n_samples)
+for item in sampled_items:
+    for segment in item.response_ideas:
+        print(segment.idea_summary)
+print("\n")    
     
 # # debug - per description tokens
 # import spacy
