@@ -27,6 +27,21 @@ class QualityFilteredModel(PreprocessedModel):
     """Model for Step 3: Quality filtered data (same fields, but after LLM quality grading)"""
     pass
 
+class IdeaSubmodel(BaseModel):
+    """Submodel for individual extracted ideas with unique tracking"""
+    idea_id: str  # Format: {respondent_id}_{sequence_number}
+    idea_summary: str  # GATOS extracted idea as short phrase
+    original_response: str  # Reference to source response
+    deidentified: bool = False  # Track if names/pronouns were removed
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class IdeaModel(QualityFilteredModel):
+    """Model for GATOS Step 1: Extracted ideas from responses"""
+    response_ideas: Optional[List[IdeaSubmodel]] = None
+    idea_count: int = 0
+    extraction_successful: bool = False
+
 class SegmentSubmodel(ResponseSegmentModel):
     """Submodel for response segments with labels and descriptions"""
     segment_label: Optional[str] = None
@@ -35,6 +50,16 @@ class SegmentSubmodel(ResponseSegmentModel):
 class SegmentedModel(QualityFilteredModel):
     """Model for Step 4: Segmented responses with codes and descriptions"""
     response_segment: Optional[List[SegmentSubmodel]] = None
+
+# Alternative path through GATOS ideas instead of segments
+class IdeaEmbeddingSubmodel(IdeaSubmodel):
+    """Submodel for ideas with embeddings (parallel to ClusterSubmodel)"""
+    idea_embedding: Optional[npt.NDArray[np.float32]] = None
+    initial_cluster: Optional[int] = None  # Cluster assignment for this idea
+    
+class IdeaEmbeddingModel(IdeaModel):
+    """Model for GATOS Step 2: Ideas with embeddings and clusters"""
+    response_ideas: Optional[List[IdeaEmbeddingSubmodel]] = None
 
 class ClusterSubmodel(SegmentSubmodel):
     """Submodel for segments with embeddings and initial cluster assignment"""

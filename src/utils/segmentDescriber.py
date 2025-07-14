@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
-from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT
+from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT, GATOS_IDEA_EXTRACTION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
@@ -60,115 +60,42 @@ class LangChainPipeline :
 
     def build_enhanced_chain(self):
         
-        enhanced_segmentation_prompt = PromptTemplate.from_template(SEGMENTATION_PROMPT)
-        focused_coding_prompt = PromptTemplate.from_template(CODING_PROMPT) 
-        description_prompt = PromptTemplate.from_template(DESCRIPTION_PROMPT)
+        # Use GATOS idea extraction instead of segmentation
+        gatos_idea_prompt = PromptTemplate.from_template(GATOS_IDEA_EXTRACTION_PROMPT)
         
-        # Prompt capture functions
-        def capture_segmentation_prompt(inputs):
+        # Prompt capture function for GATOS idea extraction
+        def capture_idea_extraction_prompt(inputs):
             if self.prompt_printer and not self.captured_segmentation:
-                formatted_prompt = SEGMENTATION_PROMPT.format(
+                formatted_prompt = GATOS_IDEA_EXTRACTION_PROMPT.format(
                     respondent_id=inputs.get("respondent_id", ""),
                     response=inputs.get("response", ""),
-                    var_lab=inputs.get("var_lab", ""),
-                    language=inputs.get("language", "")
+                    var_lab=inputs.get("var_lab", "")
                 )
                 self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
+                    step_name="idea_extraction",
                     utility_name="SegmentDescriber", 
                     prompt_content=formatted_prompt,
-                    prompt_type="enhanced_segmentation",
+                    prompt_type="gatos_idea_extraction",
                     metadata={
                         "model": self.llm.model_name,
                         "var_lab": inputs.get("var_lab", ""),
-                        "language": inputs.get("language", ""),
-                        "stage": "1/3 - Enhanced Segmentation"
+                        "stage": "GATOS Step 1 - Idea Extraction"
                     }
                 )
                 self.captured_segmentation = True
             return inputs
             
-        def capture_coding_prompt(inputs):
-            if self.prompt_printer and not self.captured_coding:
-                # Extract coded_segments directly from inputs
-                coded_segments = inputs.get("coded_segments", []) if isinstance(inputs, dict) else []
-                formatted_prompt = CODING_PROMPT.format(
-                    coded_segments=coded_segments,
-                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-                )
-                self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
-                    utility_name="SegmentDescriber",
-                    prompt_content=formatted_prompt, 
-                    prompt_type="focused_coding",
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
-                        "stage": "2/3 - Focused Coding"
-                    }
-                )
-                self.captured_coding = True
-            return inputs
-            
-        def capture_description_prompt(inputs):
-            if self.prompt_printer and not self.captured_description:
-                # Extract labeled_segments directly from inputs
-                labeled_segments = inputs.get("labeled_segments", []) if isinstance(inputs, dict) else []
-                formatted_prompt = DESCRIPTION_PROMPT.format(
-                    labeled_segments=labeled_segments,
-                    var_lab=self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                    language=self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-                )
-                self.prompt_printer.capture_prompt(
-                    step_name="segmentation",
-                    utility_name="SegmentDescriber",
-                    prompt_content=formatted_prompt,
-                    prompt_type="description_generation", 
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                        "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language,
-                        "stage": "3/3 - Description Generation"
-                    }
-                )
-                self.captured_description = True
-            return inputs
-
+        # Simple GATOS idea extraction chain
         chain = (
-            # Initial input mapping - now includes respondent_id
+            # Input mapping for GATOS idea extraction
             {
                 "respondent_id": lambda x: x["respondent_id"],
                 "response": lambda x: x["response"],
-                "var_lab": lambda x: x["var_lab"],
-                "language": lambda x: x["language"]
+                "var_lab": lambda x: x["var_lab"]
             }
-            # Stage 1: Enhanced Segmentation
-            | RunnableLambda(capture_segmentation_prompt)
-            | enhanced_segmentation_prompt
-            | self.llm
-            | self.parser
-            # Transform for Stage 2: Prepare coded_segments
-            | RunnableLambda(lambda inputs: {
-                "coded_segments": self._safe_extract_segments(inputs),
-                "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-            })
-            # Stage 2: Focused Coding  
-            | RunnableLambda(capture_coding_prompt)
-            | focused_coding_prompt
-            | self.llm
-            | self.parser
-            # Transform for Stage 3: Prepare labeled_segments
-            | RunnableLambda(lambda inputs: {
-                "labeled_segments": self._safe_extract_segments(inputs),
-                "var_lab": self._safe_get(inputs, "var_lab") if isinstance(inputs, dict) else self.var_lab,
-                "language": self._safe_get(inputs, "language") if isinstance(inputs, dict) else self.language
-            })
-            # Stage 3: Description Generation
-            | RunnableLambda(capture_description_prompt)
-            | description_prompt
+            # GATOS Step 1: Idea Extraction
+            | RunnableLambda(capture_idea_extraction_prompt)
+            | gatos_idea_prompt
             | self.llm
             | self.parser
         )
@@ -245,7 +172,7 @@ class SegmentDescriber:
         
         #print(f"Initialized DescriptiveCoder with {provider} provider and {self.openai_model} model")
     
-    def create_batches(self, responses: List[models.DescriptiveModel], var_lab: str) -> List[CodingBatch]:
+    def create_batches(self, responses: List[models.QualityFilteredModel], var_lab: str) -> List[CodingBatch]:
         #encoding = tiktoken.encoding_for_model(self.openai_model)
         
         try:
@@ -254,16 +181,11 @@ class SegmentDescriber:
             encoding = tiktoken.get_encoding("cl100k_base")  # This is the encoding used by GPT-4
             print(f"Using cl100k_base encoding as fallback for {self.openai_model}")
         
-        # Calculate token budget
-        segmentation_prompt = SEGMENTATION_PROMPT 
-        segmentation_prompt = segmentation_prompt.replace("{language}", DEFAULT_LANGUAGE)
-        segmentation_prompt = segmentation_prompt.replace("{var_lab}", var_lab)
-        segmentation_prompt = segmentation_prompt.replace("{response}", "")
-        coding_prompt = CODING_PROMPT
-        coding_prompt = coding_prompt.replace("{language}", DEFAULT_LANGUAGE)
-        coding_prompt = coding_prompt.replace("{var_lab}", var_lab)
-        coding_prompt = coding_prompt.replace("{segments}", "")
-        prompt = segmentation_prompt + "\n" + coding_prompt
+        # Calculate token budget for GATOS idea extraction
+        idea_prompt = GATOS_IDEA_EXTRACTION_PROMPT 
+        idea_prompt = idea_prompt.replace("{var_lab}", var_lab)
+        idea_prompt = idea_prompt.replace("{response}", "")
+        prompt = idea_prompt
         
         prompt_length = len(encoding.encode(prompt))
         token_budget = self.max_tokens - prompt_length - self.completion_reserve
@@ -333,44 +255,53 @@ class SegmentDescriber:
                     "language": DEFAULT_LANGUAGE
                     })    
          
-                # Create globally unique segment IDs
-                segments_with_unique_ids = []
-                for i, seg in enumerate(result):
-                    seg_copy = seg.copy()
-                    # Create unique ID: respondent_id_segmentNumber
-                    seg_copy['segment_id'] = f"{respondent_id}_{i+1}"
-                    segments_with_unique_ids.append(models.DescriptiveSubmodel(**seg_copy))
+                # Create globally unique idea IDs  
+                ideas_with_unique_ids = []
+                for i, idea in enumerate(result):
+                    # Create unique ID: respondent_id_ideaNumber (following your pattern)
+                    idea_id = f"{respondent_id}_{i+1}"
+                    ideas_with_unique_ids.append(models.IdeaSubmodel(
+                        idea_id=idea_id,
+                        idea_summary=idea.get('idea_summary', ''),
+                        original_response=response_text,
+                        deidentified=True  # GATOS requires deidentification
+                    ))
                 
-                return models.DescriptiveModel(
-                respondent_id=respondent_id,
-                response=response_text,
-                quality_filter=None,
-                response_segment=segments_with_unique_ids
-                )
-            
-            except Exception as e:
-                print(f"Error in LangChain pipeline: {str(e)}")
-                return models.DescriptiveModel(
+                return models.IdeaModel(
                     respondent_id=respondent_id,
                     response=response_text,
                     quality_filter=None,
-                    response_segment=[
-                        models.DescriptiveSubmodel(
-                            segment_id=f"{respondent_id}_1",  # Unique ID even for errors
-                            segment_response=response_text,
-                            segment_label="NA",
-                            segment_description="NA"
-                            )])
+                    response_ideas=ideas_with_unique_ids,
+                    idea_count=len(ideas_with_unique_ids),
+                    extraction_successful=True
+                )
+            
+            except Exception as e:
+                print(f"Error in GATOS idea extraction: {str(e)}")
+                return models.IdeaModel(
+                    respondent_id=respondent_id,
+                    response=response_text,
+                    quality_filter=None,
+                    response_ideas=[
+                        models.IdeaSubmodel(
+                            idea_id=f"{respondent_id}_1",  # Unique ID even for errors
+                            idea_summary="Error in idea extraction",
+                            original_response=response_text,
+                            deidentified=False
+                        )],
+                    idea_count=1,
+                    extraction_successful=False
+                )
        
-    async def process_batch(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
+    async def process_batch(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
         """Process a batch of responses using two-step approach"""
         tasks = []
         
         # Create tasks for each response in the batch
         for task_dict in batch.tasks:
-            # Convert dict back to DescriptiveModel if needed
+            # Convert dict back to QualityFilteredModel if needed
             if isinstance(task_dict, dict):
-                task = models.DescriptiveModel(**task_dict)
+                task = models.QualityFilteredModel(**task_dict)
             else:
                 task = task_dict
                 
@@ -415,10 +346,10 @@ class SegmentDescriber:
         
         return processed_results
     
-    async def generate_codes_async(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
+    async def generate_codes_async(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
         self._stats.start_timing()
         self._stats.input_count = len(responses)
-        self.verbose_reporter.step_start("Enhanced Segment Processing (Segmentation → Coding → Description)", emoji="🔧")
+        self.verbose_reporter.step_start("GATOS Idea Extraction", emoji="💡")
         self.verbose_reporter.stat_line(f"Processing {len(responses)} responses...")
         
         batches = self.create_batches(responses, var_lab)
@@ -504,7 +435,7 @@ class SegmentDescriber:
         
         return all_results
     
-    def generate_codes(self, responses: List[models.DescriptiveModel], var_lab: str, max_retries: int = 3) -> List[models.DescriptiveModel]:
+    def generate_codes(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
         if not responses:
             print("No responses provided. Returning empty list.")
             return []
