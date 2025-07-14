@@ -30,17 +30,13 @@ class QualityFilteredModel(PreprocessedModel):
 class IdeaSubmodel(BaseModel):
     """Submodel for individual extracted ideas with unique tracking"""
     idea_id: str  # Format: {respondent_id}_{sequence_number}
-    idea_summary: str  # GATOS extracted idea as short phrase
-    original_response: str  # Reference to source response
-    deidentified: bool = False  # Track if names/pronouns were removed
+    idea_summary: str   
     
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class IdeaModel(QualityFilteredModel):
     """Model for GATOS Step 1: Extracted ideas from responses"""
     response_ideas: Optional[List[IdeaSubmodel]] = None
     idea_count: int = 0
-    extraction_successful: bool = False
 
 class SegmentSubmodel(ResponseSegmentModel):
     """Submodel for response segments with labels and descriptions"""
