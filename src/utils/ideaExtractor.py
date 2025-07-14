@@ -266,9 +266,7 @@ class IdeaExtractor:
                     idea_id = f"{respondent_id}_{i+1}"
                     ideas_with_unique_ids.append(models.IdeaSubmodel(
                         idea_id=idea_id,
-                        idea_summary=idea.get('idea_summary', ''),
-                        original_response=response_text,
-                        deidentified=True  # GATOS requires deidentification
+                        idea_summary=idea.get('idea_summary', '')
                     ))
                 
                 return models.IdeaModel(
@@ -276,8 +274,7 @@ class IdeaExtractor:
                     response=response_text,
                     quality_filter=None,
                     response_ideas=ideas_with_unique_ids,
-                    idea_count=len(ideas_with_unique_ids),
-                    extraction_successful=True
+                    idea_count=len(ideas_with_unique_ids)
                 )
             
             except Exception as e:
@@ -289,12 +286,9 @@ class IdeaExtractor:
                     response_ideas=[
                         models.IdeaSubmodel(
                             idea_id=f"{respondent_id}_1",  # Unique ID even for errors
-                            idea_summary="Error in idea extraction",
-                            original_response=response_text,
-                            deidentified=False
+                            idea_summary="Error in idea extraction"
                         )],
-                    idea_count=1,
-                    extraction_successful=False
+                    idea_count=1
                 )
        
     async def process_batch(self, batch: CodingBatch, var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
@@ -339,13 +333,10 @@ class IdeaExtractor:
                     response_ideas=[
                         models.IdeaSubmodel(
                             idea_id=f"{respondent_id}_1",  # Unique ID for error cases
-                            idea_summary="PROCESSING_ERROR",
-                            original_response=response_text,
-                            deidentified=False
+                            idea_summary="PROCESSING_ERROR"
                         )
                     ],
-                    idea_count=1,
-                    extraction_successful=False
+                    idea_count=1
                 ))
             else:
                 processed_results.append(result)
@@ -423,7 +414,7 @@ class IdeaExtractor:
                         
                         # Collect examples
                         if len(idea_examples) < self.config.max_code_examples:
-                            idea_examples.append(f'"{idea.original_response}" → "{idea.idea_summary}"')
+                            idea_examples.append(f'"{resp.response}" → "{idea.idea_summary}"')
         
         avg_idea_length = total_idea_length / idea_count if idea_count > 0 else 0
         
