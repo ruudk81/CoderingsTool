@@ -34,47 +34,32 @@ class IdeaModel(QualityFilteredModel):
     response_ideas: Optional[List[IdeaSubmodel]] = None
     idea_count: int = 0
 
-class SegmentSubmodel(BaseModel):
-    """Submodel for response segments with labels and descriptions"""
-    segment_id: str
-    segment_response: str
-    segment_label: Optional[str] = None
-    segment_description: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-class SegmentedModel(QualityFilteredModel):
-    """Model for Step 4: Segmented responses with codes and descriptions"""
-    response_segment: Optional[List[SegmentSubmodel]] = None
-
-# Alternative path through GATOS ideas instead of segments
-class IdeaEmbeddingSubmodel(IdeaSubmodel):
-    """Submodel for ideas with embeddings (parallel to ClusterSubmodel)"""
+class EmbeddingSubmodel(IdeaSubmodel):
+    """Submodel for ideas with embeddings"""
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
-    initial_cluster: Optional[int] = None  # Cluster assignment for this idea
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     
-class IdeaEmbeddingModel(IdeaModel):
-    """Model for GATOS Step 2: Ideas with embeddings and clusters"""
-    response_ideas: Optional[List[IdeaEmbeddingSubmodel]] = None
+class EmbeddingModel(IdeaModel):
+    """Model for Step 5: Ideas with embeddings"""
+    idea_embeddings: Optional[List[EmbeddingSubmodel]] = None
 
-class ClusterSubmodel(SegmentSubmodel):
-    """Submodel for segments with embeddings and initial cluster assignment"""
-    code_embedding: Optional[npt.NDArray[np.float32]] = None
-    description_embedding: Optional[npt.NDArray[np.float32]] = None
+class ClusterSubmodel(EmbeddingSubmodel):
+    """Submodel for ideas with embeddings and cluster assignment"""
     initial_cluster: Optional[int] = None  # Single cluster ID from initial clustering
     
-class ClusterModel(SegmentedModel):
-    """Model for Step 5: Initial clusters with embeddings"""
-    response_segment: Optional[List[ClusterSubmodel]] = None
+class ClusterModel(EmbeddingModel):
+    """Model for Step 6: Ideas with embeddings and clusters"""
+    idea_embeddings: Optional[List[ClusterSubmodel]] = None
 
 class LabelSubmodel(ClusterSubmodel):
-    """Submodel for segments with hierarchical labeling information"""
+    """Submodel for ideas with hierarchical labeling information"""
     Theme: Optional[Dict[int, str]] = None 
     Topic: Optional[Dict[float, str]] = None  # Float keys for topic IDs like 1.1, 1.2, etc.
     Code: Optional[Dict[float, str]] = None  # Float keys for code IDs like 1.1.1
     
     model_config = ConfigDict(arbitrary_types_allowed=True)  # Force model rebuild
 
-    
 class HierarchicalTopic(BaseModel):
     """Represents a single topic in the hierarchical structure"""
     topic_id: str  # e.g., "1.1"
@@ -103,9 +88,9 @@ class ClusterMapping(BaseModel):
     confidence: float = 1.0
 
 class LabelModel(ClusterModel):
-    """Model for Step 6: Hierarchical labeling with themes, topics, and codes"""
+    """Model for Step 7: Hierarchical labeling with themes, topics, and codes"""
     summary: Optional[str] = None
-    response_segment: Optional[List[LabelSubmodel]] = None
+    idea_embeddings: Optional[List[LabelSubmodel]] = None
     # Hierarchical structure data
     themes: Optional[List[HierarchicalTheme]] = None
     cluster_mappings: Optional[List[ClusterMapping]] = None
@@ -114,24 +99,22 @@ class LabelModel(ClusterModel):
 def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
     data = self.model_dump()
     
-    if hasattr(self, 'response_segment') and self.response_segment:
+    if hasattr(self, 'idea_embeddings') and self.idea_embeddings:
     
         from typing import get_type_hints, get_args
         type_hints = get_type_hints(model_class)
         
-        if 'response_segment' in type_hints:
-            submodel_type = get_args(get_args(type_hints['response_segment'])[0])[0]
-            converted_segments = []
-            for segment in self.response_segment:
-                segment_data = segment.model_dump()
-                converted_segments.append(submodel_type(**segment_data))
-            data['response_segment'] = converted_segments
+        if 'idea_embeddings' in type_hints:
+            submodel_type = get_args(get_args(type_hints['idea_embeddings'])[0])[0]
+            converted_embeddings = []
+            for embedding in self.idea_embeddings:
+                embedding_data = embedding.model_dump()
+                converted_embeddings.append(submodel_type(**embedding_data))
+            data['idea_embeddings'] = converted_embeddings
     
     return model_class(**data)
 
 # Backward compatibility aliases
-DescriptiveModel = SegmentedModel
-DescriptiveSubmodel = SegmentSubmodel
 PreprocessModel = PreprocessedModel
-EmbeddingsModel = ClusterModel  # For pipeline compatibility
-EmbeddingsSubmodel = ClusterSubmodel  # For pipeline compatibility
+EmbeddingsModel = EmbeddingModel  # For pipeline compatibility
+EmbeddingsSubmodel = EmbeddingSubmodel  # For pipeline compatibility
