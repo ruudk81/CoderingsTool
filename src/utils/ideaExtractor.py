@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
-from prompts import SEGMENTATION_PROMPT, CODING_PROMPT, DESCRIPTION_PROMPT, IDEA_EXTRACTION_PROMPT
+from prompts import IDEA_EXTRACTION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
@@ -73,7 +73,7 @@ class LangChainPipeline :
                 )
                 self.prompt_printer.capture_prompt(
                     step_name="idea_extraction",
-                    utility_name="SegmentDescriber", 
+                    utility_name="IdeaExtractor", 
                     prompt_content=formatted_prompt,
                     prompt_type="gatos_idea_extraction",
                     metadata={
@@ -118,7 +118,7 @@ class LangChainPipeline :
 class CodingBatch(BaseModel):
     tasks: List[Dict] = Field(description="List of coding tasks in this batch")   
 
-class SegmentDescriber:
+class IdeaExtractor:
     def __init__(
         self, 
         config: SegmentationConfig = None,
@@ -144,6 +144,7 @@ class SegmentDescriber:
         self.max_batch_size = self.config.max_batch_size
         self._debug_print_first_prompt = True
         self.varlab = var_lab
+        self.language = DEFAULT_LANGUAGE  # Add language attribute
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer

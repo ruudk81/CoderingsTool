@@ -305,7 +305,7 @@ else:
 
 # === STEP 4 ========================================================================================================
 """describe and segment data"""
-from utils import segmentDescriber
+from utils import ideaExtractor
 
 FORCE = True
 
@@ -326,7 +326,7 @@ else:
     start_time = time.time()
     # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
-    encoder = segmentDescriber.SegmentDescriber(verbose=VERBOSE, prompt_printer=prompt_printer)
+    encoder = ideaExtractor.IdeaExtractor(verbose=VERBOSE, prompt_printer=prompt_printer)
     encoded_text = encoder.generate_codes(filtered_text, var_lab)
     end_time = time.time()
     elapsed_time = end_time - start_time
