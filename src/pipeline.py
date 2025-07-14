@@ -1,6 +1,4 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-import random
-import re
 
 # ===  MODULES ========================================================================================================
 import time
@@ -37,7 +35,7 @@ FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
-DEBUG_CLUSTER_TRACKING = True  # Enable detailed cluster ID tracking diagnostics
+DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
 
 # Clustering parameters
 EMBEDDING_TYPE = "description"  # Options: "description" or "code"
@@ -239,14 +237,7 @@ else:
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug
-# import random
-# n_samples = 5
-# indices = random.sample(range(len(preprocessed_text)), n_samples)
-# for i in indices:
-#     if preprocessed_text[i].quality_filter_code == None:
-#         print("Preprocessed:", preprocessed_text[i].response)
-#         print("---")    
+    
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
@@ -343,23 +334,6 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-# #debug 1 - per response-label/code
-# import random
-# sampled_items = random.sample(encoded_text, 1)
-# print(f"Q: {var_lab}\n")
-# for item in sampled_items:
-#     print(f"A: {item.response}\n")
-#     for segment in item.response_segment:
-#         print(f"-    {segment.segment_label}")
-
-# # debug 2 - per description
-# import random
-# sampled_items = random.sample(encoded_text, 1)
-# print(f"Q: {var_lab}\n")
-# for item in sampled_items:
-#     print(f"A: {item.response}\n")
-#     for segment in item.response_segment:
-#         print(f"-    {segment.segment_description}")
         
 # # debug 2 - per description tokens
 # import spacy
@@ -446,10 +420,6 @@ else:
         verbose=VERBOSE)
     cluster_gen.run_pipeline()
     
-    # Debug: Check alignment before converting to cluster model
-    if DEBUG_CLUSTER_TRACKING:
-        from debug_cluster_alignment import debug_cluster_alignment
-        debug_cluster_alignment(cluster_gen, sample_size=10)
     
     initial_cluster_results = cluster_gen.to_cluster_model()
     end_time = time.time()
@@ -457,266 +427,31 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
-    # Run comprehensive alignment diagnostic
-    if DEBUG_CLUSTER_TRACKING:
-        print("\n" + "="*60)
-        print("Running comprehensive alignment diagnostic...")
-        print("="*60)
-        from utils.comprehensive_alignment_diagnostic import run_comprehensive_diagnostic
-        tracker = run_comprehensive_diagnostic(
-            segmented=encoded_text,
-            embedded=embedded_text,
-            clustered=initial_cluster_results
-        )
         
-        # Run clean clusterer test to check semantic coherence
-        print("\n" + "="*60)
-        print("Running clean clusterer test...")
-        print("="*60)
-        from utils.clean_clusterer import run_clean_clustering_test, compare_with_original_clusters
-        from config import DEFAULT_CLUSTERING_CONFIG
-        clean_cluster_map = run_clean_clustering_test(initial_cluster_results, DEFAULT_CLUSTERING_CONFIG)
-        compare_with_original_clusters(initial_cluster_results, clean_cluster_map)
         
-        # Run segment ID verification to ensure consistency across pipeline stages
-        print("\n" + "="*60)
-        print("Running segment ID verification diagnostic...")
-        print("="*60)
-        from utils.segment_id_verification import run_segment_id_verification
-        verification_passed = run_segment_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
-        if not verification_passed:
-            print("⚠️  WARNING: Segment ID verification failed - there may be data integrity issues!")
-        
-        # Run order verification to identify where scrambling occurs
-        print("\n" + "="*60)
-        print("Running order verification diagnostic...")
-        print("="*60)
-        from utils.order_verification import run_order_verification
-        run_order_verification(initial_cluster_results)
 
     
     
 
-#debug  1
-#print from initial_cluster_results
-import random
-cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for item in initial_cluster_results:
-    for segment in item.response_segment:
-        if segment.initial_cluster == sampled_cluster:
-            cluster_segments.append(segment.segment_description)
-            #cluster_segments.append(segment.segment_label)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
     
 
-#print from clean_cluster_map
-from collections import defaultdict
-segment_lookup = {}
 
-for record in encoded_text:
-    for seg in record.response_segment:
-        segment_lookup[seg.segment_id] = seg.segment_description
 
-cluster_ids = sorted({v for v in clean_cluster_map.values() if v is not None})
-cluster_to_keys = defaultdict(list)
-for k, v in clean_cluster_map.items():
-    if v is not None:
-        cluster_to_keys[v].append(k)
-
-# Run diagnostics after segment_lookup is defined
-exec(open('quick_id_check.py').read())
-id_match = quick_id_verification(encoded_text, clean_cluster_map, initial_cluster_results)
-desc_match = quick_description_check(encoded_text, segment_lookup)
-
-exec(open('test_clustering_determinism.py').read())
-cluster_labels = test_clustering_determinism(embedded_text)
-
-exec(open('compare_processing_order.py').read())
-order_match = compare_processing_orders(encoded_text, embedded_text)
-clean_order = compare_with_clusterer_extraction(encoded_text)
-
-print("\n" + "="*80)
-print("EMBEDDING COMPARISON TEST")
-print("="*80)
-
-# Extract pipeline embeddings (from Enhanced Embedder)
-pipeline_embeddings = []
-pipeline_segment_ids = []
-for resp in embedded_text:
-    if resp.response_segment:
-        for seg in resp.response_segment:
-            if seg.description_embedding is not None:
-                pipeline_embeddings.append(seg.description_embedding)
-                pipeline_segment_ids.append(seg.segment_id)
-
-# Generate fresh embeddings (like clean clusterer does)
-descriptions = [seg.segment_description for resp in encoded_text for seg in resp.response_segment if resp.response_segment]
-
-from openai import OpenAI
-from config import OPENAI_API_KEY
-import numpy as np
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-print("Generating fresh embeddings for comparison...")
-response = client.embeddings.create(
-    input=descriptions,
-    model="text-embedding-3-large"
-)
-
-fresh_embeddings = [np.array(item.embedding, dtype=np.float32) for item in response.data]
-
-# Compare embeddings
-print(f"Pipeline embeddings: {len(pipeline_embeddings)}")
-print(f"Fresh embeddings: {len(fresh_embeddings)}")
-
-if len(pipeline_embeddings) > 0 and len(fresh_embeddings) > 0:
-    # Compare first embedding
-    cosine_sim = np.dot(pipeline_embeddings[0], fresh_embeddings[0]) / (
-        np.linalg.norm(pipeline_embeddings[0]) * np.linalg.norm(fresh_embeddings[0])
-    )
-    print(f"Cosine similarity between first embeddings: {cosine_sim:.6f}")
-    
-    # Compare a few more embeddings
-    similarities = []
-    for i in range(min(10, len(pipeline_embeddings), len(fresh_embeddings))):
-        sim = np.dot(pipeline_embeddings[i], fresh_embeddings[i]) / (
-            np.linalg.norm(pipeline_embeddings[i]) * np.linalg.norm(fresh_embeddings[i])
-        )
-        similarities.append(sim)
-    
-    avg_similarity = np.mean(similarities)
-    min_similarity = np.min(similarities)
-    max_similarity = np.max(similarities)
-    
-    print(f"Average cosine similarity (first 10): {avg_similarity:.6f}")
-    print(f"Min similarity: {min_similarity:.6f}")
-    print(f"Max similarity: {max_similarity:.6f}")
-    
-    if avg_similarity < 0.999:
-        print("❌ EMBEDDINGS DIFFER - This explains the clustering differences!")
-        print("The Enhanced Embedder and fresh embedding calls produce different results")
-    else:
-        print("✅ Embeddings are nearly identical")
-        print("The clustering differences must be due to something else")
-else:
-    print("❌ Could not compare embeddings - missing data")
-
-print("\n" + "="*80)
-print("CLUSTER ALIGNMENT VERIFICATION")
-print("="*80)
-
-exec(open('verify_cluster_alignment.py').read())
-cluster_contents = verify_cluster_content_alignment(initial_cluster_results, sample_cluster_id=18)
-consistency_check = cross_reference_cluster_assignments(initial_cluster_results)
-
-for cluster_id in cluster_ids:
-    if cluster_id == sampled_cluster:
-        print(f"\nCluster ID {cluster_id}:")
-        for seg_id in cluster_to_keys[cluster_id]:
-            description = segment_lookup.get(seg_id)
-            if description:
-                print(f"  {seg_id}: {description}")
-            else:
-                print(f"  {seg_id}: [description not found]")
-    
-    
-#debug  2  print all clusters
-# cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-# for x in range(1, round(len(cluster_ids) / 20) + 1):
-#     y = x * 20
-#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
-
-#     for z in range(y - 20, y):
-#         if z < len(cluster_ids):
-#             print(f"\nCluster {z}")
-#             for item in initial_cluster_results:
-#                 for subitem in item.response_segment:
-#                     if subitem.initial_cluster == z:
-#                         print(subitem.segment_description)
-#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
 
 
 # === STEP 6 ========================================================================================================
 PROMPT_PRINTER = False 
 """thematic labeling"""
-if DEBUG_CLUSTER_TRACKING:
-    from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
-    from config import DEFAULT_LABELLER_CONFIG
-    
-    verbose_reporter = VerboseReporter(VERBOSE)
-    prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
-  
-    
-    thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-    
-    # Print comprehensive diagnostic summary
-    thematic_labeller.print_diagnostic_summary()
-    
-else:
-    from utils.thematicLabeller import ThematicLabeller
-    from config import DEFAULT_LABELLER_CONFIG
+from utils.thematicLabeller import ThematicLabeller
+from config import DEFAULT_LABELLER_CONFIG
 
-    verbose_reporter = VerboseReporter(VERBOSE)
-    prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
 
-    thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-    labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-    cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
+thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
+labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
 
 
-# debug
-print("\nINITIAL CLUSTERS")  
-cluster_summaries = []
-for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-        summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-        cluster_summaries.append(summary)
-cluster_summaries_text = "\n".join(cluster_summaries)
-
-sampled_results = random.sample(labeled_results, 1)
-for result in sampled_results:
-    print(f"Q: {var_lab}\n")  # Assuming var_lab is defined elsewhere
-    print(f"A: {result.response}\n")  # Assuming result has a 'response' attribute
-    for item in result.response_segment:
-        #print(f"-    {item.segment_description}")
-        if isinstance(item.initial_cluster, int):
-            cluster = re.sub(r'\[.*?\]', '', cluster_summaries[item.initial_cluster]).strip()
-            print(f"-  cluster: {cluster}")
-        if isinstance(item.Code, dict):
-            concept = item.Code.values()
-            print(f"-  concept: {next(iter(item.Code.values()))}\n")
-        
-# debug  
-# print("\nAtomic concepts")  
-# for concept in thematic_labeller.atomic_concepts.atomic_concepts:
-#     print(concept.concept)
-
-
-# debug  
-# print("\nMERGED CLUSTERS")  
-# merged_summaries = []
-# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         merged_summaries.append(summary)
-# merged_summaries_text = "\n".join(merged_summaries)
-# print(merged_summaries_text)
-
-# debug  
-# codebook = thematic_labeller.refined_codebook
-# lines_final = []
-# for theme in codebook.themes:
-#     lines_final.append(f"{theme.theme_id}. {theme.label.upper()}")
-#     for atomic_concept in theme.atomic_concepts:
-#         lines_final.append(f"{atomic_concept.concept_id}. {atomic_concept.label.upper()}")
-#         lines_final.append(f"{atomic_concept.description}")
-# print("\n==== CODEBOOK (After all phases) ===")    
-# print("\n".join(lines_final))
 
 # === STEP 6 ========================================================================================================
 
