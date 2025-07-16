@@ -26,7 +26,7 @@ class QualityFilteredModel(PreprocessedModel):
 class IdeaSubmodel(BaseModel):
     """Submodel for individual extracted ideas with unique tracking"""
     idea_id: str  # Format: {respondent_id}_{sequence_number}
-    idea_summary: str   
+    idea: str   
     
 
 class IdeaModel(QualityFilteredModel):

@@ -128,53 +128,72 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 """
 
 # =============================================================================
-# STEP 4A: GATOS IDEA EXTRACTION (Alternative to Segmentation)
+# STEP 4: ATOMIC IDEA EXTRACTION  
 # =============================================================================
 
 IDEA_EXTRACTION_PROMPT = """
-You are an {language} language text analyst reading survey responses collected about {var_lab}. I need you to use your expertise to analyze the provided response and extract distinct ideas from it.
+You are an expert text analyst specializing in analyzing written responsess collected in surveys. 
+Your task is to analyze and summarize the following text in response to this question: 
+    
+<survey_question>
+{{var_lab}}
+</survey_question>
 
-Your task is to identify and extract the key ideas discussed in the survey response. When a response contains multiple ideas, extract each one separately. You MUST remove anyone's names and *use gender neutral pronouns* for deidentification purposes.
+Here is the respondent information and their response:
 
-Rules:
-1. Extract each distinct idea as a short descriptive phrase (maximum 10 words)
-2. Remove any names and replace pronouns with gender-neutral alternatives
-3. Do not make up information that is not in the input text
-4. If the response is very short or says "nothing", extract what is actually present
-5. Each idea should be a standalone concept that answers the survey question
-
-Here is the response to analyze:
 <respondent_info>
-Respondent ID: {respondent_id}
-Response: {response}
+Respondent ID: {{respondent_id}}
+Written response: {{response}}
 </respondent_info>
 
-Your output must be a JSON array with these fields for each extracted idea:
-- "respondent_id": The exact respondent ID provided
-- "idea_id": A sequential number as string ("1", "2", etc.)
-- "idea_summary": The extracted idea as a short descriptive phrase
+Please follow these instructions carefully:
+1. Read and analyze the provided text thoroughly.
+2. Summarize the main ideas discussed in the written response.
+3. For each main idea, provide a short descriptive phrase that captures the essence of the point in light of the survey question.
+4. Return ALL main ideas as summary points of your summary.
+4. Ensure that each point in your summary directly addresses the survey question - i.e., when reading a single point in your summary, it should make sense in light of the survey question.
+5. For deidentification purposes:
+   - Remove all names of individuals mentioned in the text.
+   - Use gender-neutral pronouns (they/them/their) when referring to any individuals.
 
-Example output format:
+Return your summary of the idea as a JSON array. Each item should include:
+- `"respondent_id"`: exactly as provided
+- `"idea_id"`: a string number ("1", "2", etc.)
+- `"idea"`: the extracted idea in {language}
+
+Here's an example of the input and desired output format:
+    
+<example>
+Example input: 
+Respondent ID: 123456789
+Response: "Jared did a great job responding quickly to emails and turning in good work."
+
+Example output:
 [
   {{
-    "respondent_id": "{respondent_id}",
+    "respondent_id": "123456789",
     "idea_id": "1", 
-    "idea_summary": "Better interaction with instructor"
+    "idea": "Responded quickly to emails"
   }},
   {{
-    "respondent_id": "{respondent_id}",
+    "respondent_id": "123456789",
     "idea_id": "2",
-    "idea_summary": "More engaging course materials"
+    "idea": "Turned in good work"
   }}
 ]
+</example>
 
-Analyze the response carefully and provide the final output formatted as a JSON array as specified above.
-Ensure that your output is returned in the following langue: {language}.
+Notice how the main ideas are summarized without including names or gendered pronouns.
+
+Please provide your summary of the given text following these guidelines. 
+You may include as many items in your list as necessary to capture all the main ideas present in the text.
 """
 
 
+
+
 # =============================================================================
-# STEP 6: HIERARCHICAL LABELING - 6 PHASES
+# STEP 6: CODEBOOK GENERATION  
 # =============================================================================
 
 PHASE1_DESCRIPTIVE_CODING_PROMPT = """
@@ -243,8 +262,7 @@ Instructions:
 3. Focus on WHAT respondents are talking about (not WHY)
 4. Be COMPLETELY EXHAUSTIVE - capture every meaningful concept, even if it appears only once
 5. Do NOT group or merge similar concepts - keep them separate
-6. Include specific subconcepts (e.g., Don’t just say “technology” if respondents specifically mention “smartphone”, “WiFi”, or “apps”.
-)
+6. Include specific subconcepts (e.g., Don’t just say “technology” if respondents specifically mention “smartphone”, “WiFi”, or “apps”.)
 
 An atomic concept is:
 - A single, indivisible idea (e.g., "battery life”, “screen size”, “weight”, “camera quality”)

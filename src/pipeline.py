@@ -2,6 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # ===  MODULES ========================================================================================================
 import time
+import random
 import pandas as pd
 import nest_asyncio
 nest_asyncio.apply()
@@ -34,7 +35,7 @@ var_name = "q19"
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
 
 # Clustering parameters
@@ -334,17 +335,16 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-for text in encoded_text:
-    print(text)
-    break
+# for text in encoded_text:
+#     print(text)
+#     break
 
 # debug - example outputs
-import random
 n_samples = 5
 sampled_items = random.sample(encoded_text, n_samples)
 for item in sampled_items:
     for segment in item.response_ideas:
-        print(segment.idea_summary)
+        print(segment.idea)
 print("\n")    
     
 # # debug - per description tokens
