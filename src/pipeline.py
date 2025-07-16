@@ -319,16 +319,21 @@ prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    encoded_text = cache_manager.load_from_cache(filename, step_name, models.SegmentedModel)
-    segments = len([segment.segment_id for item in encoded_text for segment in item.response_segment])
+    encoded_text = cache_manager.load_from_cache(filename, step_name, models.IdeaModel)
+    segments = sum(item.idea_count for item in encoded_text)
     verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
 else: 
     verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
     start_time = time.time()
     # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
-    encoder = ideaExtractor.IdeaExtractor(verbose=VERBOSE, prompt_printer=prompt_printer)
-    encoded_text = encoder.generate_codes(filtered_text, var_lab)
+    encoder = ideaExtractor.IdeaExtractor(
+        responses=filtered_text,
+        var_lab=var_lab,
+        verbose=VERBOSE,
+        prompt_printer=prompt_printer
+    )
+    encoded_text = encoder.extract()
     end_time = time.time()
     elapsed_time = end_time - start_time
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
