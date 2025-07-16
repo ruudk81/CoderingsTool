@@ -335,17 +335,18 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-# for text in encoded_text:
-#     print(text)
-#     break
+for text in encoded_text:
+    print(text)
+    break
 
 # debug - example outputs
-n_samples = 5
+n_samples = 1
 sampled_items = random.sample(encoded_text, n_samples)
 for item in sampled_items:
+    print(item.response)
     for segment in item.response_ideas:
-        print(segment.idea)
-print("\n")    
+        print(f"- {segment.idea}")
+
     
 # # debug - per description tokens
 # import spacy

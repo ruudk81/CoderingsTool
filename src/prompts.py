@@ -136,14 +136,14 @@ You are an expert text analyst specializing in analyzing written responsess coll
 Your task is to analyze and summarize the following text in response to this question: 
     
 <survey_question>
-{{var_lab}}
+{var_lab}
 </survey_question>
 
 Here is the respondent information and their response:
 
 <respondent_info>
-Respondent ID: {{respondent_id}}
-Written response: {{response}}
+Respondent ID: {respondent_id}
+Written response: {response}
 </respondent_info>
 
 Please follow these instructions carefully:
