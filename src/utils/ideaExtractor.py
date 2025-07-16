@@ -26,10 +26,8 @@ class LangChainPipeline :
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
         self.prompt_printer = prompt_printer
 
-        self.captured_segmentation = False
-        self.captured_coding = False
-        self.captured_description = False
-      
+        self.captured_prompt = False  #only print first prompt
+
         model_config = ModelConfig()
         
         self.llm = ChatOpenAI(
@@ -42,7 +40,7 @@ class LangChainPipeline :
         self.retry_delay = self.config.retry_delay
         self.max_retries = self.config.max_retries
         
-        self.chain = self.build_enhanced_chain()
+        self.chain = self.build_chain()
 
     def _safe_get(self, x, key):
         return x.get(key) if isinstance(x, dict) else None
@@ -57,11 +55,11 @@ class LangChainPipeline :
             return inputs
         return []
 
-    def build_enhanced_chain(self):
+    def build_chain(self):
         
-        gatos_idea_prompt = PromptTemplate.from_template(IDEA_EXTRACTION_PROMPT)
+        idea_extraction_prompt = PromptTemplate.from_template(IDEA_EXTRACTION_PROMPT)
         def capture_idea_extraction_prompt(inputs):
-            if self.prompt_printer and not self.captured_segmentation:
+            if self.prompt_printer and not self.captured_prompt:
                 formatted_prompt = IDEA_EXTRACTION_PROMPT.format(
                     respondent_id=inputs.get("respondent_id", ""),
                     response=inputs.get("response", ""),
@@ -76,10 +74,10 @@ class LangChainPipeline :
                     metadata={
                         "model": self.llm.model_name,
                         "var_lab": inputs.get("var_lab", ""),
-                        "stage": "GATOS Step 1 - Idea Extraction"
+                        "stage": "Idea Extraction"
                     }
                 )
-                self.captured_segmentation = True
+                self.captured_prompt = True
             return inputs
     
         chain = (
@@ -90,7 +88,7 @@ class LangChainPipeline :
                 "language": lambda x: x["language"]
             }
             | RunnableLambda(capture_idea_extraction_prompt)
-            | gatos_idea_prompt
+            | idea_extraction_prompt
             | self.llm
             | self.parser
         )
@@ -150,7 +148,7 @@ class IdeaExtractor:
             temperature=self.config.temperature,
             config=self.config,
             prompt_printer=self.prompt_printer)
-        self.chain = self.langchain_pipeline.build_enhanced_chain()
+        self.chain = self.langchain_pipeline.build_chain()
 
         if not self.openai_api_key:
             raise ValueError("API key is required")
@@ -240,7 +238,7 @@ class IdeaExtractor:
                     idea_id = f"{respondent_id}_{i+1}"
                     ideas_with_unique_ids.append(models.IdeaSubmodel(
                         idea_id=idea_id,
-                        idea_summary=idea.get('idea_summary', '')
+                        idea=idea.get('idea', '')
                     ))
                 
                 return models.IdeaModel(
@@ -260,7 +258,7 @@ class IdeaExtractor:
                     response_ideas=[
                         models.IdeaSubmodel(
                             idea_id=f"{respondent_id}_1",  
-                            idea_summary="Error in idea extraction"
+                            idea="Error in idea extraction"
                         )],
                     idea_count=1
                 )
@@ -302,7 +300,7 @@ class IdeaExtractor:
                     response_ideas=[
                         models.IdeaSubmodel(
                             idea_id=f"{respondent_id}_1",  
-                            idea_summary="PROCESSING_ERROR"
+                            idea="PROCESSING_ERROR"
                         )
                     ],
                     idea_count=1
@@ -315,7 +313,7 @@ class IdeaExtractor:
     async def generate_codes_async(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
         self._stats.start_timing()
         self._stats.input_count = len(responses)
-        self.verbose_reporter.step_start("GATOS Idea Extraction", emoji="💡")
+        self.verbose_reporter.step_start("Idea Extraction", emoji="💡")
         self.verbose_reporter.stat_line(f"Processing {len(responses)} responses...")
         
         batches = self.create_batches(responses, var_lab)
@@ -368,15 +366,15 @@ class IdeaExtractor:
                     multi_idea_responses += 1
                     
                 for idea in resp.response_ideas:
-                    if idea.idea_summary and idea.idea_summary not in ["NA", "PROCESSING_ERROR"]:
-                        unique_ideas.add(idea.idea_summary)
-                        idea_words = idea.idea_summary.split()
+                    if idea.idea and idea.idea not in ["NA", "PROCESSING_ERROR"]:
+                        unique_ideas.add(idea.idea)
+                        idea_words = idea.idea.split()
                         total_idea_length += len(idea_words)
                         idea_count += 1
                         
                         # Collect examples
                         if len(idea_examples) < self.config.max_code_examples:
-                            idea_examples.append(f'"{resp.response}" → "{idea.idea_summary}"')
+                            idea_examples.append(f'"{resp.response}" → "{idea.idea}"')
         
         avg_idea_length = total_idea_length / idea_count if idea_count > 0 else 0
         
