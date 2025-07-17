@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Union
 import instructor
 from openai import OpenAI
 import tiktoken
+from pydantic import BaseModel
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import IDEA_EXTRACTION_PROMPT
@@ -14,6 +15,10 @@ import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
 client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY))
+
+class IdeaResponse(BaseModel):
+    """Response model for idea extraction matching the prompt format"""
+    idea: str
 
 class IdeaExtractor:
     def __init__(
@@ -103,7 +108,7 @@ class IdeaExtractor:
             response=response
         )
 
-    async def _call_openai_api(self, prompt: str) -> List[Dict[str, str]]:
+    async def _call_openai_api(self, prompt: str) -> List[IdeaResponse]:
         """Call OpenAI API with structured output for single response"""
         tries = 0
         max_tries = self.config.max_retries
@@ -113,15 +118,13 @@ class IdeaExtractor:
             try:
                 loop = asyncio.get_running_loop()
                 
-                # Always expect array of ideas for single response
-                response_model = List[Dict[str, str]]
-                
+                # Use IdeaResponse model for structured output
                 response = await loop.run_in_executor(
                     None,
                     functools.partial(
                         self.client.chat.completions.create,
                         model=self.config.model,
-                        response_model=response_model,
+                        response_model=List[IdeaResponse],
                         max_retries=3,  # Default instructor retries
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
@@ -165,14 +168,13 @@ class IdeaExtractor:
         try:
             response_data = await self._call_openai_api(prompt)
             
-            # Process response - array of ideas
+            # Process response - array of IdeaResponse objects
             ideas = []
-            for i, idea_dict in enumerate(response_data):
-                idea_text = idea_dict.get('idea', '')
-                if idea_text:
+            for i, idea_response in enumerate(response_data):
+                if idea_response.idea:
                     ideas.append(models.IdeaSubmodel(
                         idea_id=f"{respondent_id}_{i+1}",
-                        idea=idea_text
+                        idea=idea_response.idea
                     ))
             
             return models.IdeaModel(
