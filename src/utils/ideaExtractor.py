@@ -204,16 +204,24 @@ class IdeaExtractor:
             )
 
     async def _process_all_responses(self):
-        """Process all responses individually but concurrently"""
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses individually...")
+        """Process all responses individually but with controlled concurrency"""
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses (max {self.config.max_concurrent_requests} concurrent)...")
         
-        # Create tasks for each response
+        # Create a semaphore to limit concurrent requests
+        max_concurrent = self.config.max_concurrent_requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def process_with_semaphore(idx, respondent_id, response_text):
+            async with semaphore:
+                return await self._process_single_response(idx, respondent_id, response_text)
+        
+        # Create tasks for each response with semaphore control
         tasks = []
         for idx, response in enumerate(self.responses):
-            task = self._process_single_response(idx, response.respondent_id, response.response)
+            task = process_with_semaphore(idx, response.respondent_id, response.response)
             tasks.append(task)
         
-        # Process all responses concurrently
+        # Process all responses with controlled concurrency
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         total_failures = 0
