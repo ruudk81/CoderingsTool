@@ -94,43 +94,17 @@ class IdeaExtractor:
         
         return batches
 
-    def _build_prompt(self, batch: List[tuple]) -> str:
-        """Build prompt for a batch of responses"""
-        # For batches, we need to format multiple responses
-        responses_text = []
-        for _, respondent_id, response in batch:
-            responses_text.append(f"Respondent ID: {respondent_id}\nResponse: \"{response}\"")
-        
-        # If single response, use the original prompt format
-        if len(batch) == 1:
-            _, respondent_id, response = batch[0]
-            return IDEA_EXTRACTION_PROMPT.format(
-                var_lab=self.var_lab,
-                language=self.language,
-                respondent_id=respondent_id,
-                response=response
-            )
-        
-        # For multiple responses, we need a batch-friendly prompt
-        batch_prompt = f"""Extract the main ideas from the following survey responses about "{self.var_lab}".
+    def _build_prompt(self, respondent_id: str, response: str) -> str:
+        """Build prompt for a single response"""
+        return IDEA_EXTRACTION_PROMPT.format(
+            var_lab=self.var_lab,
+            language=self.language,
+            respondent_id=respondent_id,
+            response=response
+        )
 
-Language: {self.language}
-
-For each response, identify and extract the distinct ideas or themes mentioned. Return a JSON array where each element represents a response and contains an array of ideas extracted from that response.
-
-Responses:
-{chr(10).join(responses_text)}
-
-Return format:
-[
-  {{"respondent_id": "id1", "ideas": [{{"idea": "first idea"}}, {{"idea": "second idea"}}]}},
-  {{"respondent_id": "id2", "ideas": [{{"idea": "idea text"}}]}},
-  ...
-]"""
-        return batch_prompt
-
-    async def _call_openai_api(self, prompt: str, batch_size: int) -> Union[List[Dict], Dict]:
-        """Call OpenAI API with structured output"""
+    async def _call_openai_api(self, prompt: str) -> List[Dict[str, str]]:
+        """Call OpenAI API with structured output for single response"""
         tries = 0
         max_tries = self.config.max_retries
         
@@ -139,13 +113,8 @@ Return format:
             try:
                 loop = asyncio.get_running_loop()
                 
-                # Define response model based on batch size
-                if batch_size == 1:
-                    # Single response: expect array of ideas
-                    response_model = List[Dict[str, str]]
-                else:
-                    # Multiple responses: expect array of responses with ideas
-                    response_model = List[Dict[str, Union[str, List[Dict[str, str]]]]]
+                # Always expect array of ideas for single response
+                response_model = List[Dict[str, str]]
                 
                 response = await loop.run_in_executor(
                     None,
@@ -173,11 +142,11 @@ Return format:
                 await asyncio.sleep(self.config.retry_delay * tries)
                 continue
 
-    async def _extract_ideas_batch(self, batch: List[tuple], batch_index: int) -> List[models.IdeaModel]:
-        """Process a batch and extract ideas"""
-        prompt = self._build_prompt(batch)
+    async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeaModel:
+        """Process a single response and extract ideas"""
+        prompt = self._build_prompt(respondent_id, response_text)
         
-        # Capture prompt only for the first batch
+        # Capture prompt only for the first response
         if self.prompt_printer and not self._captured_prompt:
             self.prompt_printer.capture_prompt(
                 step_name="idea_extraction",
@@ -188,106 +157,87 @@ Return format:
                     "model": self.config.model,
                     "var_lab": self.var_lab,
                     "language": self.language,
-                    "batch_size": len(batch),
-                    "batch_number": batch_index + 1
+                    "respondent_id": respondent_id
                 }
             )
             self._captured_prompt = True
         
         try:
-            response_data = await self._call_openai_api(prompt, len(batch))
+            response_data = await self._call_openai_api(prompt)
             
-            # Process response based on batch size
-            results = []
-            if len(batch) == 1:
-                # Single response format: just array of ideas
-                idx, respondent_id, response_text = batch[0]
-                ideas = []
-                for i, idea_dict in enumerate(response_data):
-                    idea_text = idea_dict.get('idea', '')
-                    if idea_text:
-                        ideas.append(models.IdeaSubmodel(
-                            idea_id=f"{respondent_id}_{i+1}",
-                            idea=idea_text
-                        ))
-                
-                results.append(models.IdeaModel(
-                    respondent_id=respondent_id,
-                    response=response_text,
-                    quality_filter=self.responses[idx].quality_filter,
-                    quality_filter_code=self.responses[idx].quality_filter_code,
-                    response_ideas=ideas,
-                    idea_count=len(ideas)
-                ))
-            else:
-                # Multiple responses format
-                batch_dict = {resp_id: (idx, resp_text) for idx, resp_id, resp_text in batch}
-                
-                for resp_data in response_data:
-                    resp_id = resp_data.get('respondent_id')
-                    if resp_id in batch_dict:
-                        idx, response_text = batch_dict[resp_id]
-                        ideas = []
-                        
-                        idea_list = resp_data.get('ideas', [])
-                        for i, idea_dict in enumerate(idea_list):
-                            idea_text = idea_dict.get('idea', '')
-                            if idea_text:
-                                ideas.append(models.IdeaSubmodel(
-                                    idea_id=f"{resp_id}_{i+1}",
-                                    idea=idea_text
-                                ))
-                        
-                        results.append(models.IdeaModel(
-                            respondent_id=resp_id,
-                            response=response_text,
-                            quality_filter=self.responses[idx].quality_filter,
-                            quality_filter_code=self.responses[idx].quality_filter_code,
-                            response_ideas=ideas,
-                            idea_count=len(ideas)
-                        ))
+            # Process response - array of ideas
+            ideas = []
+            for i, idea_dict in enumerate(response_data):
+                idea_text = idea_dict.get('idea', '')
+                if idea_text:
+                    ideas.append(models.IdeaSubmodel(
+                        idea_id=f"{respondent_id}_{i+1}",
+                        idea=idea_text
+                    ))
             
-            return results
+            return models.IdeaModel(
+                respondent_id=respondent_id,
+                response=response_text,
+                quality_filter=self.responses[idx].quality_filter,
+                quality_filter_code=self.responses[idx].quality_filter_code,
+                response_ideas=ideas,
+                idea_count=len(ideas)
+            )
             
         except Exception as e:
-            print(f"Batch {batch_index + 1} processing failed: {str(e)}")
-            # Return error results for this batch
-            results = []
-            for idx, respondent_id, response_text in batch:
-                results.append(models.IdeaModel(
-                    respondent_id=respondent_id,
-                    response=response_text,
-                    quality_filter=self.responses[idx].quality_filter,
-                    quality_filter_code=self.responses[idx].quality_filter_code,
+            print(f"Processing failed for respondent {respondent_id}: {str(e)}")
+            # Return error result
+            return models.IdeaModel(
+                respondent_id=respondent_id,
+                response=response_text,
+                quality_filter=self.responses[idx].quality_filter,
+                quality_filter_code=self.responses[idx].quality_filter_code,
+                response_ideas=[
+                    models.IdeaSubmodel(
+                        idea_id=f"{respondent_id}_1",
+                        idea="PROCESSING_ERROR"
+                    )
+                ],
+                idea_count=1
+            )
+
+    async def _process_all_responses(self):
+        """Process all responses individually but concurrently"""
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses individually...")
+        
+        # Create tasks for each response
+        tasks = []
+        for idx, response in enumerate(self.responses):
+            task = self._process_single_response(idx, response.respondent_id, response.response)
+            tasks.append(task)
+        
+        # Process all responses concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        total_failures = 0
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"Response {i+1} processing failed: {str(result)}")
+                total_failures += 1
+                # Create error result for failed response
+                self._results.append(models.IdeaModel(
+                    respondent_id=self.responses[i].respondent_id,
+                    response=self.responses[i].response,
+                    quality_filter=self.responses[i].quality_filter,
+                    quality_filter_code=self.responses[i].quality_filter_code,
                     response_ideas=[
                         models.IdeaSubmodel(
-                            idea_id=f"{respondent_id}_1",
+                            idea_id=f"{self.responses[i].respondent_id}_1",
                             idea="PROCESSING_ERROR"
                         )
                     ],
                     idea_count=1
                 ))
-            return results
-
-    async def _process_all_batches(self):
-        """Process all batches concurrently"""
-        batches = self._batch()
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
-        
-        tasks = [self._extract_ideas_batch(batch, i) for i, batch in enumerate(batches)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        total_failures = 0
-        for i, batch_result in enumerate(batch_results):
-            if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
-                total_failures += 1
-                continue
-            
-            self._results.extend(batch_result)
+            else:
+                self._results.append(result)
         
         if total_failures > 0:
-            print(f"{total_failures} out of {len(batches)} batches failed completely")
+            print(f"{total_failures} out of {len(self.responses)} responses failed")
 
     def extract(self) -> List[models.IdeaModel]:
         """Main method to extract ideas from responses"""
@@ -302,7 +252,7 @@ Return format:
             return []
         
         nest_asyncio.apply()
-        asyncio.run(self._process_all_batches())
+        asyncio.run(self._process_all_responses())
         
         # Ensure all responses are accounted for
         result_ids = {r.respondent_id for r in self._results}
@@ -389,3 +339,18 @@ Return format:
             "unique_ideas": unique_ideas,
             "avg_ideas_per_response": round(total_ideas / total, 2) if total > 0 else 0
         }
+    
+    def generate_codes(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
+        """Compatibility method for v1 interface"""
+        # Update instance variables
+        self.responses = responses
+        self.var_lab = var_lab
+        if max_retries != self.config.max_retries:
+            self.config.max_retries = max_retries
+        
+        # Reset results for new run
+        self._results = []
+        self._captured_prompt = False
+        
+        # Call the main extract method
+        return self.extract()
