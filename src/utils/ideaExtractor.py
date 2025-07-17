@@ -203,51 +203,63 @@ class IdeaExtractor:
                 idea_count=1
             )
 
-    async def _process_all_responses(self):
-        """Process all responses individually but with controlled concurrency"""
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses (max {self.config.max_concurrent_requests} concurrent)...")
-        
-        # Create a semaphore to limit concurrent requests
-        max_concurrent = self.config.max_concurrent_requests
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        async def process_with_semaphore(idx, respondent_id, response_text):
-            async with semaphore:
-                return await self._process_single_response(idx, respondent_id, response_text)
-        
-        # Create tasks for each response with semaphore control
+    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.IdeaModel]:
+        """Process a batch of responses concurrently (LangChain-style within-batch processing)"""
+        # Create tasks for all responses in this batch
         tasks = []
-        for idx, response in enumerate(self.responses):
-            task = process_with_semaphore(idx, response.respondent_id, response.response)
+        for idx, respondent_id, response_text in batch:
+            task = self._process_single_response(idx, respondent_id, response_text)
             tasks.append(task)
         
-        # Process all responses with controlled concurrency
+        # Process all responses in batch concurrently (no limits)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        total_failures = 0
+        # Handle results and exceptions
+        batch_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                print(f"Response {i+1} processing failed: {str(result)}")
-                total_failures += 1
                 # Create error result for failed response
-                self._results.append(models.IdeaModel(
-                    respondent_id=self.responses[i].respondent_id,
-                    response=self.responses[i].response,
-                    quality_filter=self.responses[i].quality_filter,
-                    quality_filter_code=self.responses[i].quality_filter_code,
+                idx, respondent_id, response_text = batch[i]
+                batch_results.append(models.IdeaModel(
+                    respondent_id=respondent_id,
+                    response=response_text,
+                    quality_filter=self.responses[idx].quality_filter,
+                    quality_filter_code=self.responses[idx].quality_filter_code,
                     response_ideas=[
                         models.IdeaSubmodel(
-                            idea_id=f"{self.responses[i].respondent_id}_1",
+                            idea_id=f"{respondent_id}_1",
                             idea="PROCESSING_ERROR"
                         )
                     ],
                     idea_count=1
                 ))
             else:
-                self._results.append(result)
+                batch_results.append(result)
+        
+        return batch_results
+
+    async def _process_all_responses(self):
+        """Process all responses using hierarchical concurrency (LangChain-style)"""
+        batches = self._batch()
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
+        
+        # Level 1: Process all batches concurrently (no limits)
+        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        
+        # Collect results from all batches
+        total_failures = 0
+        for i, batch_result in enumerate(batch_results):
+            if isinstance(batch_result, Exception):
+                print(f"Batch {i+1} processing failed: {str(batch_result)}")
+                total_failures += 1
+                continue
+            
+            # Add all results from this batch
+            self._results.extend(batch_result)
         
         if total_failures > 0:
-            print(f"{total_failures} out of {len(self.responses)} responses failed")
+            print(f"{total_failures} out of {len(batches)} batches failed completely")
 
     def extract(self) -> List[models.IdeaModel]:
         """Main method to extract ideas from responses"""
