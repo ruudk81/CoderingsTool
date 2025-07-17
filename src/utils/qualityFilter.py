@@ -1,18 +1,21 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import asyncio
-import functools
-import nest_asyncio #for Spyder
 from typing import Dict, List, Optional, Union
+try:
+    import nest_asyncio #for Spyder
+except ImportError:
+    nest_asyncio = None
 import instructor
-from openai import OpenAI
+from openai import AsyncOpenAI
+import tiktoken
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG
 from prompts import GRADER_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
-client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY)) 
+async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY)) 
 
 class Grader:
     def __init__(
@@ -26,18 +29,82 @@ class Grader:
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
-        self.client = client
+        self.client = async_client
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()  # For accessing seed
-        self.prompt_printer = prompt_printer 
+        self.prompt_printer = prompt_printer
+        
+        # Initialize tokenizer for batch size calculation
+        try:
+            self.encoding = tiktoken.encoding_for_model(self.config.model)
+        except KeyError:
+            self.encoding = tiktoken.get_encoding("cl100k_base")
+            print(f"Using cl100k_base encoding as fallback for {self.config.model}")
+
+    def _calculate_token_budget(self) -> int:
+        """Calculate available tokens for responses after accounting for prompt overhead"""
+        # Create a sample prompt to estimate token usage
+        sample_responses = "respondent_id: sample_id, response: \"sample response\""
+        base_prompt = self.grader_instructions.format(
+            language=DEFAULT_LANGUAGE,
+            var_lab=self.question,
+            responses=sample_responses
+        )
+        prompt_tokens = len(self.encoding.encode(base_prompt))
+        return self.config.max_tokens - prompt_tokens - 200  # 200 token completion reserve
 
     def _batch(self) -> List[List[tuple]]:
+        """Create token-aware batches with pre-calculated token caching"""
         # Only batch items that need LLM evaluation (quality_filter_code = None)
-        indexed = [(i, r.respondent_id, r.response) for i, r in enumerate(self.responses) if r.quality_filter_code is None]
-        return [indexed[i:i + self.config.batch_size] for i in range(0, len(indexed), self.config.batch_size)]
+        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
+        
+        if not items_to_process:
+            return []
+        
+        token_budget = self._calculate_token_budget()
+        
+        # Pre-calculate and cache token counts for responses
+        response_tokens = []
+        for r in items_to_process:
+            response_text = f"respondent_id: {r.respondent_id}, response: \"{r.response}\""
+            tokens = len(self.encoding.encode(response_text))
+            response_tokens.append(tokens)
+        
+        # Calculate adaptive batch size based on average response length
+        avg_tokens = sum(response_tokens) / max(1, len(response_tokens))
+        adaptive_max_batch = min(self.config.batch_size, max(1, int(token_budget / max(1, avg_tokens))))
+        
+        batches = []
+        current_batch = []
+        current_tokens = 0
+        
+        for i, (response, tokens) in enumerate(zip(items_to_process, response_tokens)):
+            indexed_item = (i, response.respondent_id, response.response)
+            
+            # Handle oversized responses
+            if tokens > token_budget and not current_batch:
+                print(f"Warning: Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
+                batches.append([indexed_item])
+                continue
+            
+            # Check if adding this response would exceed limits
+            if (current_tokens + tokens > token_budget or 
+                len(current_batch) >= adaptive_max_batch):
+                if current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_tokens = 0
+            
+            current_batch.append(indexed_item)
+            current_tokens += tokens
+        
+        if current_batch:
+            batches.append(current_batch)
+        
+        return batches
 
     def _build_prompt(self, var_lab: str, batch: List[tuple]) -> str:
         
@@ -48,40 +115,26 @@ class Grader:
             responses=responses_text)
 
     async def _call_openai_api(self, prompt: str) -> List[models.QualityFilteredModel]:
-        tries = 0
-        max_tries = self.config.retries
-        
-        while tries < max_tries:
-            tries += 1
-            try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        self.client.chat.completions.create,
-                        model=self.config.model,
-                        response_model=List[models.QualityFilteredModel],
-                        max_retries=self.config.instructor_retries,   
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed
-                    )
-                )
-                return response
-                
-            except Exception as e:
-                print(f"\nAPI call failed on attempt {tries}/{max_tries}:")
-                print(f"Error: {str(e)}")
-                
-                if tries >= max_tries:
-                    raise
-                
-                # Exponential backoff
-                await asyncio.sleep(2 ** tries)
-                continue
+        """Call OpenAI API with structured output using instructor's built-in retries"""
+        try:
+            # Use AsyncOpenAI directly with instructor's built-in retries
+            response = await self.client.chat.completions.create(
+                model=self.config.model,
+                response_model=List[models.QualityFilteredModel],
+                max_retries=self.config.retries,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                seed=self.model_config.seed
+            )
+            return response
+            
+        except Exception as e:
+            print(f"\nAPI call failed: {str(e)}")
+            raise
 
-    async def _grade_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
+    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
+        """Process a single batch with hierarchical concurrency (LangChain-style)"""
         prompt = self._build_prompt(self.question, batch)
         
         # Capture prompt only for the first batch
@@ -100,27 +153,37 @@ class Grader:
                 }
             )
         
-        response_data = await self._call_openai_api(prompt)
-        return response_data
+        try:
+            response_data = await self._call_openai_api(prompt)
+            return response_data
+        except Exception as e:
+            print(f"Batch {batch_index + 1} processing failed: {str(e)}")
+            # Return empty results for failed batch
+            return []
 
     async def _process_all_batches(self):
+        """Process all batches using hierarchical concurrency (LangChain-style)"""
         batches = self._batch()
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
+        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
+        self.verbose_reporter.stat_line(f"Processing {len(items_to_process)} responses in {len(batches)} batches...")
         
-        tasks = [self._grade_batch(batch, i) for i, batch in enumerate(batches)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Level 1: Process all batches concurrently (no limits)
+        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
+        # Collect results from all batches
         total_failures = 0
         for i, batch_result in enumerate(batch_results):
             if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed after all retries: {str(batch_result)}")
+                print(f"Batch {i+1} processing failed completely: {str(batch_result)}")
                 total_failures += 1
                 continue
-
+            
+            # Add all results from this batch
             self._results.extend(batch_result)
              
-        if total_failures > 0 and not self.verbose_reporter.enabled:
-            print(f"{total_failures} out of {len(batches)} batches failed completely after all retries")
+        if total_failures > 0:
+            print(f"{total_failures} out of {len(batches)} batches failed completely")
 
     def grade(self) -> List[models.QualityFilteredModel]:
         self._stats.start_timing()
@@ -140,7 +203,8 @@ class Grader:
             original_responses = self.responses
             self.responses = items_to_process
             
-            nest_asyncio.apply()
+            if nest_asyncio:
+                nest_asyncio.apply()
             asyncio.run(self._process_all_batches())
             
             # Restore original responses
