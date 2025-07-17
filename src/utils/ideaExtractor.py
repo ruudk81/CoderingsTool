@@ -1,11 +1,10 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import asyncio
-import functools
 import nest_asyncio
 from typing import Dict, List, Optional, Union
 import instructor
-from openai import OpenAI
+from openai import AsyncOpenAI
 import tiktoken
 from pydantic import BaseModel
 
@@ -14,7 +13,7 @@ from prompts import IDEA_EXTRACTION_PROMPT
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
 
-client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY))
+async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
 class IdeaResponse(BaseModel):
     """Response model for idea extraction matching the prompt format"""
@@ -32,7 +31,7 @@ class IdeaExtractor:
         self.responses = responses
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
-        self.client = client
+        self.client = async_client
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeaModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
@@ -60,31 +59,30 @@ class IdeaExtractor:
         return self.config.max_tokens - prompt_tokens - self.config.completion_reserve
 
     def _batch(self) -> List[List[tuple]]:
-        """Create token-aware batches of responses"""
+        """Create token-aware batches of responses with cached token calculations"""
         token_budget = self._calculate_token_budget()
         
         if not self.responses:
             return []
         
-        # Calculate adaptive batch size based on average response length
-        avg_tokens = sum(len(self.encoding.encode(r.response)) for r in self.responses) / max(1, len(self.responses))
+        # Pre-calculate and cache all token counts
+        response_tokens = [len(self.encoding.encode(r.response)) for r in self.responses]
+        avg_tokens = sum(response_tokens) / max(1, len(response_tokens))
         adaptive_max_batch = min(self.config.max_batch_size, max(1, int(token_budget / max(1, avg_tokens))))
         
         batches = []
         current_batch = []
         current_tokens = 0
         
-        for i, response in enumerate(self.responses):
-            response_tokens = len(self.encoding.encode(response.response))
-            
+        for i, (response, tokens) in enumerate(zip(self.responses, response_tokens)):
             # Handle oversized responses
-            if response_tokens > token_budget and not current_batch:
-                print(f"Warning: Response from {response.respondent_id} exceeds token budget ({response_tokens} > {token_budget})")
+            if tokens > token_budget and not current_batch:
+                print(f"Warning: Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
                 batches.append([(i, response.respondent_id, response.response)])
                 continue
             
             # Check if adding this response would exceed limits
-            if (current_tokens + response_tokens > token_budget or 
+            if (current_tokens + tokens > token_budget or 
                 len(current_batch) >= adaptive_max_batch):
                 if current_batch:
                     batches.append(current_batch)
@@ -92,7 +90,7 @@ class IdeaExtractor:
                     current_tokens = 0
             
             current_batch.append((i, response.respondent_id, response.response))
-            current_tokens += response_tokens
+            current_tokens += tokens
         
         if current_batch:
             batches.append(current_batch)
@@ -110,40 +108,22 @@ class IdeaExtractor:
 
     async def _call_openai_api(self, prompt: str) -> List[IdeaResponse]:
         """Call OpenAI API with structured output for single response"""
-        tries = 0
-        max_tries = self.config.max_retries
-        
-        while tries < max_tries:
-            tries += 1
-            try:
-                loop = asyncio.get_running_loop()
-                
-                # Use IdeaResponse model for structured output
-                response = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        self.client.chat.completions.create,
-                        model=self.config.model,
-                        response_model=List[IdeaResponse],
-                        max_retries=3,  # Default instructor retries
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed
-                    )
-                )
-                return response
-                
-            except Exception as e:
-                print(f"\nAPI call failed on attempt {tries}/{max_tries}:")
-                print(f"Error: {str(e)}")
-                
-                if tries >= max_tries:
-                    raise
-                
-                # Exponential backoff with delay from config
-                await asyncio.sleep(self.config.retry_delay * tries)
-                continue
+        try:
+            # Use AsyncOpenAI directly with instructor's built-in retries
+            response = await self.client.chat.completions.create(
+                model=self.config.model,
+                response_model=List[IdeaResponse],
+                max_retries=self.config.max_retries,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                seed=self.model_config.seed
+            )
+            return response
+            
+        except Exception as e:
+            print(f"\nAPI call failed: {str(e)}")
+            raise
 
     async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeaModel:
         """Process a single response and extract ideas"""
