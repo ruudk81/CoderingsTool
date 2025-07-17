@@ -110,28 +110,40 @@ class IdeaExtractor:
 
     async def _call_openai_api(self, prompt: str) -> List[IdeaResponse]:
         """Call OpenAI API with structured output for single response"""
-        try:
-            loop = asyncio.get_running_loop()
-            
-            # Let instructor handle all retries (simpler and more efficient)
-            response = await loop.run_in_executor(
-                None,
-                functools.partial(
-                    self.client.chat.completions.create,
-                    model=self.config.model,
-                    response_model=List[IdeaResponse],
-                    max_retries=self.config.max_retries,  # Use config retries
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    seed=self.model_config.seed
+        tries = 0
+        max_tries = self.config.max_retries
+        
+        while tries < max_tries:
+            tries += 1
+            try:
+                loop = asyncio.get_running_loop()
+                
+                # Use IdeaResponse model for structured output
+                response = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        self.client.chat.completions.create,
+                        model=self.config.model,
+                        response_model=List[IdeaResponse],
+                        max_retries=3,  # Default instructor retries
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        seed=self.model_config.seed
+                    )
                 )
-            )
-            return response
-            
-        except Exception as e:
-            print(f"API call failed: {str(e)}")
-            raise
+                return response
+                
+            except Exception as e:
+                print(f"\nAPI call failed on attempt {tries}/{max_tries}:")
+                print(f"Error: {str(e)}")
+                
+                if tries >= max_tries:
+                    raise
+                
+                # Exponential backoff with delay from config
+                await asyncio.sleep(self.config.retry_delay * tries)
+                continue
 
     async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeaModel:
         """Process a single response and extract ideas"""
@@ -192,16 +204,24 @@ class IdeaExtractor:
             )
 
     async def _process_all_responses(self):
-        """Process all responses individually but concurrently"""
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses individually...")
+        """Process all responses individually but with controlled concurrency"""
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses (max {self.config.max_concurrent_requests} concurrent)...")
         
-        # Create tasks for each response
+        # Create a semaphore to limit concurrent requests
+        max_concurrent = self.config.max_concurrent_requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def process_with_semaphore(idx, respondent_id, response_text):
+            async with semaphore:
+                return await self._process_single_response(idx, respondent_id, response_text)
+        
+        # Create tasks for each response with semaphore control
         tasks = []
         for idx, response in enumerate(self.responses):
-            task = self._process_single_response(idx, response.respondent_id, response.response)
+            task = process_with_semaphore(idx, response.respondent_id, response.response)
             tasks.append(task)
         
-        # Process all responses concurrently (no artificial limits)
+        # Process all responses with controlled concurrency
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         total_failures = 0
