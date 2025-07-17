@@ -122,7 +122,7 @@ class IdeaExtractor:
                         self.client.chat.completions.create,
                         model=self.config.model,
                         response_model=response_model,
-                        max_retries=self.config.instructor_retries,
+                        max_retries=3,  # Default instructor retries
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
                         max_tokens=self.config.max_tokens,
