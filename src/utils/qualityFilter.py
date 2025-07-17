@@ -56,6 +56,18 @@ class Grader:
         prompt_tokens = len(self.encoding.encode(base_prompt))
         return self.config.max_tokens - prompt_tokens - 200  # 200 token completion reserve
 
+    def _create_sub_batches(self, batch: List[tuple], sub_batch_size: int = 5) -> List[List[tuple]]:
+        """Split a large batch into smaller sub-batches for concurrent processing"""
+        if not batch:
+            return []
+        
+        sub_batches = []
+        for i in range(0, len(batch), sub_batch_size):
+            sub_batch = batch[i:i + sub_batch_size]
+            sub_batches.append(sub_batch)
+        
+        return sub_batches
+
     def _batch(self) -> List[List[tuple]]:
         """Create token-aware batches with pre-calculated token caching"""
         # Only batch items that need LLM evaluation (quality_filter_code = None)
@@ -133,12 +145,12 @@ class Grader:
             print(f"\nAPI call failed: {str(e)}")
             raise
 
-    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
-        """Process a single batch with hierarchical concurrency (LangChain-style)"""
-        prompt = self._build_prompt(self.question, batch)
+    async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int) -> List[models.QualityFilteredModel]:
+        """Process a single sub-batch of responses"""
+        prompt = self._build_prompt(self.question, sub_batch)
         
-        # Capture prompt only for the first batch
-        if self.prompt_printer and batch_index == 0:
+        # Capture prompt only for the first sub-batch of the first batch
+        if self.prompt_printer and batch_index == 0 and sub_batch_index == 0:
             self.prompt_printer.capture_prompt(
                 step_name="segmentation",
                 utility_name="QualityFilter",
@@ -148,8 +160,9 @@ class Grader:
                     "model": self.config.model,
                     "var_lab": self.question,
                     "language": DEFAULT_LANGUAGE,
-                    "batch_size": len(batch),
-                    "batch_number": batch_index + 1
+                    "sub_batch_size": len(sub_batch),
+                    "batch_number": batch_index + 1,
+                    "sub_batch_number": sub_batch_index + 1
                 }
             )
         
@@ -157,15 +170,52 @@ class Grader:
             response_data = await self._call_openai_api(prompt)
             return response_data
         except Exception as e:
-            print(f"Batch {batch_index + 1} processing failed: {str(e)}")
-            # Return empty results for failed batch
+            print(f"Sub-batch {sub_batch_index + 1} of batch {batch_index + 1} processing failed: {str(e)}")
+            # Return empty results for failed sub-batch
             return []
 
+    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
+        """Process a single batch with concurrent sub-batch processing (hybrid approach)"""
+        # Split large batch into sub-batches of 5
+        sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
+        
+        if not sub_batches:
+            return []
+        
+        # Level 2: Process all sub-batches within this batch concurrently
+        sub_batch_tasks = [
+            self._process_sub_batch(sub_batch, batch_index, i) 
+            for i, sub_batch in enumerate(sub_batches)
+        ]
+        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
+        
+        # Collect results from all sub-batches
+        batch_results = []
+        sub_batch_failures = 0
+        
+        for i, sub_batch_result in enumerate(sub_batch_results):
+            if isinstance(sub_batch_result, Exception):
+                print(f"Sub-batch {i+1} of batch {batch_index+1} failed completely: {str(sub_batch_result)}")
+                sub_batch_failures += 1
+                continue
+            
+            # Add all results from this sub-batch
+            batch_results.extend(sub_batch_result)
+        
+        if sub_batch_failures > 0:
+            print(f"{sub_batch_failures} out of {len(sub_batches)} sub-batches failed in batch {batch_index+1}")
+        
+        return batch_results
+
     async def _process_all_batches(self):
-        """Process all batches using hierarchical concurrency (LangChain-style)"""
+        """Process all batches using hierarchical concurrency with sub-batch processing"""
         batches = self._batch()
         items_to_process = [r for r in self.responses if r.quality_filter_code is None]
-        self.verbose_reporter.stat_line(f"Processing {len(items_to_process)} responses in {len(batches)} batches...")
+        
+        # Calculate total sub-batches for reporting
+        total_sub_batches = sum(len(self._create_sub_batches(batch, sub_batch_size=5)) for batch in batches)
+        
+        self.verbose_reporter.stat_line(f"Processing {len(items_to_process)} responses in {len(batches)} batches ({total_sub_batches} concurrent sub-batches)...")
         
         # Level 1: Process all batches concurrently (no limits)
         batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
