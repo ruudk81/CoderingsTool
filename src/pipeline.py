@@ -2,7 +2,6 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # ===  MODULES ========================================================================================================
 import time
-import random
 import pandas as pd
 import nest_asyncio
 nest_asyncio.apply()
@@ -39,7 +38,6 @@ PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
 
 # Clustering parameters
-EMBEDDING_TYPE = "description"  # Options: "description" or "code"
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
 USE_QUESTION_AWARE_EMBEDDINGS = False  # Disable question-aware embeddings for debugging
 
@@ -54,7 +52,6 @@ print("=" * 80)
 print(f"📊 Data file: {filename}")
 print(f"📌 Variable: {var_name} - {var_lab}")
 print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
-print(f"🎯 Embedding type: {EMBEDDING_TYPE}")
 print(f"🔀 Question-aware embeddings: {USE_QUESTION_AWARE_EMBEDDINGS}")
 print(f"💬 Verbose mode: {VERBOSE}")
 print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
@@ -290,6 +287,7 @@ else:
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
 # # debug
+# import random
 # n_samples = 5
 # indices = random.sample(range(len(quality_filtered_text)), n_samples)
 # for i in indices:
@@ -338,6 +336,7 @@ else:
 #     break
 
 # # debug - example outputs
+# import random
 # n_samples = 1
 # sampled_items = random.sample(encoded_text, n_samples)
 # for item in sampled_items:
@@ -383,7 +382,7 @@ else:
   
     get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
-    embedded_text = get_embeddings.get_combined_embeddings_with_tracking(input_data, var_lab)
+    embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
  
     # Step 5b: Generate initial clusters
     print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
