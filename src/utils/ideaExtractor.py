@@ -16,7 +16,6 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
 class IdeaResponse(BaseModel):
-    """Response model for idea extraction matching the prompt format"""
     idea: str
 
 class IdeaExtractor:
@@ -33,7 +32,7 @@ class IdeaExtractor:
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
         self.client = async_client
         self.language = DEFAULT_LANGUAGE
-        self._results: List[models.IdeaModel] = []
+        self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()
@@ -125,7 +124,7 @@ class IdeaExtractor:
             print(f"\nAPI call failed: {str(e)}")
             raise
 
-    async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeaModel:
+    async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeasExtractedModel:
         """Process a single response and extract ideas"""
         prompt = self._build_prompt(respondent_id, response_text)
         
@@ -152,12 +151,12 @@ class IdeaExtractor:
             ideas = []
             for i, idea_response in enumerate(response_data):
                 if idea_response.idea:
-                    ideas.append(models.IdeaSubmodel(
+                    ideas.append(models.IdeasExtractedSubmodel(
                         idea_id=f"{respondent_id}_{i+1}",
                         idea=idea_response.idea
                     ))
             
-            return models.IdeaModel(
+            return models.IdeasExtractedModel(
                 respondent_id=respondent_id,
                 response=response_text,
                 quality_filter=self.responses[idx].quality_filter,
@@ -169,13 +168,13 @@ class IdeaExtractor:
         except Exception as e:
             print(f"Processing failed for respondent {respondent_id}: {str(e)}")
             # Return error result
-            return models.IdeaModel(
+            return models.IdeasExtractedModel(
                 respondent_id=respondent_id,
                 response=response_text,
                 quality_filter=self.responses[idx].quality_filter,
                 quality_filter_code=self.responses[idx].quality_filter_code,
                 response_ideas=[
-                    models.IdeaSubmodel(
+                    models.IdeasExtractedSubmodel(
                         idea_id=f"{respondent_id}_1",
                         idea="PROCESSING_ERROR"
                     )
@@ -183,7 +182,7 @@ class IdeaExtractor:
                 idea_count=1
             )
 
-    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.IdeaModel]:
+    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.IdeasExtractedModel]:
         """Process a batch of responses concurrently (LangChain-style within-batch processing)"""
         # Create tasks for all responses in this batch
         tasks = []
@@ -200,13 +199,13 @@ class IdeaExtractor:
             if isinstance(result, Exception):
                 # Create error result for failed response
                 idx, respondent_id, response_text = batch[i]
-                batch_results.append(models.IdeaModel(
+                batch_results.append(models.IdeasExtractedModel(
                     respondent_id=respondent_id,
                     response=response_text,
                     quality_filter=self.responses[idx].quality_filter,
                     quality_filter_code=self.responses[idx].quality_filter_code,
                     response_ideas=[
-                        models.IdeaSubmodel(
+                        models.IdeasExtractedSubmodel(
                             idea_id=f"{respondent_id}_1",
                             idea="PROCESSING_ERROR"
                         )
@@ -241,7 +240,7 @@ class IdeaExtractor:
         if total_failures > 0:
             print(f"{total_failures} out of {len(batches)} batches failed completely")
 
-    def extract(self) -> List[models.IdeaModel]:
+    def extract(self) -> List[models.IdeasExtractedModel]:
         """Main method to extract ideas from responses"""
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
@@ -261,13 +260,13 @@ class IdeaExtractor:
         for response in self.responses:
             if response.respondent_id not in result_ids:
                 # Add missing responses with error marker
-                self._results.append(models.IdeaModel(
+                self._results.append(models.IdeasExtractedModel(
                     respondent_id=response.respondent_id,
                     response=response.response,
                     quality_filter=response.quality_filter,
                     quality_filter_code=response.quality_filter_code,
                     response_ideas=[
-                        models.IdeaSubmodel(
+                        models.IdeasExtractedSubmodel(
                             idea_id=f"{response.respondent_id}_1",
                             idea="NOT_PROCESSED"
                         )
@@ -342,17 +341,17 @@ class IdeaExtractor:
             "avg_ideas_per_response": round(total_ideas / total, 2) if total > 0 else 0
         }
     
-    def generate_codes(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
-        """Compatibility method for v1 interface"""
-        # Update instance variables
-        self.responses = responses
-        self.var_lab = var_lab
-        if max_retries != self.config.max_retries:
-            self.config.max_retries = max_retries
+    # def generate_codes(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
+    #     """Compatibility method for v1 interface"""
+    #     # Update instance variables
+    #     self.responses = responses
+    #     self.var_lab = var_lab
+    #     if max_retries != self.config.max_retries:
+    #         self.config.max_retries = max_retries
         
-        # Reset results for new run
-        self._results = []
-        self._captured_prompt = False
+    #     # Reset results for new run
+    #     self._results = []
+    #     self._captured_prompt = False
         
-        # Call the main extract method
-        return self.extract()
+    #     # Call the main extract method
+    #     return self.extract()

@@ -172,19 +172,13 @@ else:
         finalized_text = text_finalizer.finalize_responses(corrected_text)
     else:
         finalized_text = [] 
-    # Combine processed strings with non-string responses
-    # Create a mapping of respondent_id to processed response
     processed_map = {item.respondent_id: item for item in finalized_text}
     processed_map.update({item.respondent_id: item for item in non_string_responses})
-    # create list for the qualityFilter/grader
     preprocessed_text = []
     for original in raw_text_list:
         if original.respondent_id in processed_map:
             item = processed_map[original.respondent_id]
-            # Add initial quality filter code based on response type and content
-            # Convert to PreprocessedModel to add quality_filter_code
             desc_item = item.to_model(models.PreprocessedModel)
-            # Categorize based on type and content
             if item.response == 'nan':
                 desc_item.quality_filter_code = 99999998  # System missing
                 desc_item.quality_filter = True
@@ -295,8 +289,7 @@ else:
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug
-# import random
+# # debug
 # n_samples = 5
 # indices = random.sample(range(len(quality_filtered_text)), n_samples)
 # for i in indices:
@@ -305,10 +298,10 @@ else:
 
 
 # === STEP 4 ========================================================================================================
-"""describe and segment data"""
+"""Extract initial ideas"""
 from utils import ideaExtractor
 
-FORCE = True
+FORCE = False
 
 step_name        = "segmented_descriptions"
 if  FORCE:
@@ -340,43 +333,23 @@ else:
     print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
-for text in encoded_text:
-    print(text)
-    break
+# for text in encoded_text:
+#     print(text)
+#     break
 
-# debug - example outputs
-n_samples = 1
-sampled_items = random.sample(encoded_text, n_samples)
-for item in sampled_items:
-    print(item.response)
-    for segment in item.response_ideas:
-        print(f"- {segment.idea}")
-
-    
-# # debug - per description tokens
-# import spacy
-# nlp = spacy.load("nl_core_news_lg")
-
-# import random
-# sampled_items = random.sample(encoded_text, 1)
-# print(f"Q: {var_lab}\n")
+# # debug - example outputs
+# n_samples = 1
+# sampled_items = random.sample(encoded_text, n_samples)
 # for item in sampled_items:
-#     print(f"A: {item.response}\n")
-#     for segment in item.response_segment:
-#         print(f"-    {segment.segment_description}")
-#         doc = nlp(segment.segment_description)
-#         topic_tokens = []
-#         for token in doc:
-#             if (token.pos_ in ['NOUN', 'PROPN'] or
-#                 (token.pos_ == 'ADJ' and token.head.pos_ in ['NOUN', 'PROPN'])) and \
-#                not token.is_stop and not token.is_punct:
-#                 topic_tokens.append(token.lemma_)
-#         print(" ".join(topic_tokens))
+#     print(item.response)
+#     for segment in item.response_ideas:
+#         print(f"- {segment.idea}")
+
     
-
-
 # === STEP 5 ========================================================================================================
 """get initial clusters"""
+from config import EmbeddingConfig
+from utils.embedder import Embedder
 from utils import clusterer
 
 FORCE = True
@@ -399,28 +372,19 @@ else:
     start_time = time.time()
     # Step 5a: Generate embeddings
     print("\nEmbedding CODES and DESCRIPTIONS of response segments")
-    
-    # Configure embeddings for question-aware mode if enabled
-    from config import EmbeddingConfig
-    # Create a fresh config instance to avoid modifying the shared default
+
     embedding_config = EmbeddingConfig()
-    
-    # Override question-aware setting based on pipeline flag
     embedding_config.use_question_aware = USE_QUESTION_AWARE_EMBEDDINGS
     
     if USE_QUESTION_AWARE_EMBEDDINGS:
         print(f"Question-aware mode enabled: {embedding_config.response_weight:.1f} Response + {embedding_config.question_weight:.1f} Question + {embedding_config.domain_anchor_weight:.1f} Domain")
     else:
         print("Question-aware mode disabled")
-    
-    # Use enhanced embedder for bulletproof ID tracking
-    from utils.enhanced_embedder import EnhancedEmbedder
-    get_embeddings = EnhancedEmbedder(config=embedding_config, verbose=VERBOSE)
-    
-    # Note: Enhanced embedder tracks actual respondent_id and segment_id through async operations
-    
+  
+    get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     embedded_text = get_embeddings.get_combined_embeddings_with_tracking(input_data, var_lab)
+ 
     # Step 5b: Generate initial clusters
     print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
