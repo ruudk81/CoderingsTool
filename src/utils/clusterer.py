@@ -4,7 +4,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 from typing import List, Any, Optional, Dict
 import numpy.typing as npt
-from collections import defaultdict, Counter
+from collections import  Counter
 from umap import UMAP
 import hdbscan
 import spacy 
@@ -22,19 +22,14 @@ warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by sett
 class ResultMapper(BaseModel):
     # input
     respondent_id: Any
-    segment_id: str
-    segment_label: str
-    segment_description: str
-    code_embedding: npt.NDArray[np.float32]
-    description_embedding: npt.NDArray[np.float32]
+    idea_id: str
+    idea: str
+    idea_embedding: npt.NDArray[np.float32]
     # add
-    reduced_code_embedding: Optional[npt.NDArray[np.float32]] = None
-    reduced_description_embedding: Optional[npt.NDArray[np.float32]] = None
-    initial_code_cluster: Optional[int] = None
-    initial_description_cluster: Optional[int] = None
+    reduced_idea_embedding: Optional[npt.NDArray[np.float32]] = None
+    initial_idea_cluster: Optional[int] = None
     # config
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for arrays with embeddings
-
 
 # Main utils 
 class ClusterGenerator:
@@ -187,22 +182,18 @@ class ClusterGenerator:
         
         self.output_list = []
         
-        for response_item in input_list:
-            if response_item.response_segment:
-                for segment_item in response_item.response_segment:
+        for respondent_item in input_list:
+            if respondent_item.response_ideas:
+                for response_item in respondent_item.response_ideas:
                     # Check if segment_item has the required attributes
-                    if (hasattr(segment_item, 'segment_label') and 
-                        hasattr(segment_item, 'segment_description') and
-                        hasattr(segment_item, 'code_embedding') and
-                        hasattr(segment_item, 'description_embedding')):
+                    if (hasattr(response_item, 'idea') and 
+                        hasattr(response_item, 'idea_embedding')):
                         
                         self.output_list.append(ResultMapper(
-                            respondent_id=response_item.respondent_id,
-                            segment_id=segment_item.segment_id,
-                            segment_label=segment_item.segment_label or "NA",
-                            segment_description=segment_item.segment_description or "NA",
-                            code_embedding=segment_item.code_embedding,
-                            description_embedding=segment_item.description_embedding
+                            respondent_id=respondent_item.respondent_id,
+                            segment_id=response_item.idea_id,
+                            idea = response_item.idea or "NA",
+                            idea_embedding=response_item.idea_embedding
                         ))
 
     def add_reduced_embeddings(self) -> None:
