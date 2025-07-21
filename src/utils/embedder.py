@@ -87,7 +87,7 @@ class Embedder:
             return data
         
         # Extract texts for embedding
-        texts_to_embed = [response_data.text_to_embed for response_item in response_data]
+        texts_to_embed = [response_item.text_to_embed for response_item in response_data]
         
         self.verbose_reporter.stat_line(f"Processing {len(texts_to_embed)}  embeddings with ID tracking")
         
