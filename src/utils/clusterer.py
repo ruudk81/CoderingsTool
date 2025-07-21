@@ -192,10 +192,9 @@ class ClusterGenerator:
         
         return metrics
 
-    def run_pipeline(self, embedding_type: str = None) -> None:
+    def run_pipeline(self) -> None:
         
         self.verbose_reporter.section_header("CLUSTERING PHASE", "🔬")
-        self.verbose_reporter.step_start(f"Clustering with embedding type: {self.embedding_type}", "🎯")
         
         self.add_reduced_embeddings()
         self.add_initial_clusters()
