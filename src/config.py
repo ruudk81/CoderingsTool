@@ -302,9 +302,9 @@ class EmbeddingConfig:
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 30  # Higher for better semantic relationships
-    n_components: int = 10  # More dimensions to preserve semantic nuances
-    min_dist: float = 0.1  # Slight separation for better cluster distinction
+    n_neighbors: int = 10  # Higher for better semantic relationships
+    n_components: int = 5  # More dimensions to preserve semantic nuances
+    min_dist: float = 0.0  # Slight separation for better cluster distinction
     metric: str = "cosine"  # Consistent with HDBSCAN for semantic similarity
     random_state: int = 42
     n_jobs: int = 1
@@ -315,8 +315,8 @@ class UMAPConfig:
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = 5  # Smaller clusters for better semantic coherence
-    min_samples: Optional[int] = 3 # Lower threshold for more selective clustering
+    min_cluster_size: Optional[int] = None  # Smaller clusters for better semantic coherence
+    min_samples: Optional[int] = None # Lower threshold for more selective clustering
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
@@ -332,56 +332,6 @@ class VectorizerConfig:
     max_df: float = 1.0
     max_features: Optional[int] = None
     use_language_stop_words: bool = True  # Use spacy stop words based on DEFAULT_LANGUAGE
-
-
-@dataclass
-class ClusterMergerConfig:
-    """Configuration for cluster merging step"""
-    # Model configuration - will be overridden by ModelConfig
-    model: str = DEFAULT_MODEL  # Fallback model
-    max_concurrent_requests: int = 5
-    batch_size: int = 5
-    similarity_threshold: float = 0.95
-    max_retries: int = 3
-    retry_delay: int = 2
-    temperature: float = 0.3
-    max_tokens: int = 4000
-    language: str = DEFAULT_LANGUAGE
-    verbose: bool = True
-
-
-@dataclass
-class NoiseRescueConfig:
-    """Configuration for noise point rescue using cosine similarity or HDBSCAN methods"""
-    enabled: bool = False
-    rescue_threshold: float = 0.3  # For HDBSCAN methods
-    max_rescue_attempts: int = 1000
-    
-    # Cosine similarity rescue parameters
-    use_cosine_rescue: bool = False
-    cosine_similarity_threshold: float = 0.7
-
-
-@dataclass
-class ClusteringConfig:
-    """Master configuration for clustering step (Step 5)"""
-    # Embedding selection
-    embedding_type: str = "description"  # Options: "description" or "code"
-    
-    # Sub-configurations for different models
-    umap: UMAPConfig = field(default_factory=UMAPConfig)
-    hdbscan: HDBSCANConfig = field(default_factory=HDBSCANConfig)
-    vectorizer: VectorizerConfig = field(default_factory=VectorizerConfig)
-    merger: ClusterMergerConfig = field(default_factory=ClusterMergerConfig)
-    noise_rescue: NoiseRescueConfig = field(default_factory=NoiseRescueConfig)
-    
-    # Quality and filtering settings
-    enable_quality_metrics: bool = True
-    filter_na_items: bool = True  # Filter out noise clusters and NA-only clusters
-    remap_cluster_ids: bool = True  # Remap to sequential IDs for cleaner output
-    
-    # General settings
-    verbose: bool = True
 
 
 # =============================================================================
@@ -476,7 +426,6 @@ DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
-DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
 

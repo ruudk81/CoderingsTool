@@ -413,13 +413,13 @@ import random
 cluster_ids = list(set([
     response_idea.initial_cluster 
     for result in initial_cluster_results 
-    for response_idea in result.idea_embeddings  # This has initial_cluster
+    for response_idea in result.response_ideas   
     if response_idea.initial_cluster is not None]))
 sampled_cluster = random.sample(cluster_ids, 1)[0]
 print(f"\nCluster {sampled_cluster}:\n")
 cluster_segments = []
 for result in initial_cluster_results:
-    for response_idea in result.idea_embeddings:  # Fixed: was item.response_idea
+    for response_idea in result.response_ideas:   
         if response_idea.initial_cluster == sampled_cluster:
             cluster_segments.append(response_idea.idea)
 sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
@@ -428,20 +428,25 @@ for segment_desc in sampled_segments:
     
     
 #debug - print all clusters
-# cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
-# for x in range(1, round(len(cluster_ids) / 20) + 1):
-#     y = x * 20
-#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas  # This has initial_cluster
+    if response_idea.initial_cluster is not None]))
+for x in range(1, round(len(cluster_ids) / 20) + 1):
+    y = x * 20
+    print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
 
-#     for z in range(y - 20, y):
-#         if z < len(cluster_ids):
-#             print(f"\nCluster {z}")
-#             for item in initial_cluster_results:
-#                 for subitem in item.response_segment:
-#                     if subitem.initial_cluster == z:
-#                         print(subitem.segment_description)
-#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    for z in range(y - 20, y):
+        if z < len(cluster_ids):
+            print(f"\nCluster {z}")
+            for item in initial_cluster_results:
+                for subitem in item.response_ideas:
+                    if subitem.initial_cluster == z:
+                        print(subitem.idea)
+    input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
+
     
 # === STEP 6 ========================================================================================================
 PROMPT_PRINTER = False 
