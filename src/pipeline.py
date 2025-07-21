@@ -312,7 +312,7 @@ prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    encoded_text = cache_manager.load_from_cache(filename, step_name, models.IdeaModel)
+    encoded_text = cache_manager.load_from_cache(filename, step_name, models.IdeasExtractedModel)
     segments = sum(item.idea_count for item in encoded_text)
     verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
 else: 
