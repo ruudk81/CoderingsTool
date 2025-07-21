@@ -59,13 +59,13 @@ class TextNormalizer:
             print(f"Error processing text: {e}")
             return self.config.na_placeholder
     
-    def normalize_with_tracking(self, data: models.PreprocessModel) -> models.PreprocessModel:
+    def normalize_with_tracking(self, data: models.PreprocessedModel) -> models.PreprocessedModel:
         
         normalized_text = self.normalize_response(data.response)
 
-        return models.PreprocessModel(respondent_id= data.respondent_id, response = normalized_text)
+        return models.PreprocessedModel(respondent_id= data.respondent_id, response = normalized_text)
  
-    def normalize_responses(self, data: List[models.PreprocessModel]) -> List[models.PreprocessModel]:
+    def normalize_responses(self, data: List[models.PreprocessedModel]) -> List[models.PreprocessedModel]:
         stats = ProcessingStats()
         stats.start_timing()
         stats.input_count = len(data)

@@ -49,13 +49,13 @@ class TextFinalizer:
         return text
         
         
-    def finalize_with_tracking(self, data: models.PreprocessModel) -> models.PreprocessModel:
+    def finalize_with_tracking(self, data: models.PreprocessedModel) -> models.PreprocessedModel:
         
         finalized_text = self.finalize_response(data.response)
 
-        return models.PreprocessModel(respondent_id=data.respondent_id, response =finalized_text)
+        return models.PreprocessedModel(respondent_id=data.respondent_id, response =finalized_text)
  
-    def finalize_responses(self, data: List[models.PreprocessModel]) -> List[models.PreprocessModel]:
+    def finalize_responses(self, data: List[models.PreprocessedModel]) -> List[models.PreprocessedModel]:
         stats = ProcessingStats()
         stats.start_timing()
         stats.input_count = len(data)
