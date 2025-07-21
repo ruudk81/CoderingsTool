@@ -155,19 +155,43 @@ class Embedder:
             key = (identifier.respondent_id, identifier.segment_id)
             embedding_lookup[key] = embedding
         
-        # Apply embeddings back to data using ID lookup
+        # Apply embeddings back to data using ID lookup and convert to EmbeddingsModel
         updated_count = 0
+        result = []
+        
         for respondent_data in data:
-            if respondent_data.response_ideas:
+            # Create EmbeddingsSubmodel objects with embeddings
+            embeddings_submodels = []
+            
+            if hasattr(respondent_data, 'response_ideas') and respondent_data.response_ideas:
                 for response_idea in respondent_data.response_ideas:
                     key = (str(respondent_data.respondent_id), str(response_idea.idea_id))
+                    embedding_data = {
+                        'idea_id': response_idea.idea_id,
+                        'idea': response_idea.idea
+                    }
                     if key in embedding_lookup:
-                        response_idea.idea_embedding = embedding_lookup[key]
+                        embedding_data['idea_embedding'] = embedding_lookup[key]
                         updated_count += 1
+                    
+                    embeddings_submodels.append(models.EmbeddingsSubmodel(**embedding_data))
+            
+            # Create EmbeddingsModel with proper structure
+            embeddings_model = models.EmbeddingsModel(
+                respondent_id=respondent_data.respondent_id,
+                response=respondent_data.response,
+                response_type=getattr(respondent_data, 'response_type', None),
+                quality_filter=getattr(respondent_data, 'quality_filter', None),
+                quality_filter_code=getattr(respondent_data, 'quality_filter_code', None),
+                response_ideas=embeddings_submodels if hasattr(respondent_data, 'response_ideas') else None,
+                idea_embeddings=embeddings_submodels,
+                idea_count=len(embeddings_submodels)
+            )
+            result.append(embeddings_model)
         
         self.verbose_reporter.stat_line(f"Successfully applied {updated_count} embeddings using ID tracking")
         
-        return data
+        return result
    
     def get_embeddings_with_tracking(self, data: List[models.EmbeddingsModel], var_lab: str = None) -> List[models.EmbeddingsModel]:
         """Generate both code and description embeddings with ID tracking"""
