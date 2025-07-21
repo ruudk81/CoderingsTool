@@ -122,6 +122,9 @@ class ClusterGenerator:
     def populate_from_input_list(self, input_list: List[models.EmbeddingsModel]) -> None:
         self.verbose_reporter.stat_line("Populating output list from input models")
         
+        # Store original input list for later conversion
+        self._original_input_list = input_list
+        
         self.output_list = []
         
         for respondent_item in input_list:
@@ -214,5 +217,60 @@ class ClusterGenerator:
         
         self.verbose_reporter.summary("Final Clustering Summary", summary_stats, "📊")
         self.verbose_reporter.step_complete("Clustering pipeline completed successfully")
+    
+    def to_cluster_model(self) -> List[models.ClusterModel]:
+        """Convert ClusterGenerator results to list of ClusterModel objects"""
+        self.verbose_reporter.step_start("Converting results to ClusterModel format", "🔄")
+        
+        # Group results by respondent_id
+        respondent_groups = {}
+        for item in self.output_list:
+            if item.respondent_id not in respondent_groups:
+                respondent_groups[item.respondent_id] = []
+            respondent_groups[item.respondent_id].append(item)
+        
+        # Create ClusterModel objects
+        cluster_models = []
+        for respondent_id, items in respondent_groups.items():
+            # Find the original EmbeddingsModel for this respondent
+            original_model = None
+            if hasattr(self, '_original_input_list'):
+                for model in self._original_input_list:
+                    if model.respondent_id == respondent_id:
+                        original_model = model
+                        break
+            
+            # Create ClusterSubmodel objects for each idea
+            cluster_submodels = []
+            for item in items:
+                cluster_submodel = models.ClusterSubmodel(
+                    idea_id=item.idea_id,
+                    idea=item.idea,
+                    idea_embedding=item.idea_embedding,
+                    initial_cluster=item.initial_idea_cluster
+                )
+                cluster_submodels.append(cluster_submodel)
+            
+            # Create ClusterModel
+            if original_model:
+                # Use original model as base and update with cluster data
+                cluster_model = models.ClusterModel(
+                    **original_model.model_dump(exclude={'response_ideas', 'idea_embeddings'}),
+                    response_ideas=cluster_submodels,
+                    idea_embeddings=cluster_submodels
+                )
+            else:
+                # Create minimal ClusterModel
+                cluster_model = models.ClusterModel(
+                    respondent_id=respondent_id,
+                    response_ideas=cluster_submodels,
+                    idea_embeddings=cluster_submodels,
+                    idea_count=len(cluster_submodels)
+                )
+            
+            cluster_models.append(cluster_model)
+        
+        self.verbose_reporter.step_complete(f"Converted {len(cluster_models)} respondents to ClusterModel format")
+        return cluster_models
             
    
