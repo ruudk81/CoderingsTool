@@ -111,8 +111,8 @@ class ClusterGenerator:
                 gen_min_span_tree=hdbscan_config.gen_min_span_tree
             )
             self.verbose_reporter.stat_line(
-                f"Using HDBSCAN with min_cluster_size={self.min_cluster_size}, "
-                f"min_samples={self.min_samples} (most permissive settings)"
+                f"Using HDBSCAN with min_cluster_size={hdbscan_config.min_cluster_size}, "
+                f"min_samples={hdbscan_config.min_samples} (most permissive settings)"
             )
         else:
             self.cluster_model = cluster_model
@@ -247,7 +247,7 @@ class ClusterGenerator:
             original_dims=original_shape[1],
             pca_dims=self.optimal_pca_dims,
             pca_variance_retained=variance_retained,
-            final_dims=self.umap_n_components,
+            final_dims=self.UMAPConfig.n_components,
             embeddings_shape=pca_embeddings.shape
         )
         
@@ -259,7 +259,7 @@ class ClusterGenerator:
     def add_umap_embeddings(self) -> None:
         """Apply UMAP to PCA-reduced embeddings to preserve global structure"""
         self.verbose_reporter.step_start(
-            f"Applying UMAP: {self.optimal_pca_dims} → {self.umap_n_components} dimensions", "🗺️"
+            f"Applying UMAP: {self.optimal_pca_dims} → {self.UMAPConfig.n_components} dimensions", "🗺️"
         )
         
         # Sort by processing order
@@ -280,7 +280,7 @@ class ClusterGenerator:
                     break
         
         self.verbose_reporter.stat_line(
-            f"UMAP complete: {self.optimal_pca_dims} → {self.umap_n_components} dimensions"
+            f"UMAP complete: {self.optimal_pca_dims} → {self.UMAPConfig.n_components} dimensions"
         )
         self.verbose_reporter.step_complete("UMAP dimensionality reduction completed")
    
