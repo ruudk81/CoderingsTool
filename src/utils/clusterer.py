@@ -191,7 +191,7 @@ class ClusterGenerator:
                         
                         self.output_list.append(ResultMapper(
                             respondent_id=respondent_item.respondent_id,
-                            segment_id=response_item.idea_id,
+                            idea_id=response_item.idea_id,
                             idea = response_item.idea or "NA",
                             idea_embedding=response_item.idea_embedding
                         ))
