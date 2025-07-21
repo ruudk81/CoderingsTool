@@ -393,7 +393,7 @@ else:
     #         print(f"- {segment.idea}")
     
     # Step 5b: Generate initial clusters
-    cluster_gen = clusterer.ClusterGenerator(
+    cluster_gen = ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
         verbose=VERBOSE)
