@@ -101,18 +101,28 @@ class ClusterGenerator:
 
         if cluster_model is None:
             hdbscan_config = self.HDBSCANConfig 
-            self.cluster_model = hdbscan.HDBSCAN(
-                min_cluster_size=hdbscan_config.min_cluster_size,
-                min_samples=hdbscan_config.min_samples,
-                metric=hdbscan_config.metric,
-                cluster_selection_method=hdbscan_config.cluster_selection_method,  
-                prediction_data=hdbscan_config.prediction_data,
-                approx_min_span_tree=hdbscan_config.approx_min_span_tree,   
-                gen_min_span_tree=hdbscan_config.gen_min_span_tree
-            )
+            
+            # Handle None values for unconstrained clustering
+            hdbscan_params = {
+                'metric': hdbscan_config.metric,
+                'cluster_selection_method': hdbscan_config.cluster_selection_method,  
+                'prediction_data': hdbscan_config.prediction_data,
+                'approx_min_span_tree': hdbscan_config.approx_min_span_tree,   
+                'gen_min_span_tree': hdbscan_config.gen_min_span_tree
+            }
+            
+            # Only add parameters if they are not None (let HDBSCAN use defaults)
+            if hdbscan_config.min_cluster_size is not None:
+                hdbscan_params['min_cluster_size'] = hdbscan_config.min_cluster_size
+            if hdbscan_config.min_samples is not None:
+                hdbscan_params['min_samples'] = hdbscan_config.min_samples
+                
+            self.cluster_model = hdbscan.HDBSCAN(**hdbscan_params)
+            min_cluster_display = hdbscan_config.min_cluster_size if hdbscan_config.min_cluster_size is not None else "default"
+            min_samples_display = hdbscan_config.min_samples if hdbscan_config.min_samples is not None else "default"
             self.verbose_reporter.stat_line(
-                f"Using HDBSCAN with min_cluster_size={hdbscan_config.min_cluster_size}, "
-                f"min_samples={hdbscan_config.min_samples} (most permissive settings)"
+                f"Using HDBSCAN with min_cluster_size={min_cluster_display}, "
+                f"min_samples={min_samples_display} (unconstrained clustering)"
             )
         else:
             self.cluster_model = cluster_model
