@@ -40,11 +40,18 @@ class ClusterGenerator:
         config: ClusteringConfig = None,
         verbose: bool = None):
 
+        # Initialize config and verbose settings first
+        self.config = config or DEFAULT_CLUSTERING_CONFIG
+        self.verbose = verbose if verbose is not None else self.config.verbose
+        self.verbose_reporter = VerboseReporter(self.verbose)
+        
+        # Initialize output_list before populate_from_input_list
+        self.output_list: List[ResultMapper] = []
+        
         if input_list:
             self.populate_from_input_list(input_list)
         
         self.var_lab = var_lab if var_lab else ""
-        self.output_list: List[ResultMapper] = []
 
         if dim_reduction_model is None:
             umap_config = self.config.umap
@@ -99,10 +106,6 @@ class ClusterGenerator:
             self.verbose_reporter.stat_line("Using configured CountVectorizer")
         else:
             self.vectorizer_model = vectorizer_model
-            
-        self.config = config or DEFAULT_CLUSTERING_CONFIG
-        self.verbose = verbose if verbose is not None else self.config.verbose
-        self.verbose_reporter = VerboseReporter(self.verbose)
            
     
     def _get_stop_words(self):
