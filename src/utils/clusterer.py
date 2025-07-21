@@ -138,8 +138,7 @@ class ClusterGenerator:
         for cluster_id, count in top_clusters:
             # Get representative description for this cluster
             cluster_items = [item for item in self.output_list 
-                           if (self.embedding_type == "code" and item.initial_code_cluster == cluster_id) or
-                              (self.embedding_type == "description" and item.initial_description_cluster == cluster_id)]
+                           if item.initial_idea_cluster == cluster_id]
             
             if cluster_items:
                 rep_desc = self._get_representative_description(cluster_items)
@@ -154,13 +153,13 @@ class ClusterGenerator:
             
         # Use the first description as fallback
         if len(cluster_items) == 1:
-            desc = cluster_items[0].segment_label if self.embedding_type == "code" else cluster_items[0].segment_description
+            desc = cluster_items[0].idea
             return desc[:max_length] + "..." if len(desc) > max_length else desc
         
         # For multiple items, find most representative
-        descriptions = [item.segment_label if self.embedding_type == "code" else item.segment_description for item in cluster_items]
-        embeddings = [item.code_embedding if self.embedding_type == "code" else item.description_embedding for item in cluster_items 
-                     if (item.code_embedding if self.embedding_type == "code" else item.description_embedding) is not None]
+        descriptions = [item.idea for item in cluster_items]
+        embeddings = [item.idea_embedding for item in cluster_items 
+                     if item.idea_embedding is not None]
         
         if embeddings:
             # Calculate centroid and find closest description
@@ -200,23 +199,13 @@ class ClusterGenerator:
         # Reduces dimensionality of embeddings and adds them to output_list.
         self.verbose_reporter.step_start("Reducing dimensionality of embeddings", "📊")
         
-        # Process code embeddings if needed
-        if self.embedding_type == "code":
-            code_embeddings_array = np.array([item.code_embedding for item in self.output_list])
-            reduced_code_embeddings = self.dim_reduction_model.fit_transform(code_embeddings_array)
-            
-            # Add reduced embeddings to output list
-            for i, item in enumerate(self.output_list):
-                item.reduced_code_embedding = reduced_code_embeddings[i]
+        # Process idea embeddings (unified approach for both code and description)
+        idea_embeddings_array = np.array([item.idea_embedding for item in self.output_list])
+        reduced_idea_embeddings = self.dim_reduction_model.fit_transform(idea_embeddings_array)
         
-        # Process description embeddings if needed
-        if self.embedding_type == "description":
-            description_embeddings_array = np.array([item.description_embedding for item in self.output_list])
-            reduced_description_embeddings = self.dim_reduction_model.fit_transform(description_embeddings_array)
-            
-            # Add reduced embeddings to output list
-            for i, item in enumerate(self.output_list):
-                item.reduced_description_embedding = reduced_description_embeddings[i]
+        # Add reduced embeddings to output list
+        for i, item in enumerate(self.output_list):
+            item.reduced_idea_embedding = reduced_idea_embeddings[i]
                 
         self.verbose_reporter.step_complete("Dimensionality reduction completed")
 
@@ -224,45 +213,24 @@ class ClusterGenerator:
         # Performs initial clustering on reduced embeddings and adds cluster labels to output_list.
         self.verbose_reporter.step_start("Clustering reduced embeddings", "🔍")
 
-        # Cluster code embeddings if needed
-        if self.embedding_type == "code":
-            reduced_code_embeddings = np.array([item.reduced_code_embedding for item in self.output_list])
-            initial_code_clusters = self.cluster_model.fit_predict(reduced_code_embeddings)
-            
-            # Add cluster labels to output list
-            for i, item in enumerate(self.output_list):
-                item.initial_code_cluster = initial_code_clusters[i]
-            
-            cluster_counts = Counter(initial_code_clusters)
-            self.verbose_reporter.stat_line(f"Code clusters: {len(set(initial_code_clusters))} clusters found")
-            noise_count = cluster_counts.get(-1, 0)
-            if noise_count > 0:
-                self.verbose_reporter.stat_line(f"Noise cluster (-1): {noise_count} items")
-            
-            # Show top clusters with smart examples
-            top_clusters = self._get_top_clusters_by_size(initial_code_clusters, 5)
-            if top_clusters:
-                self.verbose_reporter.sample_list("Largest clusters", top_clusters)
-                
-        # Cluster description embeddings if needed
-        if self.embedding_type == "description":
-            reduced_description_embeddings = np.array([item.reduced_description_embedding for item in self.output_list])
-            initial_description_clusters = self.cluster_model.fit_predict(reduced_description_embeddings)
-            
-            # Add cluster labels to output list
-            for i, item in enumerate(self.output_list):
-                item.initial_description_cluster = initial_description_clusters[i]
-            
-            cluster_counts = Counter(initial_description_clusters)
-            self.verbose_reporter.stat_line(f"Description clusters: {len(set(initial_description_clusters))} clusters found")
-            noise_count = cluster_counts.get(-1, 0)
-            if noise_count > 0:
-                self.verbose_reporter.stat_line(f"Noise cluster (-1): {noise_count} items")
-            
-            # Show top clusters with smart examples
-            top_clusters = self._get_top_clusters_by_size(initial_description_clusters, 5)
-            if top_clusters:
-                self.verbose_reporter.sample_list("Largest clusters", top_clusters)
+        # Cluster idea embeddings (unified approach)
+        reduced_idea_embeddings = np.array([item.reduced_idea_embedding for item in self.output_list])
+        initial_idea_clusters = self.cluster_model.fit_predict(reduced_idea_embeddings)
+        
+        # Add cluster labels to output list
+        for i, item in enumerate(self.output_list):
+            item.initial_idea_cluster = initial_idea_clusters[i]
+        
+        cluster_counts = Counter(initial_idea_clusters)
+        self.verbose_reporter.stat_line(f"Clusters: {len(set(initial_idea_clusters))} clusters found")
+        noise_count = cluster_counts.get(-1, 0)
+        if noise_count > 0:
+            self.verbose_reporter.stat_line(f"Noise cluster (-1): {noise_count} items")
+        
+        # Show top clusters with smart examples
+        top_clusters = self._get_top_clusters_by_size(initial_idea_clusters, 5)
+        if top_clusters:
+            self.verbose_reporter.sample_list("Largest clusters", top_clusters)
         
         self.verbose_reporter.step_complete("Initial clustering completed")
 
@@ -677,13 +645,13 @@ class ClusterGenerator:
         
         # Create mapping of respondent_id to original response data
         response_mapping = {}
-        segment_mapping = {}
+        idea_mapping = {}
         for original_item in self.original_input_list:
             response_mapping[original_item.respondent_id] = original_item.response
-            if original_item.response_segment:
-                for segment in original_item.response_segment:
-                    segment_key = (original_item.respondent_id, segment.segment_id)
-                    segment_mapping[segment_key] = segment.segment_response
+            if hasattr(original_item, 'idea_embeddings') and original_item.idea_embeddings:
+                for idea_item in original_item.idea_embeddings:
+                    idea_key = (original_item.respondent_id, idea_item.idea_id)
+                    idea_mapping[idea_key] = idea_item.idea
         
         # Build result models preserving exact output_list order
         result_models = []
@@ -696,39 +664,41 @@ class ClusterGenerator:
             # Create or get the model for this respondent
             if respondent_id not in respondent_models:
                 response = response_mapping.get(respondent_id, "")
+                # Get original model data to preserve all fields
+                orig_model = next((item for item in self.original_input_list if item.respondent_id == respondent_id), None)
+                
                 respondent_models[respondent_id] = {
                     'model': models.ClusterModel(
                         respondent_id=respondent_id,
                         response=response,
-                        response_segment=[]
+                        response_type=getattr(orig_model, 'response_type', None) if orig_model else None,
+                        quality_filter=getattr(orig_model, 'quality_filter', None) if orig_model else None,
+                        quality_filter_code=getattr(orig_model, 'quality_filter_code', None) if orig_model else None,
+                        response_ideas=getattr(orig_model, 'response_ideas', None) if orig_model else None,
+                        idea_embeddings=[],
+                        idea_count=0
                     ),
                     'added_to_result': False
                 }
             
-            # Create submodel for this segment
-            segment_key = (respondent_id, output_item.segment_id)
-            segment_response = segment_mapping.get(segment_key, "")
+            # Create submodel for this idea
+            idea_key = (respondent_id, output_item.idea_id)
+            idea_text = idea_mapping.get(idea_key, output_item.idea)
             
             # Store initial cluster ID
-            initial_cluster = None
-            if self.embedding_type == "code" and output_item.initial_code_cluster is not None:
-                initial_cluster = output_item.initial_code_cluster
-            elif self.embedding_type == "description" and output_item.initial_description_cluster is not None:
-                initial_cluster = output_item.initial_description_cluster
+            initial_cluster = output_item.initial_idea_cluster
             
             # Create submodel with embeddings and initial cluster
             submodel = models.ClusterSubmodel(
-                segment_id=output_item.segment_id,
-                segment_response=segment_response,
-                segment_label=output_item.segment_label,
-                segment_description=output_item.segment_description,
-                code_embedding=output_item.code_embedding,
-                description_embedding=output_item.description_embedding,
+                idea_id=output_item.idea_id,
+                idea=output_item.idea,
+                idea_embedding=output_item.idea_embedding,
                 initial_cluster=initial_cluster  # Single cluster ID
             )
             
             # Add submodel to the respondent's model in exact output_list order
-            respondent_models[respondent_id]['model'].response_segment.append(submodel)
+            respondent_models[respondent_id]['model'].idea_embeddings.append(submodel)
+            respondent_models[respondent_id]['model'].idea_count = len(respondent_models[respondent_id]['model'].idea_embeddings)
             
             # Add model to result list on first encounter (preserves respondent order)
             if not respondent_models[respondent_id]['added_to_result']:
