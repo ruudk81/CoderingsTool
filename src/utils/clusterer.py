@@ -186,6 +186,13 @@ class ClusterGenerator:
                     self.output_list.append(result)
                     processing_order += 1
         
+        # Validation: Check processing order assignment
+        processing_orders = [item.processing_order for item in self.output_list]
+        expected_orders = list(range(len(self.output_list)))
+        if processing_orders != expected_orders:
+            self.verbose_reporter.stat_line("⚠️  WARNING: Processing orders are not sequential!")
+            self.verbose_reporter.stat_line(f"Expected: {expected_orders[:10]}... Got: {processing_orders[:10]}...")
+        
         self.verbose_reporter.stat_line(f"Populated {len(self.output_list)} items successfully")
     
     def _find_optimal_pca_dimensions(self, embeddings_array: np.ndarray) -> Tuple[int, float]:
@@ -308,12 +315,31 @@ class ClusterGenerator:
         initial_idea_clusters = self.cluster_model.fit_predict(umap_embeddings_array)
         
         # Assign clusters
+        assignment_count = 0
         for i, item in enumerate(sorted_items):
             # Find the item in the original list and update it
+            found = False
             for orig_item in self.output_list:
                 if orig_item.processing_order == item.processing_order:
                     orig_item.initial_idea_cluster = initial_idea_clusters[i]
+                    assignment_count += 1
+                    found = True
                     break
+            if not found:
+                self.verbose_reporter.stat_line(
+                    f"⚠️  WARNING: Could not find original item for processing_order {item.processing_order}"
+                )
+        
+        # Validation: Check for processing order consistency
+        processing_orders = [item.processing_order for item in self.output_list]
+        unique_orders = set(processing_orders)
+        if len(unique_orders) != len(processing_orders):
+            self.verbose_reporter.stat_line("⚠️  WARNING: Duplicate processing orders detected!")
+            from collections import Counter
+            duplicates = {k: v for k, v in Counter(processing_orders).items() if v > 1}
+            self.verbose_reporter.stat_line(f"Processing order duplicates: {duplicates}")
+        
+        self.verbose_reporter.stat_line(f"Cluster assignments completed: {assignment_count}/{len(sorted_items)}")
         
         # Report statistics
         cluster_counts = Counter(initial_idea_clusters)
