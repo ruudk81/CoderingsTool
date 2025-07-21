@@ -29,7 +29,6 @@ var_name = "q19"
 # id_column = "DLNMID"
 # var_name = "Q20"
 
-
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
@@ -349,7 +348,7 @@ else:
 """get initial clusters"""
 from config import EmbeddingConfig
 from utils.embedder import Embedder
-from utils import clusterer
+from utils.clusterer import ClusterGenerator
 
 FORCE = True
 
@@ -383,7 +382,16 @@ else:
     get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
- 
+    
+    #debug 
+    # import random
+    # n_samples = 1
+    # sampled_items = random.sample(embedded_text, n_samples)
+    # for item in sampled_items:
+    #     print(f"{item.response}\n")
+    #     for segment in item.response_ideas:
+    #         print(f"- {segment.idea}")
+    
     # Step 5b: Generate initial clusters
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
@@ -398,20 +406,25 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
     
-        
-# #debug - print random clusters
-# import random
-# cluster_ids = list(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None]))
-# sampled_cluster = random.sample(cluster_ids, 1)[0]
-# print(f"\nCluster {sampled_cluster}:\n")
-# cluster_segments = []
-# for item in initial_cluster_results:
-#     for segment in item.response_segment:
-#         if segment.initial_cluster == sampled_cluster:
-#             cluster_segments.append(segment.segment_description)
-# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-# for segment_desc in sampled_segments:
-#     print(f"-    {segment_desc}")
+
+
+#debug - print random clusters
+import random
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.idea_embeddings  # This has initial_cluster
+    if response_idea.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for result in initial_cluster_results:
+    for response_idea in result.idea_embeddings:  # Fixed: was item.response_idea
+        if response_idea.initial_cluster == sampled_cluster:
+            cluster_segments.append(response_idea.idea)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
     
     
 #debug - print all clusters
