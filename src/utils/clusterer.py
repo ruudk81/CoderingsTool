@@ -335,7 +335,6 @@ class ClusterGenerator:
         unique_orders = set(processing_orders)
         if len(unique_orders) != len(processing_orders):
             self.verbose_reporter.stat_line("⚠️  WARNING: Duplicate processing orders detected!")
-            from collections import Counter
             duplicates = {k: v for k, v in Counter(processing_orders).items() if v > 1}
             self.verbose_reporter.stat_line(f"Processing order duplicates: {duplicates}")
         
