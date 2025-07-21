@@ -36,10 +36,10 @@ class EmbeddingsSubmodel(IdeasExtractedSubmodel):
 class EmbeddingsModel(IdeasExtractedModel):
     idea_embeddings: Optional[List[EmbeddingsSubmodel]] = None
 
-class ClusterSubmodel(EmbeddingsSubmodel):
+class ClusterSubmodel(IdeasExtractedSubmodel):
     initial_cluster: Optional[int] = None   
     
-class ClusterModel(EmbeddingsModel):
+class ClusterModel(IdeasExtractedModel):
     pass
 
 # class LabelSubmodel(ClusterSubmodel):
