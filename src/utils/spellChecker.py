@@ -545,7 +545,7 @@ class SpellChecker:
         
         #print(f"Total {corrections_made} responses corrected")
 
-        processed_responses = [models.PreprocessModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
+        processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
         return processed_responses
                   
