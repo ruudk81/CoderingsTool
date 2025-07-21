@@ -132,8 +132,8 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # =============================================================================
 
 IDEA_EXTRACTION_PROMPT = """
-You are an expert text analyst specializing in analyzing written responsess collected in surveys. 
-Your task is to analyze and summarize the following text in response to this question: 
+You are an {language} language expert in analyzing written responses to open-ended question collected in surveys. 
+Your task is to extract ALL ideas expressed in answering the following question: 
     
 <survey_question>
 {var_lab}
@@ -148,18 +148,16 @@ Written response: {response}
 
 Please follow these instructions carefully:
 1. Read and analyze the provided text thoroughly.
-2. Summarize the main ideas discussed in the written response.
-3. For each main idea, provide a short descriptive phrase that captures the essence of the point in light of the survey question.
-4. Return ALL main ideas as summary points of your summary.
-4. Ensure that each point in your summary directly addresses the survey question - i.e., when reading a single point in your summary, it should make sense in light of the survey question.
-5. For deidentification purposes:
+2. Identify ALL ideas expressed in answering the question.
+3. For each idea, provide a short descriptive phrase that captures the essence of the idea in light of the survey question.
+4. For deidentification purposes:
    - Remove all names of individuals mentioned in the text.
    - Use gender-neutral pronouns (they/them/their) when referring to any individuals.
 
-Return your summary of the idea as a JSON array. Each item should include:
+Return the descriptive phrease the extracted ideas as a JSON array. Each item should include:
 - `"respondent_id"`: exactly as provided
 - `"idea_id"`: a string number ("1", "2", etc.)
-- `"idea"`: the extracted idea in {language}
+- `"idea"`: the descriptive phrase capturing the essence of the idea in {language}
 
 Here's an example of the input and desired output format:
     
@@ -184,10 +182,68 @@ Example output:
 </example>
 
 Notice how the main ideas are summarized without including names or gendered pronouns.
-
-Please provide your summary of the given text following these guidelines. 
-You may include as many items in your list as necessary to capture all the main ideas present in the text.
+You may include as many items in your list as necessary to capture all the ideas present in the write response.
 """
+
+
+
+# IDEA_EXTRACTION_PROMPT = """
+# You are an expert text analyst specializing in analyzing written responsess collected in surveys. 
+# Your task is to analyze and summarize the following text in response to this question: 
+    
+# <survey_question>
+# {var_lab}
+# </survey_question>
+
+# Here is the respondent information and their response:
+
+# <respondent_info>
+# Respondent ID: {respondent_id}
+# Written response: {response}
+# </respondent_info>
+
+# Please follow these instructions carefully:
+# 1. Read and analyze the provided text thoroughly.
+# 2. Summarize the main ideas discussed in the written response.
+# 3. For each main idea, provide a short descriptive phrase that captures the essence of the point in light of the survey question.
+# 4. Return ALL main ideas as summary points of your summary.
+# 4. Ensure that each point in your summary directly addresses the survey question - i.e., when reading a single point in your summary, it should make sense in light of the survey question.
+# 5. For deidentification purposes:
+#    - Remove all names of individuals mentioned in the text.
+#    - Use gender-neutral pronouns (they/them/their) when referring to any individuals.
+
+# Return your summary of the idea as a JSON array. Each item should include:
+# - `"respondent_id"`: exactly as provided
+# - `"idea_id"`: a string number ("1", "2", etc.)
+# - `"idea"`: the extracted idea in {language}
+
+# Here's an example of the input and desired output format:
+    
+# <example>
+# Example input: 
+# Respondent ID: 123456789
+# Response: "Jared did a great job responding quickly to emails and turning in good work."
+
+# Example output:
+# [
+#   {{
+#     "respondent_id": "123456789",
+#     "idea_id": "1", 
+#     "idea": "Responded quickly to emails"
+#   }},
+#   {{
+#     "respondent_id": "123456789",
+#     "idea_id": "2",
+#     "idea": "Turned in good work"
+#   }}
+# ]
+# </example>
+
+# Notice how the main ideas are summarized without including names or gendered pronouns.
+
+# Please provide your summary of the given text following these guidelines. 
+# You may include as many items in your list as necessary to capture all the main ideas present in the text.
+# """
 
 
 
