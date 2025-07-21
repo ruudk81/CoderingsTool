@@ -378,7 +378,7 @@ class ClusterGenerator:
             "Total items processed": len(self.output_list),
             "Clusters found": len(unique_clusters),
             "Noise points": f"{noise_count} ({noise_count/len(clusters)*100:.1f}%)",
-            "Clustering method": "HDBSCAN (min_cluster_size=2, min_samples=1)",
+            "Clustering method": f"HDBSCAN (min_cluster_size={self.HDBSCANConfig.min_cluster_size or 'default'}, min_samples={self.HDBSCANConfig.min_samples or 'default'})",
             "Dimensionality reduction": f"{self.dr_stats.original_dims} → {self.dr_stats.pca_dims} (PCA) → {self.dr_stats.final_dims} (UMAP)",
             "PCA variance retained": f"{self.dr_stats.pca_variance_retained*100:.2f}%"
         }
