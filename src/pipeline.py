@@ -385,11 +385,9 @@ else:
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
  
     # Step 5b: Generate initial clusters
-    print(f"\nClustering with embedding_type={EMBEDDING_TYPE}")
     cluster_gen = clusterer.ClusterGenerator(
         input_list=embedded_text, 
         var_lab=var_lab, 
-        embedding_type=EMBEDDING_TYPE,
         verbose=VERBOSE)
     cluster_gen.run_pipeline()
     
