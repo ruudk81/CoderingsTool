@@ -23,7 +23,8 @@ class QualityFilteredModel(PreprocessedModel):
 
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
-    idea: str   
+    idea: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)   
     
 class IdeasExtractedModel(QualityFilteredModel):
     response_ideas: Optional[List[IdeasExtractedSubmodel]] = None
