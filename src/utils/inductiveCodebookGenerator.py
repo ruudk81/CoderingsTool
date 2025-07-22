@@ -264,7 +264,7 @@ class InductiveCodebookGenerator:
             
             # Get structured response
             response = await self.client.chat.completions.create(
-                model=self.model_config.get_model("phase_1"),
+                model=self.model_config.get_model_for_phase("phase1_descriptive"),
                 messages=[{"role": "user", "content": prompt}],
                 response_model=models.CodeGenerationDecision,
                 temperature=0.3,
