@@ -432,9 +432,145 @@ else:
         
     
 # === STEP 6 ========================================================================================================
+"""GATOS Codebook Generation"""
+from utils import speculativeStarterCodes, inductiveCodebookGenerator
 
+FORCE = False
+
+step_name = "gatos_codebook"
+if FORCE:
+    FORCE_STEP = step_name
+
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    gatos_codebook = cache_manager.load_from_cache(filename, step_name, models.GATOSCodebook)
+    verbose_reporter.summary("GATOS CODEBOOK FROM CACHE", {
+        "Total codes": len(gatos_codebook.codes),
+        "Starter codes": gatos_codebook.stats.get('initial_codes', 20),
+        "New codes added": gatos_codebook.stats.get('new_codes', 0)
+    })
+else:
+    verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
+    start_time = time.time()
+    
+    # Step 6.1: Generate speculative starter codes
+    starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+        var_lab=var_lab, 
+        verbose=VERBOSE, 
+        prompt_printer=prompt_printer
+    )
+    starter_codes = starter_generator.generate()
+    
+    if not starter_codes:
+        print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
+        gatos_codebook = models.GATOSCodebook(
+            codes=[],
+            cluster_assignments={},
+            themes=[],
+            stats={'error': 'Failed to generate starter codes'}
+        )
+    else:
+        # Step 6.2: Inductive codebook generation
+        codebook_generator = inductiveCodebookGenerator.InductiveCodebookGenerator(
+            cluster_results=initial_cluster_results,
+            starter_codes=starter_codes,
+            var_lab=var_lab,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        codebook_results = codebook_generator.generate()
+        
+        # Create GATOS codebook model
+        gatos_codebook = models.GATOSCodebook(
+            codes=codebook_results['codebook'],
+            cluster_assignments=codebook_results['cluster_assignments'],
+            themes=[],  # Will be populated in Step 7
+            stats=codebook_results['stats']
+        )
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Cache the results
+    cache_manager.save_to_cache(gatos_codebook, filename, step_name, elapsed_time)
+    print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 # === STEP 7 ========================================================================================================
+"""Theme Identification"""
+from utils import themeIdentifier
+
+FORCE = False
+
+step_name = "theme_identification"
+if FORCE:
+    FORCE_STEP = step_name
+
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    final_results = cache_manager.load_from_cache(filename, step_name, models.GATOSFinalResults)
+    verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
+        "Total themes": len(final_results.themes),
+        "Total codes": len(final_results.codebook.codes)
+    })
+else:
+    verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
+    start_time = time.time()
+    
+    if not gatos_codebook.codes:
+        print("Error: No codes available for theme identification.")
+        final_results = models.GATOSFinalResults(
+            codebook=gatos_codebook,
+            themes=[],
+            theme_analysis=models.ThemeAnalysis(
+                initial_observations=["No codes available"],
+                suggested_themes=[],
+                reflection={"error": "No codes provided"}
+            )
+        )
+    else:
+        # Step 7: Identify themes from codebook
+        theme_identifier_instance = themeIdentifier.ThemeIdentifier(
+            codebook=gatos_codebook.codes,
+            var_lab=var_lab,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        theme_results = theme_identifier_instance.identify_themes()
+        
+        # Create final results
+        final_results = models.GATOSFinalResults(
+            codebook=gatos_codebook,
+            themes=theme_results['suggested_themes'],
+            theme_analysis=theme_results['theme_analysis']
+        )
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Cache the results
+    cache_manager.save_to_cache(final_results, filename, step_name, elapsed_time)
+    print(f"\n'Theme identification' completed in {elapsed_time:.2f} seconds.\n")
+
+# Print final summary
+print("\n" + "=" * 80)
+print("GATOS PIPELINE COMPLETED")
+print("=" * 80)
+print("📊 Final Results:")
+print(f"   • Generated codes: {len(final_results.codebook.codes)}")
+print(f"   • Identified themes: {len(final_results.themes)}")
+if final_results.themes:
+    print("📋 Themes identified:")
+    for i, theme in enumerate(final_results.themes[:5]):  # Show first 5 themes
+        print(f"   {i+1}. {theme.theme_name} ({len(theme.codes)} codes)")
+    if len(final_results.themes) > 5:
+        print(f"   ... and {len(final_results.themes) - 5} more themes")
+print("=" * 80)
 # """export results"""
 # from utils.resultsExporter import ResultsExporter
 
