@@ -20,25 +20,23 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-# filename = "M250285 input voor coderen - met Q18Q19.sav"
-# id_column = "respondentid"
-# var_name = "q19"
+filename = "M250285 input voor coderen - met Q18Q19.sav"
+id_column = "respondentid"
+var_name = "q19"
 # #var_name = "Q18Q19"
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
+# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
-DEBUG_CLUSTER_TRACKING = False  # Enable detailed cluster ID tracking diagnostics
+PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
-USE_QUESTION_AWARE_EMBEDDINGS = False  # Disable question-aware embeddings for debugging
 
 # Initialize data loader and get variable label
 data_loader = dataLoader.DataLoader(verbose=False)
@@ -51,10 +49,8 @@ print("=" * 80)
 print(f"📊 Data file: {filename}")
 print(f"📌 Variable: {var_name} - {var_lab}")
 print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
-print(f"🔀 Question-aware embeddings: {USE_QUESTION_AWARE_EMBEDDINGS}")
 print(f"💬 Verbose mode: {VERBOSE}")
 print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
-print(f"🔍 Debug cluster tracking: {DEBUG_CLUSTER_TRACKING}")
 print("=" * 80)
 
 
@@ -345,12 +341,12 @@ else:
 
     
 # === STEP 5 ========================================================================================================
-"""get initial clusters"""
+"""reduce and cluster"""
 from config import EmbeddingConfig
 from utils.embedder import Embedder
-from utils.clusterer import ClusterGenerator
+from utils.clusterer import Clusterer
 
-FORCE = True
+FORCE = False
 
 step_name        = "initial_clusters"
 if  FORCE:
@@ -369,16 +365,10 @@ else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
     start_time = time.time()
     # Step 5a: Generate embeddings
-    print("\nEmbedding CODES and DESCRIPTIONS of response segments")
+    print("\nEmbedding of extracted ideas")
 
     embedding_config = EmbeddingConfig()
-    embedding_config.use_question_aware = USE_QUESTION_AWARE_EMBEDDINGS
-    
-    if USE_QUESTION_AWARE_EMBEDDINGS:
-        print(f"Question-aware mode enabled: {embedding_config.response_weight:.1f} Response + {embedding_config.question_weight:.1f} Question + {embedding_config.domain_anchor_weight:.1f} Domain")
-    else:
-        print("Question-aware mode disabled")
-  
+ 
     get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
     input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
@@ -393,203 +383,100 @@ else:
     #         print(f"- {segment.idea}")
     
     # Step 5b: Generate initial clusters
-    cluster_gen = ClusterGenerator(
-        input_list=embedded_text, 
-        var_lab=var_lab, 
-        verbose=VERBOSE)
-    cluster_gen.run_pipeline()
+    clusterer = Clusterer(embedded_text)
+    clusterer.run()
+    initial_cluster_results = clusterer.to_cluster_model()
     
-    
-    initial_cluster_results = cluster_gen.to_cluster_model()
     end_time = time.time()
     elapsed_time = end_time - start_time
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
-    
-
-
-from cluster_pipeline import Clusterer
-
-clusterer = Clusterer(embedded_text)
-clusterer.run()
-initial_cluster_results = clusterer.to_cluster_model()
-
 
 #debug - print random clusters  
-import random
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas   
-    if response_idea.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for result in initial_cluster_results:
-    for response_idea in result.response_ideas:   
-        if response_idea.initial_cluster == sampled_cluster:
-            cluster_segments.append(response_idea.idea)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
+# import random
+# cluster_ids = list(set([
+#     response_idea.initial_cluster 
+#     for result in initial_cluster_results 
+#     for response_idea in result.response_ideas   
+#     if response_idea.initial_cluster is not None]))
+# sampled_cluster = random.sample(cluster_ids, 1)[0]
+# print(f"\nCluster {sampled_cluster}:\n")
+# cluster_segments = []
+# for result in initial_cluster_results:
+#     for response_idea in result.response_ideas:   
+#         if response_idea.initial_cluster == sampled_cluster:
+#             cluster_segments.append(response_idea.idea)
+# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+# for segment_desc in sampled_segments:
+#     print(f"-    {segment_desc}")
     
     
-#debug - print all clusters
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas  # This has initial_cluster
-    if response_idea.initial_cluster is not None]))
-for x in range(1, round(len(cluster_ids) / 20) + 1):
-    y = x * 20
-    print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+# #debug - print all clusters
+# cluster_ids = list(set([
+#     response_idea.initial_cluster 
+#     for result in initial_cluster_results 
+#     for response_idea in result.response_ideas  # This has initial_cluster
+#     if response_idea.initial_cluster is not None]))
+# for x in range(1, round(len(cluster_ids) / 20) + 1):
+#     y = x * 20
+#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
 
-    for z in range(y - 20, y):
-        if z < len(cluster_ids):
-            print(f"\nCluster {z}")
-            for item in initial_cluster_results:
-                for subitem in item.response_ideas:
-                    if subitem.initial_cluster == z:
-                        print(subitem.idea)
-    input("\n🔸 Press Enter to continue to the next batch of clusters...")
+#     for z in range(y - 20, y):
+#         if z < len(cluster_ids):
+#             print(f"\nCluster {z}")
+#             for item in initial_cluster_results:
+#                 for subitem in item.response_ideas:
+#                     if subitem.initial_cluster == z:
+#                         print(subitem.idea)
+#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
-
     
 # === STEP 6 ========================================================================================================
-PROMPT_PRINTER = False 
-"""thematic labeling"""
-from utils.thematicLabeller import ThematicLabeller
-from config import DEFAULT_LABELLER_CONFIG
-
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-
-thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-
-
-
-# === STEP 6 ========================================================================================================
-
-# step_name = "labels"
-# verbose_reporter = VerboseReporter(VERBOSE)
-# prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  # Real-time printing during pipeline
-# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-
-# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-#     labeled_results = cache_manager.load_from_cache(filename, step_name, models.LabelModel)
-#     if labeled_results and labeled_results[0].themes:
-#         # Get complete hierarchical structure from first result (same for all)
-#         first_result = labeled_results[0]
-
-#         # Count themes, topics, and codes from hierarchical structure
-#         theme_count = len(first_result.themes)
-#         topic_count = sum(len(theme.topics) for theme in first_result.themes)
-#         code_count = sum(len(topic.codes) for theme in first_result.themes for topic in theme.topics)
-
-#         # Get cluster mappings
-#         cluster_count = len(first_result.cluster_mappings) if first_result.cluster_mappings else 0
-
-#         verbose_reporter.summary("HIERARCHICAL STRUCTURE", {
-#             "Themes": theme_count,
-#             "Topics": topic_count,
-#             "Codes": code_count,
-#             "Mapped Clusters": cluster_count
-#             })
-
-#         print("\nExample Theme Structure:")
-#         for theme in first_result.themes:  
-#             print(f"Theme {theme.theme_id}: {theme.label}")
-#             for topic in theme.topics: 
-#                 print(f"  Topic {topic.topic_id}: {topic.label}")
-#                 for code in topic.codes: 
-#                     print(f"    Code {code.code_id}: {code.label}")
-    
-    
-# else:
-#     verbose_reporter.section_header("HIERARCHICAL LABELING PHASE")
-#     start_time = time.time()
-    
-#     if DEBUG_CLUSTER_TRACKING:
-#         from utils.thematicLabeller_diagnostic import DiagnosticThematicLabeller
-#         print("\n" + "="*60)
-#         print("🔍 DIAGNOSTIC MODE: Running with cluster ID tracking")
-#         print("="*60)
-#         thematic_labeller = DiagnosticThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-#         labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-#         # Print comprehensive diagnostic summary
-#         thematic_labeller.print_diagnostic_summary()
-#     else:
-#         thematic_labeller = ThematicLabeller(config=DEFAULT_LABELLER_CONFIG, verbose=VERBOSE, prompt_printer=prompt_printer)
-#         labeled_results = thematic_labeller.process_hierarchy(cluster_models=initial_cluster_results, survey_question=var_lab)
-    
-#     end_time = time.time()
-#     elapsed_time = end_time - start_time
-#     cache_manager.save_to_cache(labeled_results, filename, step_name, elapsed_time)
-#     verbose_reporter.stat_line(f"'Hierarchical labeling' completed in {elapsed_time:.2f} seconds.")
-
-
-# # debug
-# print("\nINITIAL CLUSTERS")  
-# cluster_summaries = []
-# for cluster in sorted(thematic_labeller.labeled_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.description}"  # Use actual cluster_id with padding
-#         cluster_summaries.append(summary)
-# cluster_summaries_text = "\n".join(cluster_summaries)
-# print(cluster_summaries_text)
-# print("\nMERGED CLUSTERS")  
-# merged_summaries = []
-# for cluster in sorted(thematic_labeller.merged_clusters, key=lambda x: x.cluster_id):
-#         summary = f"[source ID: {cluster.cluster_id:2d}] {cluster.label}"  # Use actual cluster_id with padding
-#         merged_summaries.append(summary)
-# merged_summaries_text = "\n".join(merged_summaries)
-# print(merged_summaries_text)
 
 
 # === STEP 7 ========================================================================================================
-"""export results"""
-from utils.resultsExporter import ResultsExporter
+# """export results"""
+# from utils.resultsExporter import ResultsExporter
 
-step_name = "results"
-verbose_reporter = VerboseReporter(VERBOSE)
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+# step_name = "results"
+# verbose_reporter = VerboseReporter(VERBOSE)
+# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    export_results = cache_manager.load_from_cache(filename, step_name, dict)
-    verbose_reporter.summary("EXPORT RESULTS FROM CACHE", {
-        "SPSS file": export_results.get('spss_file', 'Not found'),
-        "Excel file": export_results.get('excel_file', 'Not found')
-    })
-else:
-    verbose_reporter.section_header("RESULTS EXPORT PHASE")
-    start_time = time.time()
+# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+#     export_results = cache_manager.load_from_cache(filename, step_name, dict)
+#     verbose_reporter.summary("EXPORT RESULTS FROM CACHE", {
+#         "SPSS file": export_results.get('spss_file', 'Not found'),
+#         "Excel file": export_results.get('excel_file', 'Not found')
+#     })
+# else:
+#     verbose_reporter.section_header("RESULTS EXPORT PHASE")
+#     start_time = time.time()
     
-    # Initialize results exporter
-    results_exporter = ResultsExporter(verbose=VERBOSE)
+#     # Initialize results exporter
+#     results_exporter = ResultsExporter(verbose=VERBOSE)
     
-    # Export results to SPSS and Excel
-    export_results = results_exporter.export_results(
-        labeled_results=labeled_results,
-        filename=filename,
-        id_column=id_column,
-        var_name=var_name
-    )
+#     # Export results to SPSS and Excel
+#     export_results = results_exporter.export_results(
+#         labeled_results=labeled_results,
+#         filename=filename,
+#         id_column=id_column,
+#         var_name=var_name
+#     )
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
     
-    # Cache the export results (file paths)
-    cache_manager.save_to_cache(export_results, filename, step_name, elapsed_time)
+#     # Cache the export results (file paths)
+#     cache_manager.save_to_cache(export_results, filename, step_name, elapsed_time)
     
-    verbose_reporter.stat_line(f"'Results export' completed in {elapsed_time:.2f} seconds.")
+#     verbose_reporter.stat_line(f"'Results export' completed in {elapsed_time:.2f} seconds.")
 
-print("\n" + "=" * 80)
-print("PIPELINE COMPLETED SUCCESSFULLY")
-print("=" * 80)
-print("📊 Final output files:")
-print(f"   • SPSS: {export_results.get('spss_file', 'Not generated')}")
-print(f"   • Excel: {export_results.get('excel_file', 'Not generated')}")
-print(f"📁 Export directory: {export_results.get('export_directory', 'Unknown')}")
-print("=" * 80)
+# print("\n" + "=" * 80)
+# print("PIPELINE COMPLETED SUCCESSFULLY")
+# print("=" * 80)
+# print("📊 Final output files:")
+# print(f"   • SPSS: {export_results.get('spss_file', 'Not generated')}")
+# print(f"   • Excel: {export_results.get('excel_file', 'Not generated')}")
+# print(f"📁 Export directory: {export_results.get('export_directory', 'Unknown')}")
+# print("=" * 80)
 

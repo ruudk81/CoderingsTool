@@ -5,6 +5,7 @@ data/exports/
 backup/
 env/
 hunspell/
+src/utils/old/
 __pycache__/
 
 # === SPECIFIC FILES TO IGNORE === 
