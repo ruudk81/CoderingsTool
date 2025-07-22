@@ -357,9 +357,9 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
-    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_segment if segment.initial_cluster is not None])
+    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
     num_initial_clusters = len(cluster_ids)
-    total_segments = sum(len(resp.response_segment) for resp in initial_cluster_results if resp.response_segment)
+    total_segments = sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)
     verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial clusters": f"{num_initial_clusters}"})
 else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
