@@ -329,7 +329,7 @@ class InductiveCodebookGenerator:
                     new_code = {
                         'code': decision.new_code,
                         'definition': decision.new_definition,
-                        'cluster_origin': cluster_id
+                        'cluster_origin': str(cluster_id)  # Convert int to str for validation
                     }
                     self.codebook.append(new_code)
                     cluster_to_code[cluster_id] = decision.new_code
