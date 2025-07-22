@@ -36,6 +36,7 @@ class InductiveCodebookGenerator:
     
     def __init__(self, 
                  cluster_results: List[models.ClusterModel], 
+                 embedded_text: List[models.EmbeddingsModel],
                  starter_codes: List[Dict[str, str]], 
                  var_lab: str, 
                  k: int = 5,
@@ -53,6 +54,7 @@ class InductiveCodebookGenerator:
             prompt_printer: Optional prompt capture utility
         """
         self.cluster_results = cluster_results
+        self.embedded_text = embedded_text  
         self.codebook = starter_codes.copy()  # Growing codebook
         self.var_lab = var_lab
         self.k = k
@@ -72,50 +74,58 @@ class InductiveCodebookGenerator:
         
     def _prepare_clusters(self) -> Dict[int, Dict]:
         """
-        Group ideas by cluster ID with their embeddings from ClusterModel.
+        Group ideas by cluster ID using embeddings from embedded_text and cluster assignments from cluster_results.
         
         Returns:
             Dict mapping cluster_id to {'ideas': List[str], 'embeddings': List[np.ndarray]}
         """
+        # Step 1: Create mapping from idea_id to embedding from embedded_text
+        embedding_map = {}
+        for result in self.embedded_text:
+            if hasattr(result, 'idea_embeddings') and result.idea_embeddings:
+                for idea in result.idea_embeddings:
+                    embedding_map[idea.idea_id] = {
+                        'idea': idea.idea,
+                        'embedding': idea.idea_embedding
+                    }
+        
+        # Step 2: Get cluster assignments from cluster_results and match with embeddings
         clusters = {}
         total_ideas = 0
+        missing_embeddings = 0
         
         for result in self.cluster_results:
-            # Use idea_embeddings which contains the embedding data (same as response_ideas but with embeddings)
-            if hasattr(result, 'idea_embeddings') and result.idea_embeddings:
-                embeddings_list = result.idea_embeddings
-            else:
-                # Fallback to response_ideas (should have embeddings from ClusterSubmodel)
-                embeddings_list = result.response_ideas or []
-                
-            for idea in embeddings_list:
+            ideas_list = result.response_ideas or []
+            
+            for idea in ideas_list:
                 if idea.initial_cluster is not None and idea.initial_cluster != -1:
                     cluster_id = idea.initial_cluster
                     
-                    if cluster_id not in clusters:
-                        clusters[cluster_id] = {
-                            'ideas': [],
-                            'embeddings': []
-                        }
-                    
-                    clusters[cluster_id]['ideas'].append(idea.idea)
-                    
-                    # Extract embedding (should be available from clustering step)
-                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
+                    # Look up embedding from embedded_text using idea_id
+                    if idea.idea_id in embedding_map:
+                        embedding_data = embedding_map[idea.idea_id]
+                        
+                        if cluster_id not in clusters:
+                            clusters[cluster_id] = {
+                                'ideas': [],
+                                'embeddings': []
+                            }
+                        
+                        clusters[cluster_id]['ideas'].append(embedding_data['idea'])
+                        clusters[cluster_id]['embeddings'].append(embedding_data['embedding'])
+                        total_ideas += 1
                     else:
-                        self.verbose_reporter.stat_line(f"Warning: No embedding for idea in cluster {cluster_id}")
-                        # Continue without this idea
-                        clusters[cluster_id]['ideas'].pop()  # Remove the idea we just added
-                        continue
-                    
-                    total_ideas += 1
+                        missing_embeddings += 1
+                        if self.verbose:
+                            self.verbose_reporter.stat_line(f"Warning: No embedding found for idea_id {idea.idea_id} in cluster {cluster_id}")
         
         # Remove clusters with no valid embeddings
         clusters = {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
         
         self.stats['total_clusters'] = len(clusters)
         self.verbose_reporter.stat_line(f"Prepared {len(clusters)} clusters with {total_ideas} total ideas")
+        if missing_embeddings > 0:
+            self.verbose_reporter.stat_line(f"Missing embeddings for {missing_embeddings} ideas")
         return clusters
     
     async def _embed_codebook_texts(self, code_texts: List[str]) -> List[np.ndarray]:
