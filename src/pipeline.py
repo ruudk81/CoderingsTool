@@ -435,7 +435,7 @@ else:
 """GATOS Codebook Generation"""
 from utils import speculativeStarterCodes, inductiveCodebookGenerator
 
-FORCE = False
+FORCE = True
 
 step_name = "gatos_codebook"
 if FORCE:
