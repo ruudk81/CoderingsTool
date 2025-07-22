@@ -36,7 +36,7 @@ class EmbeddingsSubmodel(IdeasExtractedSubmodel):
 class EmbeddingsModel(IdeasExtractedModel):
     idea_embeddings: Optional[List[EmbeddingsSubmodel]] = None
 
-class ClusterSubmodel(IdeasExtractedSubmodel):
+class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[int] = None   
     
 class ClusterModel(IdeasExtractedModel):
