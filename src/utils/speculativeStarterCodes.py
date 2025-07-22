@@ -73,7 +73,12 @@ class SpeculativeStarterCodes:
         
         # Capture prompt if printer is available
         if self.prompt_printer:
-            self.prompt_printer.capture_prompt(prompt, "Initial Codebook Creation")
+            self.prompt_printer.capture_prompt(
+                step_name="gatos_codebook",
+                utility_name="SpeculativeStarterCodes",
+                prompt_content=json_prompt,
+                prompt_type="Initial Codebook Creation"
+            )
         
         # Parse the prompt to extract the expected format
         # Since the LLM needs to return a list format, we'll modify the approach

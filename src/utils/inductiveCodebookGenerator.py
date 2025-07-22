@@ -255,7 +255,12 @@ class InductiveCodebookGenerator:
             
             # Capture first prompt for debugging
             if self.prompt_printer and cluster_id == 0:
-                self.prompt_printer.capture_prompt(prompt, "Inductive Codebook Generation")
+                self.prompt_printer.capture_prompt(
+                    step_name="gatos_codebook",
+                    utility_name="InductiveCodebookGenerator",
+                    prompt_content=prompt,
+                    prompt_type="Inductive Codebook Generation"
+                )
             
             # Get structured response
             response = await self.client.chat.completions.create(
