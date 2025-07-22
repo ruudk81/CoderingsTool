@@ -539,3 +539,174 @@ Provide your output in the following JSON format:
   }}
 }}
 """
+
+# =============================================================================
+# STEP 6: GATOS CODEBOOK GENERATION
+# =============================================================================
+
+INITIAL_CODEBOOK_CREATION_PROMPT = """Act as if you are the world's best qualitative data analysis. You specialize in applying codes to analyze qualitative data. I need your help. Your important task is to generate {k_to_start} hypothetical codes that one might encounter when analyzing {data_type}s from {data_collection_context}. 
+
+You should format your response by filling in the template I give you at the end of these instructions, which is an enumerated list of {k_to_start} codes. The list should contain {k_to_start} short phrases with regular spacing between words written in plain English without examples. After the final code, you should stop writing so that it is easy for your response to be parsed for downstream tasks. 
+
+Begin your list now using the following template:
+{code_template}"""
+
+INDUCTIVE_CODEBOOK_GENERATION_PROMPT = """Act as if you are the world's best qualitative data analyst with expertise in generating qualitative codebooks for thematic analysis. You specialize in creating parsimonious codebooks with non-overlapping and non-redundant codes. A codebook in this setting is a collection of labels and definitions for those labels that can be used to describe pieces of data in a qualitative research study. 
+
+I need your help to create a qualitative codebook to analyze {data_type}s from {data_collection_context}. To aid you in this process, I am going to send you instructions in the <instructions> XML tag. Use the instructions to analyze the data in the <data to analyze> tag. You must follow these instructions using your expertise and data to analyze in the <data to analyze> XML tag. I will provide you the instructions first and then the data to analyze afterward. Be aware that your instructions contain task instructions, evaluation criteria, and formatting instructions, each in their respective XML tags.
+
+<instructions>
+<task instructions>
+We are trying to determine whether or not an existing codebook is sufficient for analyzing one {data_type} that you have been given in the <text to analyze> tag. Your important task is to analyze one summary of {data_type}s collected in the context of {data_collection_context} and determine if the theme discussed in the {data_type} summary is already covered by the codes in an existing codebook that will be given to you in the <existing codebook> tag or if instead the codebook needs one or more new code to cover the theme in the text to analyze.
+
+You should complete your task by following these steps:
+
+Step 1: Codebook examination.
+Read and understand the existing codebook. Study each code and its definition carefully to understand what themes are already covered.
+
+Step 2: Current data examination.
+Read and understand the summaries of the {data_type} in the <text to analyze> tag and identify the main theme discussed in the summary.
+
+Step 3: Try to use existing codebook.
+Attempt to describe the main theme of the {data_type} using one or more of the existing codes in the existing codebook. Think at a high level of abstraction and consider if any new themes could be subcategories of existing codes. If you determine that there is no need to create a new code, say "No new codes needed".
+
+Step 4: Create new code if needed.
+If in step 3 you discover that you are unable to use the current codes to describe the main theme in the summary of the {data_type} that you are analyzing, determine whether the existing codebook needs new labels to describe the summary in the <text to analyze> tag. You should complete this determination by reasoning step-by-step. If you determine that a new code is necessary, explicitly justify why existing codes or combinations thereof are insufficient. Finally, generate a new code (or codes, if multiple ones are absolutely necessary) that captures the main concepts or themes discussed in the {data_type}s that you review. Remember, you specialize in creating parsimonious codebooks and avoid creating redundant codes. Your goal is to use the least number of new codes possible while still accurately representing the data.
+
+There is a VERY significant penalty for creating redundant or unnecessary codes, so you should only create a new code if you are **absolutely** certain the existing ones are insufficient, even when combined or broadened. If you decide to generate a new code, please provide:
+- The code (a short phrase).
+- A brief definition of what the label represents.
+
+Step 5: Evaluate your suggestion.
+To guide your work, you must consider the following three evaluation criteria. These three evaluation criteria will be used by other famous expert qualitative data analysts to evaluate the quality of your work. In the reflection step, you must check whether you have satisfied each of these three criteria:
+
+<evaluation criteria>
+Evaluation Criteria 1. Parsimony: Have you made every effort to use existing codes or combinations of existing codes before proposing a new one?
+Evaluation Criteria 2. Abstraction Level: Is any proposed new code at an appropriate level of abstraction, consistent with existing codes?
+Evaluation Criteria 3. Non-Redundancy: Have you avoided creating codes that significantly overlap with existing ones?
+
+To help illustrate what I mean by non-redundancy, here is an example of redundant codes and an explanation of their redundancy:
+{redundancy_example}
+
+Use the evaluation criteria and these task instructions to help you in your step-by-step reasoning for each of the preparation, analysis, and reflection steps given to you in these instructions.
+
+It is CRUCIAL TO REMEMBER that if you do not think a new code should be created, you must say "No new codes needed".
+</evaluation criteria>
+
+Step 6: Final recommendation.
+Present your final logical recommendation on a new line about any codes to create or whether none are needed on a new line.
+</task instructions>
+
+<formatting instructions>
+I will give you a template to use for your response. The main parts of the template are the following. First, your response should start with "My expert analysis:". Then, on a new line, you should write your logical step-by-step reasoning about the existing codes and the {data_type}s. This will include the two orientation steps, the two analysis steps, the reflection step, and the recommendation step. Your analysis notes should be succinct and formatted in a numbered list rather than long prose. This means that each step in your step-by-step reasoning should get its own line as if it were a premise in a proof. These notes should be logical, adhere perfectly to your task instructions, be concise, and be in a numbered list. Then, on another new line, you should state "My logical recommendation:" followed by your recommendation on yet another new line. Your recommendations can either be "No new codes needed" if no new codes are needed or the actual codes you suggest adding to the codebook.
+
+If you do think one or more new codes should be created, your response should start 'Code: ' followed by your code, then on a new line 'Definition: ' followed by your definition for that code.
+
+For example:
+Code: <code 1>
+Definition: <definition 1>
+</formatting instructions>
+
+This concludes your task and formatting instructions.
+</instructions>
+
+Now I will give you the data to analyze:
+
+<data to analyze>
+<existing codebook>
+{codes}
+</existing codebook>
+
+And here is a summary of one {data_type} for you to analyze.
+<text to analyze>
+{text}
+</text to analyze>
+</data to analyze>
+
+Now that you have meticulously studied the data to analyze using your task instructions, formatting instructions, and evaluation criteria, take a moment to gather your expert thoughts and observations. When you are ready, begin your flawless and logical step-by-step analysis using the instructions and evaluation criteria outlined above. Be sure to display your expertise in creating parsimonious codebooks and minimizing redundancy and use the full analysis template, provided below. Be sure to use spaces in any codes you write rather than concatenating words together (e.g., say "example code" rather than "examplecode"). Here is the template to use for your analysis. Begin your expert analysis when you are ready.
+
+FULL ANALYSIS TEMPLATE:
+My expert analysis:
+Step 1 (codebook examination)
+[your step 1 notes describing the existing code go here]
+
+Step 2 (current data examination)
+[your step 2 notes go here to identify the main theme in the {data_type}]
+
+Step 3 (analysis part 1)
+[your step 3 notes to describe main theme in the {data_type}s with existing codes here]
+
+Step 4 (analysis part 2)
+[your step 4 notes considering whether to create new code here, favoring parsimony and avoiding unnecessary code creation]
+
+Step 5 (reflection on planned suggestions)
+[your evaluation reflection notes here reviewing the evaluation criteria]
+
+My logical recommendation:
+[logical recommendation based on expert step-by-step reasoning about whether or not to create zero, one, or more than one new codes. These notes will reflect your reputation for only creating essential codes]"""
+
+# =============================================================================
+# STEP 7: THEME IDENTIFICATION  
+# =============================================================================
+
+THEME_IDENTIFICATION_PROMPT = """You are an expert qualitative researcher specializing in thematic analysis. Your task is to analyze a list of codes that will be given to you below in the <codes> tag and identify potential themes following the guidance of Braun and Clarke. The goal is to identify themes that help to answer the research question '{research_question}'.
+
+Please follow these steps outlined in the <instructions> tag carefully.
+
+<instructions>
+Step 1. Review the list of codes provided below in the <codes> tag below. These codes are being used to analyze {data_type}s from {data_collection_context}.
+
+Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
+
+Step 3. Identify overarching narratives that might represent broader themes or sub-themes.
+
+Step 4. Remember that themes don't simply "emerge" from the data. Actively construe relationships among the codes and examine how these relationships inform potential themes.
+
+Step 5. Consider the importance and salience of potential themes. Remember, the number of codes supporting a theme is less important than whether the pattern communicates something meaningful that helps answer the research question(s). On that note, remember that the research question for this research is {research_question}.
+
+Step 6. Aim for themes that are distinctive yet coherent with the overall analysis. Themes may even be contradictory to each other.
+
+Step 7. Be willing to let go of codes or potential themes that don't fit the overall analysis. Consider creating a "miscellaneous" category for codes that don't fit elsewhere.
+
+Step 8. Strive for a balance in the number of themes - not so many that the analysis becomes unwieldy, but enough to fully explore the depth and breadth of the data.
+
+Step 9. For each theme, prepare a structured description including the theme name, its underlying concept, associated codes, and how these codes relate to each other and the overall theme.
+
+Step 10. Reflect on your analysis considering: themes that seem too broad or narrow, contradictions or unexpected patterns, need for subthemes, and codes that don't fit well into the current themes.
+
+Step 11. Organize your analysis into a structured format with initial observations, an array of suggested themes (each as an object with name, concept, codes, and relationship), and your reflection.
+</instructions>
+
+Now that you have studied your instructions carefully, here is the list of codes to analyze to identify themes related to the research question "{research_question}":
+
+<codes>
+{codes}
+</codes>
+
+Proceed with your expert analysis, explaining your reasoning at each step. Present your analysis in JSON format with the following structure:
+
+{{
+  "initial_observations": [
+    "observation1"
+  ],
+  "suggested_themes": [
+    {{
+      "theme_name": "Theme 1",
+      "concept": "Brief description of the underlying concept or narrative",
+      "codes": [
+        "Code 1"
+      ],
+      "relationship": "Brief explanation of how these codes relate to each other and the overall theme"
+    }}
+  ],
+  "reflection": {{
+    "broad_or_narrow_themes": "Discussion of any themes that seem too broad or too narrow",
+    "contradictions_or_unexpected_patterns": "Description of any contradictions or unexpected patterns", 
+    "potential_subthemes": "Discussion of any need for subthemes within the main themes",
+    "unclassified_codes": "List of any codes that were not included in the proposed themes"
+  }}
+}}
+
+Use this JSON structure I have given you as a template. Expand on the template by adding as many observations, themes, and codes as necessary based on your analysis. Ensure that your response remains a valid JSON object. Do not include any text outside of this JSON structure.
+
+Now that you have thoroughly read your task instructions, formatting instructions, and the codes to analyze, take a moment to gather your expert thoughts. Begin your analysis when you are ready."""
