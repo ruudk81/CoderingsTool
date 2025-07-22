@@ -3,6 +3,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 # === MODULES ========================================================================================================
 import asyncio
 import time
+import os
 import numpy as np
 from typing import List, Dict, Optional, Any
 from sklearn.metrics.pairwise import cosine_similarity
@@ -130,7 +131,7 @@ class InductiveCodebookGenerator:
     
     async def _embed_codebook_texts(self, code_texts: List[str]) -> List[np.ndarray]:
         """
-        Embed codebook texts using the existing embedder.
+        Embed codebook texts using direct OpenAI API call.
         
         Args:
             code_texts: List of code text descriptions
@@ -138,37 +139,21 @@ class InductiveCodebookGenerator:
         Returns:
             List of embedding arrays
         """
-        # Create dummy response models for embedder
-        dummy_responses = []
-        for i, text in enumerate(code_texts):
-            dummy_responses.append(models.IdeasExtractedModel(
-                respondent_id=f"code_{i}",
-                response=text,
-                response_ideas=[models.IdeasExtractedSubmodel(
-                    idea_id=f"code_{i}_1",
-                    idea=text
-                )],
-                idea_count=1
-            ))
-        
-        # Use embedder to get embeddings
         try:
-            embedded = await self.embedder.get_embeddings_async(dummy_responses)
+            # Use direct OpenAI API call (simpler than the complex Embedder class)
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            
+            response = await client.embeddings.create(
+                model="text-embedding-3-small",  # Same as used in pipeline
+                input=code_texts
+            )
+            
+            # Extract embeddings from response
             embeddings = []
-            
-            for item in embedded:
-                if hasattr(item, 'idea_embeddings') and item.idea_embeddings:
-                    embeddings.append(item.idea_embeddings[0].idea_embedding)
-                elif hasattr(item, 'response_ideas') and item.response_ideas:
-                    # Try to get from response_ideas if available
-                    idea = item.response_ideas[0]
-                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        embeddings.append(idea.idea_embedding)
-                    else:
-                        raise ValueError(f"No embedding found for code {item.respondent_id}")
-                else:
-                    raise ValueError(f"No ideas found for code {item.respondent_id}")
-            
+            for embedding_data in response.data:
+                embeddings.append(np.array(embedding_data.embedding, dtype=np.float32))
+                
             return embeddings
             
         except Exception as e:
