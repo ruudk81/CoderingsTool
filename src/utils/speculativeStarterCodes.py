@@ -71,15 +71,6 @@ class SpeculativeStarterCodes:
             code_template=code_template
         )
         
-        # Capture prompt if printer is available
-        if self.prompt_printer:
-            self.prompt_printer.capture_prompt(
-                step_name="gatos_codebook",
-                utility_name="SpeculativeStarterCodes",
-                prompt_content=json_prompt,
-                prompt_type="Initial Codebook Creation"
-            )
-        
         # Parse the prompt to extract the expected format
         # Since the LLM needs to return a list format, we'll modify the approach
         # to ask for JSON directly
@@ -90,6 +81,15 @@ Please provide your response as a JSON array of objects, where each object has "
   {{"code": "Technical difficulties", "definition": "Issues related to technology or system failures"}},
   {{"code": "Communication problems", "definition": "Challenges in exchanging information or understanding"}}
 ]"""
+        
+        # Capture prompt if printer is available
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name="gatos_codebook",
+                utility_name="SpeculativeStarterCodes",
+                prompt_content=json_prompt,
+                prompt_type="Initial Codebook Creation"
+            )
             
         try:
             # Get structured response using instructor
