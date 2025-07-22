@@ -77,7 +77,7 @@ class GATOSCodebook(BaseModel):
     codes: List[Dict[str, str]]  # code, definition, optional cluster_origin
     cluster_assignments: Dict[int, str]  # cluster_id -> code mapping
     themes: List[Theme] = []
-    stats: Dict[str, int] = {}
+    stats: Dict[str, Any] = {}
 
 class GATOSFinalResults(BaseModel):
     """Final GATOS results with themes"""

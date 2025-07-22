@@ -101,7 +101,7 @@ class ThemeIdentifier:
         try:
             # Get structured response using instructor
             response = await self.client.chat.completions.create(
-                model=self.model_config.get_model("phase_3"),  # Use premium model for theme analysis
+                model=self.model_config.get_model_for_phase("phase3_themes"),  # Use premium model for theme analysis
                 messages=[{"role": "user", "content": prompt}],
                 response_model=models.ThemeAnalysis,
                 temperature=0.3,

@@ -94,7 +94,7 @@ Please provide your response as a JSON array of objects, where each object has "
         try:
             # Get structured response using instructor
             response = await self.client.chat.completions.create(
-                model=self.model_config.get_model("phase_1"),
+                model=self.model_config.get_model_for_phase("phase1_descriptive"),
                 messages=[{"role": "user", "content": json_prompt}],
                 response_model=List[models.CodeDefinition],
                 temperature=0.7,
