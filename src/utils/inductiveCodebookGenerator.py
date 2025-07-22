@@ -140,12 +140,15 @@ class InductiveCodebookGenerator:
             List of embedding arrays
         """
         try:
-            # Use direct OpenAI API call (simpler than the complex Embedder class)
+            # Use direct OpenAI API call with same config as pipeline
             from openai import AsyncOpenAI
+            from config import EmbeddingConfig
+            
+            embedding_config = EmbeddingConfig()
             client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
             
             response = await client.embeddings.create(
-                model="text-embedding-3-small",  # Same as used in pipeline
+                model=embedding_config.embedding_model,  # Use same model as pipeline
                 input=code_texts
             )
             
