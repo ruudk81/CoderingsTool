@@ -91,7 +91,12 @@ class ThemeIdentifier:
         
         # Capture prompt if printer is available
         if self.prompt_printer:
-            self.prompt_printer.capture_prompt(prompt, "Theme Identification")
+            self.prompt_printer.capture_prompt(
+                step_name="theme_identification",
+                utility_name="ThemeIdentifier",
+                prompt_content=prompt,
+                prompt_type="Theme Identification"
+            )
         
         try:
             # Get structured response using instructor
