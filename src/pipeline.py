@@ -30,7 +30,7 @@ id_column = "DLNMID"
 var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
@@ -408,49 +408,12 @@ else:
     
 
 
-#debug - DIAGNOSTIC CODE TO IDENTIFY MISALIGNMENT
-print("\n" + "="*60)
-print("CLUSTER ALIGNMENT DIAGNOSTICS")
-print("="*60)
+from cluster_pipeline import Clusterer
 
-# 1. Check overall data consistency
-total_results = len(initial_cluster_results)
-total_ideas = sum(len(result.response_ideas) for result in initial_cluster_results)
-all_ideas = [idea for result in initial_cluster_results for idea in result.response_ideas]
+clusterer = Clusterer(embedded_text)
+clusterer.run()
+initial_cluster_results = clusterer.to_cluster_model()
 
-print(f"Total cluster results (respondents): {total_results}")
-print(f"Total response ideas across all results: {total_ideas}")
-print(f"Flattened ideas list length: {len(all_ideas)}")
-
-# 2. Check for duplicate idea_ids (should be unique)
-idea_ids = [idea.idea_id for idea in all_ideas]
-unique_idea_ids = set(idea_ids)
-print(f"Unique idea_ids: {len(unique_idea_ids)}")
-print(f"Total idea_ids: {len(idea_ids)}")
-if len(unique_idea_ids) != len(idea_ids):
-    print("⚠️  WARNING: Duplicate idea_ids detected!")
-    from collections import Counter
-    duplicates = {k: v for k, v in Counter(idea_ids).items() if v > 1}
-    print(f"Duplicates: {duplicates}")
-
-# 3. Check cluster assignment distribution
-cluster_assignments = [idea.initial_cluster for idea in all_ideas if idea.initial_cluster is not None]
-unique_clusters = set(cluster_assignments)
-print(f"Ideas with cluster assignments: {len(cluster_assignments)}")
-print(f"Ideas without cluster assignments: {total_ideas - len(cluster_assignments)}")
-print(f"Unique cluster IDs: {sorted(unique_clusters)}")
-
-# 4. Sample a few ideas to verify consistency
-print(f"\nSAMPLE DATA VERIFICATION:")
-for i, result in enumerate(initial_cluster_results[:3]):  # First 3 respondents
-    print(f"Respondent {result.respondent_id}:")
-    for j, idea in enumerate(result.response_ideas[:3]):  # First 3 ideas per respondent
-        print(f"  Idea {idea.idea_id}: cluster={idea.initial_cluster}")
-        print(f"    Text: {idea.idea[:100]}...")
-    if i < 2:  # Add separator except for last one
-        print()
-
-print("="*60)
 
 #debug - print random clusters  
 import random
