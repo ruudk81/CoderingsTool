@@ -998,20 +998,20 @@ class InductiveCodebookGenerator:
                 'error': str(e)
             }
     
-    async def process_batch_async(self, batch: ClusterBatch, use_shared_state: bool = True) -> List[Dict[str, Any]]:
+    async def process_batch_async(self, batch: ClusterBatch, use_shared_state: bool = True, 
+                                  shared_state: SharedCodebookState = None, 
+                                  dynamic_embeddings: DynamicEmbeddingManager = None) -> List[Dict[str, Any]]:
         """Process a batch of clusters asynchronously with optional shared state"""
         
         if use_shared_state:
-            return await self._process_batch_with_shared_state(batch)
+            return await self._process_batch_with_shared_state(batch, shared_state, dynamic_embeddings)
         else:
             return await self._process_batch_legacy(batch)
     
-    async def _process_batch_with_shared_state(self, batch: ClusterBatch) -> List[Dict[str, Any]]:
+    async def _process_batch_with_shared_state(self, batch: ClusterBatch, 
+                                                shared_state: SharedCodebookState, 
+                                                dynamic_embeddings: DynamicEmbeddingManager) -> List[Dict[str, Any]]:
         """Process batch using shared state for real-time code updates"""
-        # Initialize shared state for this batch
-        initial_codebook = batch.codebook_snapshot or self.data_processor.codebook.copy()
-        shared_state = SharedCodebookState(initial_codebook)
-        dynamic_embeddings = DynamicEmbeddingManager(self.embedding_manager)
         
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.config.max_concurrent_batches)
@@ -1044,9 +1044,7 @@ class InductiveCodebookGenerator:
             else:
                 processed_results.append(result)
         
-        # Update main codebook with final shared state
-        final_codes = await shared_state.get_current_snapshot()
-        self.data_processor.codebook = final_codes
+        # Note: Codebook is now updated globally in generate_async, not per batch
         
         # Update statistics
         shared_stats = await shared_state.get_stats()
@@ -1165,16 +1163,18 @@ class InductiveCodebookGenerator:
         
         # Initialize shared codebook state
         shared_state = SharedCodebookState(
-            initial_codes=self.data_processor.codebook.copy(),
-            embedding_manager=DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
+            initial_codes=self.data_processor.codebook.copy()
         )
+        
+        # Initialize dynamic embedding manager
+        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
         
         # Pre-embed initial codebook for efficiency
         if self._pre_embed_initial_codebook and self.data_processor.codebook:
             if self.verbose:
                 verbose_reporter.stat_line(f"Pre-embedding initial codebook ({len(self.data_processor.codebook)} codes)")
             
-            await shared_state.embedding_manager.update_embeddings(self.data_processor.codebook.copy())
+            await dynamic_embeddings.update_embeddings(self.data_processor.codebook.copy())
         
         # Create token-aware adaptive batches
         batches = self.batch_processor.create_adaptive_batches(
@@ -1195,7 +1195,9 @@ class InductiveCodebookGenerator:
             
             try:
                 # Process batch with shared state (concurrent within batch)
-                batch_results = await self.process_batch_with_shared_state(batch, shared_state)
+                batch_results = await self.process_batch_async(batch, use_shared_state=True, 
+                                                               shared_state=shared_state,
+                                                               dynamic_embeddings=dynamic_embeddings)
                 
                 # Process individual cluster results
                 for result in batch_results:
