@@ -1,0 +1,698 @@
+"""
+CODEBOOK GENERATOR V3 - LangChain-Optimized Architecture
+========================================================
+
+This version leverages LangChain's native batch processing capabilities and 
+shared memory state pattern for maximum efficiency.
+
+Key Features:
+- LangChain's abatch() for efficient concurrent API calls
+- Shared memory codebook with real-time updates across all batches
+- Structured outputs using Pydantic models
+- True concurrent batch processing (all batches run simultaneously)
+- Optimized prompt chaining similar to SegmentDescriber pattern
+"""
+
+import os
+import sys
+sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+
+import asyncio
+from typing import List, Dict, Any, Optional, Tuple, Union
+from dataclasses import dataclass
+import logging
+import numpy as np
+import time
+from pydantic import BaseModel, Field
+import hashlib
+
+from openai import AsyncOpenAI
+from sklearn.metrics.pairwise import cosine_similarity
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.runnables import RunnableLambda
+
+from prompts import SYSTEM_MESSAGE_CODEBOOK, INITIAL_CODEBOOK_GENERATION, REVIEW_CODEBOOK_GENERATION
+from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
+import models
+from utils.verboseReporter import VerboseReporter
+
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").disabled = True
+
+# ============================================================================
+# PYDANTIC MODELS FOR STRUCTURED OUTPUT
+# ============================================================================
+
+class CodeDecision(BaseModel):
+    """Single-stage code decision combining initial suggestion and review"""
+    needs_new_code: bool = Field(description="Whether a new code is needed")
+    code: Optional[str] = Field(default=None, description="The final code name")
+    definition: Optional[str] = Field(default=None, description="The final code definition")
+    confidence: float = Field(default=0.8, description="Confidence score (0-1)")
+    reasoning: Optional[str] = Field(default=None, description="Reasoning for the decision")
+
+class BatchCodeDecisions(BaseModel):
+    """Batch processing multiple clusters in one LLM call"""
+    decisions: List[CodeDecision] = Field(description="Code decisions for multiple clusters")
+
+class ClusterInput(BaseModel):
+    """Input data for a single cluster"""
+    cluster_id: int
+    cluster_text: str
+    nearest_codes: str
+
+# ============================================================================
+# SHARED CODEBOOK WITH REAL-TIME UPDATES
+# ============================================================================
+
+@dataclass
+class SharedCodebook:
+    """Thread-safe shared codebook with async lock and version tracking"""
+    _codes: List[Dict[str, str]]
+    _lock: asyncio.Lock
+    _version: int = 0
+    _update_log: List[Dict[str, Any]] = None
+    _embedding_cache: Dict[str, np.ndarray] = None
+    
+    def __init__(self, initial_codes: List[Dict[str, str]]):
+        self._codes = initial_codes.copy()
+        self._lock = asyncio.Lock()
+        self._version = 0
+        self._update_log = []
+        self._embedding_cache = {}
+    
+    async def get_current_snapshot(self) -> Tuple[List[Dict[str, str]], int]:
+        """Get current codes and version atomically"""
+        async with self._lock:
+            return self._codes.copy(), self._version
+    
+    async def add_code_if_new(self, code: str, definition: str) -> Tuple[bool, int]:
+        """Add a new code if it doesn't exist, return (added, new_version)"""
+        async with self._lock:
+            # Check if code already exists
+            for existing in self._codes:
+                if existing['code'].lower() == code.lower():
+                    return False, self._version
+            
+            # Add new code
+            self._codes.append({'code': code, 'definition': definition})
+            self._version += 1
+            self._update_log.append({
+                'version': self._version,
+                'action': 'add',
+                'code': code,
+                'timestamp': time.time()
+            })
+            return True, self._version
+    
+    async def get_embeddings_for_version(self, version: int) -> Optional[List[np.ndarray]]:
+        """Get cached embeddings for a specific version"""
+        async with self._lock:
+            return self._embedding_cache.get(version)
+    
+    async def cache_embeddings(self, version: int, embeddings: List[np.ndarray]):
+        """Cache embeddings for a version"""
+        async with self._lock:
+            self._embedding_cache[version] = embeddings
+    
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get codebook statistics"""
+        async with self._lock:
+            return {
+                'total_codes': len(self._codes),
+                'version': self._version,
+                'updates': len(self._update_log),
+                'cached_versions': len(self._embedding_cache)
+            }
+
+# ============================================================================
+# OPTIMIZED EMBEDDING MANAGER
+# ============================================================================
+
+class OptimizedEmbeddingManager:
+    """Manages embeddings with shared codebook integration"""
+    
+    def __init__(self, shared_codebook: SharedCodebook, verbose: bool = False):
+        self.shared_codebook = shared_codebook
+        self.embedding_config = EmbeddingConfig()
+        self.verbose = verbose
+        self._individual_cache: Dict[str, np.ndarray] = {}
+    
+    def _get_text_hash(self, text: str) -> str:
+        """Generate hash for text"""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
+    
+    async def get_embeddings_for_current_codebook(self) -> Tuple[List[Dict[str, str]], List[np.ndarray], int]:
+        """Get embeddings for the current codebook state"""
+        # Get current snapshot
+        codes, version = await self.shared_codebook.get_current_snapshot()
+        
+        # Check if we have cached embeddings for this version
+        cached_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
+        if cached_embeddings is not None:
+            return codes, cached_embeddings, version
+        
+        # Generate embeddings for new version
+        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+        embeddings = await self._embed_texts(code_texts)
+        
+        # Cache for this version
+        await self.shared_codebook.cache_embeddings(version, embeddings)
+        
+        return codes, embeddings, version
+    
+    async def _embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+        """Embed multiple texts with caching"""
+        # Check cache first
+        embeddings = []
+        new_texts = []
+        new_indices = []
+        
+        for i, text in enumerate(texts):
+            text_hash = self._get_text_hash(text)
+            if text_hash in self._individual_cache:
+                embeddings.append((i, self._individual_cache[text_hash]))
+            else:
+                new_texts.append(text)
+                new_indices.append(i)
+        
+        # Embed new texts if any
+        if new_texts:
+            try:
+                client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
+                response = await client.embeddings.create(
+                    model=self.embedding_config.embedding_model,
+                    input=new_texts
+                )
+                
+                # Cache new embeddings
+                for j, embedding_data in enumerate(response.data):
+                    embedding = np.array(embedding_data.embedding, dtype=np.float32)
+                    text = new_texts[j]
+                    text_hash = self._get_text_hash(text)
+                    self._individual_cache[text_hash] = embedding
+                    embeddings.append((new_indices[j], embedding))
+                    
+            except Exception as e:
+                logger.error(f"Error embedding texts: {str(e)}")
+                return []
+        
+        # Sort by index and return
+        embeddings.sort(key=lambda x: x[0])
+        return [emb[1] for emb in embeddings]
+
+# ============================================================================
+# LANGCHAIN BATCH PROCESSOR
+# ============================================================================
+
+class LangChainBatchProcessor:
+    """Processes clusters using LangChain's efficient batch capabilities"""
+    
+    def __init__(self, 
+                 embedding_manager: OptimizedEmbeddingManager,
+                 shared_codebook: SharedCodebook,
+                 model_config: ModelConfig,
+                 var_lab: str,
+                 k: int = 5,
+                 batch_size: int = 5,
+                 max_concurrent_requests: int = 10,
+                 verbose: bool = False,
+                 prompt_printer = None):
+        
+        self.embedding_manager = embedding_manager
+        self.shared_codebook = shared_codebook
+        self.model_config = model_config
+        self.var_lab = var_lab
+        self.k = k
+        self.batch_size = batch_size
+        self.max_concurrent_requests = max_concurrent_requests
+        self.verbose = verbose
+        self.prompt_printer = prompt_printer
+        
+        # Initialize LangChain components
+        self._init_langchain_chain()
+        
+        # Stats tracking
+        self.stats = {
+            'clusters_processed': 0,
+            'new_codes_added': 0,
+            'no_new_codes_needed': 0,
+            'errors': 0,
+            'llm_time': 0.0,
+            'embedding_time': 0.0
+        }
+    
+    def _init_langchain_chain(self):
+        """Initialize optimized LangChain chain for code decisions"""
+        # Single LLM for combined decision
+        self.llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("initial_codes"),
+            temperature=0.0
+        )
+        
+        # Parser for structured output
+        self.parser = PydanticOutputParser(pydantic_object=CodeDecision)
+        
+        # Combined prompt template
+        combined_prompt = PromptTemplate(
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + """
+Analyze this cluster of survey responses and decide if a new code is needed.
+
+Survey Question: {survey_question}
+Language: {language}
+
+Existing Relevant Codes:
+{code_text}
+
+Cluster Ideas:
+{cluster_text}
+
+Based on the above, determine if the existing codes adequately capture the themes in this cluster.
+If not, suggest a new code with a clear definition.
+
+{format_instructions}
+""",
+            input_variables=["language", "survey_question", "code_text", "cluster_text"],
+            partial_variables={"format_instructions": self.parser.get_format_instructions()}
+        )
+        
+        # Build the chain with batch optimization
+        self.chain = (
+            combined_prompt 
+            | self.llm 
+            | self.parser
+        ).with_config({"max_concurrency": self.max_concurrent_requests})
+        
+        # Capture prompt function
+        def capture_prompt(inputs):
+            if self.prompt_printer and hasattr(self, '_capture_count'):
+                if self._capture_count < 3:  # Only capture first few prompts
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation_v3",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=str(inputs),
+                        prompt_type="combined_code_decision",
+                        metadata={
+                            "model": self.llm.model_name,
+                            "var_lab": self.var_lab,
+                            "batch_processing": True
+                        }
+                    )
+                    self._capture_count += 1
+            return inputs
+        
+        self._capture_count = 0
+        
+        # Add prompt capture to chain
+        self.chain = RunnableLambda(capture_prompt) | self.chain
+    
+    async def _find_nearest_codes(self, cluster_embedding: np.ndarray, 
+                                 codebook_embeddings: List[np.ndarray], 
+                                 codes: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Find k nearest codes to cluster embedding"""
+        if not codebook_embeddings:
+            return []
+        
+        # Calculate similarities
+        codebook_array = np.array(codebook_embeddings)
+        similarities = cosine_similarity(cluster_embedding.reshape(1, -1), codebook_array)[0]
+        top_k_indices = np.argsort(similarities)[-self.k:][::-1]
+        
+        # Get unique codes
+        seen = set()
+        nearest_codes = []
+        
+        for idx in top_k_indices:
+            if idx < len(codes):
+                code = codes[idx]
+                code_text = code.get('code', '')
+                
+                if code_text not in seen:
+                    seen.add(code_text)
+                    nearest_codes.append(code)
+                    
+                    if len(nearest_codes) >= self.k:
+                        break
+        
+        return nearest_codes
+    
+    async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
+        """Process a batch of clusters using LangChain's batch capabilities"""
+        batch_results = []
+        batch_inputs = []
+        cluster_map = {}
+        
+        # Prepare all inputs for batch processing
+        for cluster_id, cluster_data in batch_clusters:
+            try:
+                start_time = time.time()
+                
+                # Calculate cluster embedding
+                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+                
+                # Get current codebook embeddings
+                embed_start = time.time()
+                codes, codebook_embeddings, version = await self.embedding_manager.get_embeddings_for_current_codebook()
+                self.stats['embedding_time'] += time.time() - embed_start
+                
+                # Find nearest codes
+                nearest_codes = await self._find_nearest_codes(cluster_embedding, codebook_embeddings, codes)
+                
+                # Prepare inputs
+                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
+                code_text = "\n".join([
+                    f"- {code['code']}: {code['definition']}" 
+                    for code in nearest_codes
+                ]) if nearest_codes else "No existing codes in codebook"
+                
+                batch_inputs.append({
+                    "language": DEFAULT_LANGUAGE,
+                    "survey_question": self.var_lab,
+                    "code_text": code_text,
+                    "cluster_text": cluster_text
+                })
+                
+                cluster_map[len(batch_inputs) - 1] = {
+                    'cluster_id': cluster_id,
+                    'start_time': start_time,
+                    'codebook_version': version
+                }
+                
+            except Exception as e:
+                logger.error(f"Error preparing cluster {cluster_id}: {e}")
+                batch_results.append({
+                    'cluster_id': cluster_id,
+                    'status': 'preparation_error',
+                    'error': str(e)
+                })
+        
+        if not batch_inputs:
+            return batch_results
+        
+        # Process batch using LangChain
+        try:
+            llm_start = time.time()
+            decisions = await self.chain.abatch(batch_inputs)
+            self.stats['llm_time'] += time.time() - llm_start
+            
+            # Process results
+            for idx, decision in enumerate(decisions):
+                cluster_info = cluster_map[idx]
+                cluster_id = cluster_info['cluster_id']
+                
+                if decision.needs_new_code and decision.code:
+                    # Add to shared codebook
+                    added, new_version = await self.shared_codebook.add_code_if_new(
+                        decision.code, decision.definition
+                    )
+                    
+                    if added:
+                        self.stats['new_codes_added'] += 1
+                        if self.verbose:
+                            logger.info(f"Cluster {cluster_id}: Added new code '{decision.code}' (v{new_version})")
+                    
+                    batch_results.append({
+                        'cluster_id': cluster_id,
+                        'status': 'new_code_added' if added else 'code_already_exists',
+                        'code': decision.code,
+                        'definition': decision.definition,
+                        'confidence': decision.confidence,
+                        'processing_time': time.time() - cluster_info['start_time']
+                    })
+                else:
+                    self.stats['no_new_codes_needed'] += 1
+                    batch_results.append({
+                        'cluster_id': cluster_id,
+                        'status': 'no_new_code_needed',
+                        'processing_time': time.time() - cluster_info['start_time']
+                    })
+                
+                self.stats['clusters_processed'] += 1
+                
+        except Exception as e:
+            logger.error(f"Batch processing error: {e}")
+            # Add error results for all clusters in batch
+            for idx in cluster_map:
+                cluster_id = cluster_map[idx]['cluster_id']
+                if not any(r['cluster_id'] == cluster_id for r in batch_results):
+                    batch_results.append({
+                        'cluster_id': cluster_id,
+                        'status': 'batch_error',
+                        'error': str(e)
+                    })
+                    self.stats['errors'] += 1
+        
+        return batch_results
+    
+    async def process_all_clusters_concurrent(self, clusters: Dict[int, Dict]) -> List[Dict[str, Any]]:
+        """Process all clusters with true concurrent batch processing"""
+        cluster_items = list(clusters.items())
+        total_clusters = len(cluster_items)
+        total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
+        
+        verbose_reporter = VerboseReporter(self.verbose)
+        
+        # Create ALL batch tasks upfront
+        batch_tasks = []
+        
+        for i in range(0, total_clusters, self.batch_size):
+            batch_num = i // self.batch_size + 1
+            batch_clusters = cluster_items[i:i + self.batch_size]
+            
+            # Create async task for each batch
+            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters):
+                """Process a single batch with LangChain"""
+                if self.verbose:
+                    logger.info(f"Batch {batch_num}/{total_batches} started")
+                
+                results = await self.process_batch_langchain(batch_clusters)
+                
+                if self.verbose:
+                    new_codes = sum(1 for r in results if r['status'] == 'new_code_added')
+                    logger.info(f"Batch {batch_num}/{total_batches} complete: {new_codes} new codes")
+                
+                return batch_num, results
+            
+            batch_tasks.append(process_batch())
+        
+        # Process ALL batches concurrently
+        if self.verbose:
+            verbose_reporter.step_start(
+                f"Processing {total_clusters} clusters in {total_batches} concurrent batches"
+            )
+        
+        all_batch_start = time.time()
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        all_batch_time = time.time() - all_batch_start
+        
+        # Collect all results
+        all_results = []
+        for result in batch_results:
+            if isinstance(result, Exception):
+                logger.error(f"Batch error: {result}")
+            elif isinstance(result, tuple):
+                batch_num, batch_cluster_results = result
+                all_results.extend(batch_cluster_results)
+        
+        if self.verbose:
+            verbose_reporter.step_complete(
+                f"All {total_batches} batches completed in {all_batch_time:.1f}s "
+                f"(true concurrent processing)"
+            )
+        
+        return all_results
+
+# ============================================================================
+# DATA PROCESSOR
+# ============================================================================
+
+class CodebookDataProcessor:
+    """Handles data preparation for codebook generation"""
+    
+    def __init__(self, 
+                 cluster_results: List[models.ClusterModel], 
+                 embedded_text: List[models.EmbeddingsModel],
+                 k: int = 5):
+        
+        self.cluster_results = cluster_results
+        self.embedded_text = embedded_text
+        self.k = k
+        
+    def prepare_cluster_text(self) -> Dict[int, Dict]:
+        """Prepare cluster data with ideas and embeddings"""
+        # Create embedding map
+        embedding_map = {}
+        for result in self.embedded_text:
+            if hasattr(result, 'idea_embeddings') and result.idea_embeddings:
+                for idea in result.idea_embeddings:
+                    embedding_map[idea.idea_id] = {
+                        'idea': idea.idea,
+                        'embedding': idea.idea_embedding
+                    }
+        
+        # Group by cluster
+        clusters = {}
+        for result in self.cluster_results:
+            ideas_list = result.response_ideas or []
+            
+            for idea in ideas_list:
+                if idea.initial_cluster is not None and idea.initial_cluster != -1:
+                    cluster_id = idea.initial_cluster
+                    
+                    if idea.idea_id in embedding_map:
+                        embedding_data = embedding_map[idea.idea_id]
+                        
+                        if cluster_id not in clusters:
+                            clusters[cluster_id] = {'ideas': [], 'embeddings': []}
+                        
+                        clusters[cluster_id]['ideas'].append(embedding_data['idea'])
+                        clusters[cluster_id]['embeddings'].append(embedding_data['embedding'])
+        
+        # Filter out empty clusters
+        return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
+
+# ============================================================================
+# MAIN GENERATOR
+# ============================================================================
+
+class InductiveCodebookGenerator:
+    """V3 Generator using LangChain optimization and shared memory pattern"""
+    
+    def __init__(
+        self,
+        cluster_results: List[models.ClusterModel], 
+        embedded_text: List[models.EmbeddingsModel],
+        starter_codes: List[Dict[str, str]], 
+        var_lab: str, 
+        k: int = 5,
+        verbose: bool = False, 
+        prompt_printer = None,
+        batch_size: int = 10,
+        max_concurrent_requests: int = 5,
+        config = None  # For compatibility
+    ):
+        self.cluster_results = cluster_results
+        self.embedded_text = embedded_text
+        self.starter_codes = starter_codes
+        self.var_lab = var_lab
+        self.k = k
+        self.verbose = verbose
+        self.prompt_printer = prompt_printer
+        self.batch_size = batch_size
+        self.max_concurrent_requests = max_concurrent_requests
+        
+        # Initialize components
+        self.model_config = ModelConfig()
+        self.data_processor = CodebookDataProcessor(
+            cluster_results=cluster_results,
+            embedded_text=embedded_text,
+            k=k
+        )
+        self.verbose_reporter = VerboseReporter(verbose)
+    
+    async def generate_async(self) -> Dict[str, Any]:
+        """Generate codebook with LangChain optimization"""
+        start_time = time.time()
+        
+        self.verbose_reporter.section_header("CODEBOOK GENERATION V3 - LANGCHAIN OPTIMIZED", emoji="⚡")
+        
+        # Initialize shared codebook
+        shared_codebook = SharedCodebook(self.starter_codes)
+        
+        # Initialize embedding manager
+        embedding_manager = OptimizedEmbeddingManager(shared_codebook, self.verbose)
+        
+        # Prepare cluster data
+        clusters = self.data_processor.prepare_cluster_text()
+        if not clusters:
+            return {
+                'codebook': self.starter_codes,
+                'cluster_assignments': {},
+                'stats': {'error': 'No clusters to process'}
+            }
+        
+        self.verbose_reporter.step_start(
+            f"Processing {len(clusters)} clusters with LangChain batch optimization"
+        )
+        
+        # Initialize batch processor
+        batch_processor = LangChainBatchProcessor(
+            embedding_manager=embedding_manager,
+            shared_codebook=shared_codebook,
+            model_config=self.model_config,
+            var_lab=self.var_lab,
+            k=self.k,
+            batch_size=self.batch_size,
+            max_concurrent_requests=self.max_concurrent_requests,
+            verbose=self.verbose,
+            prompt_printer=self.prompt_printer
+        )
+        
+        # Process all clusters
+        results = await batch_processor.process_all_clusters_concurrent(clusters)
+        
+        # Build cluster assignments
+        cluster_to_code = {}
+        for result in results:
+            cluster_id = result['cluster_id']
+            if result.get('code'):
+                cluster_to_code[cluster_id] = result['code']
+            else:
+                cluster_to_code[cluster_id] = result['status']
+        
+        # Get final stats
+        final_codes, final_version = await shared_codebook.get_current_snapshot()
+        codebook_stats = await shared_codebook.get_stats()
+        
+        # Combine stats
+        processing_time = time.time() - start_time
+        final_stats = {
+            **batch_processor.stats,
+            **codebook_stats,
+            'processing_time': processing_time,
+            'initial_codes': len(self.starter_codes),
+            'final_codes': len(final_codes),
+            'new_codes': len(final_codes) - len(self.starter_codes),
+            'avg_time_per_cluster': processing_time / len(clusters) if len(clusters) > 0 else 0
+        }
+        
+        # Report results
+        self.verbose_reporter.summary("V3 GENERATION COMPLETE", {
+            "Initial codes": len(self.starter_codes),
+            "New codes added": batch_processor.stats['new_codes_added'],
+            "Final codebook size": len(final_codes),
+            "Clusters processed": len(clusters),
+            "Processing time": f"{processing_time:.2f}s",
+            "Avg per cluster": f"{final_stats['avg_time_per_cluster']:.2f}s",
+            "LLM time": f"{batch_processor.stats['llm_time']:.2f}s",
+            "Embedding time": f"{batch_processor.stats['embedding_time']:.2f}s",
+            "Method": "LangChain batch optimization"
+        })
+        
+        return {
+            'codebook': final_codes,
+            'cluster_assignments': cluster_to_code,
+            'stats': final_stats
+        }
+    
+    def generate(self) -> Dict[str, Any]:
+        """Synchronous wrapper for async generation"""
+        return asyncio.run(self.generate_async())
+    
+    # Compatibility methods
+    def generate_batch_concurrent(self) -> Dict[str, Any]:
+        return self.generate()
+    
+    def generate_fully_concurrent(self) -> Dict[str, Any]:
+        return self.generate()
