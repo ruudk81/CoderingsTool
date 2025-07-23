@@ -1166,7 +1166,7 @@ class InductiveCodebookGenerator:
         # Initialize shared codebook state
         shared_state = SharedCodebookState(
             initial_codes=self.data_processor.codebook.copy(),
-            embedding_manager=DynamicEmbeddingManager(verbose=self.verbose)
+            embedding_manager=DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
         )
         
         # Pre-embed initial codebook for efficiency
