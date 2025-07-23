@@ -73,7 +73,6 @@ class ProcessingError(Exception):
         super().__init__(message)
         self.error_type = error_type
 
-@dataclass
 def classify_error(error: Exception) -> ErrorType:
     """Classify errors for appropriate retry behavior"""
     error_str = str(error).lower()
