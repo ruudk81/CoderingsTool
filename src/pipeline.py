@@ -346,7 +346,7 @@ from config import EmbeddingConfig
 from utils.embedder import Embedder
 from utils.clusterer import Clusterer
 
-FORCE = False
+FORCE = True
 
 step_name        = "initial_clusters"
 if  FORCE:
