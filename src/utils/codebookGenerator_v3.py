@@ -472,9 +472,11 @@ class LangChainBatchProcessor:
     
     @retry(**API_RETRY_CONFIG)
     async def _process_initial_batch_with_retry(self, batch_inputs: List[Dict]) -> List[Any]:
-        """Process initial suggestions with retry logic"""
+        """Process initial suggestions with retry logic using individual ainvoke calls"""
         try:
-            results = await self.initial_chain.abatch(batch_inputs)
+            # Use asyncio.gather with individual ainvoke calls instead of abatch
+            tasks = [self.initial_chain.ainvoke(input_data) for input_data in batch_inputs]
+            results = await asyncio.gather(*tasks)
             return results
         except Exception as e:
             error_type = classify_error(e)
@@ -487,9 +489,11 @@ class LangChainBatchProcessor:
     
     @retry(**API_RETRY_CONFIG)
     async def _process_review_batch_with_retry(self, review_inputs: List[Dict]) -> List[Any]:
-        """Process review suggestions with retry logic"""
+        """Process review suggestions with retry logic using individual ainvoke calls"""
         try:
-            results = await self.review_chain.abatch(review_inputs)
+            # Use asyncio.gather with individual ainvoke calls instead of abatch
+            tasks = [self.review_chain.ainvoke(input_data) for input_data in review_inputs]
+            results = await asyncio.gather(*tasks)
             return results
         except Exception as e:
             error_type = classify_error(e)
@@ -586,7 +590,7 @@ class LangChainBatchProcessor:
         try:
             llm_start = time.time()
             
-            # Stage 1: Initial suggestions using abatch with retry
+            # Stage 1: Initial suggestions using asyncio.gather with individual ainvoke calls
             try:
                 initial_results = await self._process_initial_batch_with_retry(batch_inputs)
             except (APIError, ProcessingError) as e:
@@ -653,7 +657,7 @@ class LangChainBatchProcessor:
                         'initial_result': initial_result
                     }
             
-            # Stage 2: Review suggestions using abatch with retry
+            # Stage 2: Review suggestions using asyncio.gather with individual ainvoke calls
             if review_inputs:
                 try:
                     review_results = await self._process_review_batch_with_retry(review_inputs)
