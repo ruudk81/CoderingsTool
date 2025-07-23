@@ -50,7 +50,7 @@ class SpeculativeStarterCodes:
             
         try:
             response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_phase("phase1_descriptive"),
+                model=self.model_config.get_model_for_stage("speculative_codes"),
                 messages=[{"role": "user", "content": prompt}],
                 response_model=List[models.CodeDefinition],
                 temperature=0.7,

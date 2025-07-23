@@ -708,7 +708,7 @@ class InductiveCodebookGenerator:
         # Initialize token-aware batch processor
         self.batch_processor = TokenAwareBatchProcessor(
             config=self.config,
-            model_name=self.model_config.get_model_for_phase("phase1_descriptive"),
+            model_name=self.model_config.get_model_for_stage("tiktoken"),
             verbose=verbose
         )
         
@@ -733,7 +733,7 @@ class InductiveCodebookGenerator:
         # Initialize LLM
         llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_phase("phase1_descriptive"),
+            model=self.model_config.get_model_for_stage("initial_codes"),
             temperature=0.0
         )
         
@@ -771,6 +771,12 @@ class InductiveCodebookGenerator:
             review_code_text = f"Suggested new code:\n- {code}: {definition}\n\nExisting codes:\n{code_text}"
         else:
             review_code_text = f"No new code suggested.\n\nExisting codes:\n{code_text}"
+        
+        llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("review_codes"),
+            temperature=0.0
+        )
         
         review_prompt_text = REVIEW_CODEBOOK_GENERATION.format(
             language=DEFAULT_LANGUAGE,

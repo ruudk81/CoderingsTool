@@ -53,6 +53,7 @@ class ModelConfig:
     embedding_model: str = "text-embedding-3-large"  
     
     # Step 6: Codebook generation
+    speculative_codes_model: str = DEFAULT_MODEL  
     token_codebook_generation_model: str = "gpt-4o-mini"
     initial_code_generation_model: str = DEFAULT_MODEL       
     review_code_generation_model: str = "gpt-4o"         
@@ -89,6 +90,7 @@ class ModelConfig:
             'segmentation': self.segmentation_model,
             'description': self.description_model,
             'embedding': self.embedding_model,
+            'speculative_codes': self.speculative_codes_model,
             'tiktoken': self.token_codebook_generation_model,
             'initial_codes': self.initial_code_generation_model,
             'review_codes': self.review_code_generation_model
