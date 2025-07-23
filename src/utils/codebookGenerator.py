@@ -485,16 +485,17 @@ class InductiveCodebookGenerator:
             return None
     
     def generate(self) -> Dict[str, Any]:
-        """Generate inductive codebook by processing clusters iteratively"""
-        if self.verbose:
-            print("=== INDUCTIVE CODEBOOK GENERATION (LANGCHAIN) ===")
+        """Generate inductive codebook using LangChain batch processing"""
+        from utils.verboseReporter import VerboseReporter
+        
+        verbose_reporter = VerboseReporter(self.verbose)
+        verbose_reporter.section_header("INDUCTIVE CODEBOOK GENERATION (LANGCHAIN)")
         
         # Prepare clusters from the data processor
         clusters = self.data_processor._prepare_cluster_text()
         
         if not clusters:
-            if self.verbose:
-                print("No valid clusters found with embeddings")
+            verbose_reporter.stat_line("No valid clusters found with embeddings")
             return {
                 'codebook': self.data_processor.codebook,
                 'cluster_assignments': {},
@@ -504,49 +505,130 @@ class InductiveCodebookGenerator:
         self.stats['total_clusters'] = len(clusters)
         cluster_ids = sorted(clusters.keys())
         
-        if self.verbose:
-            print(f"Processing {len(cluster_ids)} clusters iteratively...")
+        verbose_reporter.stat_line(f"Processing {len(cluster_ids)} clusters with batch processing")
         
         # Track cluster assignments
         cluster_to_code = {}
         
-        # Process clusters iteratively (as per GATOS methodology)
+        # Process clusters iteratively (GATOS methodology)
         for i, cluster_id in enumerate(cluster_ids):
             if self.verbose and i % 10 == 0 and i > 0:
-                print(f"Progress: {i}/{len(cluster_ids)} clusters processed ({self.stats['new_codes_added']} new codes added)")
+                verbose_reporter.stat_line(
+                    f"Progress: {i}/{len(cluster_ids)} clusters processed "
+                    f"({self.stats['new_codes_added']} new codes added)"
+                )
             
-            # Process cluster
-            result = asyncio.run(self._process_cluster(cluster_id, clusters[cluster_id]))
+            # Get current codebook embeddings for k-nearest neighbor search
+            code_texts = [f"{code['code']}: {code['definition']}" for code in self.data_processor.codebook]
+            codebook_embeddings = asyncio.run(self.data_processor._embed_codebook_texts(code_texts))
             
-            if result:
-                if result.needs_new_code and result.code and result.definition:
-                    # Add new code to codebook
-                    new_code = {
-                        'code': result.code,
-                        'definition': result.definition,
-                        'cluster_origin': str(cluster_id)
-                    }
-                    self.data_processor.codebook.append(new_code)
-                    cluster_to_code[cluster_id] = result.code
-                    self.stats['new_codes_added'] += 1
+            if not codebook_embeddings:
+                verbose_reporter.stat_line(f"Warning: Failed to embed codebook for cluster {cluster_id}")
+                cluster_to_code[cluster_id] = "embedding_error"
+                continue
+            
+            # Calculate cluster embedding (mean of all ideas in cluster)
+            cluster_data = clusters[cluster_id]
+            cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+            
+            # Find k nearest codes
+            nearest_codes = self.data_processor._find_k_nearest_codes(cluster_embedding, codebook_embeddings)
+            
+            # Prepare cluster data for processing
+            cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
+            code_text = "\n".join([
+                f"- {code['code']}: {code['definition']}" 
+                for code in nearest_codes
+            ]) if nearest_codes else "No existing codes in codebook"
+            
+            # Convert cluster to SurveyResponse format for batch processing
+            survey_responses = [SurveyResponse(
+                respondent_id=str(cluster_id),
+                response=cluster_text
+            )]
+            
+            # Create batch processor and pipeline
+            batch_processor = BatchProcessor(self.config)
+            
+            # Create batches based on token estimates
+            batches = batch_processor.create_batches(
+                responses=survey_responses,
+                existing_codebook=code_text,
+                survey_question=self.var_lab
+            )
+            
+            if not batches:
+                cluster_to_code[cluster_id] = "batch_error"
+                continue
+            
+            # Process the batch through LangChain pipeline
+            try:
+                # Create prompt manager for this cluster
+                prompt_manager = PromptManager(
+                    var_lab=self.var_lab,
+                    code_text=code_text,
+                    cluster_text=cluster_text,
+                    code_recommendation=[]
+                )
+                
+                # Create survey response pipeline
+                pipeline = SurveyResponsePipeline(
+                    api_key=OPENAI_API_KEY,
+                    prompts_config={
+                        'var_lab': self.var_lab,
+                        'code_text': code_text,
+                        'cluster_text': cluster_text
+                    },
+                    config=self.config,
+                    verbose=False
+                )
+                
+                # Process the batch
+                processed_responses = asyncio.run(
+                    pipeline.process_responses(
+                        responses=survey_responses,
+                        existing_codebook=code_text,
+                        survey_question=self.var_lab
+                    )
+                )
+                
+                # Extract result
+                if processed_responses and len(processed_responses) > 0:
+                    result = processed_responses[0]
                     
-                    if self.verbose:
-                        print(f"  New code added for cluster {cluster_id}: '{result.code}'")
+                    if result.needs_new_code and result.code and result.definition:
+                        # Add new code to codebook
+                        new_code = {
+                            'code': result.code,
+                            'definition': result.definition,
+                            'cluster_origin': str(cluster_id)
+                        }
+                        self.data_processor.codebook.append(new_code)
+                        cluster_to_code[cluster_id] = result.code
+                        self.stats['new_codes_added'] += 1
+                        
+                        if self.verbose:
+                            print(f"  New code added for cluster {cluster_id}: '{result.code}'")
+                    else:
+                        # No new code needed
+                        cluster_to_code[cluster_id] = "existing_code"
+                        self.stats['no_new_codes_needed'] += 1
                 else:
-                    # No new code needed
-                    cluster_to_code[cluster_id] = "existing_code"
-                    self.stats['no_new_codes_needed'] += 1
-            else:
-                # Error processing cluster
+                    cluster_to_code[cluster_id] = "no_response"
+                    
+            except Exception as e:
+                logger.error(f"Error processing cluster {cluster_id}: {str(e)}")
                 cluster_to_code[cluster_id] = "processing_error"
+                self.stats['errors'] += 1
         
         # Final summary
-        if self.verbose:
-            print("\n=== CODEBOOK GENERATION COMPLETE ===")
-            print(f"Initial codes: {len(self.starter_codes)}")
-            print(f"New codes added: {self.stats['new_codes_added']}")
-            print(f"Final codebook size: {len(self.data_processor.codebook)}")
-            print(f"Processing errors: {self.stats['errors']}")
+        verbose_reporter.summary("CODEBOOK GENERATION COMPLETE", {
+            "Initial codes": len(self.starter_codes),
+            "New codes added": self.stats['new_codes_added'],
+            "Final codebook size": len(self.data_processor.codebook),
+            "Clusters processed": len(cluster_ids),
+            "Processing errors": self.stats['errors']
+        })
         
         return {
             'codebook': self.data_processor.codebook,
@@ -573,7 +655,7 @@ class SurveyResponsePipeline:
         verbose: bool = False
     ):
         self.config = config or ProcessingConfig()
-        self.prompt_manager = PromptManager(prompts_config)
+        self.prompts_config = prompts_config
         self.batch_processor = BatchProcessor(self.config)
         self.verbose = verbose
         
@@ -584,8 +666,8 @@ class SurveyResponsePipeline:
             temperature=self.config.temperature
         )
         
-        # Build the processing chain
-        self.chain = self._build_chain()
+        # Build the processing chain will be done per batch
+        # since we need different prompts for each cluster
         
     def _build_chain(self):
         """Build the three-stage processing chain"""
@@ -663,12 +745,19 @@ class SurveyResponsePipeline:
         ])
         
         try:
+            # Create prompt manager for this batch
+            prompt_manager = PromptManager(
+                var_lab=survey_question,
+                code_text=existing_codebook,
+                cluster_text=clustered_responses,
+                code_recommendation=[]
+            )
+            
+            # Build chain for this batch  
+            chain = self._build_chain_for_batch(prompt_manager)
+            
             # Run the chain
-            result = await self.chain.ainvoke({
-                "existing_codebook": existing_codebook,
-                "survey_question": survey_question,
-                "clustered_responses": clustered_responses
-            })
+            result = await chain.ainvoke({})
             
             # Create processed responses
             processed = []
@@ -703,6 +792,99 @@ class SurveyResponsePipeline:
                 )
                 for r in batch.responses
             ]
+    
+    def _build_chain_for_batch(self, prompt_manager: PromptManager):
+        """Build processing chain for a specific batch"""
+        
+        # Stage 1: Initial code generation
+        initial_prompt = prompt_manager.get_initial_prompt()
+        
+        # Stage 2: Review and refinement  
+        review_prompt = prompt_manager.get_review_prompt()
+        
+        # Output parser for final recommendation
+        output_parser = JsonOutputParser(pydantic_object=CodeRecommendation)
+        
+        def extract_initial_suggestion(response: str) -> Dict[str, Any]:
+            """Extract code and definition from initial response"""
+            lines = response.strip().split('\n')
+            code = None
+            definition = None
+            
+            for i, line in enumerate(lines):
+                if line.strip().startswith("Code:"):
+                    code = line.replace("Code:", "").strip()
+                elif line.strip().startswith("Definition:"):
+                    definition = line.replace("Definition:", "").strip()
+            
+            return {
+                "code": code or "No code suggested",
+                "definition": definition or "No definition provided",
+                "initial_response": response
+            }
+        
+        def prepare_review_input(data: Dict[str, Any]) -> Dict[str, Any]:
+            """Prepare input for review stage"""
+            return {
+                "existing_codebook": data.get("existing_codebook", ""),
+                "survey_question": data.get("survey_question", ""),
+                "clustered_responses": data.get("clustered_responses", ""),
+                "code": data.get("code"),
+                "definition": data.get("definition")
+            }
+        
+        # Complete chain
+        chain = (
+            # Stage 1: Initial code generation
+            initial_prompt
+            | self.llm
+            | StrOutputParser()
+            | RunnableLambda(extract_initial_suggestion)
+            | RunnablePassthrough.assign(
+                existing_codebook=lambda x: "",
+                survey_question=lambda x: "",
+                clustered_responses=lambda x: ""
+            )
+            # Stage 2: Review and refinement
+            | RunnableLambda(prepare_review_input)
+            | review_prompt
+            | self.llm
+            | RunnableLambda(lambda response: response.content if hasattr(response, 'content') else str(response))
+            | RunnableLambda(self._parse_response_to_recommendation)
+        )
+        
+        return chain
+    
+    def _parse_response_to_recommendation(self, response_text: str) -> CodeRecommendation:
+        """Parse response to CodeRecommendation"""
+        try:
+            import json
+            import re
+            
+            # Look for JSON in the response
+            json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                try:
+                    json_data = json.loads(json_str)
+                    return CodeRecommendation(**json_data)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fallback: try to extract decision from text
+            needs_new_code = "new code" in response_text.lower() and "no" not in response_text.lower()
+            
+            return CodeRecommendation(
+                needs_new_code=needs_new_code,
+                reasoning=response_text[:500]
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to parse response: {e}")
+            return CodeRecommendation(
+                needs_new_code=False,
+                reasoning="Failed to parse response"
+            )
     
     async def process_responses(
         self,
