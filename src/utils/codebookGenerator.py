@@ -725,8 +725,8 @@ class InductiveCodebookGenerator:
     async def generate_async_realtime_concurrent(self) -> Dict[str, Any]:
         """Process clusters with real-time codebook updates during concurrent processing"""
         verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.header("REAL-TIME CONCURRENT CODEBOOK GENERATION")
-        verbose_reporter.info("Processing clusters concurrently with real-time codebook updates")
+        verbose_reporter.section_header("REAL-TIME CONCURRENT CODEBOOK GENERATION")
+        verbose_reporter.step_start("Processing clusters concurrently with real-time codebook updates")
         
         # Get cluster data  
         clusters = self.data_processor.prepare_cluster_text()
@@ -752,7 +752,7 @@ class InductiveCodebookGenerator:
             batch_clusters = cluster_items[i:i + self.batch_size]
             batch_start_time = time.time()
             
-            verbose_reporter.info(f"Processing batch {batch_num}: clusters {i+1}-{min(i+self.batch_size, total_clusters)} of {total_clusters} (real-time updates)")
+            verbose_reporter.step_start(f"Processing batch {batch_num}: clusters {i+1}-{min(i+self.batch_size, total_clusters)} of {total_clusters} (real-time updates)")
             
             # Process batch concurrently with shared state
             semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
@@ -788,9 +788,9 @@ class InductiveCodebookGenerator:
             batch_time = time.time() - batch_start_time
             
             if batch_new_codes > 0:
-                verbose_reporter.info(f"Batch {batch_num} complete: {batch_new_codes} new codes added during processing. Codebook now has {len(self.data_processor.codebook)} codes. Time: {batch_time:.2f}s")
+                verbose_reporter.step_complete(f"Batch {batch_num} complete: {batch_new_codes} new codes added during processing. Codebook now has {len(self.data_processor.codebook)} codes. Time: {batch_time:.2f}s")
             else:
-                verbose_reporter.info(f"Batch {batch_num} complete: No new codes needed. Time: {batch_time:.2f}s")
+                verbose_reporter.step_complete(f"Batch {batch_num} complete: No new codes needed. Time: {batch_time:.2f}s")
         
         processing_time = time.time() - start_time
         
@@ -812,8 +812,8 @@ class InductiveCodebookGenerator:
     async def generate_async_batch_concurrent(self) -> Dict[str, Any]:
         """Process clusters in batches with concurrent processing within batches and dynamic codebook updates between batches"""
         verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.header("BATCH CONCURRENT CODEBOOK GENERATION")
-        verbose_reporter.info("Processing clusters in batches with dynamic codebook updates between batches")
+        verbose_reporter.section_header("BATCH CONCURRENT CODEBOOK GENERATION")
+        verbose_reporter.step_start("Processing clusters in batches with dynamic codebook updates between batches")
         
         # Get cluster data  
         clusters = self.data_processor.prepare_cluster_text()
@@ -837,7 +837,7 @@ class InductiveCodebookGenerator:
             batch_clusters = cluster_items[i:i + self.batch_size]
             batch_start_time = time.time()
             
-            verbose_reporter.info(f"Processing batch {batch_num}: clusters {i+1}-{min(i+self.batch_size, total_clusters)} of {total_clusters}")
+            verbose_reporter.step_start(f"Processing batch {batch_num}: clusters {i+1}-{min(i+self.batch_size, total_clusters)} of {total_clusters}")
             
             # Process batch concurrently
             semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
@@ -882,9 +882,9 @@ class InductiveCodebookGenerator:
             # Update snapshot ID for next batch if codebook changed
             if batch_new_codes:
                 current_snapshot_id += 1
-                verbose_reporter.info(f"Batch {batch_num} complete: {len(batch_new_codes)} new codes added. Codebook now has {len(self.data_processor.codebook)} codes. Time: {batch_time:.2f}s")
+                verbose_reporter.step_complete(f"Batch {batch_num} complete: {len(batch_new_codes)} new codes added. Codebook now has {len(self.data_processor.codebook)} codes. Time: {batch_time:.2f}s")
             else:
-                verbose_reporter.info(f"Batch {batch_num} complete: No new codes needed. Time: {batch_time:.2f}s")
+                verbose_reporter.step_complete(f"Batch {batch_num} complete: No new codes needed. Time: {batch_time:.2f}s")
         
         processing_time = time.time() - start_time
         
@@ -906,7 +906,7 @@ class InductiveCodebookGenerator:
     async def generate_async_fully_concurrent(self) -> Dict[str, Any]:
         """Process all clusters concurrently (fastest but no dynamic code addition)"""
         verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.header("FULLY CONCURRENT CODEBOOK GENERATION")
+        verbose_reporter.section_header("FULLY CONCURRENT CODEBOOK GENERATION")
         verbose_reporter.warning("Note: No dynamic code addition between clusters in this mode")
         
         # Get cluster data  
