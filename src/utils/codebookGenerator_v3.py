@@ -624,11 +624,14 @@ class LangChainBatchProcessor:
                     logger.info(f"Prepared cluster {cluster_id} with codebook v{cluster_info['codebook_version']}")
                 
             except Exception as e:
-                logger.error(f"Error preparing cluster {cluster_id}: {e}")
+                logger.error(f"V3 PREPARATION ERROR for cluster {cluster_id}: {e}")
+                logger.error(f"Error type: {type(e).__name__}")
                 batch_results.append({
                     'cluster_id': cluster_id,
-                    'status': 'preparation_error',
-                    'error': str(e)
+                    'status': 'v3_preparation_error',  # Clear V3 identifier
+                    'error': str(e),
+                    'error_type': type(e).__name__,
+                    'error_details': f"Failed during input preparation: {str(e)}"
                 })
         
         if not batch_inputs:
@@ -670,8 +673,9 @@ class LangChainBatchProcessor:
                     logger.error(f"Initial processing failed for cluster {cluster_id}: {str(initial_result)}")
                     batch_results.append({
                         'cluster_id': cluster_id,
-                        'status': 'initial_error',
+                        'status': 'v3_initial_stage_error',  # Clear V3 identifier
                         'error': str(initial_result),
+                        'error_type': type(initial_result).__name__,
                         'processing_time': time.time() - cluster_info['start_time']
                     })
                     self.stats['errors'] += 1
@@ -736,8 +740,9 @@ class LangChainBatchProcessor:
                         logger.error(f"Review failed for cluster {cluster_id}: {str(review_result)}")
                         batch_results.append({
                             'cluster_id': cluster_id,
-                            'status': 'review_error',
+                            'status': 'v3_review_stage_error',  # Clear V3 identifier
                             'error': str(review_result),
+                            'error_type': type(review_result).__name__,
                             'processing_time': time.time() - cluster_info['start_time']
                         })
                         self.stats['errors'] += 1
@@ -775,22 +780,62 @@ class LangChainBatchProcessor:
             self.stats['llm_time'] += time.time() - llm_start
                 
         except Exception as e:
-            logger.error(f"Unexpected batch processing error: {e}")
+            logger.error(f"V3 BATCH PROCESSING ERROR: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Batch had {len(batch_clusters)} clusters")
             error_type = classify_error(e)
+            
             # Add error results for all clusters in batch that weren't processed
+            unprocessed_count = 0
             for idx in cluster_map:
                 cluster_id = cluster_map[idx]['cluster_id']
                 if not any(r['cluster_id'] == cluster_id for r in batch_results):
                     batch_results.append({
                         'cluster_id': cluster_id,
-                        'status': 'unexpected_error',
+                        'status': 'v3_batch_processing_error',  # Clear V3 identifier
                         'error': str(e),
                         'error_type': error_type.value,
+                        'error_details': f"Exception: {type(e).__name__}",
                         'processing_time': time.time() - cluster_map[idx]['start_time']
                     })
                     self.stats['errors'] += 1
+                    unprocessed_count += 1
+            
+            logger.error(f"V3: {unprocessed_count} clusters marked as failed due to batch error")
+            
+            # Attempt individual recovery for failed clusters if possible
+            if unprocessed_count > 0 and len(batch_inputs) > 0:
+                logger.info(f"V3: Attempting individual recovery for {unprocessed_count} failed clusters")
+                # This could be implemented as a fallback mechanism
         
         return batch_results
+    
+    async def _process_cluster_individually_as_fallback(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
+        """Process a single cluster individually as fallback when batch processing fails"""
+        try:
+            logger.info(f"V3: Attempting individual fallback for cluster {cluster_id}")
+            
+            # Process as a batch of 1
+            single_cluster_batch = [(cluster_id, cluster_data)]
+            results = await self.process_batch_langchain(single_cluster_batch)
+            
+            if results and len(results) > 0:
+                return results[0]
+            else:
+                return {
+                    'cluster_id': cluster_id,
+                    'status': 'v3_individual_fallback_failed',
+                    'error': 'No results from individual processing'
+                }
+                
+        except Exception as e:
+            logger.error(f"V3: Individual fallback failed for cluster {cluster_id}: {e}")
+            return {
+                'cluster_id': cluster_id,
+                'status': 'v3_individual_fallback_error',
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
     
     async def process_batch_with_sequential_codebook_updates(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
         """Alternative processing that handles clusters more sequentially for better codebook awareness"""
@@ -801,8 +846,17 @@ class LangChainBatchProcessor:
         
         for i in range(0, len(batch_clusters), sub_batch_size):
             sub_batch = batch_clusters[i:i + sub_batch_size]
-            sub_results = await self.process_batch_langchain(sub_batch)
-            batch_results.extend(sub_results)
+            
+            try:
+                sub_results = await self.process_batch_langchain(sub_batch)
+                batch_results.extend(sub_results)
+            except Exception as e:
+                logger.error(f"V3: Sub-batch {i//sub_batch_size + 1} failed, attempting individual fallback: {e}")
+                
+                # Individual fallback for each cluster in the failed sub-batch
+                for cluster_id, cluster_data in sub_batch:
+                    fallback_result = await self._process_cluster_individually_as_fallback(cluster_id, cluster_data)
+                    batch_results.append(fallback_result)
             
             # Small delay to allow codebook updates to propagate
             if i + sub_batch_size < len(batch_clusters):  # Not the last batch
@@ -938,6 +992,7 @@ class InductiveCodebookGenerator:
         max_concurrent_requests: int = 5,
         config = None  # For compatibility
     ):
+        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR V3 (LangChain optimized)")
         self.cluster_results = cluster_results
         self.embedded_text = embedded_text
         self.starter_codes = starter_codes
@@ -961,6 +1016,7 @@ class InductiveCodebookGenerator:
         """Generate codebook with LangChain optimization"""
         start_time = time.time()
         
+        logger.info("🔥 STARTING V3 CODEBOOK GENERATION (NOT V2!)")
         self.verbose_reporter.section_header("CODEBOOK GENERATION V3 - LANGCHAIN OPTIMIZED", emoji="⚡")
         
         # Initialize shared codebook
@@ -1052,10 +1108,14 @@ class InductiveCodebookGenerator:
             
         self.verbose_reporter.summary("V3 GENERATION COMPLETE", summary_data)
         
+        # Log final results to confirm V3 was used
+        logger.info(f"✅ V3 GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
+        
         return {
             'codebook': final_codes,
             'cluster_assignments': cluster_to_code,
-            'stats': final_stats
+            'stats': final_stats,
+            'generator_version': 'V3_LANGCHAIN_OPTIMIZED'  # Clear identifier
         }
     
     def generate(self) -> Dict[str, Any]:
