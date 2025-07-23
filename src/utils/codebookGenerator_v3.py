@@ -371,9 +371,9 @@ class LangChainBatchProcessor:
         self.suggestion_parser = PydanticOutputParser(pydantic_object=CodeSuggestion)
         self.review_parser = PydanticOutputParser(pydantic_object=CodeReview)
         
-        # Initial suggestion chain - using v1's exact prompt format (no format_instructions)
+        # Initial suggestion chain - using v1's exact prompt format with minimal JSON instruction
         initial_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION,
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION + "\n\nProvide your response as JSON with fields: needs_new_code (boolean), code (string or null), definition (string or null), reasoning (string or null).",
             input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"]
         )
         
@@ -383,9 +383,9 @@ class LangChainBatchProcessor:
             | self.suggestion_parser
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Review chain - using v1's exact prompt format (no format_instructions)
+        # Review chain - using v1's exact prompt format with minimal JSON instruction
         review_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION,
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION + "\n\nProvide your response as JSON with fields: approve_new_code (boolean), final_code (string or null), final_definition (string or null), revision_notes (string or null).",
             input_variables=["language", "survey_question", "code_text", "cluster_text"]
         )
         
