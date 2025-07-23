@@ -1,3 +1,55 @@
+"""
+CODEBOOK GENERATOR - Architecture Overview
+=========================================
+
+This module implements a sophisticated automated codebook generation system for survey analysis
+with the following key architectural features:
+
+## Processing Architecture
+
+### 1. BATCH SEQUENTIAL / CLUSTER CONCURRENT
+   - Batches are processed SEQUENTIALLY to enable cumulative codebook building
+   - Within each batch, clusters are processed CONCURRENTLY
+   - This hybrid approach balances performance with the need for dynamic code addition
+
+### 2. DYNAMIC CODE ADDITION
+   - SharedCodebookState: Thread-safe codebook that grows during processing
+   - New codes added in Batch 1 are immediately available to Batch 2, 3, etc.
+   - Within a batch, concurrent clusters can see codes added by other clusters in real-time
+
+### 3. PROCESSING FLOW
+   ```
+   Initial Codebook
+        ↓
+   [Batch 1: Clusters 1-10] → Process concurrently → Add new codes to shared state
+        ↓
+   [Batch 2: Clusters 11-20] → Can see all codes from Batch 1 → Add more codes
+        ↓
+   [Batch 3: Clusters 21-30] → Can see all codes from Batches 1 & 2
+        ↓
+   Final Codebook (Initial + All new codes)
+   ```
+
+### 4. KEY COMPONENTS
+   - InductiveCodebookGenerator: Main orchestrator
+   - SharedCodebookState: Thread-safe codebook with lock-based updates
+   - DynamicEmbeddingManager: Incremental embedding management
+   - TokenAwareBatchProcessor: Smart batching based on token limits
+   - CodebookEmbeddingManager: Efficient embedding caching
+
+### 5. CONCURRENCY CONTROLS
+   - Batches: Sequential processing (for cumulative building)
+   - Clusters within batch: Concurrent with max_concurrent_batches limit
+   - Lock-based synchronization for codebook updates
+   - Incremental embedding updates to avoid recomputing
+
+### 6. PERFORMANCE OPTIMIZATIONS
+   - Embeddings computed once and cached
+   - Incremental updates (only new codes are embedded)
+   - Similarity checks use cached embeddings
+   - Token-aware batching to maximize throughput
+"""
+
 import os
 import sys
 sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
@@ -35,6 +87,14 @@ logger = logging.getLogger(__name__)
 import logging
 logging.getLogger("httpx").disabled = True
 
+from enum import Enum
+
+class ProcessingMode(Enum):
+    """Defines different processing strategies for codebook generation"""
+    FULLY_SEQUENTIAL = "fully_sequential"  # Process one cluster at a time
+    BATCH_SEQUENTIAL = "batch_sequential"  # Current default: sequential batches, concurrent clusters
+    FULLY_CONCURRENT = "fully_concurrent"  # All clusters concurrent (no dynamic code addition between clusters)
+    QUEUE_BASED = "queue_based"  # Worker pool with queue (experimental)
 
 @dataclass
 class EnhancedCodebookConfig:
@@ -48,6 +108,8 @@ class EnhancedCodebookConfig:
     retry_exponential_base: float = 2.0
     max_concurrent_batches: int = 5  # Process batches concurrently
     rate_limit_buffer: float = 0.1  # 10% buffer for rate limiting
+    processing_mode: ProcessingMode = ProcessingMode.BATCH_SEQUENTIAL
+    queue_workers: int = 3  # Number of workers for queue-based mode
     
     def __post_init__(self):
         # Ensure sensible defaults
@@ -1222,7 +1284,7 @@ class InductiveCodebookGenerator:
         processing_time = time.time() - start_time
         
         # Update final codebook from shared state
-        final_codebook = await shared_state.get_current_codebook()
+        final_codebook = await shared_state.get_current_snapshot()
         self.data_processor.codebook = final_codebook
         
         # Get comprehensive statistics
@@ -1249,10 +1311,255 @@ class InductiveCodebookGenerator:
             'stats': self.stats
         }
     
+    async def generate_async_queue_based(self) -> Dict[str, Any]:
+        """Alternative implementation using queue-based worker pool"""
+        verbose_reporter = VerboseReporter(self.verbose)
+        verbose_reporter.header("QUEUE-BASED CODEBOOK GENERATION (EXPERIMENTAL)")
+        
+        # Get cluster data
+        clusters = self.data_processor.prepare_cluster_text()
+        if not clusters:
+            return {'codebook': self.data_processor.codebook, 'cluster_assignments': {}}
+        
+        self.stats['total_clusters'] = len(clusters)
+        start_time = time.time()
+        
+        # Initialize shared state and embeddings
+        shared_state = SharedCodebookState(
+            initial_codes=self.data_processor.codebook.copy()
+        )
+        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
+        shared_state.set_embedding_manager(dynamic_embeddings)
+        
+        # Create work queue
+        work_queue = asyncio.Queue()
+        for cluster_id, cluster_data in clusters.items():
+            await work_queue.put((cluster_id, cluster_data))
+        
+        # Create workers
+        workers = []
+        for i in range(self.config.queue_workers):
+            worker = asyncio.create_task(
+                self._queue_worker(
+                    work_queue, 
+                    shared_state, 
+                    dynamic_embeddings,
+                    worker_id=i
+                )
+            )
+            workers.append(worker)
+        
+        # Wait for all work to complete
+        await work_queue.join()
+        
+        # Cancel workers
+        for worker in workers:
+            worker.cancel()
+        
+        # Wait for workers to finish
+        await asyncio.gather(*workers, return_exceptions=True)
+        
+        # Get final results
+        processing_time = time.time() - start_time
+        final_codebook = await shared_state.get_current_snapshot()
+        self.data_processor.codebook = final_codebook
+        
+        # Extract cluster assignments from worker results
+        cluster_to_code = {}
+        # Note: In queue-based mode, we'd need to track results differently
+        # This is a simplified version - in production, workers would report results
+        
+        verbose_reporter.summary("QUEUE-BASED GENERATION COMPLETE", {
+            "Initial codes": len(self.starter_codes),
+            "Final codebook size": len(final_codebook),
+            "Clusters processed": len(clusters),
+            "Workers used": self.config.queue_workers,
+            "Processing time (s)": f"{processing_time:.2f}"
+        })
+        
+        return {
+            'codebook': final_codebook,
+            'cluster_assignments': cluster_to_code,
+            'stats': self.stats
+        }
+    
+    async def _queue_worker(self, queue: asyncio.Queue, shared_state: SharedCodebookState, 
+                           dynamic_embeddings: DynamicEmbeddingManager, worker_id: int):
+        """Worker coroutine for queue-based processing"""
+        semaphore = asyncio.Semaphore(1)  # Control concurrency per worker
+        
+        while True:
+            try:
+                # Get work from queue
+                cluster_id, cluster_data = await queue.get()
+                
+                if self.verbose:
+                    logger.info(f"Worker {worker_id} processing cluster {cluster_id}")
+                
+                # Process cluster
+                result = await self._process_cluster_with_shared_state_retries(
+                    cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
+                )
+                
+                # Mark task as done
+                queue.task_done()
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Worker {worker_id} error: {str(e)}")
+                queue.task_done()
+    
+    async def generate_async_fully_sequential(self) -> Dict[str, Any]:
+        """Process clusters one by one sequentially (slowest but most deterministic)"""
+        verbose_reporter = VerboseReporter(self.verbose)
+        verbose_reporter.header("FULLY SEQUENTIAL CODEBOOK GENERATION")
+        
+        # Get cluster data
+        clusters = self.data_processor.prepare_cluster_text()
+        if not clusters:
+            return {'codebook': self.data_processor.codebook, 'cluster_assignments': {}}
+        
+        self.stats['total_clusters'] = len(clusters)
+        start_time = time.time()
+        
+        # Initialize shared state and embeddings
+        shared_state = SharedCodebookState(
+            initial_codes=self.data_processor.codebook.copy()
+        )
+        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
+        shared_state.set_embedding_manager(dynamic_embeddings)
+        
+        # Process clusters one by one
+        cluster_to_code = {}
+        semaphore = asyncio.Semaphore(1)
+        
+        for i, (cluster_id, cluster_data) in enumerate(clusters.items()):
+            if self.verbose:
+                verbose_reporter.stat_line(f"Processing cluster {i+1}/{len(clusters)}: {cluster_id}")
+            
+            result = await self._process_cluster_with_shared_state_retries(
+                cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
+            )
+            
+            if result['status'] == 'success':
+                if result['needs_new_code'] and result.get('code'):
+                    cluster_to_code[cluster_id] = result['code']
+                    self.stats['new_codes_added'] += 1
+                else:
+                    cluster_to_code[cluster_id] = "existing_code"
+                    self.stats['no_new_codes_needed'] += 1
+            else:
+                cluster_to_code[cluster_id] = result['status']
+                self.stats['errors'] += 1
+        
+        # Final processing
+        processing_time = time.time() - start_time
+        final_codebook = await shared_state.get_current_snapshot()
+        self.data_processor.codebook = final_codebook
+        
+        verbose_reporter.summary("FULLY SEQUENTIAL GENERATION COMPLETE", {
+            "Initial codes": len(self.starter_codes),
+            "New codes added": self.stats['new_codes_added'],
+            "Final codebook size": len(final_codebook),
+            "Clusters processed": len(clusters),
+            "Processing time (s)": f"{processing_time:.2f}"
+        })
+        
+        return {
+            'codebook': final_codebook,
+            'cluster_assignments': cluster_to_code,
+            'stats': self.stats
+        }
+    
+    async def generate_async_fully_concurrent(self) -> Dict[str, Any]:
+        """Process all clusters concurrently (fastest but no dynamic code addition)"""
+        verbose_reporter = VerboseReporter(self.verbose)
+        verbose_reporter.header("FULLY CONCURRENT CODEBOOK GENERATION")
+        verbose_reporter.warning("Note: No dynamic code addition between clusters in this mode")
+        
+        # Get cluster data  
+        clusters = self.data_processor.prepare_cluster_text()
+        if not clusters:
+            return {'codebook': self.data_processor.codebook, 'cluster_assignments': {}}
+        
+        self.stats['total_clusters'] = len(clusters)
+        start_time = time.time()
+        
+        # Use static codebook (no dynamic updates)
+        static_codebook = self.data_processor.codebook.copy()
+        
+        # Create semaphore for rate limiting
+        semaphore = asyncio.Semaphore(self.config.max_concurrent_batches)
+        
+        # Process all clusters concurrently
+        tasks = []
+        for cluster_id, cluster_data in clusters.items():
+            task = self._process_cluster_legacy(cluster_id, cluster_data, static_codebook, semaphore)
+            tasks.append(task)
+        
+        # Wait for all to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results
+        cluster_to_code = {}
+        new_codes = []
+        
+        for result in results:
+            if isinstance(result, Exception):
+                self.stats['errors'] += 1
+                continue
+                
+            cluster_id = result['cluster_id']
+            if result['status'] == 'success':
+                if result['needs_new_code'] and result.get('code'):
+                    cluster_to_code[cluster_id] = result['code']
+                    self.stats['new_codes_added'] += 1
+                    # Collect new codes (but don't use for other clusters)
+                    new_codes.append({
+                        'code': result['code'],
+                        'definition': result['definition']
+                    })
+                else:
+                    cluster_to_code[cluster_id] = "existing_code"
+                    self.stats['no_new_codes_needed'] += 1
+            else:
+                cluster_to_code[cluster_id] = result['status']
+                self.stats['errors'] += 1
+        
+        # Update final codebook with all new codes
+        final_codebook = static_codebook + new_codes
+        self.data_processor.codebook = final_codebook
+        
+        processing_time = time.time() - start_time
+        
+        verbose_reporter.summary("FULLY CONCURRENT GENERATION COMPLETE", {
+            "Initial codes": len(static_codebook),
+            "New codes added": len(new_codes),
+            "Final codebook size": len(final_codebook),
+            "Clusters processed": len(clusters),
+            "Processing time (s)": f"{processing_time:.2f}"
+        })
+        
+        return {
+            'codebook': final_codebook,
+            'cluster_assignments': cluster_to_code,
+            'stats': self.stats
+        }
+    
     def generate(self) -> Dict[str, Any]:
         """Synchronous wrapper for the async generate method"""
         async def run_generation():
-            result = await self.generate_async()
+            # Choose processing mode
+            if self.config.processing_mode == ProcessingMode.QUEUE_BASED:
+                result = await self.generate_async_queue_based()
+            elif self.config.processing_mode == ProcessingMode.FULLY_SEQUENTIAL:
+                result = await self.generate_async_fully_sequential()
+            elif self.config.processing_mode == ProcessingMode.FULLY_CONCURRENT:
+                result = await self.generate_async_fully_concurrent()
+            else:  # Default: BATCH_SEQUENTIAL
+                result = await self.generate_async()
+            
             return {
                 'codebook': self.data_processor.codebook,
                 'cluster_assignments': result.get('cluster_assignments', {}),
