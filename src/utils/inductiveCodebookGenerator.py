@@ -1,40 +1,29 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-# === MODULES ========================================================================================================
 import asyncio
 import time
 import os
 import numpy as np
-from typing import List, Dict, Optional, Any
-from sklearn.metrics.pairwise import cosine_similarity
-import instructor
-from openai import AsyncOpenAI
 
-# === MODELS ========================================================================================================
 import models
+import instructor
+from typing import List, Dict, Optional, Any
+from openai import AsyncOpenAI
+from prompts import INDUCTIVE_CODEBOOK_GENERATION_PROMPT
+from sklearn.metrics.pairwise import cosine_similarity
 
-# === CONFIG ========================================================================================================
-from config import ModelConfig, EmbeddingConfig
+from config import ModelConfig, EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY
 from utils.verboseReporter import VerboseReporter
 from utils.embedder import Embedder
-from prompts import INDUCTIVE_CODEBOOK_GENERATION_PROMPT
 
-# === UTILS ========================================================================================================
 try:
     import nest_asyncio
     nest_asyncio.apply()
 except ImportError:
     pass
 
-# === CONSTANTS ========================================================================================================
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 class InductiveCodebookGenerator:
-    """
-    Performs iterative inductive codebook generation using GATOS methodology.
-    For each cluster, finds k nearest neighbor codes and decides whether to create new codes.
-    """
-    
     def __init__(self, 
                  cluster_results: List[models.ClusterModel], 
                  embedded_text: List[models.EmbeddingsModel],
@@ -43,17 +32,8 @@ class InductiveCodebookGenerator:
                  k: int = 5,
                  verbose: bool = False, 
                  prompt_printer = None):
-        """
-        Initialize the inductive codebook generator.
-        
-        Args:
-            cluster_results: Results from clustering step (List[ClusterModel])
-            starter_codes: Initial speculative codes
-            var_lab: Survey question/variable label
-            k: Number of nearest neighbors to find (default: 5)
-            verbose: Enable verbose output
-            prompt_printer: Optional prompt capture utility
-        """
+
+        self.language = DEFAULT_LANGUAGE
         self.cluster_results = cluster_results
         self.embedded_text = embedded_text  
         self.codebook = starter_codes.copy()  # Growing codebook
@@ -74,12 +54,6 @@ class InductiveCodebookGenerator:
         }
         
     def _prepare_clusters(self) -> Dict[int, Dict]:
-        """
-        Group ideas by cluster ID using embeddings from embedded_text and cluster assignments from cluster_results.
-        
-        Returns:
-            Dict mapping cluster_id to {'ideas': List[str], 'embeddings': List[np.ndarray]}
-        """
         # Step 1: Create mapping from idea_id to embedding from embedded_text
         embedding_map = {}
         for result in self.embedded_text:
@@ -87,8 +61,7 @@ class InductiveCodebookGenerator:
                 for idea in result.idea_embeddings:
                     embedding_map[idea.idea_id] = {
                         'idea': idea.idea,
-                        'embedding': idea.idea_embedding
-                    }
+                        'embedding': idea.idea_embedding}
         
         # Step 2: Get cluster assignments from cluster_results and match with embeddings
         clusters = {}
@@ -102,15 +75,11 @@ class InductiveCodebookGenerator:
                 if idea.initial_cluster is not None and idea.initial_cluster != -1:
                     cluster_id = idea.initial_cluster
                     
-                    # Look up embedding from embedded_text using idea_id
                     if idea.idea_id in embedding_map:
                         embedding_data = embedding_map[idea.idea_id]
                         
-                        if cluster_id not in clusters:
-                            clusters[cluster_id] = {
-                                'ideas': [],
-                                'embeddings': []
-                            }
+                        if cluster_id not in clusters: 
+                            clusters[cluster_id] = {'ideas': [], 'embeddings': []}
                         
                         clusters[cluster_id]['ideas'].append(embedding_data['idea'])
                         clusters[cluster_id]['embeddings'].append(embedding_data['embedding'])
@@ -130,29 +99,13 @@ class InductiveCodebookGenerator:
         return clusters
     
     async def _embed_codebook_texts(self, code_texts: List[str]) -> List[np.ndarray]:
-        """
-        Embed codebook texts using direct OpenAI API call.
-        
-        Args:
-            code_texts: List of code text descriptions
-            
-        Returns:
-            List of embedding arrays
-        """
+
         try:
-            # Use direct OpenAI API call with same config as pipeline
-            from openai import AsyncOpenAI
-            from config import EmbeddingConfig
-            
             embedding_config = EmbeddingConfig()
-            client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
             
-            response = await client.embeddings.create(
-                model=embedding_config.embedding_model,  # Use same model as pipeline
-                input=code_texts
-            )
+            response = await client.embeddings.create(model=embedding_config.embedding_model, input=code_texts)
             
-            # Extract embeddings from response
             embeddings = []
             for embedding_data in response.data:
                 embeddings.append(np.array(embedding_data.embedding, dtype=np.float32))
@@ -163,35 +116,15 @@ class InductiveCodebookGenerator:
             self.verbose_reporter.stat_line(f"Error embedding codebook: {str(e)}")
             return []
     
-    def _find_k_nearest_codes(self, 
-                             cluster_embedding: np.ndarray, 
-                             codebook_embeddings: List[np.ndarray]) -> List[Dict]:
-        """
-        Find k nearest codes using cosine similarity.
-        
-        Args:
-            cluster_embedding: Mean embedding of cluster ideas
-            codebook_embeddings: List of codebook embeddings
-            
-        Returns:
-            List of nearest code dictionaries
-        """
+    def _find_k_nearest_codes(self, cluster_embedding: np.ndarray, codebook_embeddings: List[np.ndarray]) -> List[Dict]:
+
         if not codebook_embeddings:
             return []
             
-        # Convert to numpy array for cosine similarity calculation
         codebook_array = np.array(codebook_embeddings)
-        
-        # Calculate similarities
-        similarities = cosine_similarity(
-            cluster_embedding.reshape(1, -1), 
-            codebook_array
-        )[0]
-        
-        # Get top k indices
+        similarities = cosine_similarity(cluster_embedding.reshape(1, -1), codebook_array)[0]
         top_k_indices = np.argsort(similarities)[-self.k:][::-1]
         
-        # Remove duplicates and collect codes
         seen = set()
         nearest_codes = []
         
@@ -209,40 +142,18 @@ class InductiveCodebookGenerator:
                 
         return nearest_codes
     
-    async def _process_cluster(self, 
-                              cluster_id: int, 
-                              cluster_data: Dict,
-                              codebook_embeddings: List[np.ndarray]) -> Optional[models.CodeGenerationDecision]:
-        """
-        Process a single cluster through the 6-step GATOS decision process.
-        
-        Args:
-            cluster_id: ID of the cluster
-            cluster_data: Dict with 'ideas' and 'embeddings' keys
-            codebook_embeddings: Current codebook embeddings
-            
-        Returns:
-            CodeGenerationDecision or None if error
-        """
+    async def _process_cluster(self, cluster_id: int, cluster_data: Dict, codebook_embeddings: List[np.ndarray]) -> Optional[models.CodeGenerationDecision]:
         try:
-            # Calculate mean embedding for cluster
             cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
-            
-            # Find k nearest codes
+
             nearest_codes = self._find_k_nearest_codes(cluster_embedding, codebook_embeddings)
-            
-            # Format cluster ideas and codes for prompt
             cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             
             if nearest_codes:
-                codes_text = "\n".join([
-                    f"- {code['code']}: {code['definition']}" 
-                    for code in nearest_codes
-                ])
+                codes_text = "\n".join([f"- {code['code']}: {code['definition']}" for code in nearest_codes])
             else:
                 codes_text = "No existing codes in codebook"
             
-            # Build prompt using GATOS format
             prompt = INDUCTIVE_CODEBOOK_GENERATION_PROMPT.format(
                 data_type="survey response",
                 data_collection_context=f"a survey asking: {self.var_lab}",
@@ -276,12 +187,7 @@ class InductiveCodebookGenerator:
             return None
     
     def generate(self) -> Dict[str, Any]:
-        """
-        Main entry point - performs iterative inductive codebook generation.
-        
-        Returns:
-            Dict with 'codebook', 'cluster_assignments', and 'stats'
-        """
+       
         self.verbose_reporter.section_header("INDUCTIVE CODEBOOK GENERATION")
         start_time = time.time()
         
