@@ -1,53 +1,37 @@
 """
-CODEBOOK GENERATOR - Architecture Overview
-=========================================
+CODEBOOK GENERATOR - Simplified Architecture
+==========================================
 
-This module implements a sophisticated automated codebook generation system for survey analysis
-with the following key architectural features:
+This module implements an automated codebook generation system for survey analysis
+using a fully concurrent processing approach.
 
 ## Processing Architecture
 
-### 1. BATCH SEQUENTIAL / CLUSTER CONCURRENT
-   - Batches are processed SEQUENTIALLY to enable cumulative codebook building
-   - Within each batch, clusters are processed CONCURRENTLY
-   - This hybrid approach balances performance with the need for dynamic code addition
+### FULLY CONCURRENT PROCESSING
+   - All clusters are processed concurrently for maximum speed
+   - Uses static initial codebook (no dynamic code sharing between clusters)
+   - Rate-limited concurrent processing to manage API load
+   - New codes are collected and added to final codebook after all processing
 
-### 2. DYNAMIC CODE ADDITION
-   - SharedCodebookState: Thread-safe codebook that grows during processing
-   - New codes added in Batch 1 are immediately available to Batch 2, 3, etc.
-   - Within a batch, concurrent clusters can see codes added by other clusters in real-time
-
-### 3. PROCESSING FLOW
+### PROCESSING FLOW
    ```
-   Initial Codebook
+   Initial Codebook (Static)
         ↓
-   [Batch 1: Clusters 1-10] → Process concurrently → Add new codes to shared state
-        ↓
-   [Batch 2: Clusters 11-20] → Can see all codes from Batch 1 → Add more codes
-        ↓
-   [Batch 3: Clusters 21-30] → Can see all codes from Batches 1 & 2
+   [All Clusters] → Process concurrently → Generate new codes independently
         ↓
    Final Codebook (Initial + All new codes)
    ```
 
-### 4. KEY COMPONENTS
+### KEY COMPONENTS
    - InductiveCodebookGenerator: Main orchestrator
-   - SharedCodebookState: Thread-safe codebook with lock-based updates
-   - DynamicEmbeddingManager: Incremental embedding management
-   - TokenAwareBatchProcessor: Smart batching based on token limits
    - CodebookEmbeddingManager: Efficient embedding caching
+   - CodebookDataProcessor: Handles data preparation
+   - VerboseReporter: Progress reporting
 
-### 5. CONCURRENCY CONTROLS
-   - Batches: Sequential processing (for cumulative building)
-   - Clusters within batch: Concurrent with max_concurrent_batches limit
-   - Lock-based synchronization for codebook updates
-   - Incremental embedding updates to avoid recomputing
-
-### 6. PERFORMANCE OPTIMIZATIONS
+### PERFORMANCE OPTIMIZATIONS
    - Embeddings computed once and cached
-   - Incremental updates (only new codes are embedded)
-   - Similarity checks use cached embeddings
-   - Token-aware batching to maximize throughput
+   - Concurrent processing with semaphore-based rate limiting
+   - Efficient similarity-based code selection using embeddings
 """
 
 import os
@@ -60,7 +44,6 @@ from dataclasses import dataclass
 import logging
 import numpy as np
 import hashlib
-import tiktoken
 import time
 
 from openai import AsyncOpenAI
@@ -87,45 +70,14 @@ logger = logging.getLogger(__name__)
 import logging
 logging.getLogger("httpx").disabled = True
 
-from enum import Enum
 
-class ProcessingMode(Enum):
-    """Defines different processing strategies for codebook generation"""
-    FULLY_SEQUENTIAL = "fully_sequential"  # Process one cluster at a time
-    BATCH_SEQUENTIAL = "batch_sequential"  # Current default: sequential batches, concurrent clusters
-    FULLY_CONCURRENT = "fully_concurrent"  # All clusters concurrent (no dynamic code addition between clusters)
-    QUEUE_BASED = "queue_based"  # Worker pool with queue (experimental)
 
 @dataclass
 class EnhancedCodebookConfig:
-    """Enhanced configuration for efficient codebook generation"""
-    max_tokens: int = 4000
-    completion_reserve: int = 1000  # Reserve tokens for LLM response
-    max_batch_size: int = 10
-    min_batch_size: int = 1
-    max_retries: int = 3
-    retry_delay: float = 1.0
-    retry_exponential_base: float = 2.0
-    max_concurrent_batches: int = 5  # Process batches concurrently
-    rate_limit_buffer: float = 0.1  # 10% buffer for rate limiting
-    processing_mode: ProcessingMode = ProcessingMode.BATCH_SEQUENTIAL
-    queue_workers: int = 3  # Number of workers for queue-based mode
-    
-    def __post_init__(self):
-        # Ensure sensible defaults
-        self.max_batch_size = max(self.min_batch_size, self.max_batch_size)
-        self.max_retries = max(0, self.max_retries)
+    """Configuration for concurrent codebook generation"""
+    max_concurrent_requests: int = 10  # Process clusters concurrently
 
 
-@dataclass
-class ClusterBatch:
-    """Represents a batch of clusters to process together with token awareness"""
-    batch_id: int
-    cluster_ids: List[int]
-    cluster_data: Dict[int, Dict]  # cluster_id -> {'ideas': [], 'embeddings': []}
-    estimated_tokens: int = 0
-    codebook_snapshot: Optional[List[Dict]] = None
-    snapshot_id: int = 0
 
 
 @dataclass
@@ -297,315 +249,10 @@ class CodebookEmbeddingManager:
         }
 
 
-class TokenAwareBatchProcessor:
-    """Creates optimized batches based on token usage and complexity"""
-    
-    def __init__(self, config: EnhancedCodebookConfig, model_name: str, verbose: bool = False):
-        self.config = config
-        self.verbose = verbose
-        self.encoding = self._get_encoding(model_name)
-    
-    def _get_encoding(self, model_name: str):
-        """Get appropriate tokenizer for the model"""
-        try:
-            return tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            logger.warning(f"Using cl100k_base encoding as fallback for {model_name}")
-            return tiktoken.get_encoding("cl100k_base")
-    
-    def _estimate_base_prompt_tokens(self, var_lab: str, sample_code_text: str) -> int:
-        """Estimate base prompt tokens for codebook generation"""
-        # Estimate based on template structure
-        base_prompt = f"""
-        Survey question: {var_lab}
-        Existing codes: {sample_code_text}
-        Analysis steps and instructions...
-        """
-        return len(self.encoding.encode(base_prompt))
-    
-    def _estimate_cluster_tokens(self, cluster_data: Dict) -> int:
-        """Estimate tokens for a cluster's ideas"""
-        cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-        return len(self.encoding.encode(cluster_text))
-    
-    def create_adaptive_batches(
-        self, 
-        clusters: Dict[int, Dict], 
-        codebook: List[Dict[str, str]], 
-        var_lab: str
-    ) -> List[ClusterBatch]:
-        """Create token-aware adaptive batches"""
-        
-        if not clusters:
-            return []
-        
-        # Calculate base prompt tokens
-        sample_code_text = "\n".join([
-            f"- {code['code']}: {code['definition']}" 
-            for code in codebook[:5]  # Sample for estimation
-        ]) if codebook else "No existing codes"
-        
-        base_prompt_tokens = self._estimate_base_prompt_tokens(var_lab, sample_code_text)
-        available_tokens = self.config.max_tokens - base_prompt_tokens - self.config.completion_reserve
-        
-        if self.verbose:
-            logger.info(f"Token budget: {available_tokens} (base: {base_prompt_tokens}, reserve: {self.config.completion_reserve})")
-        
-        # Calculate cluster token estimates
-        cluster_items = []
-        total_cluster_tokens = 0
-        
-        for cluster_id, cluster_data in clusters.items():
-            cluster_tokens = self._estimate_cluster_tokens(cluster_data)
-            cluster_items.append((cluster_id, cluster_data, cluster_tokens))
-            total_cluster_tokens += cluster_tokens
-        
-        # Sort by complexity (token count) for better batching
-        cluster_items.sort(key=lambda x: x[2])  # Sort by token count
-        
-        # Calculate adaptive batch size
-        avg_tokens_per_cluster = total_cluster_tokens / len(cluster_items) if cluster_items else 0
-        adaptive_max_batch_size = min(
-            self.config.max_batch_size,
-            max(self.config.min_batch_size, int(available_tokens / max(1, avg_tokens_per_cluster)))
-        )
-        
-        if self.verbose:
-            logger.info(f"Adaptive batch size: {adaptive_max_batch_size} (avg tokens per cluster: {avg_tokens_per_cluster:.1f})")
-        
-        # Create batches
-        batches = []
-        current_batch_clusters = {}
-        current_batch_ids = []
-        current_batch_tokens = 0
-        batch_id = 0
-        
-        for cluster_id, cluster_data, cluster_tokens in cluster_items:
-            # Check if adding this cluster would exceed limits
-            if (current_batch_tokens + cluster_tokens > available_tokens or 
-                len(current_batch_ids) >= adaptive_max_batch_size):
-                
-                # Create batch if not empty
-                if current_batch_ids:
-                    batches.append(ClusterBatch(
-                        batch_id=batch_id,
-                        cluster_ids=current_batch_ids,
-                        cluster_data=current_batch_clusters,
-                        estimated_tokens=current_batch_tokens,
-                        codebook_snapshot=codebook.copy(),
-                        snapshot_id=batch_id
-                    ))
-                    batch_id += 1
-                    current_batch_clusters = {}
-                    current_batch_ids = []
-                    current_batch_tokens = 0
-            
-            # Handle oversized individual clusters
-            if cluster_tokens > available_tokens and not current_batch_ids:
-                logger.warning(f"Cluster {cluster_id} exceeds token budget ({cluster_tokens} > {available_tokens}). Processing as single item batch.")
-                batches.append(ClusterBatch(
-                    batch_id=batch_id,
-                    cluster_ids=[cluster_id],
-                    cluster_data={cluster_id: cluster_data},
-                    estimated_tokens=cluster_tokens,
-                    codebook_snapshot=codebook.copy(),
-                    snapshot_id=batch_id
-                ))
-                batch_id += 1
-                continue
-            
-            # Add cluster to current batch
-            current_batch_ids.append(cluster_id)
-            current_batch_clusters[cluster_id] = cluster_data
-            current_batch_tokens += cluster_tokens
-        
-        # Add final batch if not empty
-        if current_batch_ids:
-            batches.append(ClusterBatch(
-                batch_id=batch_id,
-                cluster_ids=current_batch_ids,
-                cluster_data=current_batch_clusters,
-                estimated_tokens=current_batch_tokens,
-                codebook_snapshot=codebook.copy(),
-                snapshot_id=batch_id
-            ))
-        
-        if self.verbose:
-            total_batches = len(batches)
-            avg_batch_size = sum(len(b.cluster_ids) for b in batches) / total_batches if total_batches > 0 else 0
-            logger.info(f"Created {total_batches} adaptive batches, avg size: {avg_batch_size:.1f} clusters")
-        
-        return batches
 
 
-class SharedCodebookState:
-    """Thread-safe codebook that can be updated during concurrent processing"""
-    
-    def __init__(self, initial_codes: List[Dict], similarity_threshold: float = 0.85):
-        self._codes = initial_codes.copy() if initial_codes else []
-        self._lock = asyncio.Lock()
-        self._embedding_config = EmbeddingConfig()
-        self._similarity_threshold = similarity_threshold
-        self._embedding_manager = None  # Will be set externally
-        self._stats = {
-            'codes_added': 0,
-            'duplicates_detected': 0,
-            'similarity_checks': 0
-        }
-    
-    def set_embedding_manager(self, embedding_manager: 'DynamicEmbeddingManager'):
-        """Set the embedding manager for efficient similarity checks"""
-        self._embedding_manager = embedding_manager
-    
-    async def get_current_snapshot(self) -> List[Dict]:
-        """Get current codebook state (no lock needed for reads)"""
-        return self._codes.copy()
-    
-    async def get_stats(self) -> Dict[str, int]:
-        """Get statistics about code additions and duplicates"""
-        return self._stats.copy()
-    
-    async def _embed_single_code(self, code_text: str) -> np.ndarray:
-        """Embed a single code text"""
-        try:
-            client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
-            response = await client.embeddings.create(
-                model=self._embedding_config.embedding_model,
-                input=[code_text]
-            )
-            return np.array(response.data[0].embedding, dtype=np.float32)
-        except Exception as e:
-            logger.error(f"Error embedding code '{code_text}': {str(e)}")
-            return None
-    
-    async def _is_duplicate(self, new_code: Dict) -> bool:
-        """Check if new code is too similar to existing codes"""
-        if not self._codes or not self._embedding_manager:
-            return False
-        
-        self._stats['similarity_checks'] += 1
-        
-        # Create text representation
-        new_code_text = f"{new_code['code']}: {new_code['definition']}"
-        
-        # Embed the new code once
-        new_embedding = await self._embed_single_code(new_code_text)
-        if new_embedding is None:
-            logger.warning(f"Could not embed new code for similarity check: {new_code['code']}")
-            return False
-        
-        # Get current embeddings from the embedding manager (already cached)
-        _, existing_embeddings = await self._embedding_manager.get_current_embeddings(self)
-        
-        # Check similarity with existing codes
-        for i, (existing_code, existing_embedding) in enumerate(zip(self._codes, existing_embeddings)):
-            # Calculate cosine similarity
-            similarity = cosine_similarity(
-                [new_embedding], [existing_embedding]
-            )[0][0]
-            
-            if similarity > self._similarity_threshold:
-                logger.info(
-                    f"Duplicate detected: '{new_code['code']}' similar to "
-                    f"'{existing_code['code']}' (similarity: {similarity:.3f})"
-                )
-                self._stats['duplicates_detected'] += 1
-                return True
-        
-        return False
-    
-    async def add_code_if_unique(self, new_code: Dict, cluster_id: int) -> bool:
-        """Thread-safe method to add code only if it's truly unique"""
-        async with self._lock:
-            # Check for exact duplicates first (fast check)
-            new_code_text = new_code['code'].lower().strip()
-            for existing_code in self._codes:
-                if existing_code['code'].lower().strip() == new_code_text:
-                    logger.info(f"Exact duplicate detected: '{new_code['code']}'")
-                    self._stats['duplicates_detected'] += 1
-                    return False
-            
-            # Check for semantic similarity (slower check)
-            if await self._is_duplicate(new_code):
-                return False  # Code not added (duplicate found)
-            
-            # Add the code
-            new_code_entry = new_code.copy()
-            new_code_entry['cluster_origin'] = str(cluster_id)
-            new_code_entry['added_at'] = time.time()
-            self._codes.append(new_code_entry)
-            self._stats['codes_added'] += 1
-            
-            logger.info(f"New code added: '{new_code['code']}' (cluster {cluster_id})")
-            return True  # Code successfully added
 
 
-class DynamicEmbeddingManager:
-    """Manages embeddings incrementally as codes are added during concurrent processing"""
-    
-    def __init__(self, base_embedding_manager: CodebookEmbeddingManager):
-        self.base_manager = base_embedding_manager
-        self._code_to_embedding = {}  # Maps code text to embedding
-        self._ordered_codes = []  # List of codes in order
-        self._ordered_embeddings = []  # Corresponding embeddings
-        self._lock = asyncio.Lock()
-        self._initialized = False
-    
-    async def get_current_embeddings(self, shared_state: SharedCodebookState) -> Tuple[List[Dict], List[np.ndarray]]:
-        """Get embeddings for current codebook state with incremental updates"""
-        current_codes = await shared_state.get_current_snapshot()
-        
-        if not current_codes:
-            return [], []
-        
-        async with self._lock:
-            # Initialize with starter codes if not done yet
-            if not self._initialized and current_codes:
-                await self._initialize_embeddings(current_codes)
-                self._initialized = True
-                return self._ordered_codes.copy(), self._ordered_embeddings.copy()
-            
-            # Check for new codes (codes are only appended, never removed)
-            if len(current_codes) > len(self._ordered_codes):
-                # Get only the new codes
-                new_codes = current_codes[len(self._ordered_codes):]
-                await self._add_new_embeddings(new_codes)
-            
-            return self._ordered_codes.copy(), self._ordered_embeddings.copy()
-    
-    async def _initialize_embeddings(self, initial_codes: List[Dict]):
-        """Initialize embeddings for the starter codes (called within lock)"""
-        if not initial_codes:
-            return
-            
-        code_texts = [f"{code['code']}: {code['definition']}" for code in initial_codes]
-        
-        # Use base manager's cache for efficiency
-        embeddings = await self.base_manager.cache.get_embeddings_with_cache(code_texts)
-        
-        # Store in our structures
-        for code, code_text, embedding in zip(initial_codes, code_texts, embeddings):
-            self._code_to_embedding[code_text] = embedding
-            self._ordered_codes.append(code)
-            self._ordered_embeddings.append(embedding)
-    
-    async def _add_new_embeddings(self, new_codes: List[Dict]):
-        """Add embeddings for newly added codes only (called within lock)"""
-        if not new_codes:
-            return
-            
-        # Get embeddings only for the new codes
-        new_code_texts = [f"{code['code']}: {code['definition']}" for code in new_codes]
-        new_embeddings = await self.base_manager.cache.get_embeddings_with_cache(new_code_texts)
-        
-        # Append to our structures
-        for code, code_text, embedding in zip(new_codes, new_code_texts, new_embeddings):
-            self._code_to_embedding[code_text] = embedding
-            self._ordered_codes.append(code)
-            self._ordered_embeddings.append(embedding)
-            
-        if self.base_manager.verbose:
-            logger.debug(f"Incrementally added {len(new_codes)} new embeddings")
     
 
 
@@ -747,10 +394,8 @@ class InductiveCodebookGenerator:
         # Initialize enhanced configuration
         self.config = config or EnhancedCodebookConfig()
         # Override with legacy parameters if provided
-        if batch_size != 5:
-            self.config.max_batch_size = batch_size
         if max_concurrent_requests != 3:
-            self.config.max_concurrent_batches = max_concurrent_requests
+            self.config.max_concurrent_requests = max_concurrent_requests
         
         # Initialize model config
         self.model_config = ModelConfig()
@@ -767,12 +412,6 @@ class InductiveCodebookGenerator:
         # Initialize embedding manager for efficient caching
         self.embedding_manager = CodebookEmbeddingManager(verbose=verbose)
         
-        # Initialize token-aware batch processor
-        self.batch_processor = TokenAwareBatchProcessor(
-            config=self.config,
-            model_name=self.model_config.get_model_for_stage("tiktoken"),
-            verbose=verbose
-        )
         
         # Pre-embed the initial codebook for better performance
         self._pre_embed_initial_codebook = True
@@ -879,142 +518,13 @@ class InductiveCodebookGenerator:
             'final_response': final_response
         }
     
-    async def _process_cluster_with_retries(self, cluster_id: int, cluster_data: Dict, 
-                                          codebook_snapshot: List[Dict], snapshot_id: int, 
-                                          semaphore: asyncio.Semaphore) -> Dict[str, Any]:
-        """Process cluster with retry logic and exponential backoff"""
-        last_exception = None
-        
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                result = await self._process_cluster_single_attempt(
-                    cluster_id, cluster_data, codebook_snapshot, snapshot_id, semaphore
-                )
-                
-                if attempt > 0:  # Log successful retry
-                    logger.info(f"Cluster {cluster_id} succeeded on attempt {attempt + 1}")
-                    self.stats['retries'] += attempt
-                
-                return result
-                
-            except Exception as e:
-                last_exception = e
-                
-                if attempt < self.config.max_retries:
-                    # Exponential backoff
-                    delay = self.config.retry_delay * (self.config.retry_exponential_base ** attempt)
-                    
-                    if self.verbose:
-                        logger.warning(f"Cluster {cluster_id} attempt {attempt + 1} failed: {str(e)}. Retrying in {delay:.2f}s")
-                    
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"Cluster {cluster_id} failed after {self.config.max_retries + 1} attempts: {str(e)}")
-                    self.stats['retries'] += attempt
-        
-        # All retries failed
-        return {
-            'cluster_id': cluster_id,
-            'status': 'retry_exhausted',
-            'needs_new_code': False,
-            'error': str(last_exception),
-            'attempts': self.config.max_retries + 1
-        }
     
-    async def _process_cluster_single_attempt(self, cluster_id: int, cluster_data: Dict, 
-                                            codebook_snapshot: List[Dict], snapshot_id: int, 
-                                            semaphore: asyncio.Semaphore) -> Dict[str, Any]:
-        """Process a single cluster asynchronously with rate limiting (legacy method)"""
-        # This method is kept for backwards compatibility but not used in shared state processing
-        return await self._process_cluster_with_shared_state(
-            cluster_id, cluster_data, None, None, semaphore
-        )
     
-    async def _process_cluster_with_shared_state(
-        self, 
-        cluster_id: int, 
-        cluster_data: Dict, 
-        shared_state: SharedCodebookState, 
-        dynamic_embeddings: DynamicEmbeddingManager,
-        semaphore: asyncio.Semaphore
-    ) -> Dict[str, Any]:
-        """Process cluster with access to shared, updating codebook"""
-        
-        async with semaphore:  # Limit concurrent requests
-            try:
-                # Get CURRENT codebook state (may have been updated by other clusters)
-                if shared_state is None:
-                    # Fallback to legacy behavior
-                    return await self._process_cluster_legacy(cluster_id, cluster_data)
-                
-                current_codes, current_embeddings = await dynamic_embeddings.get_current_embeddings(shared_state)
-                
-                if not current_embeddings:
-                    return {
-                        'cluster_id': cluster_id,
-                        'status': 'embedding_error',
-                        'needs_new_code': False
-                    }
-                
-                # Calculate cluster embedding
-                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
-                
-                # Find k nearest codes from current state
-                nearest_codes = self.data_processor.find_k_nearest_codes(cluster_embedding, current_embeddings)
-                
-                # Prepare texts for LLM
-                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-                code_text = "\n".join([
-                    f"- {code['code']}: {code['definition']}" 
-                    for code in nearest_codes
-                ]) if nearest_codes else "No existing codes in codebook"
-                
-                # Capture prompt for first cluster only
-                if self.prompt_printer and cluster_id == 0:
-                    prompt_content = f"Existing codes:\n{code_text}\n\nCluster text:\n{cluster_text}"
-                    self.prompt_printer.capture_prompt(
-                        step_name="gatos_codebook", 
-                        utility_name="InductiveCodebookGenerator",
-                        prompt_content=prompt_content,
-                        prompt_type="Enhanced GATOS with Shared State"
-                    )
-                
-                # Call LLM to determine if new code is needed
-                result = await self._call_llm_for_code_generation(code_text, cluster_text)
-                
-                # If new code is needed, try to add it to shared state (thread-safe)
-                code_added = False
-                duplicate_detected = False
-                
-                if result['needs_new_code'] and result.get('code') and result.get('definition'):
-                    new_code = {
-                        'code': result['code'],
-                        'definition': result['definition']
-                    }
-                    
-                    # Thread-safe code addition with duplicate detection
-                    code_added = await shared_state.add_code_if_unique(new_code, cluster_id)
-                    duplicate_detected = not code_added
-                
-                return {
-                    'cluster_id': cluster_id,
-                    'status': 'success',
-                    'needs_new_code': result['needs_new_code'],
-                    'code': result.get('code') if code_added else None,
-                    'definition': result.get('definition') if code_added else None,
-                    'code_added': code_added,
-                    'duplicate_detected': duplicate_detected,
-                    'original_code_suggestion': result.get('code') if duplicate_detected else None
-                }
-                
-            except Exception as e:
-                logger.error(f"Error processing cluster {cluster_id}: {str(e)}")
-                return {
-                    'cluster_id': cluster_id,
-                    'status': 'error',
-                    'needs_new_code': False,
-                    'error': str(e)
-                }
+    
+    async def _process_cluster_with_semaphore(self, cluster_id: int, cluster_data: Dict, semaphore: asyncio.Semaphore) -> Dict[str, Any]:
+        """Process cluster with semaphore for rate limiting"""
+        async with semaphore:
+            return await self._process_cluster_legacy(cluster_id, cluster_data)
     
     async def _process_cluster_legacy(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
         """Legacy cluster processing without shared state"""
@@ -1060,417 +570,13 @@ class InductiveCodebookGenerator:
                 'error': str(e)
             }
     
-    async def process_batch_async(self, batch: ClusterBatch, use_shared_state: bool = True, 
-                                  shared_state: SharedCodebookState = None, 
-                                  dynamic_embeddings: DynamicEmbeddingManager = None) -> List[Dict[str, Any]]:
-        """Process a batch of clusters asynchronously with optional shared state"""
-        
-        if use_shared_state:
-            return await self._process_batch_with_shared_state(batch, shared_state, dynamic_embeddings)
-        else:
-            return await self._process_batch_legacy(batch)
     
-    async def _process_batch_with_shared_state(self, batch: ClusterBatch, 
-                                                shared_state: SharedCodebookState, 
-                                                dynamic_embeddings: DynamicEmbeddingManager) -> List[Dict[str, Any]]:
-        """Process batch using shared state for real-time code updates"""
-        
-        # Create semaphore for concurrency control
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_batches)
-        
-        # Create tasks - all clusters see the SAME shared state
-        tasks = []
-        for cluster_id in batch.cluster_ids:
-            cluster_data = batch.cluster_data[cluster_id]
-            task = self._process_cluster_with_shared_state_retries(
-                cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
-            )
-            tasks.append(task)
-        
-        # Process all clusters concurrently with shared state
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Handle exceptions and update main codebook
-        processed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                cluster_id = batch.cluster_ids[i]
-                logger.error(f"Unhandled exception in cluster {cluster_id}: {str(result)}")
-                processed_results.append({
-                    'cluster_id': cluster_id,
-                    'status': 'unhandled_exception',
-                    'needs_new_code': False,
-                    'error': str(result)
-                })
-                self.stats['batch_failures'] += 1
-            else:
-                processed_results.append(result)
-        
-        # Note: Codebook is now updated globally in generate_async, not per batch
-        
-        # Update statistics
-        shared_stats = await shared_state.get_stats()
-        self.stats.update({
-            'codes_added_in_batch': shared_stats['codes_added'],
-            'duplicates_detected_in_batch': shared_stats['duplicates_detected'],
-            'similarity_checks_in_batch': shared_stats['similarity_checks']
-        })
-        
-        return processed_results
     
-    async def _process_batch_legacy(self, batch: ClusterBatch) -> List[Dict[str, Any]]:
-        """Legacy batch processing without shared state"""
-        # Create dynamic semaphore based on configuration
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_batches)
-        
-        # Use the pre-stored codebook snapshot and snapshot_id from batch
-        current_codebook = batch.codebook_snapshot or self.data_processor.codebook.copy()
-        snapshot_id = batch.snapshot_id
-        
-        # Create tasks for all clusters in batch with retry wrapper
-        tasks = []
-        for cluster_id in batch.cluster_ids:
-            cluster_data = batch.cluster_data[cluster_id]
-            task = self._process_cluster_with_retries(
-                cluster_id, cluster_data, current_codebook, snapshot_id, semaphore
-            )
-            tasks.append(task)
-        
-        # Process all clusters in batch concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Handle any exceptions that weren't caught by retry logic
-        processed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                cluster_id = batch.cluster_ids[i]
-                logger.error(f"Unhandled exception in cluster {cluster_id}: {str(result)}")
-                processed_results.append({
-                    'cluster_id': cluster_id,
-                    'status': 'unhandled_exception',
-                    'needs_new_code': False,
-                    'error': str(result)
-                })
-                self.stats['batch_failures'] += 1
-            else:
-                processed_results.append(result)
-        
-        return processed_results
     
-    async def _process_cluster_with_shared_state_retries(
-        self, 
-        cluster_id: int, 
-        cluster_data: Dict, 
-        shared_state: SharedCodebookState, 
-        dynamic_embeddings: DynamicEmbeddingManager,
-        semaphore: asyncio.Semaphore
-    ) -> Dict[str, Any]:
-        """Process cluster with shared state and retry logic"""
-        last_exception = None
-        
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                result = await self._process_cluster_with_shared_state(
-                    cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
-                )
-                
-                if attempt > 0:  # Log successful retry
-                    logger.info(f"Cluster {cluster_id} succeeded on attempt {attempt + 1}")
-                    self.stats['retries'] += attempt
-                
-                return result
-                
-            except Exception as e:
-                last_exception = e
-                
-                if attempt < self.config.max_retries:
-                    # Exponential backoff
-                    delay = self.config.retry_delay * (self.config.retry_exponential_base ** attempt)
-                    
-                    if self.verbose:
-                        logger.warning(f"Cluster {cluster_id} attempt {attempt + 1} failed: {str(e)}. Retrying in {delay:.2f}s")
-                    
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"Cluster {cluster_id} failed after {self.config.max_retries + 1} attempts: {str(e)}")
-                    self.stats['retries'] += attempt
-        
-        # All retries failed
-        return {
-            'cluster_id': cluster_id,
-            'status': 'retry_exhausted',
-            'needs_new_code': False,
-            'error': str(last_exception),
-            'attempts': self.config.max_retries + 1
-        }
     
-    async def generate_async(self) -> Dict[str, Any]:
-        """Generate inductive codebook using lock-based shared state for duplicate prevention"""
-        verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.section_header("ENHANCED INDUCTIVE CODEBOOK GENERATION (SHARED STATE + LOCKS)")
-        
-        # Prepare clusters
-        clusters = self.data_processor.prepare_cluster_text()
-        
-        if not clusters:
-            verbose_reporter.stat_line("No valid clusters found with embeddings")
-            return {
-                'codebook': self.data_processor.codebook,
-                'cluster_assignments': {},
-                'stats': self.stats
-            }
-        
-        self.stats['total_clusters'] = len(clusters)
-        start_time = time.time()
-        
-        # Initialize shared codebook state
-        shared_state = SharedCodebookState(
-            initial_codes=self.data_processor.codebook.copy()
-        )
-        
-        # Initialize dynamic embedding manager
-        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
-        
-        # Connect embedding manager to shared state for efficient similarity checks
-        shared_state.set_embedding_manager(dynamic_embeddings)
-        
-        # Create token-aware adaptive batches
-        batches = self.batch_processor.create_adaptive_batches(
-            clusters, self.data_processor.codebook, self.var_lab
-        )
-        
-        verbose_reporter.stat_line(
-            f"Processing {len(clusters)} clusters in {len(batches)} batches with shared state "
-            f"(sequential batches, concurrent within batch, max concurrent: {self.config.max_concurrent_batches})"
-        )
-        
-        # Process batches sequentially to maintain cumulative codebook building
-        cluster_to_code = {}
-        
-        for batch_idx, batch in enumerate(batches):
-            if self.verbose:
-                verbose_reporter.stat_line(f"Processing batch {batch_idx + 1}/{len(batches)} with {len(batch.cluster_ids)} clusters")
-            
-            try:
-                # Process batch with shared state (concurrent within batch)
-                batch_results = await self.process_batch_async(batch, use_shared_state=True, 
-                                                               shared_state=shared_state,
-                                                               dynamic_embeddings=dynamic_embeddings)
-                
-                # Process individual cluster results
-                for result in batch_results:
-                    cluster_id = result['cluster_id']
-                    
-                    if result['status'] == 'success':
-                        if result['needs_new_code'] and result.get('code'):
-                            cluster_to_code[cluster_id] = result['code']
-                            self.stats['new_codes_added'] += 1
-                        else:
-                            cluster_to_code[cluster_id] = "existing_code"
-                            self.stats['no_new_codes_needed'] += 1
-                    elif result['status'] in ['retry_exhausted', 'unhandled_exception']:
-                        cluster_to_code[cluster_id] = result['status']
-                        self.stats['errors'] += 1
-                    else:
-                        cluster_to_code[cluster_id] = result['status']
-                        self.stats['errors'] += 1
-            
-            except Exception as e:
-                logger.error(f"Batch {batch_idx} failed completely: {str(e)}")
-                for cluster_id in batch.cluster_ids:
-                    cluster_to_code[cluster_id] = "batch_failed"
-                    self.stats['errors'] += 1
-        
-        processing_time = time.time() - start_time
-        
-        # Update final codebook from shared state
-        final_codebook = await shared_state.get_current_snapshot()
-        self.data_processor.codebook = final_codebook
-        
-        # Get comprehensive statistics
-        shared_stats = await shared_state.get_stats()
-        
-        # Final summary with performance metrics
-        verbose_reporter.summary("ENHANCED CODEBOOK GENERATION COMPLETE", {
-            "Initial codes": len(self.starter_codes),
-            "New codes added": self.stats['new_codes_added'],
-            "Final codebook size": len(final_codebook),
-            "Clusters processed": len(clusters),
-            "Batches processed": len(batches),
-            "Processing errors": self.stats['errors'],
-            "Retries performed": self.stats['retries'],
-            "Processing time (s)": f"{processing_time:.2f}",
-            "Duplicates prevented": shared_stats['duplicates_prevented'],
-            "Lock acquisitions": shared_stats['lock_acquisitions']
-        })
-        
-        return {
-            'codebook': final_codebook,
-            'cluster_assignments': cluster_to_code,
-            'batches': batches,
-            'stats': self.stats
-        }
     
-    async def generate_async_queue_based(self) -> Dict[str, Any]:
-        """Alternative implementation using queue-based worker pool"""
-        verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.header("QUEUE-BASED CODEBOOK GENERATION (EXPERIMENTAL)")
-        
-        # Get cluster data
-        clusters = self.data_processor.prepare_cluster_text()
-        if not clusters:
-            return {'codebook': self.data_processor.codebook, 'cluster_assignments': {}}
-        
-        self.stats['total_clusters'] = len(clusters)
-        start_time = time.time()
-        
-        # Initialize shared state and embeddings
-        shared_state = SharedCodebookState(
-            initial_codes=self.data_processor.codebook.copy()
-        )
-        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
-        shared_state.set_embedding_manager(dynamic_embeddings)
-        
-        # Create work queue
-        work_queue = asyncio.Queue()
-        for cluster_id, cluster_data in clusters.items():
-            await work_queue.put((cluster_id, cluster_data))
-        
-        # Create workers
-        workers = []
-        for i in range(self.config.queue_workers):
-            worker = asyncio.create_task(
-                self._queue_worker(
-                    work_queue, 
-                    shared_state, 
-                    dynamic_embeddings,
-                    worker_id=i
-                )
-            )
-            workers.append(worker)
-        
-        # Wait for all work to complete
-        await work_queue.join()
-        
-        # Cancel workers
-        for worker in workers:
-            worker.cancel()
-        
-        # Wait for workers to finish
-        await asyncio.gather(*workers, return_exceptions=True)
-        
-        # Get final results
-        processing_time = time.time() - start_time
-        final_codebook = await shared_state.get_current_snapshot()
-        self.data_processor.codebook = final_codebook
-        
-        # Extract cluster assignments from worker results
-        cluster_to_code = {}
-        # Note: In queue-based mode, we'd need to track results differently
-        # This is a simplified version - in production, workers would report results
-        
-        verbose_reporter.summary("QUEUE-BASED GENERATION COMPLETE", {
-            "Initial codes": len(self.starter_codes),
-            "Final codebook size": len(final_codebook),
-            "Clusters processed": len(clusters),
-            "Workers used": self.config.queue_workers,
-            "Processing time (s)": f"{processing_time:.2f}"
-        })
-        
-        return {
-            'codebook': final_codebook,
-            'cluster_assignments': cluster_to_code,
-            'stats': self.stats
-        }
     
-    async def _queue_worker(self, queue: asyncio.Queue, shared_state: SharedCodebookState, 
-                           dynamic_embeddings: DynamicEmbeddingManager, worker_id: int):
-        """Worker coroutine for queue-based processing"""
-        semaphore = asyncio.Semaphore(1)  # Control concurrency per worker
-        
-        while True:
-            try:
-                # Get work from queue
-                cluster_id, cluster_data = await queue.get()
-                
-                if self.verbose:
-                    logger.info(f"Worker {worker_id} processing cluster {cluster_id}")
-                
-                # Process cluster
-                result = await self._process_cluster_with_shared_state_retries(
-                    cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
-                )
-                
-                # Mark task as done
-                queue.task_done()
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Worker {worker_id} error: {str(e)}")
-                queue.task_done()
     
-    async def generate_async_fully_sequential(self) -> Dict[str, Any]:
-        """Process clusters one by one sequentially (slowest but most deterministic)"""
-        verbose_reporter = VerboseReporter(self.verbose)
-        verbose_reporter.header("FULLY SEQUENTIAL CODEBOOK GENERATION")
-        
-        # Get cluster data
-        clusters = self.data_processor.prepare_cluster_text()
-        if not clusters:
-            return {'codebook': self.data_processor.codebook, 'cluster_assignments': {}}
-        
-        self.stats['total_clusters'] = len(clusters)
-        start_time = time.time()
-        
-        # Initialize shared state and embeddings
-        shared_state = SharedCodebookState(
-            initial_codes=self.data_processor.codebook.copy()
-        )
-        dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
-        shared_state.set_embedding_manager(dynamic_embeddings)
-        
-        # Process clusters one by one
-        cluster_to_code = {}
-        semaphore = asyncio.Semaphore(1)
-        
-        for i, (cluster_id, cluster_data) in enumerate(clusters.items()):
-            if self.verbose:
-                verbose_reporter.stat_line(f"Processing cluster {i+1}/{len(clusters)}: {cluster_id}")
-            
-            result = await self._process_cluster_with_shared_state_retries(
-                cluster_id, cluster_data, shared_state, dynamic_embeddings, semaphore
-            )
-            
-            if result['status'] == 'success':
-                if result['needs_new_code'] and result.get('code'):
-                    cluster_to_code[cluster_id] = result['code']
-                    self.stats['new_codes_added'] += 1
-                else:
-                    cluster_to_code[cluster_id] = "existing_code"
-                    self.stats['no_new_codes_needed'] += 1
-            else:
-                cluster_to_code[cluster_id] = result['status']
-                self.stats['errors'] += 1
-        
-        # Final processing
-        processing_time = time.time() - start_time
-        final_codebook = await shared_state.get_current_snapshot()
-        self.data_processor.codebook = final_codebook
-        
-        verbose_reporter.summary("FULLY SEQUENTIAL GENERATION COMPLETE", {
-            "Initial codes": len(self.starter_codes),
-            "New codes added": self.stats['new_codes_added'],
-            "Final codebook size": len(final_codebook),
-            "Clusters processed": len(clusters),
-            "Processing time (s)": f"{processing_time:.2f}"
-        })
-        
-        return {
-            'codebook': final_codebook,
-            'cluster_assignments': cluster_to_code,
-            'stats': self.stats
-        }
     
     async def generate_async_fully_concurrent(self) -> Dict[str, Any]:
         """Process all clusters concurrently (fastest but no dynamic code addition)"""
@@ -1489,13 +595,11 @@ class InductiveCodebookGenerator:
         # Use static codebook (no dynamic updates)
         static_codebook = self.data_processor.codebook.copy()
         
-        # Create semaphore for rate limiting
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_batches)
-        
-        # Process all clusters concurrently
+        # Process all clusters concurrently with rate limiting
+        semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
         tasks = []
         for cluster_id, cluster_data in clusters.items():
-            task = self._process_cluster_legacy(cluster_id, cluster_data, static_codebook, semaphore)
+            task = self._process_cluster_with_semaphore(cluster_id, cluster_data, semaphore)
             tasks.append(task)
         
         # Wait for all to complete
@@ -1548,17 +652,9 @@ class InductiveCodebookGenerator:
         }
     
     def generate(self) -> Dict[str, Any]:
-        """Synchronous wrapper for the async generate method"""
+        """Generate codebook using fully concurrent processing"""
         async def run_generation():
-            # Choose processing mode
-            if self.config.processing_mode == ProcessingMode.QUEUE_BASED:
-                result = await self.generate_async_queue_based()
-            elif self.config.processing_mode == ProcessingMode.FULLY_SEQUENTIAL:
-                result = await self.generate_async_fully_sequential()
-            elif self.config.processing_mode == ProcessingMode.FULLY_CONCURRENT:
-                result = await self.generate_async_fully_concurrent()
-            else:  # Default: BATCH_SEQUENTIAL
-                result = await self.generate_async()
+            result = await self.generate_async_fully_concurrent()
             
             return {
                 'codebook': self.data_processor.codebook,
@@ -1568,11 +664,8 @@ class InductiveCodebookGenerator:
                     'new_codes': self.stats['new_codes_added'],
                     'total_codes': len(self.data_processor.codebook),
                     'clusters_processed': self.stats['total_clusters'],
-                    'batches_processed': len(result.get('batches', [])),
                     'no_new_codes_needed': self.stats['no_new_codes_needed'],
-                    'errors': self.stats['errors'],
-                    'retries': self.stats['retries'],
-                    'batch_failures': self.stats['batch_failures']
+                    'errors': self.stats['errors']
                 }
             }
         
