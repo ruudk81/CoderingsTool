@@ -31,7 +31,7 @@ DEFAULT_LANGUAGE = "Dutch"
 
 # LLM settings (core settings)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-4.1-mini"
 
 @dataclass
 class ModelConfig:
@@ -42,36 +42,28 @@ class ModelConfig:
     # =============================================================================
     
     # Step 2: Text preprocessing models
-    spell_check_model: str = "gpt-4o-mini"           # Fast model for spell checking
+    spell_check_model: str = DEFAULT_MODEL         
     
     # Step 3: Quality filtering and segmentation models  
-    quality_filter_model: str = "gpt-4o-mini"        # Fast model for quality filtering
-    segmentation_model: str = "gpt-4o-mini"          # Fast model for response segmentation
-    description_model: str = "gpt-4o-mini"           # Fast model for description generation
+    quality_filter_model: str = DEFAULT_MODEL      
+    segmentation_model: str = DEFAULT_MODEL        
+    description_model: str = DEFAULT_MODEL         
     
     # Step 4: Embedding model
-    embedding_model: str = "text-embedding-3-large"  # Embedding model
+    embedding_model: str = "text-embedding-3-large"  
     
-    # Step 5: Clustering models
-    cluster_merge_model: str = "gpt-4o-mini"         # Fast model for cluster merging
-    
-    # Step 6: Hierarchical labelling models (6 phases)
-    labelling_base_model: str = "gpt-4.1-mini"        # Base model for most labelling phases
-    phase1_descriptive_model: str = "gpt-4.1-mini"    # Phase 1: Descriptive coding
-    phase2_merger_model: str = "gpt-4.1-mini"         # Phase 2: Label merger
-    phase2_5_confidence_model: str = "gpt-4o-mini"    # Phase 2.5: Confidence scoring
-    phase3_themes_model: str = "gpt-4o"              # Phase 3: Extract themes (premium model)
-    phase4_codebook_model: str = "gpt-4o-mini"       # Phase 4: Create codebook
-    phase5_refinement_model: str = "gpt-4o"     # Phase 5: Label refinement
-    phase6_assignment_model: str = "gpt-4o-mini"     # Phase 6: Assignment
-    
+    # Step 6: Codebook generation
+    token_codebook_generation_model: str = "gpt-4o-mini"
+    initial_code_generation_model: str = DEFAULT_MODEL       
+    review_code_generation_model: str = "gpt-4o"         
+ 
     # =============================================================================
     # GLOBAL PARAMETERS
     # =============================================================================
     
     seed: int = 42
     default_temperature: float = 0.0  # Default to deterministic
-    default_max_tokens: int = 16000   # Default token limit
+    default_max_tokens: int = 32000   # Default token limit
     
     # =============================================================================
     # STAGE-SPECIFIC TEMPERATURES
@@ -97,43 +89,20 @@ class ModelConfig:
             'segmentation': self.segmentation_model,
             'description': self.description_model,
             'embedding': self.embedding_model,
-            'cluster_merge': self.cluster_merge_model,
-            'labelling': self.labelling_base_model,
+            'tiktoken': self.token_codebook_generation_model,
+            'initial_codes': self.initial_code_generation_model,
+            'review_codes': self.review_code_generation_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
-    
-    def get_model_for_phase(self, phase: str) -> str:
-        """Get the appropriate model for a specific labelling phase"""
-        phase_models = {
-            'phase1_descriptive': self.phase1_descriptive_model,
-            'phase2_merger': self.phase2_merger_model,
-            'phase2_5_confidence': self.phase2_5_confidence_model,
-            'phase3_themes': self.phase3_themes_model,
-            'phase4_codebook': self.phase4_codebook_model,
-            'phase5_refinement': self.phase5_refinement_model,
-            'phase6_assignment': self.phase6_assignment_model,
-        }
-        return phase_models.get(phase, self.labelling_base_model)
     
     def get_temperature_for_stage(self, stage: str) -> float:
         """Get the appropriate temperature for a pipeline stage"""
         stage_temperatures = {
             'spell_check': self.spell_check_temperature,
             'quality_filter': self.quality_filter_temperature,
-            'segmentation': self.segmentation_temperature,
-            'description': self.description_temperature,
-            'cluster_merge': self.cluster_merge_temperature,
-            'labelling': self.labelling_temperature,
         }
         return stage_temperatures.get(stage, self.default_temperature)
     
-    def get_temperature_for_phase(self, phase: str) -> float:
-        """Get the appropriate temperature for a specific labelling phase"""
-        phase_temperatures = {
-            'phase3_themes': self.phase3_themes_temperature,
-        }
-        return phase_temperatures.get(phase, self.labelling_temperature)
-
 # =============================================================================
 # CACHE CONFIGURATION
 # =============================================================================
