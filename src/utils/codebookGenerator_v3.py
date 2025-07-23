@@ -217,11 +217,17 @@ class OptimizedEmbeddingManager:
         self.shared_codebook = shared_codebook
         self.embedding_config = EmbeddingConfig()
         self.verbose = verbose
-        self._individual_cache: Dict[str, np.ndarray] = {}
+        self._individual_cache: Dict[str, np.ndarray] = {}  # Individual text cache like v2
+        self._code_text_cache: Dict[str, np.ndarray] = {}   # Specific cache for code texts
     
     def _get_text_hash(self, text: str) -> str:
         """Generate hash for text"""
         return hashlib.md5(text.encode('utf-8')).hexdigest()
+    
+    def _get_code_hash(self, code: str, definition: str) -> str:
+        """Generate hash for code definition pair"""
+        combined = f"{code}: {definition}"
+        return hashlib.md5(combined.encode('utf-8')).hexdigest()
     
     async def get_embeddings_for_current_codebook(self) -> Tuple[List[Dict[str, str]], List[np.ndarray], int]:
         """Get embeddings for the current codebook state"""
@@ -241,6 +247,46 @@ class OptimizedEmbeddingManager:
         await self.shared_codebook.cache_embeddings(version, embeddings)
         
         return codes, embeddings, version
+    
+    async def get_embeddings_for_codes_individually(self, codes: List[Dict[str, str]]) -> List[np.ndarray]:
+        """Get embeddings for codes individually with aggressive caching (like v2)"""
+        embeddings = []
+        new_texts = []
+        new_indices = []
+        
+        for i, code in enumerate(codes):
+            code_hash = self._get_code_hash(code['code'], code['definition'])
+            if code_hash in self._code_text_cache:
+                embeddings.append((i, self._code_text_cache[code_hash]))
+            else:
+                code_text = f"{code['code']}: {code['definition']}"
+                new_texts.append(code_text)
+                new_indices.append((i, code_hash))
+        
+        # Embed new code texts if any
+        if new_texts:
+            try:
+                new_embeddings = await self._embed_texts_with_retry(new_texts)
+                
+                # Cache new embeddings with both individual and code caches
+                for j, embedding in enumerate(new_embeddings):
+                    text = new_texts[j]
+                    idx, code_hash = new_indices[j]
+                    
+                    # Cache in both caches
+                    text_hash = self._get_text_hash(text)
+                    self._individual_cache[text_hash] = embedding
+                    self._code_text_cache[code_hash] = embedding
+                    
+                    embeddings.append((idx, embedding))
+                    
+            except (APIError, ProcessingError, RetryError) as e:
+                logger.error(f"Failed to embed code texts: {str(e)}")
+                return []
+        
+        # Sort by index and return
+        embeddings.sort(key=lambda x: x[0])
+        return [emb[1] for emb in embeddings]
     
     @retry(**EMBEDDING_RETRY_CONFIG)
     async def _embed_texts_with_retry(self, texts: List[str]) -> List[np.ndarray]:
@@ -523,48 +569,59 @@ class LangChainBatchProcessor:
         
         return recovery_results
     
+    async def _prepare_cluster_input_with_current_codebook(self, cluster_id: int, cluster_data: Dict) -> Tuple[Dict, Dict]:
+        """Prepare input for a single cluster with current codebook state"""
+        start_time = time.time()
+        
+        # Calculate cluster embedding
+        cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+        
+        # Get CURRENT codebook embeddings (this is key - fresh each time)
+        embed_start = time.time()
+        codes, codebook_embeddings, version = await self.embedding_manager.get_embeddings_for_current_codebook()
+        self.stats['embedding_time'] += time.time() - embed_start
+        
+        # Find nearest codes
+        nearest_codes = await self._find_nearest_codes(cluster_embedding, codebook_embeddings, codes)
+        
+        # Prepare inputs
+        cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
+        code_text = "\n".join([
+            f"- {code['code']}: {code['definition']}" 
+            for code in nearest_codes
+        ]) if nearest_codes else "No existing codes in codebook"
+        
+        batch_input = {
+            "language": DEFAULT_LANGUAGE,
+            "survey_question": self.var_lab,
+            "code_text": code_text,
+            "cluster_text": cluster_text,
+            "data type": "survey responses"
+        }
+        
+        cluster_info = {
+            'cluster_id': cluster_id,
+            'start_time': start_time,
+            'codebook_version': version
+        }
+        
+        return batch_input, cluster_info
+    
     async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
-        """Process a batch of clusters using LangChain's batch capabilities"""
+        """Process a batch of clusters using LangChain's batch capabilities with real-time codebook updates"""
         batch_results = []
         batch_inputs = []
         cluster_map = {}
         
-        # Prepare all inputs for batch processing
-        for cluster_id, cluster_data in batch_clusters:
+        # Prepare inputs individually to see real-time codebook updates
+        for i, (cluster_id, cluster_data) in enumerate(batch_clusters):
             try:
-                start_time = time.time()
+                batch_input, cluster_info = await self._prepare_cluster_input_with_current_codebook(cluster_id, cluster_data)
+                batch_inputs.append(batch_input)
+                cluster_map[i] = cluster_info
                 
-                # Calculate cluster embedding
-                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
-                
-                # Get current codebook embeddings
-                embed_start = time.time()
-                codes, codebook_embeddings, version = await self.embedding_manager.get_embeddings_for_current_codebook()
-                self.stats['embedding_time'] += time.time() - embed_start
-                
-                # Find nearest codes
-                nearest_codes = await self._find_nearest_codes(cluster_embedding, codebook_embeddings, codes)
-                
-                # Prepare inputs
-                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
-                code_text = "\n".join([
-                    f"- {code['code']}: {code['definition']}" 
-                    for code in nearest_codes
-                ]) if nearest_codes else "No existing codes in codebook"
-                
-                batch_inputs.append({
-                    "language": DEFAULT_LANGUAGE,
-                    "survey_question": self.var_lab,
-                    "code_text": code_text,
-                    "cluster_text": cluster_text,
-                    "data type": "survey responses"
-                })
-                
-                cluster_map[len(batch_inputs) - 1] = {
-                    'cluster_id': cluster_id,
-                    'start_time': start_time,
-                    'codebook_version': version
-                }
+                if self.verbose:
+                    logger.info(f"Prepared cluster {cluster_id} with codebook v{cluster_info['codebook_version']}")
                 
             except Exception as e:
                 logger.error(f"Error preparing cluster {cluster_id}: {e}")
@@ -667,6 +724,7 @@ class LangChainBatchProcessor:
                         else:
                             review_results.append(Exception(f"Failed to process review after retries"))
                 
+                # Process review results sequentially to maintain codebook consistency
                 for idx, review_result in enumerate(review_results):
                     review_info = review_cluster_map[idx]
                     cluster_id = review_info['cluster_id']
@@ -686,7 +744,7 @@ class LangChainBatchProcessor:
                         continue
                     
                     if review_result.approve_new_code and review_result.final_code:
-                        # Add to shared codebook
+                        # Add to shared codebook (this updates immediately for subsequent clusters)
                         added, new_version = await self.shared_codebook.add_code_if_new(
                             review_result.final_code,
                             review_result.final_definition or initial_result.definition
@@ -695,7 +753,7 @@ class LangChainBatchProcessor:
                         if added:
                             self.stats['new_codes_added'] += 1
                             if self.verbose:
-                                logger.info(f"Cluster {cluster_id}: Added new code '{review_result.final_code}' (v{new_version})")
+                                logger.info(f"Cluster {cluster_id}: Added new code '{review_result.final_code}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
                         
                         batch_results.append({
                             'cluster_id': cluster_id,
@@ -734,6 +792,24 @@ class LangChainBatchProcessor:
         
         return batch_results
     
+    async def process_batch_with_sequential_codebook_updates(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
+        """Alternative processing that handles clusters more sequentially for better codebook awareness"""
+        batch_results = []
+        
+        # Process clusters in smaller sub-batches to balance performance and codebook awareness
+        sub_batch_size = min(3, len(batch_clusters))  # Process 3 at a time max
+        
+        for i in range(0, len(batch_clusters), sub_batch_size):
+            sub_batch = batch_clusters[i:i + sub_batch_size]
+            sub_results = await self.process_batch_langchain(sub_batch)
+            batch_results.extend(sub_results)
+            
+            # Small delay to allow codebook updates to propagate
+            if i + sub_batch_size < len(batch_clusters):  # Not the last batch
+                await asyncio.sleep(0.1)  # Brief pause for codebook updates
+        
+        return batch_results
+    
     async def process_all_clusters_concurrent(self, clusters: Dict[int, Dict]) -> List[Dict[str, Any]]:
         """Process all clusters with true concurrent batch processing"""
         cluster_items = list(clusters.items())
@@ -749,13 +825,14 @@ class LangChainBatchProcessor:
             batch_num = i // self.batch_size + 1
             batch_clusters = cluster_items[i:i + self.batch_size]
             
-            # Create async task for each batch
+            # Create async task for each batch - use sequential processing for better codebook awareness
             async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters):
-                """Process a single batch with LangChain"""
+                """Process a single batch with sequential codebook updates"""
                 if self.verbose:
                     logger.info(f"Batch {batch_num}/{total_batches} started")
                 
-                results = await self.process_batch_langchain(batch_clusters)
+                # Use sequential processing within batch for better codebook awareness
+                results = await self.process_batch_with_sequential_codebook_updates(batch_clusters)
                 
                 if self.verbose:
                     new_codes = sum(1 for r in results if r['status'] == 'new_code_added')
