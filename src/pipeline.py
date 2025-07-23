@@ -474,13 +474,15 @@ else:
         )
     else:
         # Step 6.2: Inductive codebook generation
-        codebook_generator = codebookGenerator.InductiveCodebookGenerator(
+        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
             cluster_results=initial_cluster_results,
             embedded_text=embedded_text,
             starter_codes=starter_codes,
             var_lab=var_lab,
-            verbose=VERBOSE,
-            prompt_printer=prompt_printer
+            k=5,
+            verbose=True,
+            batch_size=10,  # Process 10 clusters per batch
+            max_concurrent_requests=5  # Allow 5 concurrent API calls
         )
         codebook_results = codebook_generator.generate()
         
