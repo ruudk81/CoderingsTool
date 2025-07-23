@@ -453,7 +453,7 @@ class LangChainBatchProcessor:
     async def _find_nearest_codes(self, cluster_embedding: np.ndarray) -> List[Dict[str, str]]:
         """Find k nearest codes using the current shared codebook (v2 logic)"""
         # Get CURRENT codebook state (like v2)
-        current_codes, version = await self.shared_codebook.get_current_codes()
+        current_codes, version = await self.shared_codebook.get_current_snapshot()
         
         if not current_codes:
             return []
@@ -568,7 +568,7 @@ class LangChainBatchProcessor:
                 self.stats['embedding_time'] += time.time() - embed_start
                 
                 # Get current version for logging
-                _, version = await self.shared_codebook.get_current_codes()
+                _, version = await self.shared_codebook.get_current_snapshot()
                 
                 # Prepare inputs
                 cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
