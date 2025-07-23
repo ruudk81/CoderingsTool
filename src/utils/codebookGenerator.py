@@ -226,7 +226,8 @@ class InductiveCodebookGenerator:
             language=DEFAULT_LANGUAGE,
             survey_question=self.var_lab,
             code_text=code_text,
-            cluster_text=cluster_text
+            cluster_text=cluster_text,
+            **{"data type": "survey responses"}
         )
         
         initial_prompt = PromptTemplate.from_template(system_message + "\n\n" + initial_prompt_text)
