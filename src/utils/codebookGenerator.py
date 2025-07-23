@@ -384,11 +384,16 @@ class SharedCodebookState:
         self._lock = asyncio.Lock()
         self._embedding_config = EmbeddingConfig()
         self._similarity_threshold = similarity_threshold
+        self._embedding_manager = None  # Will be set externally
         self._stats = {
             'codes_added': 0,
             'duplicates_detected': 0,
             'similarity_checks': 0
         }
+    
+    def set_embedding_manager(self, embedding_manager: DynamicEmbeddingManager):
+        """Set the embedding manager for efficient similarity checks"""
+        self._embedding_manager = embedding_manager
     
     async def get_current_snapshot(self) -> List[Dict]:
         """Get current codebook state (no lock needed for reads)"""
@@ -413,38 +418,37 @@ class SharedCodebookState:
     
     async def _is_duplicate(self, new_code: Dict) -> bool:
         """Check if new code is too similar to existing codes"""
-        if not self._codes:
+        if not self._codes or not self._embedding_manager:
             return False
         
         self._stats['similarity_checks'] += 1
         
-        # Create text representations
+        # Create text representation
         new_code_text = f"{new_code['code']}: {new_code['definition']}"
         
-        # Embed the new code
+        # Embed the new code once
         new_embedding = await self._embed_single_code(new_code_text)
         if new_embedding is None:
             logger.warning(f"Could not embed new code for similarity check: {new_code['code']}")
             return False
         
+        # Get current embeddings from the embedding manager (already cached)
+        _, existing_embeddings = await self._embedding_manager.get_current_embeddings(self)
+        
         # Check similarity with existing codes
-        for existing_code in self._codes:
-            existing_text = f"{existing_code['code']}: {existing_code['definition']}"
-            existing_embedding = await self._embed_single_code(existing_text)
+        for i, (existing_code, existing_embedding) in enumerate(zip(self._codes, existing_embeddings)):
+            # Calculate cosine similarity
+            similarity = cosine_similarity(
+                [new_embedding], [existing_embedding]
+            )[0][0]
             
-            if existing_embedding is not None:
-                # Calculate cosine similarity
-                similarity = cosine_similarity(
-                    [new_embedding], [existing_embedding]
-                )[0][0]
-                
-                if similarity > self._similarity_threshold:
-                    logger.info(
-                        f"Duplicate detected: '{new_code['code']}' similar to "
-                        f"'{existing_code['code']}' (similarity: {similarity:.3f})"
-                    )
-                    self._stats['duplicates_detected'] += 1
-                    return True
+            if similarity > self._similarity_threshold:
+                logger.info(
+                    f"Duplicate detected: '{new_code['code']}' similar to "
+                    f"'{existing_code['code']}' (similarity: {similarity:.3f})"
+                )
+                self._stats['duplicates_detected'] += 1
+                return True
         
         return False
     
@@ -475,77 +479,72 @@ class SharedCodebookState:
 
 
 class DynamicEmbeddingManager:
-    """Manages embeddings that update as codes are added during concurrent processing"""
+    """Manages embeddings incrementally as codes are added during concurrent processing"""
     
     def __init__(self, base_embedding_manager: CodebookEmbeddingManager):
         self.base_manager = base_embedding_manager
-        self._dynamic_cache = {}
+        self._code_to_embedding = {}  # Maps code text to embedding
+        self._ordered_codes = []  # List of codes in order
+        self._ordered_embeddings = []  # Corresponding embeddings
         self._lock = asyncio.Lock()
+        self._initialized = False
     
     async def get_current_embeddings(self, shared_state: SharedCodebookState) -> Tuple[List[Dict], List[np.ndarray]]:
-        """Get embeddings for current codebook state"""
+        """Get embeddings for current codebook state with incremental updates"""
         current_codes = await shared_state.get_current_snapshot()
         
         if not current_codes:
             return [], []
         
-        # Create a snapshot ID based on the current code count
-        snapshot_id = f"dynamic_{len(current_codes)}_{hash(tuple(c['code'] for c in current_codes))}"
-        
-        # Try to get from base manager first (for efficiency)
-        try:
-            codes, embeddings = await self.base_manager.get_snapshot_embeddings(current_codes, snapshot_id)
-            return codes, embeddings
-        except Exception as e:
-            logger.warning(f"Base embedding manager failed, using dynamic cache: {str(e)}")
-            return await self._get_embeddings_dynamic(current_codes)
-    
-    async def _get_embeddings_dynamic(self, codes: List[Dict]) -> Tuple[List[Dict], List[np.ndarray]]:
-        """Get embeddings using dynamic cache"""
-        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
-        embeddings = []
-        
         async with self._lock:
-            # Check cache and identify missing embeddings
-            missing_texts = []
-            missing_indices = []
+            # Initialize with starter codes if not done yet
+            if not self._initialized and current_codes:
+                await self._initialize_embeddings(current_codes)
+                self._initialized = True
+                return self._ordered_codes.copy(), self._ordered_embeddings.copy()
             
-            for i, code_text in enumerate(code_texts):
-                if code_text in self._dynamic_cache:
-                    embeddings.append(self._dynamic_cache[code_text])
-                else:
-                    embeddings.append(None)  # Placeholder
-                    missing_texts.append(code_text)
-                    missing_indices.append(i)
+            # Check for new codes (codes are only appended, never removed)
+            if len(current_codes) > len(self._ordered_codes):
+                # Get only the new codes
+                new_codes = current_codes[len(self._ordered_codes):]
+                await self._add_new_embeddings(new_codes)
             
-            # Embed missing codes
-            if missing_texts:
-                try:
-                    client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
-                    response = await client.embeddings.create(
-                        model=EmbeddingConfig().embedding_model,
-                        input=missing_texts
-                    )
-                    
-                    # Cache new embeddings
-                    for i, embedding_data in enumerate(response.data):
-                        embedding = np.array(embedding_data.embedding, dtype=np.float32)
-                        text = missing_texts[i]
-                        idx = missing_indices[i]
-                        
-                        self._dynamic_cache[text] = embedding
-                        embeddings[idx] = embedding
-                        
-                except Exception as e:
-                    logger.error(f"Error in dynamic embedding: {str(e)}")
-                    # Fill missing embeddings with zeros as fallback
-                    for idx in missing_indices:
-                        if embeddings[idx] is None:
-                            embeddings[idx] = np.zeros(1536, dtype=np.float32)  # Standard embedding size
+            return self._ordered_codes.copy(), self._ordered_embeddings.copy()
+    
+    async def _initialize_embeddings(self, initial_codes: List[Dict]):
+        """Initialize embeddings for the starter codes (called within lock)"""
+        if not initial_codes:
+            return
+            
+        code_texts = [f"{code['code']}: {code['definition']}" for code in initial_codes]
         
-        # Filter out any None values
-        final_embeddings = [emb for emb in embeddings if emb is not None]
-        return codes[:len(final_embeddings)], final_embeddings
+        # Use base manager's cache for efficiency
+        embeddings = await self.base_manager.cache.get_embeddings_with_cache(code_texts)
+        
+        # Store in our structures
+        for code, code_text, embedding in zip(initial_codes, code_texts, embeddings):
+            self._code_to_embedding[code_text] = embedding
+            self._ordered_codes.append(code)
+            self._ordered_embeddings.append(embedding)
+    
+    async def _add_new_embeddings(self, new_codes: List[Dict]):
+        """Add embeddings for newly added codes only (called within lock)"""
+        if not new_codes:
+            return
+            
+        # Get embeddings only for the new codes
+        new_code_texts = [f"{code['code']}: {code['definition']}" for code in new_codes]
+        new_embeddings = await self.base_manager.cache.get_embeddings_with_cache(new_code_texts)
+        
+        # Append to our structures
+        for code, code_text, embedding in zip(new_codes, new_code_texts, new_embeddings):
+            self._code_to_embedding[code_text] = embedding
+            self._ordered_codes.append(code)
+            self._ordered_embeddings.append(embedding)
+            
+        if self.base_manager.verbose:
+            logger.debug(f"Incrementally added {len(new_codes)} new embeddings")
+    
 
 
 class CodebookDataProcessor:
@@ -1170,7 +1169,8 @@ class InductiveCodebookGenerator:
         # Initialize dynamic embedding manager
         dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
         
-        # Note: DynamicEmbeddingManager handles embeddings on-demand, no pre-embedding needed
+        # Connect embedding manager to shared state for efficient similarity checks
+        shared_state.set_embedding_manager(dynamic_embeddings)
         
         # Create token-aware adaptive batches
         batches = self.batch_processor.create_adaptive_batches(
