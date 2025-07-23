@@ -29,6 +29,9 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+import logging
+logging.getLogger("httpx").disabled = True
+
 
 @dataclass
 class ClusterBatch:

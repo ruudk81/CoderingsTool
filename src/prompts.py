@@ -378,7 +378,7 @@ If in step 3 you discover that you are unable to use the current codes to descri
 You should complete this determination by reasoning step−by−step. 
 If you determine that a new code is necessary, explicitly justify why existing codes or combinations thereof are insufficient. 
 
-Finally, generate a new code (or codes, if multiple ones are absolutely necessary) that captures the main concepts or themes discussed in the {data type}s that you review.
+Finally, generate a new code (or codes, if multiple ones are absolutely necessary) that captures the main concepts or themes discussed in the survey responses that you review.
 
 Remember, you specialize in creating parsimonious codebooks and avoid creating redundant codes. 
 Your goal is to use the least number of new codes possible while still accurately representing the data.
