@@ -185,7 +185,8 @@ class CodebookEmbeddingManager:
         # Get code texts
         code_texts = [f"{code['code']}: {code['definition']}" for code in codebook]
         
-        if self.verbose:
+        # Suppress repetitive embedding messages unless explicitly debugging
+        if self.verbose and os.environ.get('CODEBOOK_DEBUG_EMBEDDINGS', '').lower() == 'true':
             cache_stats = self.cache.get_cache_stats()
             logger.info(f"Getting embeddings for {len(code_texts)} codes. Cache: {cache_stats['cached_codes']} codes")
         
