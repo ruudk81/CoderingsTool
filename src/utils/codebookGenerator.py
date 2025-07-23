@@ -391,7 +391,7 @@ class SharedCodebookState:
             'similarity_checks': 0
         }
     
-    def set_embedding_manager(self, embedding_manager: DynamicEmbeddingManager):
+    def set_embedding_manager(self, embedding_manager: 'DynamicEmbeddingManager'):
         """Set the embedding manager for efficient similarity checks"""
         self._embedding_manager = embedding_manager
     
