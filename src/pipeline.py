@@ -433,7 +433,7 @@ else:
     
 # === STEP 6 ========================================================================================================
 """GATOS Codebook Generation"""
-from utils import speculativeStarterCodes, codebookGenerator
+from utils import speculativeStarterCodes, inductiveCodebookGenerator
 
 FORCE = True
 
@@ -474,7 +474,7 @@ else:
         )
     else:
         # Step 6.2: Inductive codebook generation
-        codebook_generator = codebookGenerator.InductiveCodebookGenerator(
+        codebook_generator = inductiveCodebookGenerator.InductiveCodebookGenerator(
             cluster_results=initial_cluster_results,
             embedded_text=embedded_text,
             starter_codes=starter_codes,
