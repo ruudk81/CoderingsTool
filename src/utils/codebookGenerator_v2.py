@@ -370,7 +370,7 @@ class ConcurrentBatchProcessor:
         self._build_chains()
     
     def _build_chains(self):
-        """Build LangChain processing chains"""
+        """Build LangChain processing chains with batch optimization"""
         # Initial suggestion chain
         initial_prompt = PromptTemplate(
             template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION + "\n\n{format_instructions}",
@@ -396,6 +396,10 @@ class ConcurrentBatchProcessor:
             | self.review_llm
             | self.review_parser
         )
+        
+        # Enable LangChain's batch optimization
+        self.initial_chain = self.initial_chain.with_config({"max_concurrency": self.max_concurrent_requests})
+        self.review_chain = self.review_chain.with_config({"max_concurrency": self.max_concurrent_requests})
     
     async def _find_nearest_codes_with_current_codebook(self, cluster_embedding: np.ndarray) -> List[Dict[str, str]]:
         """Find k nearest codes using the current shared codebook"""
@@ -470,7 +474,7 @@ class ConcurrentBatchProcessor:
                     }
                 )
             
-            # Stage 1: Initial code suggestion
+            # Stage 1: Initial code suggestion (using LangChain's optimized invoke)
             llm_start = time.time()
             initial_result = await self.initial_chain.ainvoke({
                 "language": DEFAULT_LANGUAGE,
@@ -542,66 +546,227 @@ class ConcurrentBatchProcessor:
                 processing_time=time.time() - start_time
             )
     
+    async def _process_clusters_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[ClusterProcessingResult]:
+        """Process multiple clusters in a batch using LangChain's batch capabilities"""
+        batch_results = []
+        
+        # Prepare all inputs for batch processing
+        initial_inputs = []
+        cluster_data_map = {}
+        
+        for cluster_id, cluster_data in batch_clusters:
+            try:
+                # Calculate cluster embedding
+                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+                
+                # Find nearest codes from current codebook
+                nearest_codes = await self._find_nearest_codes_with_current_codebook(cluster_embedding)
+                
+                # Prepare inputs
+                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
+                code_text = "\n".join([
+                    f"- {code['code']}: {code['definition']}" 
+                    for code in nearest_codes
+                ]) if nearest_codes else "No existing codes in codebook"
+                
+                # Store for batch processing
+                initial_inputs.append({
+                    "language": DEFAULT_LANGUAGE,
+                    "survey_question": self.var_lab,
+                    "code_text": code_text,
+                    "cluster_text": cluster_text,
+                    "data type": "survey responses"
+                })
+                
+                cluster_data_map[cluster_id] = {
+                    "nearest_codes": code_text,
+                    "cluster_text": cluster_text,
+                    "start_time": time.time()
+                }
+                
+            except Exception as e:
+                logger.error(f"Error preparing cluster {cluster_id}: {e}")
+                batch_results.append(ClusterProcessingResult(
+                    cluster_id=cluster_id,
+                    status='preparation_error',
+                    needs_new_code=False,
+                    error=str(e),
+                    processing_time=0
+                ))
+        
+        if not initial_inputs:
+            return batch_results
+        
+        # Batch process initial suggestions using LangChain
+        try:
+            # Use LangChain's batch processing
+            initial_results = await self.initial_chain.abatch(initial_inputs)
+            
+            # Process review inputs
+            review_inputs = []
+            review_cluster_ids = []
+            
+            for idx, (cluster_id, _) in enumerate(batch_clusters):
+                if idx < len(initial_results):
+                    initial_result = initial_results[idx]
+                    
+                    if not initial_result.needs_new_code:
+                        self.stats['no_new_codes_needed'] += 1
+                        batch_results.append(ClusterProcessingResult(
+                            cluster_id=cluster_id,
+                            status='no_new_code_needed',
+                            needs_new_code=False,
+                            processing_time=time.time() - cluster_data_map[cluster_id]["start_time"]
+                        ))
+                    else:
+                        # Prepare for review
+                        review_code_text = (
+                            f"Suggested new code:\n- {initial_result.code}: {initial_result.definition}\n\n"
+                            f"Existing codes:\n{cluster_data_map[cluster_id]['nearest_codes']}"
+                        )
+                        
+                        review_inputs.append({
+                            "language": DEFAULT_LANGUAGE,
+                            "survey_question": self.var_lab,
+                            "code_text": review_code_text,
+                            "cluster_text": cluster_data_map[cluster_id]['cluster_text']
+                        })
+                        review_cluster_ids.append((cluster_id, initial_result))
+            
+            # Batch process reviews
+            if review_inputs:
+                review_results = await self.review_chain.abatch(review_inputs)
+                
+                for idx, (cluster_id, initial_result) in enumerate(review_cluster_ids):
+                    if idx < len(review_results):
+                        review_result = review_results[idx]
+                        
+                        if review_result.approve_new_code and review_result.final_code:
+                            # Add to shared codebook
+                            added = await self.shared_codebook.add_code_if_new(
+                                review_result.final_code,
+                                review_result.final_definition or initial_result.definition
+                            )
+                            
+                            if added:
+                                self.stats['new_codes_added'] += 1
+                                if self.verbose:
+                                    logger.info(f"Cluster {cluster_id}: Added new code '{review_result.final_code}'")
+                            
+                            batch_results.append(ClusterProcessingResult(
+                                cluster_id=cluster_id,
+                                status='new_code_added' if added else 'code_already_exists',
+                                needs_new_code=True,
+                                code=review_result.final_code,
+                                definition=review_result.final_definition or initial_result.definition,
+                                processing_time=time.time() - cluster_data_map[cluster_id]["start_time"]
+                            ))
+                        else:
+                            self.stats['no_new_codes_needed'] += 1
+                            batch_results.append(ClusterProcessingResult(
+                                cluster_id=cluster_id,
+                                status='no_new_code_after_review',
+                                needs_new_code=False,
+                                processing_time=time.time() - cluster_data_map[cluster_id]["start_time"]
+                            ))
+                            
+        except Exception as e:
+            logger.error(f"Batch processing error: {e}")
+            # Fallback to individual processing
+            for cluster_id, cluster_data in batch_clusters:
+                if not any(r.cluster_id == cluster_id for r in batch_results):
+                    batch_results.append(ClusterProcessingResult(
+                        cluster_id=cluster_id,
+                        status='batch_error',
+                        needs_new_code=False,
+                        error=str(e)
+                    ))
+        
+        return batch_results
+    
     async def process_all_clusters(self, clusters: Dict[int, Dict]) -> List[ClusterProcessingResult]:
-        """Process all clusters with concurrent batch processing"""
-        all_results = []
+        """Process all clusters with TRUE concurrent batch processing"""
         cluster_items = list(clusters.items())
         total_clusters = len(cluster_items)
+        total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
         
-        # Process in batches with rate limiting
         verbose_reporter = VerboseReporter(self.verbose)
+        
+        # Create ALL batch tasks upfront for true concurrency
+        batch_tasks = []
         
         for i in range(0, total_clusters, self.batch_size):
             batch_num = i // self.batch_size + 1
             batch_clusters = cluster_items[i:i + self.batch_size]
+            batch_start = i + 1
+            batch_end = min(i + self.batch_size, total_clusters)
             
+            # Create async task for each batch (capture variables to avoid closure issues)
+            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters, 
+                                  batch_start=batch_start, batch_end=batch_end):
+                """Process a single batch concurrently"""
+                start_time = time.time()
+                
+                if self.verbose:
+                    logger.info(f"Batch {batch_num}/{total_batches} started: clusters {batch_start}-{batch_end}")
+                
+                # Use LangChain's batch processing for efficiency
+                batch_results = await self._process_clusters_batch_langchain(batch_clusters)
+                
+                # Process results
+                batch_all_results = batch_results
+                batch_new_codes = sum(1 for r in batch_results if r.status == 'new_code_added')
+                batch_errors = sum(1 for r in batch_results if 'error' in r.status)
+                
+                # Get current codebook stats
+                codebook_stats = await self.shared_codebook.get_stats()
+                
+                elapsed = time.time() - start_time
+                
+                if self.verbose:
+                    status = f"Batch {batch_num}/{total_batches} complete: "
+                    if batch_new_codes > 0:
+                        status += f"{batch_new_codes} new codes added. "
+                    status += f"Codebook: {codebook_stats['total_codes']} codes. "
+                    status += f"Time: {elapsed:.1f}s"
+                    if batch_errors > 0:
+                        status += f" ({batch_errors} errors)"
+                    logger.info(status)
+                
+                return batch_num, batch_all_results
+            
+            # Add batch task to list
+            task = process_batch()  # No args needed, they're captured as defaults
+            batch_tasks.append(task)
+        
+        # Process ALL batches concurrently!
+        if self.verbose:
             verbose_reporter.step_start(
-                f"Processing batch {batch_num}: clusters {i+1}-{min(i+self.batch_size, total_clusters)} of {total_clusters}"
+                f"Processing {total_clusters} clusters in {total_batches} concurrent batches"
             )
-            
-            # Process batch concurrently with semaphore
-            semaphore = asyncio.Semaphore(self.max_concurrent_requests)
-            
-            async def process_with_semaphore(cluster_id, cluster_data):
-                async with semaphore:
-                    return await self._process_single_cluster(cluster_id, cluster_data)
-            
-            # Create tasks for batch
-            tasks = []
-            for cluster_id, cluster_data in batch_clusters:
-                task = process_with_semaphore(cluster_id, cluster_data)
-                tasks.append(task)
-            
-            # Wait for batch to complete
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            batch_new_codes = 0
-            for result in batch_results:
-                if isinstance(result, Exception):
-                    logger.error(f"Batch error: {result}")
-                    all_results.append(ClusterProcessingResult(
-                        cluster_id=-1,
-                        status='batch_error',
-                        needs_new_code=False,
-                        error=str(result)
-                    ))
-                else:
-                    all_results.append(result)
-                    self.stats['clusters_processed'] += 1
-                    if result.status == 'new_code_added':
-                        batch_new_codes += 1
-            
-            # Get current codebook stats
-            codebook_stats = await self.shared_codebook.get_stats()
-            
-            if batch_new_codes > 0:
-                verbose_reporter.step_complete(
-                    f"Batch {batch_num} complete: {batch_new_codes} new codes added. "
-                    f"Codebook now has {codebook_stats['total_codes']} codes"
-                )
-            else:
-                verbose_reporter.step_complete(f"Batch {batch_num} complete: No new codes needed")
+        
+        all_batch_start = time.time()
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        all_batch_time = time.time() - all_batch_start
+        
+        # Collect all results
+        all_results = []
+        successful_batches = 0
+        
+        for result in batch_results:
+            if isinstance(result, Exception):
+                logger.error(f"Batch processing error: {result}")
+            elif isinstance(result, tuple):
+                batch_num, batch_cluster_results = result
+                all_results.extend(batch_cluster_results)
+                successful_batches += 1
+                self.stats['clusters_processed'] += len(batch_cluster_results)
+        
+        if self.verbose:
+            verbose_reporter.step_complete(
+                f"All {total_batches} batches completed in {all_batch_time:.1f}s "
+                f"(~{all_batch_time/total_batches:.1f}s per batch running concurrently)"
+            )
         
         return all_results
 
