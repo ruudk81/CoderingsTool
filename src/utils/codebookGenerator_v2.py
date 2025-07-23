@@ -371,11 +371,10 @@ class ConcurrentBatchProcessor:
     
     def _build_chains(self):
         """Build LangChain processing chains with batch optimization"""
-        # Initial suggestion chain
+        # Initial suggestion chain - using v1's exact prompt format (no format_instructions)
         initial_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION + "\n\n{format_instructions}",
-            input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"],
-            partial_variables={"format_instructions": self.suggestion_parser.get_format_instructions()}
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION,
+            input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"]
         )
         
         self.initial_chain = (
@@ -384,11 +383,10 @@ class ConcurrentBatchProcessor:
             | self.suggestion_parser
         )
         
-        # Review chain
+        # Review chain - using v1's exact prompt format (no format_instructions)
         review_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION + "\n\n{format_instructions}",
-            input_variables=["language", "survey_question", "code_text", "cluster_text"],
-            partial_variables={"format_instructions": self.review_parser.get_format_instructions()}
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION,
+            input_variables=["language", "survey_question", "code_text", "cluster_text"]
         )
         
         self.review_chain = (
