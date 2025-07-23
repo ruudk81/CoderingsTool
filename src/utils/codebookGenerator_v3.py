@@ -10,6 +10,14 @@ import numpy as np
 import time
 from pydantic import BaseModel, Field
 import hashlib
+from enum import Enum
+
+# Retry logic imports
+from tenacity import (
+    retry, stop_after_attempt, wait_exponential, 
+    retry_if_exception_type, before_sleep_log,
+    RetryError
+)
 
 from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
@@ -33,6 +41,74 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").disabled = True
+logging.getLogger("tenacity").setLevel(logging.WARNING)  # Reduce tenacity noise
+
+# ============================================================================
+# ERROR HANDLING AND RETRY CONFIGURATION
+# ============================================================================
+
+class ErrorType(Enum):
+    """Categorize different types of errors for appropriate handling"""
+    API_RATE_LIMIT = "api_rate_limit"
+    API_TIMEOUT = "api_timeout"
+    API_SERVER_ERROR = "api_server_error"
+    NETWORK_ERROR = "network_error"
+    PARSING_ERROR = "parsing_error"
+    VALIDATION_ERROR = "validation_error"
+    UNKNOWN_ERROR = "unknown_error"
+
+class RetryableError(Exception):
+    """Base class for retryable errors"""
+    def __init__(self, message: str, error_type: ErrorType):
+        super().__init__(message)
+        self.error_type = error_type
+
+class APIError(RetryableError):
+    """API-related errors that should be retried"""
+    pass
+
+class ProcessingError(Exception):
+    """Non-retryable processing errors"""
+    def __init__(self, message: str, error_type: ErrorType):
+        super().__init__(message)
+        self.error_type = error_type
+
+@dataclass
+def classify_error(error: Exception) -> ErrorType:
+    """Classify errors for appropriate retry behavior"""
+    error_str = str(error).lower()
+    
+    if "rate limit" in error_str or "429" in error_str:
+        return ErrorType.API_RATE_LIMIT
+    elif "timeout" in error_str:
+        return ErrorType.API_TIMEOUT
+    elif "500" in error_str or "502" in error_str or "503" in error_str:
+        return ErrorType.API_SERVER_ERROR
+    elif "connection" in error_str or "network" in error_str:
+        return ErrorType.NETWORK_ERROR
+    elif "parsing" in error_str or "json" in error_str:
+        return ErrorType.PARSING_ERROR
+    elif "validation" in error_str:
+        return ErrorType.VALIDATION_ERROR
+    else:
+        return ErrorType.UNKNOWN_ERROR
+
+# Retry configurations for different error types
+API_RETRY_CONFIG = {
+    "stop": stop_after_attempt(5),
+    "wait": wait_exponential(multiplier=2, min=1, max=30),
+    "retry": retry_if_exception_type((APIError, asyncio.TimeoutError, ConnectionError)),
+    "before_sleep": before_sleep_log(logger, logging.WARNING),
+    "reraise": True
+}
+
+EMBEDDING_RETRY_CONFIG = {
+    "stop": stop_after_attempt(3),
+    "wait": wait_exponential(multiplier=1, min=2, max=10),
+    "retry": retry_if_exception_type((APIError, asyncio.TimeoutError, ConnectionError)),
+    "before_sleep": before_sleep_log(logger, logging.WARNING),
+    "reraise": True
+}
 
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
@@ -166,8 +242,34 @@ class OptimizedEmbeddingManager:
         
         return codes, embeddings, version
     
+    @retry(**EMBEDDING_RETRY_CONFIG)
+    async def _embed_texts_with_retry(self, texts: List[str]) -> List[np.ndarray]:
+        """Embed texts with retry logic for API failures"""
+        try:
+            client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
+            response = await client.embeddings.create(
+                model=self.embedding_config.embedding_model,
+                input=texts,
+                timeout=30.0  # Add explicit timeout
+            )
+            
+            embeddings = []
+            for embedding_data in response.data:
+                embedding = np.array(embedding_data.embedding, dtype=np.float32)
+                embeddings.append(embedding)
+            
+            return embeddings
+            
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                raise APIError(f"Embedding API error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Embedding processing error: {str(e)}", error_type)
+    
     async def _embed_texts(self, texts: List[str]) -> List[np.ndarray]:
-        """Embed multiple texts with caching"""
+        """Embed multiple texts with caching and retry logic"""
         # Check cache first
         embeddings = []
         new_texts = []
@@ -184,22 +286,20 @@ class OptimizedEmbeddingManager:
         # Embed new texts if any
         if new_texts:
             try:
-                client = AsyncOpenAI(api_key=os.environ.get(OPENAI_API_KEY))
-                response = await client.embeddings.create(
-                    model=self.embedding_config.embedding_model,
-                    input=new_texts
-                )
+                new_embeddings = await self._embed_texts_with_retry(new_texts)
                 
                 # Cache new embeddings
-                for j, embedding_data in enumerate(response.data):
-                    embedding = np.array(embedding_data.embedding, dtype=np.float32)
+                for j, embedding in enumerate(new_embeddings):
                     text = new_texts[j]
                     text_hash = self._get_text_hash(text)
                     self._individual_cache[text_hash] = embedding
                     embeddings.append((new_indices[j], embedding))
                     
-            except Exception as e:
-                logger.error(f"Error embedding texts: {str(e)}")
+            except (APIError, ProcessingError) as e:
+                logger.error(f"Failed to embed texts after retries: {str(e)}")
+                return []
+            except RetryError as e:
+                logger.error(f"Retry exhausted for embedding: {str(e)}")
                 return []
         
         # Sort by index and return
@@ -243,6 +343,9 @@ class LangChainBatchProcessor:
             'new_codes_added': 0,
             'no_new_codes_needed': 0,
             'errors': 0,
+            'retries': 0,
+            'partial_failures': 0,
+            'successful_recoveries': 0,
             'llm_time': 0.0,
             'embedding_time': 0.0
         }
@@ -366,6 +469,60 @@ class LangChainBatchProcessor:
         
         return nearest_codes
     
+    @retry(**API_RETRY_CONFIG)
+    async def _process_initial_batch_with_retry(self, batch_inputs: List[Dict]) -> List[Any]:
+        """Process initial suggestions with retry logic"""
+        try:
+            results = await self.initial_chain.abatch(batch_inputs)
+            return results
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1
+                raise APIError(f"Initial batch processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Initial batch processing error: {str(e)}", error_type)
+    
+    @retry(**API_RETRY_CONFIG)
+    async def _process_review_batch_with_retry(self, review_inputs: List[Dict]) -> List[Any]:
+        """Process review suggestions with retry logic"""
+        try:
+            results = await self.review_chain.abatch(review_inputs)
+            return results
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1 
+                raise APIError(f"Review batch processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Review batch processing error: {str(e)}", error_type)
+    
+    async def _retry_individual_failures(self, failed_inputs: List[Tuple[int, Dict]], 
+                                        is_review: bool = False) -> Dict[int, Any]:
+        """Retry individual failed items from a batch"""
+        recovery_results = {}
+        
+        for original_idx, input_data in failed_inputs:
+            try:
+                if is_review:
+                    result = await self.review_chain.ainvoke(input_data)
+                else:
+                    result = await self.initial_chain.ainvoke(input_data)
+                
+                recovery_results[original_idx] = result
+                self.stats['successful_recoveries'] += 1
+                
+                if self.verbose:
+                    logger.info(f"Successfully recovered {'review' if is_review else 'initial'} processing for item {original_idx}")
+                    
+            except Exception as e:
+                logger.error(f"Individual retry failed for item {original_idx}: {str(e)}")
+                recovery_results[original_idx] = e
+        
+        return recovery_results
+    
     async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
         """Process a batch of clusters using LangChain's batch capabilities"""
         batch_results = []
@@ -420,12 +577,28 @@ class LangChainBatchProcessor:
         if not batch_inputs:
             return batch_results
         
-        # Process batch using proper two-stage LangChain approach
+        # Process batch using proper two-stage LangChain approach with retry logic
         try:
             llm_start = time.time()
             
-            # Stage 1: Initial suggestions using abatch
-            initial_results = await self.initial_chain.abatch(batch_inputs)
+            # Stage 1: Initial suggestions using abatch with retry
+            try:
+                initial_results = await self._process_initial_batch_with_retry(batch_inputs)
+            except (APIError, ProcessingError) as e:
+                logger.warning(f"Initial batch failed, attempting individual recovery: {str(e)}")
+                self.stats['partial_failures'] += 1
+                
+                # Attempt individual recovery
+                failed_inputs = [(i, inp) for i, inp in enumerate(batch_inputs)]
+                recovery_results = await self._retry_individual_failures(failed_inputs, is_review=False)
+                
+                # Rebuild results array
+                initial_results = []
+                for i in range(len(batch_inputs)):
+                    if i in recovery_results:
+                        initial_results.append(recovery_results[i])
+                    else:
+                        initial_results.append(Exception(f"Failed to process cluster after retries"))
             
             # Prepare review inputs for clusters that need new codes
             review_inputs = []
@@ -434,6 +607,18 @@ class LangChainBatchProcessor:
             for idx, initial_result in enumerate(initial_results):
                 cluster_info = cluster_map[idx]
                 cluster_id = cluster_info['cluster_id']
+                
+                # Handle failed initial results
+                if isinstance(initial_result, Exception):
+                    logger.error(f"Initial processing failed for cluster {cluster_id}: {str(initial_result)}")
+                    batch_results.append({
+                        'cluster_id': cluster_id,
+                        'status': 'initial_error',
+                        'error': str(initial_result),
+                        'processing_time': time.time() - cluster_info['start_time']
+                    })
+                    self.stats['errors'] += 1
+                    continue
                 
                 if not initial_result.needs_new_code:
                     # No new code needed
@@ -462,15 +647,43 @@ class LangChainBatchProcessor:
                         'initial_result': initial_result
                     }
             
-            # Stage 2: Review suggestions using abatch
+            # Stage 2: Review suggestions using abatch with retry
             if review_inputs:
-                review_results = await self.review_chain.abatch(review_inputs)
+                try:
+                    review_results = await self._process_review_batch_with_retry(review_inputs)
+                except (APIError, ProcessingError) as e:
+                    logger.warning(f"Review batch failed, attempting individual recovery: {str(e)}")
+                    self.stats['partial_failures'] += 1
+                    
+                    # Attempt individual recovery
+                    failed_inputs = [(i, inp) for i, inp in enumerate(review_inputs)]
+                    recovery_results = await self._retry_individual_failures(failed_inputs, is_review=True)
+                    
+                    # Rebuild results array
+                    review_results = []
+                    for i in range(len(review_inputs)):
+                        if i in recovery_results:
+                            review_results.append(recovery_results[i])
+                        else:
+                            review_results.append(Exception(f"Failed to process review after retries"))
                 
                 for idx, review_result in enumerate(review_results):
                     review_info = review_cluster_map[idx]
                     cluster_id = review_info['cluster_id']
                     cluster_info = review_info['cluster_info']
                     initial_result = review_info['initial_result']
+                    
+                    # Handle failed review results
+                    if isinstance(review_result, Exception):
+                        logger.error(f"Review failed for cluster {cluster_id}: {str(review_result)}")
+                        batch_results.append({
+                            'cluster_id': cluster_id,
+                            'status': 'review_error',
+                            'error': str(review_result),
+                            'processing_time': time.time() - cluster_info['start_time']
+                        })
+                        self.stats['errors'] += 1
+                        continue
                     
                     if review_result.approve_new_code and review_result.final_code:
                         # Add to shared codebook
@@ -504,15 +717,18 @@ class LangChainBatchProcessor:
             self.stats['llm_time'] += time.time() - llm_start
                 
         except Exception as e:
-            logger.error(f"Batch processing error: {e}")
-            # Add error results for all clusters in batch
+            logger.error(f"Unexpected batch processing error: {e}")
+            error_type = classify_error(e)
+            # Add error results for all clusters in batch that weren't processed
             for idx in cluster_map:
                 cluster_id = cluster_map[idx]['cluster_id']
                 if not any(r['cluster_id'] == cluster_id for r in batch_results):
                     batch_results.append({
                         'cluster_id': cluster_id,
-                        'status': 'batch_error',
-                        'error': str(e)
+                        'status': 'unexpected_error',
+                        'error': str(e),
+                        'error_type': error_type.value,
+                        'processing_time': time.time() - cluster_map[idx]['start_time']
                     })
                     self.stats['errors'] += 1
         
@@ -730,8 +946,18 @@ class InductiveCodebookGenerator:
             'avg_time_per_cluster': processing_time / len(clusters) if len(clusters) > 0 else 0
         }
         
-        # Report results
-        self.verbose_reporter.summary("V3 GENERATION COMPLETE", {
+        # Report results with comprehensive error statistics
+        error_summary = {}
+        if batch_processor.stats['errors'] > 0:
+            error_summary[f"Errors"] = batch_processor.stats['errors']
+        if batch_processor.stats['retries'] > 0:
+            error_summary[f"Retries"] = batch_processor.stats['retries']
+        if batch_processor.stats['partial_failures'] > 0:
+            error_summary[f"Partial failures"] = batch_processor.stats['partial_failures']
+        if batch_processor.stats['successful_recoveries'] > 0:
+            error_summary[f"Successful recoveries"] = batch_processor.stats['successful_recoveries']
+        
+        summary_data = {
             "Initial codes": len(self.starter_codes),
             "New codes added": batch_processor.stats['new_codes_added'],
             "Final codebook size": len(final_codes),
@@ -740,8 +966,14 @@ class InductiveCodebookGenerator:
             "Avg per cluster": f"{final_stats['avg_time_per_cluster']:.2f}s",
             "LLM time": f"{batch_processor.stats['llm_time']:.2f}s",
             "Embedding time": f"{batch_processor.stats['embedding_time']:.2f}s",
-            "Method": "LangChain batch optimization"
-        })
+            "Method": "LangChain batch optimization with retry logic"
+        }
+        
+        # Add error summary if there were any issues
+        if error_summary:
+            summary_data.update(error_summary)
+            
+        self.verbose_reporter.summary("V3 GENERATION COMPLETE", summary_data)
         
         return {
             'codebook': final_codes,
