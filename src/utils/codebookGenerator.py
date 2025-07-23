@@ -37,6 +37,36 @@ logging.getLogger("httpx").disabled = True
 
 
 @dataclass
+class EnhancedCodebookConfig:
+    """Enhanced configuration for efficient codebook generation"""
+    max_tokens: int = 4000
+    completion_reserve: int = 1000  # Reserve tokens for LLM response
+    max_batch_size: int = 10
+    min_batch_size: int = 1
+    max_retries: int = 3
+    retry_delay: float = 1.0
+    retry_exponential_base: float = 2.0
+    max_concurrent_batches: int = 5  # Process batches concurrently
+    rate_limit_buffer: float = 0.1  # 10% buffer for rate limiting
+    
+    def __post_init__(self):
+        # Ensure sensible defaults
+        self.max_batch_size = max(self.min_batch_size, self.max_batch_size)
+        self.max_retries = max(0, self.max_retries)
+
+
+@dataclass
+class ClusterBatch:
+    """Represents a batch of clusters to process together with token awareness"""
+    batch_id: int
+    cluster_ids: List[int]
+    cluster_data: Dict[int, Dict]  # cluster_id -> {'ideas': [], 'embeddings': []}
+    estimated_tokens: int = 0
+    codebook_snapshot: Optional[List[Dict]] = None
+    snapshot_id: int = 0
+
+
+@dataclass
 class CodeEmbeddingCache:
     """Cache for code embeddings to avoid re-computing"""
     _cache: Dict[str, np.ndarray]
@@ -343,36 +373,6 @@ class TokenAwareBatchProcessor:
             logger.info(f"Created {total_batches} adaptive batches, avg size: {avg_batch_size:.1f} clusters")
         
         return batches
-
-
-@dataclass
-class EnhancedCodebookConfig:
-    """Enhanced configuration for efficient codebook generation"""
-    max_tokens: int = 4000
-    completion_reserve: int = 1000  # Reserve tokens for LLM response
-    max_batch_size: int = 10
-    min_batch_size: int = 1
-    max_retries: int = 3
-    retry_delay: float = 1.0
-    retry_exponential_base: float = 2.0
-    max_concurrent_batches: int = 5  # Process batches concurrently
-    rate_limit_buffer: float = 0.1  # 10% buffer for rate limiting
-    
-    def __post_init__(self):
-        # Ensure sensible defaults
-        self.max_batch_size = max(self.min_batch_size, self.max_batch_size)
-        self.max_retries = max(0, self.max_retries)
-
-
-@dataclass
-class ClusterBatch:
-    """Represents a batch of clusters to process together with token awareness"""
-    batch_id: int
-    cluster_ids: List[int]
-    cluster_data: Dict[int, Dict]  # cluster_id -> {'ideas': [], 'embeddings': []}
-    estimated_tokens: int = 0
-    codebook_snapshot: Optional[List[Dict]] = None
-    snapshot_id: int = 0
 
 
 class CodebookDataProcessor:
