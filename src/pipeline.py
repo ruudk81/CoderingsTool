@@ -434,7 +434,7 @@ else:
 # === STEP 6 ========================================================================================================
 """GATOS Codebook Generation"""
 from utils import speculativeStarterCodes
-from utils import codebookGenerator_v2 as codebookGenerator
+from utils import codebookGenerator_v3 as codebookGenerator
 
 FORCE = True
 
@@ -486,7 +486,7 @@ else:
             max_concurrent_requests=5  # Allow 5 concurrent API calls
         )
         codebook_results = codebook_generator.generate()
-        
+
         # Create GATOS codebook model
         gatos_codebook = models.GATOSCodebook(
             codes=codebook_results['codebook'],

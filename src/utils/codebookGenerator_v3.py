@@ -1,24 +1,9 @@
-"""
-CODEBOOK GENERATOR V3 - LangChain-Optimized Architecture
-========================================================
-
-This version leverages LangChain's native batch processing capabilities and 
-shared memory state pattern for maximum efficiency.
-
-Key Features:
-- LangChain's abatch() for efficient concurrent API calls
-- Shared memory codebook with real-time updates across all batches
-- Structured outputs using Pydantic models
-- True concurrent batch processing (all batches run simultaneously)
-- Optimized prompt chaining similar to SegmentDescriber pattern
-"""
-
 import os
 import sys
 sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import logging
 import numpy as np
