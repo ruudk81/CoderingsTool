@@ -23,7 +23,7 @@ from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 
 from prompts import SYSTEM_MESSAGE_CODEBOOK, INITIAL_CODEBOOK_GENERATION, REVIEW_CODEBOOK_GENERATION
@@ -371,11 +371,10 @@ class LangChainBatchProcessor:
         self.suggestion_parser = PydanticOutputParser(pydantic_object=CodeSuggestion)
         self.review_parser = PydanticOutputParser(pydantic_object=CodeReview)
         
-        # Initial suggestion chain - using PROPER prompts
+        # Initial suggestion chain - using v1's exact prompt format (no format_instructions)
         initial_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION + "\n\n{format_instructions}",
-            input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"],
-            partial_variables={"format_instructions": self.suggestion_parser.get_format_instructions()}
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION,
+            input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"]
         )
         
         self.initial_chain = (
@@ -384,11 +383,10 @@ class LangChainBatchProcessor:
             | self.suggestion_parser
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Review chain - using PROPER prompts  
+        # Review chain - using v1's exact prompt format (no format_instructions)
         review_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION + "\n\n{format_instructions}",
-            input_variables=["language", "survey_question", "code_text", "cluster_text"],
-            partial_variables={"format_instructions": self.review_parser.get_format_instructions()}
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION,
+            input_variables=["language", "survey_question", "code_text", "cluster_text"]
         )
         
         self.review_chain = (
