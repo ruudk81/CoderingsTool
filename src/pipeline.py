@@ -433,7 +433,8 @@ else:
     
 # === STEP 6 ========================================================================================================
 """GATOS Codebook Generation"""
-from utils import speculativeStarterCodes, codebookGenerator
+from utils import speculativeStarterCodes
+from utils import codebookGenerator_v2 as codebookGenerator
 
 FORCE = True
 

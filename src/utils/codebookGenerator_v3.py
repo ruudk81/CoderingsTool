@@ -53,17 +53,27 @@ logging.getLogger("httpx").disabled = True
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
 
-class CodeDecision(BaseModel):
-    """Single-stage code decision combining initial suggestion and review"""
+class CodeSuggestion(BaseModel):
+    """Structured output for initial code suggestion"""
     needs_new_code: bool = Field(description="Whether a new code is needed")
-    code: Optional[str] = Field(default=None, description="The final code name")
-    definition: Optional[str] = Field(default=None, description="The final code definition")
-    confidence: float = Field(default=0.8, description="Confidence score (0-1)")
+    code: Optional[str] = Field(default=None, description="The suggested code name")
+    definition: Optional[str] = Field(default=None, description="The code definition")
     reasoning: Optional[str] = Field(default=None, description="Reasoning for the decision")
 
-class BatchCodeDecisions(BaseModel):
-    """Batch processing multiple clusters in one LLM call"""
-    decisions: List[CodeDecision] = Field(description="Code decisions for multiple clusters")
+class CodeReview(BaseModel):
+    """Structured output for code review"""
+    approve_new_code: bool = Field(description="Whether to approve the new code")
+    final_code: Optional[str] = Field(default=None, description="The final code name")
+    final_definition: Optional[str] = Field(default=None, description="The final definition")
+    revision_notes: Optional[str] = Field(default=None, description="Notes on any revisions made")
+
+class BatchCodeSuggestions(BaseModel):
+    """Batch processing multiple clusters for initial suggestions"""
+    suggestions: List[CodeSuggestion] = Field(description="Code suggestions for multiple clusters")
+
+class BatchCodeReviews(BaseModel):
+    """Batch processing multiple clusters for reviews"""
+    reviews: List[CodeReview] = Field(description="Code reviews for multiple clusters")
 
 class ClusterInput(BaseModel):
     """Input data for a single cluster"""
@@ -253,69 +263,93 @@ class LangChainBatchProcessor:
         }
     
     def _init_langchain_chain(self):
-        """Initialize optimized LangChain chain for code decisions"""
-        # Single LLM for combined decision
-        self.llm = ChatOpenAI(
+        """Initialize proper two-stage LangChain chains"""
+        # Stage 1: Initial code generation
+        self.initial_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
             model=self.model_config.get_model_for_stage("initial_codes"),
             temperature=0.0
         )
         
-        # Parser for structured output
-        self.parser = PydanticOutputParser(pydantic_object=CodeDecision)
-        
-        # Combined prompt template
-        combined_prompt = PromptTemplate(
-            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + """
-Analyze this cluster of survey responses and decide if a new code is needed.
-
-Survey Question: {survey_question}
-Language: {language}
-
-Existing Relevant Codes:
-{code_text}
-
-Cluster Ideas:
-{cluster_text}
-
-Based on the above, determine if the existing codes adequately capture the themes in this cluster.
-If not, suggest a new code with a clear definition.
-
-{format_instructions}
-""",
-            input_variables=["language", "survey_question", "code_text", "cluster_text"],
-            partial_variables={"format_instructions": self.parser.get_format_instructions()}
+        # Stage 2: Review chain
+        self.review_llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("review_codes"),
+            temperature=0.0
         )
         
-        # Build the chain with batch optimization
-        self.chain = (
-            combined_prompt 
-            | self.llm 
-            | self.parser
+        # Parsers for structured output
+        self.suggestion_parser = PydanticOutputParser(pydantic_object=CodeSuggestion)
+        self.review_parser = PydanticOutputParser(pydantic_object=CodeReview)
+        
+        # Initial suggestion chain - using PROPER prompts
+        initial_prompt = PromptTemplate(
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + INITIAL_CODEBOOK_GENERATION + "\n\n{format_instructions}",
+            input_variables=["language", "survey_question", "code_text", "cluster_text", "data type"],
+            partial_variables={"format_instructions": self.suggestion_parser.get_format_instructions()}
+        )
+        
+        self.initial_chain = (
+            initial_prompt 
+            | self.initial_llm 
+            | self.suggestion_parser
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Capture prompt function
-        def capture_prompt(inputs):
-            if self.prompt_printer and hasattr(self, '_capture_count'):
-                if self._capture_count < 3:  # Only capture first few prompts
+        # Review chain - using PROPER prompts  
+        review_prompt = PromptTemplate(
+            template=SYSTEM_MESSAGE_CODEBOOK + "\n\n" + REVIEW_CODEBOOK_GENERATION + "\n\n{format_instructions}",
+            input_variables=["language", "survey_question", "code_text", "cluster_text"],
+            partial_variables={"format_instructions": self.review_parser.get_format_instructions()}
+        )
+        
+        self.review_chain = (
+            review_prompt
+            | self.review_llm
+            | self.review_parser
+        ).with_config({"max_concurrency": self.max_concurrent_requests})
+        
+        # Capture prompt function (optional)
+        def capture_initial_prompt(inputs):
+            if self.prompt_printer and hasattr(self, '_capture_initial_count'):
+                if self._capture_initial_count < 2:  # Only capture first few prompts
                     self.prompt_printer.capture_prompt(
                         step_name="codebook_generation_v3",
                         utility_name="LangChainBatchProcessor",
                         prompt_content=str(inputs),
-                        prompt_type="combined_code_decision",
+                        prompt_type="initial_code_suggestion",
                         metadata={
-                            "model": self.llm.model_name,
+                            "model": self.initial_llm.model_name,
                             "var_lab": self.var_lab,
-                            "batch_processing": True
+                            "stage": "1/2 - Initial Code Suggestion"
                         }
                     )
-                    self._capture_count += 1
+                    self._capture_initial_count += 1
             return inputs
         
-        self._capture_count = 0
+        def capture_review_prompt(inputs):
+            if self.prompt_printer and hasattr(self, '_capture_review_count'):
+                if self._capture_review_count < 2:  # Only capture first few prompts
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation_v3",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=str(inputs),
+                        prompt_type="code_review",
+                        metadata={
+                            "model": self.review_llm.model_name,
+                            "var_lab": self.var_lab,
+                            "stage": "2/2 - Code Review"
+                        }
+                    )
+                    self._capture_review_count += 1
+            return inputs
         
-        # Add prompt capture to chain
-        self.chain = RunnableLambda(capture_prompt) | self.chain
+        self._capture_initial_count = 0
+        self._capture_review_count = 0
+        
+        # Add prompt capture to chains
+        if self.prompt_printer:
+            self.initial_chain = RunnableLambda(capture_initial_prompt) | self.initial_chain
+            self.review_chain = RunnableLambda(capture_review_prompt) | self.review_chain
     
     async def _find_nearest_codes(self, cluster_embedding: np.ndarray, 
                                  codebook_embeddings: List[np.ndarray], 
@@ -380,7 +414,8 @@ If not, suggest a new code with a clear definition.
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
                     "code_text": code_text,
-                    "cluster_text": cluster_text
+                    "cluster_text": cluster_text,
+                    "data type": "survey responses"
                 })
                 
                 cluster_map[len(batch_inputs) - 1] = {
@@ -400,45 +435,88 @@ If not, suggest a new code with a clear definition.
         if not batch_inputs:
             return batch_results
         
-        # Process batch using LangChain
+        # Process batch using proper two-stage LangChain approach
         try:
             llm_start = time.time()
-            decisions = await self.chain.abatch(batch_inputs)
-            self.stats['llm_time'] += time.time() - llm_start
             
-            # Process results
-            for idx, decision in enumerate(decisions):
+            # Stage 1: Initial suggestions using abatch
+            initial_results = await self.initial_chain.abatch(batch_inputs)
+            
+            # Prepare review inputs for clusters that need new codes
+            review_inputs = []
+            review_cluster_map = {}
+            
+            for idx, initial_result in enumerate(initial_results):
                 cluster_info = cluster_map[idx]
                 cluster_id = cluster_info['cluster_id']
                 
-                if decision.needs_new_code and decision.code:
-                    # Add to shared codebook
-                    added, new_version = await self.shared_codebook.add_code_if_new(
-                        decision.code, decision.definition
-                    )
-                    
-                    if added:
-                        self.stats['new_codes_added'] += 1
-                        if self.verbose:
-                            logger.info(f"Cluster {cluster_id}: Added new code '{decision.code}' (v{new_version})")
-                    
-                    batch_results.append({
-                        'cluster_id': cluster_id,
-                        'status': 'new_code_added' if added else 'code_already_exists',
-                        'code': decision.code,
-                        'definition': decision.definition,
-                        'confidence': decision.confidence,
-                        'processing_time': time.time() - cluster_info['start_time']
-                    })
-                else:
+                if not initial_result.needs_new_code:
+                    # No new code needed
                     self.stats['no_new_codes_needed'] += 1
                     batch_results.append({
                         'cluster_id': cluster_id,
                         'status': 'no_new_code_needed',
                         'processing_time': time.time() - cluster_info['start_time']
                     })
+                    self.stats['clusters_processed'] += 1
+                else:
+                    # Prepare for review stage
+                    original_input = batch_inputs[idx]
+                    review_code_text = f"Suggested new code:\n- {initial_result.code}: {initial_result.definition}\n\nExisting codes:\n{original_input['code_text']}"
+                    
+                    review_inputs.append({
+                        "language": original_input["language"],
+                        "survey_question": original_input["survey_question"],
+                        "code_text": review_code_text,
+                        "cluster_text": original_input["cluster_text"]
+                    })
+                    
+                    review_cluster_map[len(review_inputs) - 1] = {
+                        'cluster_id': cluster_id,
+                        'cluster_info': cluster_info,
+                        'initial_result': initial_result
+                    }
+            
+            # Stage 2: Review suggestions using abatch
+            if review_inputs:
+                review_results = await self.review_chain.abatch(review_inputs)
                 
-                self.stats['clusters_processed'] += 1
+                for idx, review_result in enumerate(review_results):
+                    review_info = review_cluster_map[idx]
+                    cluster_id = review_info['cluster_id']
+                    cluster_info = review_info['cluster_info']
+                    initial_result = review_info['initial_result']
+                    
+                    if review_result.approve_new_code and review_result.final_code:
+                        # Add to shared codebook
+                        added, new_version = await self.shared_codebook.add_code_if_new(
+                            review_result.final_code,
+                            review_result.final_definition or initial_result.definition
+                        )
+                        
+                        if added:
+                            self.stats['new_codes_added'] += 1
+                            if self.verbose:
+                                logger.info(f"Cluster {cluster_id}: Added new code '{review_result.final_code}' (v{new_version})")
+                        
+                        batch_results.append({
+                            'cluster_id': cluster_id,
+                            'status': 'new_code_added' if added else 'code_already_exists',
+                            'code': review_result.final_code,
+                            'definition': review_result.final_definition or initial_result.definition,
+                            'processing_time': time.time() - cluster_info['start_time']
+                        })
+                    else:
+                        self.stats['no_new_codes_needed'] += 1
+                        batch_results.append({
+                            'cluster_id': cluster_id,
+                            'status': 'no_new_code_after_review',
+                            'processing_time': time.time() - cluster_info['start_time']
+                        })
+                    
+                    self.stats['clusters_processed'] += 1
+            
+            self.stats['llm_time'] += time.time() - llm_start
                 
         except Exception as e:
             logger.error(f"Batch processing error: {e}")
