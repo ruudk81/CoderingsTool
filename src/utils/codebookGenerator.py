@@ -1203,9 +1203,6 @@ class InductiveCodebookGenerator:
                         if result['needs_new_code'] and result.get('code'):
                             cluster_to_code[cluster_id] = result['code']
                             self.stats['new_codes_added'] += 1
-                            
-                            if self.verbose:
-                                logger.info(f"New code added for cluster {cluster_id}: '{result['code']}'")
                         else:
                             cluster_to_code[cluster_id] = "existing_code"
                             self.stats['no_new_codes_needed'] += 1
