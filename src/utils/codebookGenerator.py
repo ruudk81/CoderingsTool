@@ -1169,12 +1169,7 @@ class InductiveCodebookGenerator:
         # Initialize dynamic embedding manager
         dynamic_embeddings = DynamicEmbeddingManager(base_embedding_manager=self.embedding_manager)
         
-        # Pre-embed initial codebook for efficiency
-        if self._pre_embed_initial_codebook and self.data_processor.codebook:
-            if self.verbose:
-                verbose_reporter.stat_line(f"Pre-embedding initial codebook ({len(self.data_processor.codebook)} codes)")
-            
-            await dynamic_embeddings.update_embeddings(self.data_processor.codebook.copy())
+        # Note: DynamicEmbeddingManager handles embeddings on-demand, no pre-embedding needed
         
         # Create token-aware adaptive batches
         batches = self.batch_processor.create_adaptive_batches(
