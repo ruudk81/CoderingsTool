@@ -1,3 +1,5 @@
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+
 import asyncio
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
@@ -17,9 +19,16 @@ from pydantic import BaseModel, Field
 import tiktoken
 
 from prompts import SYSTEM_MESSAGE_CODEBOOK, INITIAL_CODEBOOK_GENERATION, REVIEW_CODEBOOK_GENERATION
-from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY
+from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 import models
 from utils.embedder import Embedder
+from utils.verboseReporter import VerboseReporter
+
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -139,7 +148,7 @@ class PromptInputData:
             return embeddings
             
         except Exception as e:
-            self.verbose_reporter.stat_line(f"Error embedding codebook: {str(e)}")
+            logger.error(f"Error embedding codebook: {str(e)}")
             return []
     
     def _find_k_nearest_codes(self, cluster_embedding: np.ndarray, codebook_embeddings: List[np.ndarray]) -> List[Dict]:
@@ -255,6 +264,302 @@ class BatchProcessor:
         
         logger.info(f"Created {len(batches)} batches from {len(responses)} responses")
         return batches
+
+
+class InductiveCodebookGenerator:
+    """Main class for inductive codebook generation using LangChain pipeline"""
+    
+    def __init__(
+        self,
+        cluster_results: List[models.ClusterModel], 
+        embedded_text: List[models.EmbeddingsModel],
+        starter_codes: List[Dict[str, str]], 
+        var_lab: str, 
+        k: int = 5,
+        verbose: bool = False, 
+        prompt_printer = None
+    ):
+        self.cluster_results = cluster_results
+        self.embedded_text = embedded_text
+        self.starter_codes = starter_codes
+        self.var_lab = var_lab
+        self.k = k
+        self.verbose = verbose
+        self.prompt_printer = prompt_printer
+        
+        # Initialize data processor
+        self.data_processor = PromptInputData(
+            cluster_results=cluster_results,
+            embedded_text=embedded_text, 
+            starter_codes=starter_codes,
+            var_lab=var_lab,
+            k=k
+        )
+        
+        # Processing config
+        self.config = ProcessingConfig()
+        self.model_config = ModelConfig()
+        
+        # Initialize LLM
+        self.llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_phase("phase1_descriptive"),
+            temperature=self.config.temperature
+        )
+        
+        # Track statistics
+        self.stats = {
+            'total_clusters': 0,
+            'new_codes_added': 0,
+            'no_new_codes_needed': 0,
+            'errors': 0
+        }
+        
+    def _create_chain_for_cluster(self, code_text: str, cluster_text: str) -> Any:
+        """Create LangChain processing chain for a specific cluster"""
+        
+        # Build the processing chain
+        system_message = SYSTEM_MESSAGE_CODEBOOK.format(language=DEFAULT_LANGUAGE)
+        
+        # Stage 1: Initial code generation prompt
+        initial_prompt_text = INITIAL_CODEBOOK_GENERATION.format(
+            language=DEFAULT_LANGUAGE,
+            survey_question=self.var_lab,
+            code_text=code_text,
+            cluster_text=cluster_text
+        )
+        
+        initial_prompt = PromptTemplate.from_template(system_message + "\n\n" + initial_prompt_text)
+        
+        def extract_initial_suggestion(response: str) -> Dict[str, Any]:
+            """Extract code and definition from initial response"""
+            lines = response.strip().split('\n')
+            code = None
+            definition = None
+            
+            for line in lines:
+                if line.strip().startswith("Code:"):
+                    code = line.replace("Code:", "").strip()
+                elif line.strip().startswith("Definition:"):
+                    definition = line.replace("Definition:", "").strip()
+            
+            return {
+                "code": code or "No code suggested",
+                "definition": definition or "No definition provided",
+                "initial_response": response,
+                "cluster_text": cluster_text,
+                "original_code_text": code_text
+            }
+        
+        def create_review_prompt(data: Dict[str, Any]) -> PromptTemplate:
+            """Create review prompt with suggested code"""
+            # Format the code suggestion for review
+            if data.get("code") and data.get("definition"):
+                review_code_text = f"Suggested new code:\n- {data['code']}: {data['definition']}\n\nExisting codes:\n{data['original_code_text']}"
+            else:
+                review_code_text = f"No new code suggested.\n\nExisting codes:\n{data['original_code_text']}"
+            
+            review_prompt_text = REVIEW_CODEBOOK_GENERATION.format(
+                language=DEFAULT_LANGUAGE,
+                survey_question=self.var_lab,
+                code_text=review_code_text,
+                cluster_text=data['cluster_text']
+            )
+            
+            # Add JSON format instruction
+            review_prompt_text += "\n\nReturn your final recommendation in the following JSON format:\n"
+            review_prompt_text += "{\n"
+            review_prompt_text += '  "needs_new_code": true/false,\n'
+            review_prompt_text += '  "code": "The code name (if needs_new_code is true)",\n'
+            review_prompt_text += '  "definition": "The code definition (if needs_new_code is true)",\n'
+            review_prompt_text += '  "reasoning": "Your reasoning for this decision"\n'
+            review_prompt_text += "}"
+            
+            return PromptTemplate.from_template(system_message + "\n\n" + review_prompt_text)
+        
+        # Complete chain: Initial generation -> Review -> Final decision  
+        chain = (
+            initial_prompt
+            | self.llm
+            | StrOutputParser()
+            | RunnableLambda(extract_initial_suggestion)
+            | RunnableLambda(create_review_prompt)
+            | self.llm
+            | RunnableLambda(lambda response: response.content if hasattr(response, 'content') else str(response))
+            | RunnableLambda(self._parse_final_response)
+        )
+        
+        return chain
+    
+    def _parse_final_response(self, response_text: str) -> CodeRecommendation:
+        """Parse the final response into CodeRecommendation"""
+        try:
+            # Try to parse as JSON first
+            import json
+            import re
+            
+            # Look for JSON in the response
+            json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                try:
+                    json_data = json.loads(json_str)
+                    return CodeRecommendation(**json_data)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fallback: try to extract decision from text
+            needs_new_code = False
+            code = None
+            definition = None
+            reasoning = response_text[:500]
+            
+            # Simple heuristics to determine if new code is needed
+            if "needs_new_code" in response_text.lower():
+                needs_new_code = "true" in response_text.lower()
+            elif "new code" in response_text.lower() and "no" not in response_text.lower():
+                needs_new_code = True
+            
+            # Try to extract code and definition
+            lines = response_text.split('\n')
+            for line in lines:
+                if 'code' in line.lower() and ':' in line:
+                    code = line.split(':', 1)[1].strip().strip('"')
+                elif 'definition' in line.lower() and ':' in line:
+                    definition = line.split(':', 1)[1].strip().strip('"')
+            
+            return CodeRecommendation(
+                needs_new_code=needs_new_code,
+                code=code,
+                definition=definition,
+                reasoning=reasoning
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to parse response: {e}")
+            return CodeRecommendation(
+                needs_new_code=False,
+                reasoning="Failed to parse response"
+            )
+    
+    async def _process_cluster(self, cluster_id: int, cluster_data: Dict) -> Optional[CodeRecommendation]:
+        """Process a single cluster through the LangChain pipeline"""
+        try:
+            # Calculate cluster embedding (mean of all ideas in cluster)
+            cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+            
+            # Get current codebook embeddings
+            code_texts = [f"{code['code']}: {code['definition']}" for code in self.data_processor.codebook]
+            codebook_embeddings = await self.data_processor._embed_codebook_texts(code_texts)
+            
+            if not codebook_embeddings:
+                logger.warning(f"No codebook embeddings available for cluster {cluster_id}")
+                return None
+            
+            # Find k nearest codes
+            nearest_codes = self.data_processor._find_k_nearest_codes(cluster_embedding, codebook_embeddings)
+            
+            # Prepare texts for processing
+            cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
+            code_text = "\n".join([f"- {code['code']}: {code['definition']}" for code in nearest_codes]) if nearest_codes else "No existing codes"
+            
+            # Capture prompt for debugging (first cluster only)
+            if self.prompt_printer and cluster_id == 0:
+                prompt_content = f"Existing codes:\n{code_text}\n\nCluster text:\n{cluster_text}"
+                self.prompt_printer.capture_prompt(
+                    step_name="gatos_codebook", 
+                    utility_name="InductiveCodebookGenerator",
+                    prompt_content=prompt_content,
+                    prompt_type="LangChain Codebook Generation"
+                )
+            
+            # Create and run chain for this cluster
+            chain = self._create_chain_for_cluster(code_text, cluster_text)
+            result = await chain.ainvoke({})
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error processing cluster {cluster_id}: {str(e)}")
+            self.stats['errors'] += 1
+            return None
+    
+    def generate(self) -> Dict[str, Any]:
+        """Generate inductive codebook by processing clusters iteratively"""
+        if self.verbose:
+            print("=== INDUCTIVE CODEBOOK GENERATION (LANGCHAIN) ===")
+        
+        # Prepare clusters from the data processor
+        clusters = self.data_processor._prepare_cluster_text()
+        
+        if not clusters:
+            if self.verbose:
+                print("No valid clusters found with embeddings")
+            return {
+                'codebook': self.data_processor.codebook,
+                'cluster_assignments': {},
+                'stats': self.stats
+            }
+        
+        self.stats['total_clusters'] = len(clusters)
+        cluster_ids = sorted(clusters.keys())
+        
+        if self.verbose:
+            print(f"Processing {len(cluster_ids)} clusters iteratively...")
+        
+        # Track cluster assignments
+        cluster_to_code = {}
+        
+        # Process clusters iteratively (as per GATOS methodology)
+        for i, cluster_id in enumerate(cluster_ids):
+            if self.verbose and i % 10 == 0 and i > 0:
+                print(f"Progress: {i}/{len(cluster_ids)} clusters processed ({self.stats['new_codes_added']} new codes added)")
+            
+            # Process cluster
+            result = asyncio.run(self._process_cluster(cluster_id, clusters[cluster_id]))
+            
+            if result:
+                if result.needs_new_code and result.code and result.definition:
+                    # Add new code to codebook
+                    new_code = {
+                        'code': result.code,
+                        'definition': result.definition,
+                        'cluster_origin': str(cluster_id)
+                    }
+                    self.data_processor.codebook.append(new_code)
+                    cluster_to_code[cluster_id] = result.code
+                    self.stats['new_codes_added'] += 1
+                    
+                    if self.verbose:
+                        print(f"  New code added for cluster {cluster_id}: '{result.code}'")
+                else:
+                    # No new code needed
+                    cluster_to_code[cluster_id] = "existing_code"
+                    self.stats['no_new_codes_needed'] += 1
+            else:
+                # Error processing cluster
+                cluster_to_code[cluster_id] = "processing_error"
+        
+        # Final summary
+        if self.verbose:
+            print("\n=== CODEBOOK GENERATION COMPLETE ===")
+            print(f"Initial codes: {len(self.starter_codes)}")
+            print(f"New codes added: {self.stats['new_codes_added']}")
+            print(f"Final codebook size: {len(self.data_processor.codebook)}")
+            print(f"Processing errors: {self.stats['errors']}")
+        
+        return {
+            'codebook': self.data_processor.codebook,
+            'cluster_assignments': cluster_to_code,
+            'stats': {
+                'initial_codes': len(self.starter_codes),
+                'new_codes': self.stats['new_codes_added'],
+                'total_codes': len(self.data_processor.codebook),
+                'clusters_processed': len(cluster_ids),
+                'no_new_codes_needed': self.stats['no_new_codes_needed'],
+                'errors': self.stats['errors']
+            }
+        }
 
 
 class SurveyResponsePipeline:
