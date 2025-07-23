@@ -242,6 +242,16 @@ class OptimizedEmbeddingManager:
         
         return codes, embeddings, version
     
+    async def get_snapshot_embeddings(self, codes: List[Dict[str, str]], version: int) -> Tuple[List[Dict[str, str]], List[np.ndarray]]:
+        """Get embeddings for a codebook snapshot like v2 - always fresh, no version caching"""
+        if not codes:
+            return [], []
+        
+        # Generate embeddings fresh each time (like v2)
+        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+        embeddings = await self._embed_texts_with_retry(code_texts)
+        
+        return codes, embeddings
     
     @retry(**EMBEDDING_RETRY_CONFIG)
     async def _embed_texts_with_retry(self, texts: List[str]) -> List[np.ndarray]:
@@ -440,19 +450,28 @@ class LangChainBatchProcessor:
             self.initial_chain = RunnableLambda(capture_initial_prompt) | self.initial_chain
             self.review_chain = RunnableLambda(capture_review_prompt) | self.review_chain
     
-    async def _find_nearest_codes(self, cluster_embedding: np.ndarray, 
-                                 codebook_embeddings: List[np.ndarray], 
-                                 codes: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Find k nearest codes to cluster embedding"""
-        if not codebook_embeddings:
+    async def _find_nearest_codes(self, cluster_embedding: np.ndarray) -> List[Dict[str, str]]:
+        """Find k nearest codes using the current shared codebook (v2 logic)"""
+        # Get CURRENT codebook state (like v2)
+        current_codes, version = await self.shared_codebook.get_current_codes()
+        
+        if not current_codes:
             return []
         
-        # Calculate similarities
-        codebook_array = np.array(codebook_embeddings)
+        # Get fresh embeddings for current state (like v2)  
+        codes, embeddings = await self.embedding_manager.get_snapshot_embeddings(
+            current_codes, version
+        )
+        
+        if not embeddings:
+            return []
+        
+        # Calculate similarities (same logic as before)
+        codebook_array = np.array(embeddings)
         similarities = cosine_similarity(cluster_embedding.reshape(1, -1), codebook_array)[0]
         top_k_indices = np.argsort(similarities)[-self.k:][::-1]
         
-        # Get unique codes
+        # Get unique codes (same logic as before)
         seen = set()
         nearest_codes = []
         
@@ -543,13 +562,13 @@ class LangChainBatchProcessor:
                 # Calculate cluster embedding
                 cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
                 
-                # Get current codebook embeddings
+                # Find nearest codes using v2 logic (gets fresh codebook state internally)
                 embed_start = time.time()
-                codes, codebook_embeddings, version = await self.embedding_manager.get_embeddings_for_current_codebook()
+                nearest_codes = await self._find_nearest_codes(cluster_embedding)
                 self.stats['embedding_time'] += time.time() - embed_start
                 
-                # Find nearest codes
-                nearest_codes = await self._find_nearest_codes(cluster_embedding, codebook_embeddings, codes)
+                # Get current version for logging
+                _, version = await self.shared_codebook.get_current_codes()
                 
                 # Prepare inputs
                 cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
