@@ -117,51 +117,44 @@ VALIDATION_PROMPT = """
 {system_message}
 This time we will focus on written responses to the following survey question: "{survey_question}".
 
-You are reviewing a code recommendation to ensure quality and consistency.
+You are reviewing a code recommendation for clustered ideas extracted from survey responses.
 
-CONTEXT DATA:
-<existing_codebook>
-{existing_codes}
-</existing_codebook>
-Note: These are the 5 codes most similar to the recommended code definition.
-
+This is the extracted ideas: 
 <clustered_ideas>
 {clustered_ideas}
 </clustered_ideas>
 Note: These are the original survey responses that prompted this recommendation.
 
-<step3_recommendation>
+This is the recommendation:
+<recommendation>
 {step3_recommendation}
-</step3_recommendation>
+</recommendation>
 Note: This is the complete recommendation from the matching analysis.
 
+These are existing codes in the code book:
+<existing_codebook>
+{existing_codes}
+</existing_codebook>
+Note: These are the 5 codes most similar to the recommended code definition.
+
 EVALUATION CRITERIA:
-1. **Parsimony** (0-10): Were existing code options properly exhausted?
-   - Did Step 3 correctly assess coverage percentages?
-   - Could existing codes be combined/broadened instead?
-
-2. **Non-redundancy** (0-10): No overlap with existing codes?
-   - Compare recommended definition against the 5 similar codes
-   - Check for semantic overlap or near-duplicate concepts
-
-3. **Abstraction consistency** (0-10): Same level as existing codes?
-   - Does the new code match the abstraction level of existing codes?
-   - Is it neither too specific nor too broad compared to others?
-
-4. **Justification alignment** (0-10): Does the recommendation match its reasoning?
-   - Is the decision (use_existing/modify_existing/create_new) well-justified?
-   - Do the coverage assessment and reasoning align?
+1. **Parsimony**: Were existing code options properly exhausted?
+2. **Non-redundancy**: No overlap with existing codes?
+3. **Conceptual unity**: Does this code represent ONE clear concept?
+4. **Mutual exclusivity**: Would a coder be confused about when to use this vs other codes?
+5. **Appropriate scope**: Is this trying to cover too much ground?
+6. **Abstraction consistency**: Same level as existing codes?
+7. **Justification alignment**: Does the recommendation match its reasoning?
 
 Output a validation assessment in {language}:
 {{
   "evaluation": {{
-    "parsimony_score": 0-10,
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
-    "redundancy_score": 0-10,
     "redundancy_reasoning": "assessment of overlap with existing codes",
-    "abstraction_score": 0-10,
+    "conceptual_unity_reasoning": "assessment of whether this represents ONE clear concept",
+    "mutual_exclusivity_reasoning": "assessment of potential confusion with other codes",
+    "appropriate_scope_reasoning": "assessment of whether scope is too broad or trying to cover multiple themes",
     "abstraction_reasoning": "assessment of abstraction level consistency",
-    "justification_score": 0-10,
     "justification_reasoning": "assessment of decision alignment with reasoning"
   }},
   "decision": "APPROVE/REVISE/REJECT",
@@ -174,9 +167,10 @@ Output a validation assessment in {language}:
 
 IMPORTANT: 
 - Return ONLY the JSON object in {language}
-- APPROVE only if all scores ≥8
-- REVISE if scores 6-7 (provide revised code in validated_code)
-- REJECT if any score <6 (set validated_code to null)
+- APPROVE only if recommendation represents ONE clear, focused concept
+- REVISE if concept needs refinement to improve focus or clarity (provide revised code in validated_code)
+- REJECT if recommendation covers multiple unrelated concepts or creates confusion
 - Always populate validated_code for APPROVE/REVISE decisions
+- Ensure codes represent single, mutually exclusive themes
 """
 
