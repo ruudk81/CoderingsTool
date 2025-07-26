@@ -77,6 +77,29 @@ class MatchRecommendation(BaseModel):
     action_details: ActionDetails = Field(description="Action details based on decision")
     justification: str = Field(description="Explanation of why this is the most parsimonious choice")
 
+class ValidationEvaluation(BaseModel):
+    """Evaluation scores and reasoning for Step 4"""
+    parsimony_score: int = Field(description="Score 0-10 for parsimony assessment", ge=0, le=10)
+    parsimony_reasoning: str = Field(description="Assessment of whether existing options were exhausted")
+    redundancy_score: int = Field(description="Score 0-10 for redundancy assessment", ge=0, le=10)
+    redundancy_reasoning: str = Field(description="Assessment of overlap with existing codes")
+    abstraction_score: int = Field(description="Score 0-10 for abstraction consistency", ge=0, le=10)
+    abstraction_reasoning: str = Field(description="Assessment of abstraction level consistency")
+    justification_score: int = Field(description="Score 0-10 for justification alignment", ge=0, le=10)
+    justification_reasoning: str = Field(description="Assessment of decision alignment with reasoning")
+
+class ValidatedCode(BaseModel):
+    """Validated code output"""
+    code: Optional[str] = Field(default=None, description="Approved code name or null if rejected")
+    definition: Optional[str] = Field(default=None, description="Approved definition or null if rejected")
+
+class ValidationResponse(BaseModel):
+    """Output for validation step (Step 4)"""
+    evaluation: ValidationEvaluation = Field(description="Detailed evaluation scores and reasoning")
+    decision: str = Field(description="Overall decision: APPROVE/REVISE/REJECT")
+    decision_rationale: str = Field(description="Explanation for the overall decision")
+    validated_code: ValidatedCode = Field(description="Final validated code if approved")
+
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
 # ============================================================================
@@ -404,8 +427,8 @@ class LangChainBatchProcessor:
         # Keep reference to primary LLM for compatibility (use step2_llm as default)
         self.llm = self.step2_llm
         
-        # Use JsonOutputParser for flexible parsing
-        from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser, StrOutputParser
+        # Import output parsers for chain construction
+        from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
         
         # Step 1: Codebook Analysis Chain (uses step1_llm with Pydantic validation)
         codebook_prompt = PromptTemplate(
@@ -446,13 +469,13 @@ class LangChainBatchProcessor:
         # Step 4: Validation Chain (uses step4_llm)
         validation_prompt = PromptTemplate(
             template=VALIDATION_PROMPT,
-            input_variables=["system_message", "recommendations", "redundancy_example"]
+            input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "step3_recommendation"]
         )
         
         self.validation_chain = (
             validation_prompt
             | self.step4_llm
-            | JsonOutputParser()
+            | PydanticOutputParser(pydantic_object=ValidationResponse)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Initialize capture counts and step diversity tracking
@@ -468,6 +491,38 @@ class LangChainBatchProcessor:
         self._all_steps = {'codebook', 'summary', 'match', 'validation'}
         self._diversity_complete = False
     
+    def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
+        """Format Step 3 recommendation in a human-readable way for Step 4"""
+        if not recommendation:
+            return "No recommendation available"
+            
+        formatted = f"""
+Cluster Theme: {recommendation.cluster_core_theme}
+
+Decision: {recommendation.decision.replace('_', ' ').title()}
+
+Coverage Assessment:
+- Percentage: {recommendation.coverage_assessment.percentage}%
+- Rationale: {recommendation.coverage_assessment.rationale}
+
+Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
+
+Action Details:
+"""
+        
+        if recommendation.action_details.codes_to_use:
+            formatted += f"- Codes to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
+        if recommendation.action_details.code_to_modify:
+            formatted += f"- Code to modify: {recommendation.action_details.code_to_modify}\n"
+            formatted += f"- Modification: {recommendation.action_details.modification_suggestion}\n"
+        if recommendation.action_details.new_code_name:
+            formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
+            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
+            
+        formatted += f"\nJustification: {recommendation.justification}"
+        
+        return formatted.strip()
+
     def _should_capture_prompt(self, step_type: str, max_per_step: int = 1) -> bool:
         """
         Determine if we should capture a prompt for this step type.
@@ -813,11 +868,16 @@ class LangChainBatchProcessor:
                 
                 # Step 4: Validate if new codes are proposed
                 if proposed_codes:
+                    # Format Step 3 recommendation for readable context
+                    formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
+                    
                     validation_input = {
                         "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                         "language": DEFAULT_LANGUAGE,
-                        "recommendations": str(proposed_codes),
-                        "redundancy_example": "Example: 'student concerns' and 'learner worries' are redundant"
+                        "survey_question": self.var_lab,
+                        "existing_codes": code_text,  # Same 5 codes used in Step 3
+                        "clustered_ideas": cluster_text,
+                        "step3_recommendation": formatted_recommendation
                     }
                     
                     # Capture Step 4 prompt with diversity-first logic
@@ -842,27 +902,36 @@ class LangChainBatchProcessor:
                         validation_results = await self._process_step4_with_retry(validation_input)
                     except (APIError, ProcessingError) as e:
                         logger.error(f"Step 4 failed for cluster {cluster_id} after retries: {str(e)}")
-                        validation_results = {"validated_codes": []}
+                        validation_results = None
                     except Exception as e:
                         logger.error(f"Step 4 unexpected error for cluster {cluster_id}: {str(e)}")
-                        validation_results = {"validated_codes": []}
+                        validation_results = None
                     
-                    # Process validated codes from JSON format
-                    validated_codes = []
+                    # Process validated codes from ValidationResponse format
+                    validated_code = None
                     try:
-                        if isinstance(validation_results, dict):
+                        if validation_results and hasattr(validation_results, 'decision'):
+                            # ValidationResponse object
+                            if validation_results.decision == 'APPROVE' and validation_results.validated_code.code:
+                                validated_code = {
+                                    'code': validation_results.validated_code.code,
+                                    'definition': validation_results.validated_code.definition
+                                }
+                        elif isinstance(validation_results, dict):
+                            # Fallback for old format
                             validated_codes = validation_results.get('validated_codes', [])
+                            if validated_codes:
+                                validated_code = validated_codes[0]
                         else:
                             logger.error(f"Unexpected validation result format for cluster {cluster_id}: {validation_results}")
                     except Exception as e:
                         logger.error(f"Error parsing validation results for cluster {cluster_id}: {e}")
                         logger.error(f"Validation results content: {validation_results}")
                     
-                    if validated_codes and len(validated_codes) > 0:
-                        first_code = validated_codes[0]
+                    if validated_code:
                         added, new_version = await self.shared_codebook.add_code_if_new(
-                            first_code.get('code', ''),
-                            first_code.get('definition', '')
+                            validated_code.get('code', ''),
+                            validated_code.get('definition', '')
                         )
                         
                         if added:

@@ -115,44 +115,67 @@ IMPORTANT:
 # PROMPT 4: Final Validation (with criteria)
 VALIDATION_PROMPT = """
 {system_message}
+This time we will focus on written responses to the following survey question: "{survey_question}".
 
-Review these code recommendations against strict criteria:
+You are reviewing a code recommendation to ensure quality and consistency.
 
-<recommendations>
-{recommendations}
-</recommendations>
+CONTEXT DATA:
+<existing_codebook>
+{existing_codes}
+</existing_codebook>
+Note: These are the 5 codes most similar to the recommended code definition.
 
-Evaluation criteria:
-1. Parsimony: Did we exhaust existing code options?
-2. Non-redundancy: No overlap with existing codes?
-3. Abstraction consistency: Same level as existing codes?
+<clustered_ideas>
+{clustered_ideas}
+</clustered_ideas>
+Note: These are the original survey responses that prompted this recommendation.
 
-Example of redundancy to avoid:
-{redundancy_example}
+<step3_recommendation>
+{step3_recommendation}
+</step3_recommendation>
+Note: This is the complete recommendation from the matching analysis.
 
-Output ONLY valid JSON with no additional text:
+EVALUATION CRITERIA:
+1. **Parsimony** (0-10): Were existing code options properly exhausted?
+   - Did Step 3 correctly assess coverage percentages?
+   - Could existing codes be combined/broadened instead?
+
+2. **Non-redundancy** (0-10): No overlap with existing codes?
+   - Compare recommended definition against the 5 similar codes
+   - Check for semantic overlap or near-duplicate concepts
+
+3. **Abstraction consistency** (0-10): Same level as existing codes?
+   - Does the new code match the abstraction level of existing codes?
+   - Is it neither too specific nor too broad compared to others?
+
+4. **Justification alignment** (0-10): Does the recommendation match its reasoning?
+   - Is the decision (use_existing/modify_existing/create_new) well-justified?
+   - Do the coverage assessment and reasoning align?
+
+Output a validation assessment in {language}:
 {{
-  "evaluations": [
-    {{
-      "code": "code name",
-      "parsimony_score": 0,
-      "parsimony_reasoning": "...",
-      "redundancy_score": 0,
-      "redundancy_reasoning": "...",
-      "abstraction_score": 0,
-      "abstraction_reasoning": "...",
-      "decision": "KEEP/REJECT"
-    }}
-  ],
-  "validated_codes": [
-    {{
-      "code": "code name",
-      "definition": "definition"
-    }}
-  ]
+  "evaluation": {{
+    "parsimony_score": 0-10,
+    "parsimony_reasoning": "assessment of whether existing options were exhausted",
+    "redundancy_score": 0-10,
+    "redundancy_reasoning": "assessment of overlap with existing codes",
+    "abstraction_score": 0-10,
+    "abstraction_reasoning": "assessment of abstraction level consistency",
+    "justification_score": 0-10,
+    "justification_reasoning": "assessment of decision alignment with reasoning"
+  }},
+  "decision": "APPROVE/REVISE/REJECT",
+  "decision_rationale": "explanation for the overall decision",
+  "validated_code": {{
+    "code": "approved code name or null if rejected",
+    "definition": "approved definition or null if rejected"
+  }}
 }}
 
-IMPORTANT: Return ONLY the JSON object. Include in validated_codes only those scoring 8+ on all criteria.
-Remember: the output needs to be in {language}
+IMPORTANT: 
+- Return ONLY the JSON object in {language}
+- APPROVE only if all scores ≥8
+- REVISE if scores 6-7 (provide specific suggestions)
+- REJECT if any score <6
 """
 
