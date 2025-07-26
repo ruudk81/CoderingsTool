@@ -489,6 +489,10 @@ generator = codebookGenerator.InductiveCodebookGenerator(
      max_concurrent_requests=5,
      prompt_printer=prompt_printer  )
 results = generator.generate()
+
+for key, value in results.items():
+    print(key)
+
     
 # === STEP 7 ========================================================================================================
 """Codebook Generation"""
