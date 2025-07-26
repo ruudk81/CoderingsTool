@@ -464,13 +464,38 @@ else:
 #                         print(subitem.idea)
 #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
+
+# === STEP 7 ========================================================================================================
+"""Codebook Generation"""
+from utils import speculativeStarterCodes
+from utils import codebookGenerator_v4 as codebookGenerator
+
+starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+     var_lab=var_lab, 
+     verbose=VERBOSE, 
+     prompt_printer=prompt_printer)
+starter_codes = starter_generator.generate()
+
+
+prompt_printer = promptPrinter(enabled=True, print_realtime=True)
+generator = codebookGenerator.InductiveCodebookGenerator(
+     cluster_results=initial_cluster_results,
+     embedded_text=embedded_text,
+     starter_codes=starter_codes,
+     var_lab=var_lab,
+     k=5,
+     verbose=True,
+     batch_size=10,
+     max_concurrent_requests=5,
+     prompt_printer=prompt_printer  )
+results = generator.generate()
     
 # === STEP 7 ========================================================================================================
 """Codebook Generation"""
 from utils import speculativeStarterCodes
 from utils import codebookGenerator_v4 as codebookGenerator
 
-FORCE = False
+FORCE = True
 
 step_name = "codebook_generation"
 if  FORCE:
