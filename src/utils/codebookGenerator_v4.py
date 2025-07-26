@@ -936,11 +936,34 @@ Action Details:
                     # Format Step 3 recommendation for readable context
                     formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
                     
+                    # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
+                    is_create_new = any(pc.get('definition') for pc in proposed_codes)
+                    
+                    if is_create_new:
+                        # Use definition-based nearest codes for new code redundancy detection
+                        definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
+                        if definition_text:
+                            definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
+                            if definition_nearest_codes:
+                                definition_code_text = "\n".join([
+                                    f"- {code['code']}: {code['definition']}" 
+                                    for code in definition_nearest_codes
+                                ])
+                            else:
+                                # Fallback to cluster-based codes if definition embedding fails
+                                definition_code_text = code_text
+                        else:
+                            # Fallback to cluster-based codes if no definition extracted
+                            definition_code_text = code_text
+                    else:
+                        # For modify_existing: keep using cluster-based codes
+                        definition_code_text = code_text
+                    
                     validation_input = {
                         "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                         "language": DEFAULT_LANGUAGE,
                         "survey_question": self.var_lab,
-                        "existing_codes": code_text,  # Same 5 codes used in Step 3
+                        "existing_codes": definition_code_text,  # Now using definition-based codes
                         "clustered_ideas": cluster_text,
                         "step3_recommendation": formatted_recommendation
                     }
@@ -1132,6 +1155,35 @@ Action Details:
         
         return batch_results
     
+    async def _extract_definition_for_embedding(self, proposed_codes: List[Dict], recommendations) -> Optional[str]:
+        """Extract definition text for embedding from Step 3 recommendation"""
+        if not proposed_codes:
+            return None
+            
+        # Handle create_new case - use the proposed definition directly
+        for pc in proposed_codes:
+            if pc.get('definition'):
+                return pc['definition']
+        
+        # Handle modify_existing case - construct definition from original + modification
+        for pc in proposed_codes:
+            if pc.get('modification_type') == 'modify_existing':
+                original_code = pc.get('original_code')
+                modification = pc.get('modification_suggestion')
+                
+                if original_code and modification:
+                    # Get the original definition from shared codebook (async)
+                    original_definition = await self.shared_codebook.get_code_definition(original_code)
+                    
+                    if original_definition:
+                        # Combine original definition with modification suggestion
+                        return f"{original_definition}. Modified to include: {modification}"
+                    else:
+                        # Fallback to just the modification suggestion
+                        return modification
+        
+        return None
+
     async def _find_nearest_codes(self, cluster_embedding: np.ndarray) -> List[Dict[str, str]]:
         """Find k nearest codes using the current shared codebook (v2 logic)"""
         # Get CURRENT codebook state (like v2)
@@ -1154,6 +1206,59 @@ Action Details:
         top_k_indices = np.argsort(similarities)[-self.k:][::-1]
         
         # Get unique codes (same logic as before)
+        seen = set()
+        nearest_codes = []
+        
+        for idx in top_k_indices:
+            if idx < len(codes):
+                code = codes[idx]
+                code_text = code.get('code', '')
+                
+                if code_text not in seen:
+                    seen.add(code_text)
+                    nearest_codes.append(code)
+                    
+                    if len(nearest_codes) >= self.k:
+                        break
+        
+        return nearest_codes
+
+    async def _find_nearest_codes_by_definition(self, definition_text: str) -> List[Dict[str, str]]:
+        """Find k nearest codes using embedding of definition text"""
+        if not definition_text or not definition_text.strip():
+            # Fallback to empty list if no definition
+            return []
+        
+        # Get CURRENT codebook state
+        current_codes, version = await self.shared_codebook.get_current_snapshot()
+        
+        if not current_codes:
+            return []
+        
+        # Get fresh embeddings for current state
+        codes, embeddings = await self.embedding_manager.get_snapshot_embeddings(
+            current_codes, version
+        )
+        
+        if not embeddings:
+            return []
+        
+        # Generate embedding for the definition text
+        try:
+            definition_embeddings = await self.embedding_manager._embed_texts_with_retry([definition_text])
+            if not definition_embeddings:
+                return []
+            definition_embedding = definition_embeddings[0]
+        except Exception as e:
+            logger.error(f"Failed to embed definition text: {e}")
+            return []
+        
+        # Calculate similarities
+        codebook_array = np.array(embeddings)
+        similarities = cosine_similarity(definition_embedding.reshape(1, -1), codebook_array)[0]
+        top_k_indices = np.argsort(similarities)[-self.k:][::-1]
+        
+        # Get unique codes
         seen = set()
         nearest_codes = []
         

@@ -125,7 +125,7 @@ These are existing codes in the code book:
 <existing_codebook>
 {existing_codes}
 </existing_codebook>
-Note: These are the 5 codes most similar to the recommended code definition.
+Note: These are the 5 codes most similar to the recommended definition by semantic similarity.
 
 EVALUATION CRITERIA:
 1. **Parsimony**: Were existing code options properly exhausted?
