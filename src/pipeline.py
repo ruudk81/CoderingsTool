@@ -514,8 +514,10 @@ else:
             max_concurrent_requests=5  # Allow 5 concurrent API calls
         )
         codebook_resultsv3 = codebook_generator.generate()
-        
+    
         from utils import codebookGenerator_v4 as codebookGenerator
+        prompt_printer = promptPrinter(enabled=True, print_realtime=True)
+
         generator = codebookGenerator.InductiveCodebookGenerator(
             cluster_results=initial_cluster_results,
             embedded_text=embedded_text,
@@ -524,7 +526,8 @@ else:
             k=5,
             verbose=True,
             batch_size=10,
-            max_concurrent_requests=5
+            max_concurrent_requests=5,
+            prompt_printer=prompt_printer  
         )
         
         # Run generation
