@@ -493,39 +493,29 @@ class LangChainBatchProcessor:
         self._all_steps = {'codebook', 'summary', 'match', 'validation'}
         self._diversity_complete = False
     
-    def _should_capture_prompt(self, step_type: str, max_per_step: int = 2) -> bool:
+    def _should_capture_prompt(self, step_type: str, max_per_step: int = 1) -> bool:
         """
         Determine if we should capture a prompt for this step type.
-        Priority: 1) Guarantee diversity (1 from each step), 2) Allow additional captures
+        Exactly-one approach: Capture 1 prompt from each step type, then stop.
         """
         if not self.prompt_printer:
             return False
             
-        # Phase 1: Guarantee diversity - capture 1 from each step type first
-        if not self._diversity_complete:
-            if step_type not in self._captured_steps:
-                return True  # Capture this new step type
-            # Check if we've now captured all step types
-            if len(self._captured_steps) == len(self._all_steps):
-                self._diversity_complete = True
-                return False  # Move to phase 2
-            return False  # Wait for missing step types
-        
-        # Phase 2: Allow additional captures up to limit
-        return self._capture_counts[step_type] < max_per_step
+        # Only capture if we haven't seen this step type yet
+        return step_type not in self._captured_steps
     
     def _record_capture(self, step_type: str):
         """Record that we captured a prompt for this step type"""
         self._captured_steps.add(step_type)
         self._capture_counts[step_type] += 1
         
-        # Debug logging for diversity progress
-        if self.verbose and not self._diversity_complete:
+        # Debug logging for exactly-one progress
+        if self.verbose:
             missing_steps = self._all_steps - self._captured_steps
             if missing_steps:
-                logger.info(f"🎯 Prompt diversity: captured {step_type}, still need: {', '.join(missing_steps)}")
+                logger.info(f"🎯 Prompt capture progress: {len(self._captured_steps)}/4 - captured {step_type}, still need: {', '.join(sorted(missing_steps))}")
             else:
-                logger.info(f"✅ Prompt diversity complete! All 4 steps captured. Additional captures now allowed.")
+                logger.info(f"✅ All 4 prompts captured! Pipeline structure complete.")
     
     @retry(**API_RETRY_CONFIG)
     async def _process_step1_with_retry(self, inputs: Dict) -> Dict:
@@ -692,8 +682,7 @@ class LangChainBatchProcessor:
                             "var_lab": self.var_lab,
                             "stage": "1/4 - Codebook Analysis",
                             "nearest_codes_count": len(nearest_codes),
-                            "codebook_version": version,
-                            "diversity_phase": "diversity" if not self._diversity_complete else "additional"
+                            "codebook_version": version
                         }
                     )
                     self._record_capture('codebook')
@@ -740,8 +729,7 @@ class LangChainBatchProcessor:
                             "var_lab": self.var_lab,
                             "stage": "2/4 - Response Summary",
                             "cluster_id": cluster_id,
-                            "cluster_size": len(cluster_data['ideas']),
-                            "diversity_phase": "diversity" if not self._diversity_complete else "additional"
+                            "cluster_size": len(cluster_data['ideas'])
                         }
                     )
                     self._record_capture('summary')
@@ -776,8 +764,7 @@ class LangChainBatchProcessor:
                             "stage": "3/4 - Match & Recommend",
                             "cluster_id": cluster_id,
                             "codebook_analysis_present": bool(codebook_analysis),
-                            "summaries_present": bool(summaries),
-                            "diversity_phase": "diversity" if not self._diversity_complete else "additional"
+                            "summaries_present": bool(summaries)
                         }
                     )
                     self._record_capture('match')
@@ -858,8 +845,7 @@ class LangChainBatchProcessor:
                                 "stage": "4/4 - Validation",
                                 "cluster_id": cluster_id,
                                 "proposed_codes_count": len(proposed_codes),
-                                "proposed_codes": [c['code'] for c in proposed_codes],
-                                "diversity_phase": "diversity" if not self._diversity_complete else "additional"
+                                "proposed_codes": [c['code'] for c in proposed_codes]
                             }
                         )
                         self._record_capture('validation')
