@@ -320,46 +320,46 @@ class CacheManager:
             return stats
 
 
-# For backward compatibility, keep the cache_intermediate_data methods
-class CacheManager(CacheManager):
-    """Extended cache manager with intermediate data caching"""
+# # For backward compatibility, keep the cache_intermediate_data methods
+# class CacheManager(CacheManager):
+#     """Extended cache manager with intermediate data caching"""
     
-    def cache_intermediate_data(self, data, filename: str, cache_key: str) -> bool:
-        """Cache intermediate processing data for phase-to-phase communication"""
-        cache_dir = self.config.cache_dir / "intermediate"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+#     def cache_intermediate_data(self, data, filename: str, cache_key: str) -> bool:
+#         """Cache intermediate processing data for phase-to-phase communication"""
+#         cache_dir = self.config.cache_dir / "intermediate"
+#         cache_dir.mkdir(parents=True, exist_ok=True)
         
-        cache_path = cache_dir / f"{filename}_{cache_key}.pkl"
+#         cache_path = cache_dir / f"{filename}_{cache_key}.pkl"
         
-        try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(data, f)
-            logger.info(f"Cached intermediate data to {cache_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Error caching intermediate data: {e}")
-            return False
+#         try:
+#             with open(cache_path, 'wb') as f:
+#                 pickle.dump(data, f)
+#             logger.info(f"Cached intermediate data to {cache_path}")
+#             return True
+#         except Exception as e:
+#             logger.error(f"Error caching intermediate data: {e}")
+#             return False
     
-    def load_intermediate_data(self, filename: str, cache_key: str, expected_type=None):
-        """Load intermediate processing data"""
-        cache_dir = self.config.cache_dir / "intermediate"
-        cache_path = cache_dir / f"{filename}_{cache_key}.pkl"
+#     def load_intermediate_data(self, filename: str, cache_key: str, expected_type=None):
+#         """Load intermediate processing data"""
+#         cache_dir = self.config.cache_dir / "intermediate"
+#         cache_path = cache_dir / f"{filename}_{cache_key}.pkl"
         
-        if not cache_path.exists():
-            logger.warning(f"No cached intermediate data found at {cache_path}")
-            return None
+#         if not cache_path.exists():
+#             logger.warning(f"No cached intermediate data found at {cache_path}")
+#             return None
         
-        try:
-            with open(cache_path, 'rb') as f:
-                data = pickle.load(f)
-            logger.info(f"Loaded intermediate data from {cache_path}")
+#         try:
+#             with open(cache_path, 'rb') as f:
+#                 data = pickle.load(f)
+#             logger.info(f"Loaded intermediate data from {cache_path}")
             
-            # Optional type checking
-            if expected_type and not isinstance(data, expected_type):
-                logger.warning(f"Loaded data is not of expected type {expected_type}")
-                return None
+#             # Optional type checking
+#             if expected_type and not isinstance(data, expected_type):
+#                 logger.warning(f"Loaded data is not of expected type {expected_type}")
+#                 return None
             
-            return data
-        except Exception as e:
-            logger.error(f"Error loading intermediate data: {e}")
-            return None
+#             return data
+#         except Exception as e:
+#             logger.error(f"Error loading intermediate data: {e}")
+#             return None

@@ -31,7 +31,7 @@ var_name = "q19"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = None  # Options: "data", "preprocessed", "quality_filter", "segmented_descriptions", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
+FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
@@ -117,7 +117,11 @@ from utils import textNormalizer, spellChecker, textFinalizer
 from utils.verboseReporter import VerboseReporter
 from utils.promptPrinter import promptPrinter
 
+FORCE = False
+
 step_name        = "preprocessed"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
@@ -231,7 +235,11 @@ else:
 """quality filter"""
 from utils import qualityFilter
 
+FORCE = False
+
 step_name        = "quality_filter"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True) 
@@ -291,7 +299,11 @@ else:
 """Extract initial ideas"""
 from utils import ideaExtractor
 
-step_name        = "segmented_descriptions"
+FORCE = False
+
+step_name        = "extracted_ideas"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  
@@ -300,9 +312,9 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.IdeasExtractedModel)
     segments = sum(item.idea_count for item in encoded_text)
-    verbose_reporter.summary("SEGMENTED RESPONSES FROM CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
+    verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
 else: 
-    verbose_reporter.section_header("SEGMENTATION & DESCRIPTION PHASE")
+    verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSD PHASE")
     start_time = time.time()
     # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
@@ -316,7 +328,7 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
-    print(f"\n\n'Segmentation phase' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
     
 
 # for text in encoded_text:
@@ -332,13 +344,16 @@ else:
 #     for segment in item.response_ideas:
 #         print(f"- {segment.idea}")
 
-    
-# === STEP 5A =======================================================================================================
+# === STEP 5 =======================================================================================================
 """Generate embeddings"""
 from config import EmbeddingConfig
 from utils.embedder import Embedder
 
+FORCE = False
+
 step_name = "embeddings"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
@@ -374,11 +389,15 @@ else:
 #     for segment in item.response_ideas:
 #         print(f"- {segment.idea}")
 
-# === STEP 5B =======================================================================================================
+# === STEP 6 =======================================================================================================
 """Generate initial clusters"""
 from utils.clusterer import Clusterer
 
+FORCE = False
+
 step_name = "initial_clusters"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
@@ -446,12 +465,16 @@ else:
 #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
     
-# === STEP 6 ========================================================================================================
-"""GATOS Codebook Generation"""
+# === STEP 7 ========================================================================================================
+"""Codebook Generation"""
 from utils import speculativeStarterCodes
 from utils import codebookGenerator_v4 as codebookGenerator
 
-step_name = "gatos_codebook"
+FORCE = False
+
+step_name = "codebook_generation"
+if  FORCE:
+    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)

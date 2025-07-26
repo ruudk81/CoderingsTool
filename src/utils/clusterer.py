@@ -43,15 +43,15 @@ class Clusterer:
         self.output_list = []
         processing_order = 0
         for respondent_item in input_list:
-            if respondent_item.response_ideas:
-                for response_item in respondent_item.response_ideas:
-                    if response_item.idea_embedding is None:
+            if respondent_item.idea_embeddings: 
+                for embedding_item in respondent_item.idea_embeddings:  
+                    if embedding_item.idea_embedding is None:
                         continue
                     result = ResultMapper(
                         respondent_id=respondent_item.respondent_id,
-                        idea_id=response_item.idea_id,
-                        idea=response_item.idea or "NA",
-                        idea_embedding=response_item.idea_embedding,
+                        idea_id=embedding_item.idea_id,
+                        idea=embedding_item.idea or "NA",
+                        idea_embedding=embedding_item.idea_embedding,
                         processing_order=processing_order
                     )
                     self.output_list.append(result)
@@ -138,17 +138,14 @@ class Clusterer:
                 ClusterSubmodel(
                     idea_id=item.idea_id,
                     idea=item.idea,
-                    idea_embedding=item.idea_embedding,
                     initial_cluster=item.initial_idea_cluster
                 ) for item in items
             ]
 
             if original_model:
                 cluster_model = ClusterModel(
-                    **original_model.model_dump(exclude={'response_ideas', 'idea_embeddings'}),
-                    response_ideas=cluster_submodels,
-                    idea_embeddings=cluster_submodels
-                )
+                    **original_model.model_dump(exclude={'response_ideas'}),
+                    response_ideas=cluster_submodels)
             else:
                 cluster_model = ClusterModel(
                     respondent_id=respondent_id,

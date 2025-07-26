@@ -40,7 +40,10 @@ class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[int] = None   
     
 class ClusterModel(IdeasExtractedModel):
-    pass
+    response_ideas: Optional[List[ClusterSubmodel]] = None  
+
+
+
 
 # =============================================================================
 # GATOS CODEBOOK MODELS
@@ -51,39 +54,39 @@ class CodeDefinition(BaseModel):
     code: str
     definition: str
     
-class CodeGenerationDecision(BaseModel):
-    """Decision from inductive codebook generation"""
-    step_by_step_analysis: str
-    create_new_code: bool
-    new_code: Optional[str] = None
-    new_definition: Optional[str] = None
-    reasoning: str
+# class CodeGenerationDecision(BaseModel):
+#     """Decision from inductive codebook generation"""
+#     step_by_step_analysis: str
+#     create_new_code: bool
+#     new_code: Optional[str] = None
+#     new_definition: Optional[str] = None
+#     reasoning: str
 
-class Theme(BaseModel):
-    """Theme from theme identification"""
-    theme_name: str
-    concept: str
-    codes: List[str]
-    relationship: str
+# class Theme(BaseModel):
+#     """Theme from theme identification"""
+#     theme_name: str
+#     concept: str
+#     codes: List[str]
+#     relationship: str
 
-class ThemeAnalysis(BaseModel):
-    """Complete theme analysis output"""
-    initial_observations: List[str]
-    suggested_themes: List[Theme]
-    reflection: Dict[str, str]
+# class ThemeAnalysis(BaseModel):
+#     """Complete theme analysis output"""
+#     initial_observations: List[str]
+#     suggested_themes: List[Theme]
+#     reflection: Dict[str, str]
 
-class GATOSCodebook(BaseModel):
-    """GATOS codebook structure"""
-    codes: List[Dict[str, str]]  # code, definition, optional cluster_origin
-    cluster_assignments: Dict[int, str]  # cluster_id -> code mapping
-    themes: List[Theme] = []
-    stats: Dict[str, Any] = {}
+# class GATOSCodebook(BaseModel):
+#     """GATOS codebook structure"""
+#     codes: List[Dict[str, str]]  # code, definition, optional cluster_origin
+#     cluster_assignments: Dict[int, str]  # cluster_id -> code mapping
+#     themes: List[Theme] = []
+#     stats: Dict[str, Any] = {}
 
-class GATOSFinalResults(BaseModel):
-    """Final GATOS results with themes"""
-    codebook: GATOSCodebook
-    themes: List[Theme]
-    theme_analysis: ThemeAnalysis
+# class GATOSFinalResults(BaseModel):
+#     """Final GATOS results with themes"""
+#     codebook: GATOSCodebook
+#     themes: List[Theme]
+#     theme_analysis: ThemeAnalysis
 
 # class LabelSubmodel(ClusterSubmodel):
 #     """Submodel for ideas with hierarchical labeling information"""
@@ -149,3 +152,4 @@ class GATOSFinalResults(BaseModel):
 
 # # Backward compatibility aliases
 # PreprocessModel = PreprocessedModel
+

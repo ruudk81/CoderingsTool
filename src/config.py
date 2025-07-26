@@ -127,10 +127,11 @@ class CacheConfig:
         "data": "001",
         "preprocessed": "002", 
         "quality_filter": "003",
-        "segmented_descriptions": "004",
-        "initial_clusters": "005",
-        "labels": "006",
-        "results": "007"
+        "extracted_ideas": "004",         
+        "embeddings": "005",     
+        "initial_clusters": "006",
+        "codebook": "007",
+        "export": "008"
         })
     
     # Cache validity settings
