@@ -1004,10 +1004,6 @@ Action Details:
                                 'reasoning': {
                                     'parsimony': validation_results.evaluation.parsimony_reasoning,
                                     'redundancy': validation_results.evaluation.redundancy_reasoning,
-                                    'conceptual_unity': validation_results.evaluation.conceptual_unity_reasoning,
-                                    'mutual_exclusivity': validation_results.evaluation.mutual_exclusivity_reasoning,
-                                    'appropriate_scope': validation_results.evaluation.appropriate_scope_reasoning,
-                                    'abstraction': validation_results.evaluation.abstraction_reasoning,
                                     'justification': validation_results.evaluation.justification_reasoning
                                 }
                             }
