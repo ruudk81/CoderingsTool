@@ -536,6 +536,7 @@ class LangChainBatchProcessor:
                 # Step 3: Match and recommend
                 match_input = {
                     "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                    "language": DEFAULT_LANGUAGE,
                     "codebook_analysis": str(codebook_analysis),
                     "summaries": str(summaries)
                 }
@@ -572,6 +573,7 @@ class LangChainBatchProcessor:
                 if proposed_codes:
                     validation_input = {
                         "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                        "language": DEFAULT_LANGUAGE,
                         "recommendations": str(proposed_codes),
                         "redundancy_example": "Example: 'student concerns' and 'learner worries' are redundant"
                     }
