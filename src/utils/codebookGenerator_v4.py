@@ -267,6 +267,14 @@ class SharedCodebook:
                 'updates': len(self._update_log),
                 'cached_versions': len(self._embedding_cache)
             }
+    
+    async def get_code_definition(self, code_name: str) -> Optional[str]:
+        """Get the definition of a specific code"""
+        async with self._lock:
+            for existing in self._codes:
+                if existing['code'].lower() == code_name.lower():
+                    return existing['definition']
+            return None
 
 # ============================================================================
 # EMBEDDING MANAGER
@@ -1017,6 +1025,9 @@ Action Details:
                             )
                             
                             if original_code_name:
+                                # Get original definition before modification
+                                original_definition = await self.shared_codebook.get_code_definition(original_code_name)
+                                
                                 # Replace existing code with modified version
                                 replaced, new_version = await self.shared_codebook.replace_code(
                                     original_code_name,
@@ -1027,7 +1038,23 @@ Action Details:
                                 if replaced:
                                     self.stats['new_codes_added'] += 1  # Count as modification
                                     if self.verbose:
-                                        logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{validated_code['code']}' (v{new_version})")
+                                        # Smart change detection logging
+                                        new_code_name = validated_code.get('code', '')
+                                        new_definition = validated_code.get('definition', '')
+                                        
+                                        name_changed = original_code_name != new_code_name
+                                        definition_changed = original_definition != new_definition if original_definition else True
+                                        
+                                        if name_changed and definition_changed:
+                                            logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{new_code_name}' + definition updated (v{new_version})")
+                                        elif name_changed:
+                                            logger.info(f"Cluster {cluster_id}: Renamed code '{original_code_name}' -> '{new_code_name}' (v{new_version})")
+                                        elif definition_changed:
+                                            logger.info(f"Cluster {cluster_id}: Updated definition for '{original_code_name}' (v{new_version})")
+                                            logger.info(f"  Old: {original_definition[:100] if original_definition else 'N/A'}...")
+                                            logger.info(f"  New: {new_definition[:100]}...")
+                                        else:
+                                            logger.info(f"Cluster {cluster_id}: Code '{original_code_name}' processed (no changes detected) (v{new_version})")
                                 
                                 batch_results.append({
                                     'cluster_id': cluster_id,
