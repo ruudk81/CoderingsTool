@@ -48,33 +48,34 @@ logging.getLogger("tenacity").setLevel(logging.WARNING)
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
 
-class CodebookAnalysis(BaseModel):
-    """Output for codebook analysis step (Step 1)"""
-    thematic_coverage: str = Field(description="Description of the main thematic areas these codes address")
-    code_relationships: str = Field(description="How these codes connect and relate to each other thematically")
+# Note: CodebookAnalysis no longer used - Step 1 now returns plain text
+# class CodebookAnalysis(BaseModel):
+#     """Output for codebook analysis step (Step 1)"""
+#     code_scope_analysis: Dict[str, str] = Field(description="Analysis of what each code covers and its abstraction level")
+#     coverage_landscape: str = Field(description="What aspects of the survey question these codes collectively address")
+#     potential_gaps: str = Field(description="What types of responses might not fit into existing codes")
 
-class ClusterAnalysis(BaseModel):
-    """Output for cluster analysis step (Step 2)"""
-    core_theme: str = Field(description="Specific aspect of the approach being discussed")
-    sentiment_pattern: str = Field(description="Predominant sentiment: positive/negative/mixed")
-    reasoning_focus: str = Field(description="Main justification provided for satisfaction/dissatisfaction")
-    shared_terminology: List[str] = Field(description="Consistent concepts, phrases, or language patterns")
-    cluster_coherence: str = Field(description="Explanation of what unites these ideas conceptually")
+class CoverageAssessment(BaseModel):
+    """Coverage assessment details"""
+    percentage: int = Field(description="Coverage percentage (0-100)", ge=0, le=100)
+    rationale: str = Field(description="Explanation of what aspects are/aren't covered")
+
+class ActionDetails(BaseModel):
+    """Action details based on decision type"""
+    codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
+    code_to_modify: Optional[str] = Field(default=None, description="Code name if modify_existing")
+    modification_suggestion: Optional[str] = Field(default=None, description="How to broaden if modify_existing")
+    new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
+    new_code_definition: Optional[str] = Field(default=None, description="New code definition if create_new")
 
 class MatchRecommendation(BaseModel):
-    """Output for match and recommend step (Step 3)"""
-    cluster_theme: str = Field(description="The core theme identified in cluster analysis")
-    existing_code_matches: List[str] = Field(description="List of existing codes that match this theme")
-    coverage: str = Field(description="How well existing codes cover this theme: full/partial/none")
-    gap_analysis: Optional[str] = Field(description="What's missing if coverage is partial or none, null if full coverage")
-    recommendation: str = Field(description="Recommendation: use existing/create new")
-    new_code: Optional[str] = Field(description="New code name if creating new, null otherwise")
-    new_definition: Optional[str] = Field(description="New code definition if creating new, null otherwise")
-    justification: Optional[str] = Field(description="Justification for recommendation, null if not applicable")
-
-class MatchRecommendationsResponse(BaseModel):
-    """Container for multiple match recommendations from Step 3"""
-    recommendations: List[MatchRecommendation] = Field(description="List of match recommendations for the cluster")
+    """Output for match and recommend step (Step 3) - single recommendation per cluster"""
+    cluster_core_theme: str = Field(description="The core theme identified from cluster analysis")
+    best_matching_codes: List[str] = Field(description="Best matching existing codes")
+    coverage_assessment: CoverageAssessment = Field(description="Coverage percentage and rationale")
+    decision: str = Field(description="Decision: use_existing|modify_existing|create_new")
+    action_details: ActionDetails = Field(description="Action details based on decision")
+    justification: str = Field(description="Explanation of why this is the most parsimonious choice")
 
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
@@ -148,11 +149,6 @@ EMBEDDING_RETRY_CONFIG = {
 
 # Pydantic models for structured LLM outputs
 # Only keeping models that are actively used - others will be created as needed
-
-class CodebookAnalysis(BaseModel):
-    """Output for codebook analysis step"""
-    thematic_coverage: str = Field(description="Description of the main thematic areas these codes address")
-    code_relationships: str = Field(description="How these codes connect and relate to each other thematically")
 
 # Future Pydantic models will be added here as we enhance Steps 2, 3, and 4
 
@@ -409,7 +405,7 @@ class LangChainBatchProcessor:
         self.llm = self.step2_llm
         
         # Use JsonOutputParser for flexible parsing
-        from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
+        from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser, StrOutputParser
         
         # Step 1: Codebook Analysis Chain (uses step1_llm with Pydantic validation)
         codebook_prompt = PromptTemplate(
@@ -420,7 +416,7 @@ class LangChainBatchProcessor:
         self.codebook_chain = (
             codebook_prompt 
             | self.step1_llm 
-            | PydanticOutputParser(pydantic_object=CodebookAnalysis)
+            | StrOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 2: Response Summary Chain (uses step2_llm)
@@ -432,19 +428,19 @@ class LangChainBatchProcessor:
         self.summary_chain = (
             summary_prompt
             | self.step2_llm
-            | PydanticOutputParser(pydantic_object=ClusterAnalysis)
+            | StrOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 3: Match and Recommend Chain (uses step3_llm)
         match_prompt = PromptTemplate(
             template=MATCH_AND_RECOMMEND_PROMPT,
-            input_variables=["system_message", "existing_codes", "clustered_ideas", "codebook_analysis", "summaries"]
+            input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "codebook_analysis", "summaries"]
         )
         
         self.match_chain = (
             match_prompt
             | self.step3_llm
-            | PydanticOutputParser(pydantic_object=MatchRecommendationsResponse)
+            | PydanticOutputParser(pydantic_object=MatchRecommendation)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain (uses step4_llm)
@@ -715,19 +711,20 @@ class LangChainBatchProcessor:
                     summaries = await self._process_step2_with_retry(summary_input)
                 except (APIError, ProcessingError) as e:
                     logger.error(f"Step 2 failed for cluster {cluster_id} after retries: {str(e)}")
-                    summaries = {"theme": "Analysis failed", "tone": "unknown", "key_phrases": [], "unique": "Error in analysis"}
+                    summaries = "Analysis failed due to API error after retries."
                 except Exception as e:
                     logger.error(f"Step 2 unexpected error for cluster {cluster_id}: {str(e)}")
-                    summaries = {"theme": "Analysis failed", "tone": "unknown", "key_phrases": [], "unique": "Error in analysis"}
+                    summaries = "Analysis failed due to processing error."
                 
                 # Step 3: Match and recommend
                 match_input = {
                     "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
+                    "survey_question": self.var_lab,
                     "existing_codes": code_text,
                     "clustered_ideas": cluster_text,
-                    "codebook_analysis": codebook_analysis.model_dump_json(indent=2) if hasattr(codebook_analysis, 'model_dump_json') else str(codebook_analysis),
-                    "summaries": summaries.model_dump_json(indent=2) if hasattr(summaries, 'model_dump_json') else str(summaries)
+                    "codebook_analysis": codebook_analysis if isinstance(codebook_analysis, str) else str(codebook_analysis),
+                    "summaries": summaries if isinstance(summaries, str) else str(summaries)
                 }
                 
                 # Capture Step 3 prompt with diversity-first logic
@@ -757,48 +754,49 @@ class LangChainBatchProcessor:
                     logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
                     recommendations = []
                 
-                # Extract new code recommendations from Pydantic container format
+                # Extract new code recommendations from single MatchRecommendation object
                 new_codes_needed = False
                 proposed_codes = []
                 
-                # Handle MatchRecommendationsResponse Pydantic object
+                # Handle new MatchRecommendation structure
                 try:
-                    # recommendations is now a MatchRecommendationsResponse object
-                    if hasattr(recommendations, 'recommendations'):
-                        recommendations_list = recommendations.recommendations
+                    # recommendations is now a single MatchRecommendation object
+                    if hasattr(recommendations, 'decision'):
+                        decision = recommendations.decision.lower()
                         
-                        for theme_analysis in recommendations_list:
-                            # Handle Pydantic MatchRecommendation objects
-                            if hasattr(theme_analysis, 'recommendation'):
-                                recommendation = theme_analysis.recommendation.lower()
-                                if 'create new' in recommendation:
-                                    new_code = theme_analysis.new_code
-                                    new_definition = theme_analysis.new_definition
-                                    
-                                    # Only add if we have actual code and definition (not null/empty)
-                                    if new_code and new_definition and new_code.strip() and new_definition.strip():
-                                        new_codes_needed = True
-                                        proposed_codes.append({
-                                            'code': new_code.strip(),
-                                            'definition': new_definition.strip()
-                                        })
+                        if 'create_new' in decision:
+                            # Access new code details from action_details
+                            if hasattr(recommendations, 'action_details'):
+                                new_code = recommendations.action_details.new_code_name
+                                new_definition = recommendations.action_details.new_code_definition
+                                
+                                # Only add if we have actual code and definition (not null/empty)
+                                if new_code and new_definition and new_code.strip() and new_definition.strip():
+                                    new_codes_needed = True
+                                    proposed_codes.append({
+                                        'code': new_code.strip(),
+                                        'definition': new_definition.strip()
+                                    })
+                        
+                        # Store the full recommendation for potential Step 4 use
+                        cluster_recommendation = recommendations
+                        
                     # Fallback for dict format (backwards compatibility)
-                    elif isinstance(recommendations, dict) and 'recommendations' in recommendations:
-                        recommendations_list = recommendations['recommendations']
-                        for theme_analysis in recommendations_list:
-                            if isinstance(theme_analysis, dict):
-                                recommendation = theme_analysis.get('recommendation', '').lower()
-                                if 'create new' in recommendation:
-                                    new_code = theme_analysis.get('new_code')
-                                    new_definition = theme_analysis.get('new_definition')
-                                    
-                                    # Only add if we have actual code and definition (not null/empty)
-                                    if new_code and new_definition and new_code.strip() and new_definition.strip():
-                                        new_codes_needed = True
-                                        proposed_codes.append({
-                                            'code': new_code.strip(),
-                                            'definition': new_definition.strip()
-                                        })
+                    elif isinstance(recommendations, dict) and 'decision' in recommendations:
+                        decision = recommendations.get('decision', '').lower()
+                        
+                        if 'create_new' in decision:
+                            action_details = recommendations.get('action_details', {})
+                            new_code = action_details.get('new_code_name')
+                            new_definition = action_details.get('new_code_definition')
+                            
+                            # Only add if we have actual code and definition (not null/empty)
+                            if new_code and new_definition and new_code.strip() and new_definition.strip():
+                                new_codes_needed = True
+                                proposed_codes.append({
+                                    'code': new_code.strip(),
+                                    'definition': new_definition.strip()
+                                })
                 except Exception as e:
                     logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
                     logger.error(f"Recommendations content: {recommendations}")
