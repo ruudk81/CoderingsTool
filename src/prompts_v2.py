@@ -51,6 +51,7 @@ MATCH_AND_RECOMMEND_PROMPT = """
 {system_message}
 This time we will focus on written responses to the following survey question: "{survey_question}".
 You are making a codebook recommendation for a cluster of semantically similar survey responses.
+Specifically, you need to recommend whether or not a new code needs to be created.
 
 INPUT DATA:
 <existing_codes>
@@ -65,27 +66,17 @@ Notes: {summaries}
 </clustered_ideas>
 Note: These responses were grouped by HDBSCAN based on semantic similarity.
 
-DECISION RULES:
-1. **USE EXISTING CODE(S)** when:
-   - One or more existing codes capture ≥80% of the cluster's core theme
-   - The cluster represents a specific instance of an existing broader code
-   - Combining 2-3 existing codes fully describes the cluster
-
-2. **MODIFY EXISTING CODE** when:
-   - An existing code captures 60-79% of the theme but needs slight broadening
-   - The cluster reveals a systematic gap in an existing code's definition
-   - Small adjustments would make the code applicable to many similar clusters
-
-3. **CREATE NEW CODE** when:
-   - No existing codes capture >60% of the cluster's core theme
-   - The cluster represents a fundamentally distinct concept
-   - The theme appears frequently enough to warrant its own code (not a one-off)
-
 EVALUATION PROCESS:
 1. Compare the cluster's core theme against each existing code
-2. Assess coverage percentage (subjective but justified)
-3. Consider if modification would be more parsimonious than creation
-4. Ensure new codes maintain similar abstraction level as existing codes
+2. Assess coverage of themes in the clustered ideas by the existing codes
+3. Decide that creating a new code is appropriate when current codes don't cover the clustered ideas enough
+4. Always favor parsimony: use existing when in doubt 
+
+CREATION CRITERIA:   
+1. **Conceptual unity**: Does the new code represent ONE clear concept?
+2. **Mutual exclusivity**: Would a coder be confused about when to use this vs other codes?
+3. **Appropriate scope**: Is this trying to cover too much ground?
+4. **Abstraction consistency**: Same level as existing codes?
 
 Output ONE recommendation as valid JSON:
 {{
@@ -112,7 +103,6 @@ IMPORTANT:
 - One cluster = one recommendation
 """
 
-# PROMPT 4: Final Validation (with criteria)
 VALIDATION_PROMPT = """
 {system_message}
 This time we will focus on written responses to the following survey question: "{survey_question}".
@@ -140,21 +130,13 @@ Note: These are the 5 codes most similar to the recommended code definition.
 EVALUATION CRITERIA:
 1. **Parsimony**: Were existing code options properly exhausted?
 2. **Non-redundancy**: No overlap with existing codes?
-3. **Conceptual unity**: Does this code represent ONE clear concept?
-4. **Mutual exclusivity**: Would a coder be confused about when to use this vs other codes?
-5. **Appropriate scope**: Is this trying to cover too much ground?
-6. **Abstraction consistency**: Same level as existing codes?
-7. **Justification alignment**: Does the recommendation match its reasoning?
+3. **Justification alignment**: Does the recommendation match its reasoning?
 
 Output a validation assessment in {language}:
 {{
   "evaluation": {{
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
     "redundancy_reasoning": "assessment of overlap with existing codes",
-    "conceptual_unity_reasoning": "assessment of whether this represents ONE clear concept",
-    "mutual_exclusivity_reasoning": "assessment of potential confusion with other codes",
-    "appropriate_scope_reasoning": "assessment of whether scope is too broad or trying to cover multiple themes",
-    "abstraction_reasoning": "assessment of abstraction level consistency",
     "justification_reasoning": "assessment of decision alignment with reasoning"
   }},
   "decision": "APPROVE/REVISE/REJECT",
