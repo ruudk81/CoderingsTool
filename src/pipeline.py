@@ -475,6 +475,7 @@ else:
         )
     else:
         # Step 6.2: Inductive codebook generation
+        from utils import codebookGenerator as codebookGenerator
         codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
             cluster_results=initial_cluster_results,
             embedded_text=embedded_text,
@@ -485,14 +486,56 @@ else:
             batch_size=10,  # Process 10 clusters per batch
             max_concurrent_requests=5  # Allow 5 concurrent API calls
         )
-        codebook_results = codebook_generator.generate()
+        codebook_resultsv1 = codebook_generator.generate()
+
+
+        from utils import codebookGenerator_v2 as codebookGenerator
+        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
+            cluster_results=initial_cluster_results,
+            embedded_text=embedded_text,
+            starter_codes=starter_codes,
+            var_lab=var_lab,
+            k=5,
+            verbose=True,
+            batch_size=10,  # Process 10 clusters per batch
+            max_concurrent_requests=5  # Allow 5 concurrent API calls
+        )
+        codebook_resultsv2 = codebook_generator.generate()
+
+        from utils import codebookGenerator_v3 as codebookGenerator
+        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
+            cluster_results=initial_cluster_results,
+            embedded_text=embedded_text,
+            starter_codes=starter_codes,
+            var_lab=var_lab,
+            k=5,
+            verbose=True,
+            batch_size=10,  # Process 10 clusters per batch
+            max_concurrent_requests=5  # Allow 5 concurrent API calls
+        )
+        codebook_resultsv3 = codebook_generator.generate()
+        
+        from utils import codebookGenerator_v4 as codebookGenerator
+        generator = codebookGenerator.InductiveCodebookGenerator(
+            cluster_results=initial_cluster_results,
+            embedded_text=embedded_text,
+            starter_codes=starter_codes,
+            var_lab=var_lab,
+            k=5,
+            verbose=True,
+            batch_size=10,
+            max_concurrent_requests=5
+        )
+        
+        # Run generation
+        results = generator.generate()
 
         # Create GATOS codebook model
         gatos_codebook = models.GATOSCodebook(
-            codes=codebook_results['codebook'],
-            cluster_assignments=codebook_results['cluster_assignments'],
+            codes=codebook_resultsv3['codebook'],
+            cluster_assignments=codebook_resultsv3['cluster_assignments'],
             themes=[],  # Will be populated in Step 7
-            stats=codebook_results['stats']
+            stats=codebook_resultsv3['stats']
         )
     
     end_time = time.time()
