@@ -144,9 +144,8 @@ class ClusterInput(BaseModel):
 
 class CodebookAnalysis(BaseModel):
     """Output for codebook analysis step"""
-    codes: List[str] = Field(description="List of existing codes")
-    idea: str = Field(description="Main idea captured by the codes")
-    themes: List[str] = Field(description="Major themes in codebook")
+    thematic_coverage: str = Field(description="Description of the main thematic areas these codes address")
+    code_relationships: str = Field(description="How these codes connect and relate to each other thematically")
 
 class ResponseSummary(BaseModel):
     """Summary of a single response"""
@@ -430,9 +429,9 @@ class LangChainBatchProcessor:
         self.llm = self.step2_llm
         
         # Use JsonOutputParser for flexible parsing
-        from langchain_core.output_parsers import JsonOutputParser
+        from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
         
-        # Step 1: Codebook Analysis Chain (uses step1_llm)
+        # Step 1: Codebook Analysis Chain (uses step1_llm with Pydantic validation)
         codebook_prompt = PromptTemplate(
             template=CODEBOOK_ANALYSIS_PROMPT,
             input_variables=["system_message", "language", "survey_question", "code_text"]
@@ -441,7 +440,7 @@ class LangChainBatchProcessor:
         self.codebook_chain = (
             codebook_prompt 
             | self.step1_llm 
-            | JsonOutputParser()
+            | PydanticOutputParser(pydantic_object=CodebookAnalysis)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 2: Response Summary Chain (uses step2_llm)
@@ -694,16 +693,14 @@ class LangChainBatchProcessor:
                     logger.error(f"Step 1 failed for cluster {cluster_id} after retries: {str(e)}")
                     # Fallback analysis
                     codebook_analysis = {
-                        "codes": [c['code'] for c in nearest_codes] if nearest_codes else [],
-                        "idea": "Analysis failed",
-                        "themes": []
+                        "thematic_coverage": "Analysis failed - could not analyze thematic areas",
+                        "code_relationships": "Analysis failed - could not determine code relationships"
                     }
                 except Exception as e:
                     logger.error(f"Step 1 unexpected error for cluster {cluster_id}: {str(e)}")
                     codebook_analysis = {
-                        "codes": [c['code'] for c in nearest_codes] if nearest_codes else [],
-                        "idea": "Analysis failed",
-                        "themes": []
+                        "thematic_coverage": "Analysis failed - unexpected error analyzing thematic areas",
+                        "code_relationships": "Analysis failed - unexpected error determining code relationships"
                     }
                 
                 # Prepare cluster text for subsequent steps
