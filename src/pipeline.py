@@ -498,6 +498,36 @@ for key, value in results.items():
             print(f"{item['definition']}\n")
             idx += 1 
 
+for key, value in results.items():
+    if key == 'cluster_assignments':
+        for cluster_id, cluster_assignment in value.items():
+            print(cluster_assignment)
+
+for key, value in results.items():
+    if key == 'step3_recommendations':
+        for id_, rec  in value.items():
+            print(f"ID: {id_}")
+            print(f"Cluster Theme: {rec.cluster_core_theme}")
+            print(f"Best Matching Codes: {rec.best_matching_codes}")
+            print(f"Coverage %: {rec.coverage_assessment.percentage}")
+            print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+            print(f"Decision: {rec.decision}")
+            print(f"New Code Name: {rec.action_details.new_code_name}")
+            print(f"New Code Definition: {rec.action_details.new_code_definition}")
+            print(f"Justification: {rec.justification}")
+            print("-" * 80)
+
+idx = 1 
+for key, value in results.items():
+    if key == 'step4_validated_codes':
+        for id_, info in value.items(): 
+            print(f"ID: {idx}")
+            print(f"Code: {info['code']}")
+            print(f"Definition: {info['definition']}\n")
+            idx += 1 
+    
+for key, value in results.items():
+    print(key)
 
     
 # === STEP 7 ========================================================================================================
