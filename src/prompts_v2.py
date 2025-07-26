@@ -1,32 +1,30 @@
 
 SYSTEM_MESSAGE = """
-Act as if you are the world's best language {language} qualitative data analyst with expertise in generating qualitative codebooks for thematic analysis. 
-You specialize in creating parsimonious codebooks with non-overlapping and non-redundant codes."""
+Act as a {language} qualitative data analyst specializing in thematic analysis.
+You specialize in creating codebooks.
+A codebook in this setting is a collection of labels and definitions for those labels that can be used to describe pieces of data collected in a survey with open-ended questions. 
+"""
 
-# PROMPT 1: Codebook Analysis  
 CODEBOOK_ANALYSIS_PROMPT = """
 {system_message}
+This time we will focus on writen responses to the following survey question: "{survey_question}".
 
-Analyze this existing codebook for responses to the following survey question: "{survey_question}":
-
+Given these codes from the codebook:
 <existing_codebook>
 {code_text}
 </existing_codebook>
 
-Provide a structured analysis:
-1. The codes: [list of codes]
-2. Description of overall idea expressed: [short description of the main idea captured by the codes in light of the survey question]
-2. Main thematic categories: [list major themes]
+Analyze the thematic landscape of these codes:
+1. What main thematic areas do these codes cover in light of the survey question?
+2. How do these codes relate to each other?    
 
-Output ONLY valid JSON with no additional text:
+Return your analysis as valid JSON:
 {{
-  "codes": ["code1", "code2"],
-  "idea": "description here",
-  "themes": ["theme1", "theme2"]
+   "thematic_coverage": "description of the main thematic areas these codes address",
+   "code_relationships": "how these codes connect and relate to each other"
 }}
 
-IMPORTANT: Return ONLY the JSON object, no explanations or additional text.
-Remember: the output needs to be in {language}
+Output in {language}. Return ONLY the JSON object.
 """
 
 # PROMPT 2: Response Summarization  
