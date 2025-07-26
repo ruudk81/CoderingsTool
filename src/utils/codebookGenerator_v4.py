@@ -66,7 +66,7 @@ class MatchRecommendation(BaseModel):
     cluster_theme: str = Field(description="The core theme identified in cluster analysis")
     existing_code_matches: List[str] = Field(description="List of existing codes that match this theme")
     coverage: str = Field(description="How well existing codes cover this theme: full/partial/none")
-    gap_analysis: str = Field(description="What's missing if coverage is partial or none")
+    gap_analysis: Optional[str] = Field(description="What's missing if coverage is partial or none, null if full coverage")
     recommendation: str = Field(description="Recommendation: use existing/create new")
     new_code: Optional[str] = Field(description="New code name if creating new, null otherwise")
     new_definition: Optional[str] = Field(description="New code definition if creating new, null otherwise")
