@@ -72,6 +72,10 @@ class MatchRecommendation(BaseModel):
     new_definition: Optional[str] = Field(description="New code definition if creating new, null otherwise")
     justification: Optional[str] = Field(description="Justification for recommendation, null if not applicable")
 
+class MatchRecommendationsResponse(BaseModel):
+    """Container for multiple match recommendations from Step 3"""
+    recommendations: List[MatchRecommendation] = Field(description="List of match recommendations for the cluster")
+
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
 # ============================================================================
@@ -440,7 +444,7 @@ class LangChainBatchProcessor:
         self.match_chain = (
             match_prompt
             | self.step3_llm
-            | JsonOutputParser()
+            | PydanticOutputParser(pydantic_object=MatchRecommendationsResponse)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain (uses step4_llm)
@@ -753,14 +757,35 @@ class LangChainBatchProcessor:
                     logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
                     recommendations = []
                 
-                # Extract new code recommendations from JSON array format
+                # Extract new code recommendations from Pydantic container format
                 new_codes_needed = False
                 proposed_codes = []
                 
-                # Handle JSON array format: [{"theme": ..., "recommendation": "create new", "new_code": ..., "new_definition": ...}]
+                # Handle MatchRecommendationsResponse Pydantic object
                 try:
-                    if isinstance(recommendations, list):
-                        for theme_analysis in recommendations:
+                    # recommendations is now a MatchRecommendationsResponse object
+                    if hasattr(recommendations, 'recommendations'):
+                        recommendations_list = recommendations.recommendations
+                        
+                        for theme_analysis in recommendations_list:
+                            # Handle Pydantic MatchRecommendation objects
+                            if hasattr(theme_analysis, 'recommendation'):
+                                recommendation = theme_analysis.recommendation.lower()
+                                if 'create new' in recommendation:
+                                    new_code = theme_analysis.new_code
+                                    new_definition = theme_analysis.new_definition
+                                    
+                                    # Only add if we have actual code and definition (not null/empty)
+                                    if new_code and new_definition and new_code.strip() and new_definition.strip():
+                                        new_codes_needed = True
+                                        proposed_codes.append({
+                                            'code': new_code.strip(),
+                                            'definition': new_definition.strip()
+                                        })
+                    # Fallback for dict format (backwards compatibility)
+                    elif isinstance(recommendations, dict) and 'recommendations' in recommendations:
+                        recommendations_list = recommendations['recommendations']
+                        for theme_analysis in recommendations_list:
                             if isinstance(theme_analysis, dict):
                                 recommendation = theme_analysis.get('recommendation', '').lower()
                                 if 'create new' in recommendation:
@@ -774,16 +799,6 @@ class LangChainBatchProcessor:
                                             'code': new_code.strip(),
                                             'definition': new_definition.strip()
                                         })
-                    elif isinstance(recommendations, dict):
-                        # Fallback for any remaining old format responses
-                        if 'analysis' in recommendations:
-                            analysis_text = recommendations['analysis']
-                            if "create new" in analysis_text.lower():
-                                new_codes_needed = True
-                                proposed_codes.append({
-                                    'code': 'ExtractedCode',
-                                    'definition': 'ExtractedDefinition'
-                                })
                 except Exception as e:
                     logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
                     logger.error(f"Recommendations content: {recommendations}")

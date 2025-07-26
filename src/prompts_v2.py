@@ -90,21 +90,23 @@ Remember: You have a reputation for parsimony. Consider:
 - Can existing codes be slightly broadened?
 - Is the new concept truly distinct?
 
-Analyze this cluster as a single thematic unit. Output ONLY valid JSON array with no additional text:
-[
-  {{
-    "cluster_theme": "the core theme identified in cluster analysis",
-    "existing_code_matches": ["code1", "code2"],
-    "coverage": "full/partial/none",
-    "gap_analysis": "what's missing if partial/none",
-    "recommendation": "use existing/create new",
-    "new_code": "code name or null",
-    "new_definition": "definition or null",
-    "justification": "justification for recommendation or null"
-  }}
-]
+Analyze this cluster as a single thematic unit. Output ONLY valid JSON object with no additional text:
+{{
+  "recommendations": [
+    {{
+      "cluster_theme": "the core theme identified in cluster analysis",
+      "existing_code_matches": ["code1", "code2"],
+      "coverage": "full/partial/none",
+      "gap_analysis": "what's missing if partial/none",
+      "recommendation": "use existing/create new",
+      "new_code": "code name or null",
+      "new_definition": "definition or null",
+      "justification": "justification for recommendation or null"
+    }}
+  ]
+}}
 
-IMPORTANT: Return ONLY the JSON array, no explanations or additional text. Use null for fields that don't apply.
+IMPORTANT: Return ONLY the JSON object, no explanations or additional text. Use null for fields that don't apply.
 Remember: the output needs to be in {language}
 """
 
