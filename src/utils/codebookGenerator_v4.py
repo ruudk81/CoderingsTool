@@ -90,8 +90,8 @@ class ValidationEvaluation(BaseModel):
 
 class ValidatedCode(BaseModel):
     """Validated code output"""
-    code: Optional[str] = Field(default=None, description="Approved code name or null if rejected")
-    definition: Optional[str] = Field(default=None, description="Approved definition or null if rejected")
+    code: Optional[str] = Field(default=None, description="Final code name (approved/revised) or null if rejected")
+    definition: Optional[str] = Field(default=None, description="Final definition (approved/revised) or null if rejected")
 
 class ValidationResponse(BaseModel):
     """Output for validation step (Step 4)"""
@@ -216,6 +216,34 @@ class SharedCodebook:
                 'version': self._version,
                 'action': 'add',
                 'code': code,
+                'timestamp': time.time()
+            })
+            return True, self._version
+    
+    async def replace_code(self, original_code: str, new_code: str, new_definition: str) -> Tuple[bool, int]:
+        """Replace an existing code with a modified version, return (replaced, new_version)"""
+        async with self._lock:
+            # Find and replace the original code
+            for i, existing in enumerate(self._codes):
+                if existing['code'].lower() == original_code.lower():
+                    self._codes[i] = {'code': new_code, 'definition': new_definition}
+                    self._version += 1
+                    self._update_log.append({
+                        'version': self._version,
+                        'action': 'replace',
+                        'original_code': original_code,
+                        'new_code': new_code,
+                        'timestamp': time.time()
+                    })
+                    return True, self._version
+            
+            # If original code not found, add as new
+            self._codes.append({'code': new_code, 'definition': new_definition})
+            self._version += 1
+            self._update_log.append({
+                'version': self._version,
+                'action': 'add_as_fallback',
+                'code': new_code,
                 'timestamp': time.time()
             })
             return True, self._version
@@ -832,6 +860,20 @@ Action Details:
                                         'code': new_code.strip(),
                                         'definition': new_definition.strip()
                                     })
+                        elif 'modify_existing' in decision:
+                            # Trigger Step 4 for modification validation
+                            if hasattr(recommendations, 'action_details'):
+                                original_code = recommendations.action_details.code_to_modify
+                                modification = recommendations.action_details.modification_suggestion
+                                
+                                # Only proceed if we have modification details
+                                if original_code and modification and original_code.strip() and modification.strip():
+                                    new_codes_needed = True
+                                    proposed_codes.append({
+                                        'original_code': original_code.strip(),
+                                        'modification_type': 'modify_existing',
+                                        'modification_suggestion': modification.strip()
+                                    })
                         
                         # Store the full recommendation for potential Step 4 use
                         cluster_recommendation = recommendations
@@ -851,6 +893,20 @@ Action Details:
                                 proposed_codes.append({
                                     'code': new_code.strip(),
                                     'definition': new_definition.strip()
+                                })
+                        elif 'modify_existing' in decision:
+                            # Trigger Step 4 for modification validation
+                            action_details = recommendations.get('action_details', {})
+                            original_code = action_details.get('code_to_modify')
+                            modification = action_details.get('modification_suggestion')
+                            
+                            # Only proceed if we have modification details
+                            if original_code and modification and original_code.strip() and modification.strip():
+                                new_codes_needed = True
+                                proposed_codes.append({
+                                    'original_code': original_code.strip(),
+                                    'modification_type': 'modify_existing',
+                                    'modification_suggestion': modification.strip()
                                 })
                 except Exception as e:
                     logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
@@ -931,7 +987,7 @@ Action Details:
                                 }
                             }
                             
-                            if validation_results.decision == 'APPROVE' and validation_results.validated_code.code:
+                            if validation_results.decision in ['APPROVE', 'REVISE'] and validation_results.validated_code.code:
                                 validated_code = {
                                     'code': validation_results.validated_code.code,
                                     'definition': validation_results.validated_code.definition
@@ -948,24 +1004,73 @@ Action Details:
                         logger.error(f"Validation results content: {validation_results}")
                     
                     if validated_code:
-                        added, new_version = await self.shared_codebook.add_code_if_new(
-                            validated_code.get('code', ''),
-                            validated_code.get('definition', '')
-                        )
+                        # Check if this is a modification or new code
+                        is_modification = any(pc.get('modification_type') == 'modify_existing' for pc in proposed_codes)
                         
-                        if added:
-                            self.stats['new_codes_added'] += 1
-                            if self.verbose:
-                                logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
-                        
-                        batch_results.append({
-                            'cluster_id': cluster_id,
-                            'status': 'new_code_added' if added else 'code_already_exists',
-                            'code': validated_code.get('code', ''),
-                            'definition': validated_code.get('definition', ''),
-                            'validation_details': validation_details,
-                            'processing_time': time.time() - start_time
-                        })
+                        if is_modification:
+                            # Get original code name from proposed_codes
+                            original_code_name = next(
+                                (pc.get('original_code') for pc in proposed_codes if pc.get('modification_type') == 'modify_existing'),
+                                None
+                            )
+                            
+                            if original_code_name:
+                                # Replace existing code with modified version
+                                replaced, new_version = await self.shared_codebook.replace_code(
+                                    original_code_name,
+                                    validated_code.get('code', ''),
+                                    validated_code.get('definition', '')
+                                )
+                                
+                                if replaced:
+                                    self.stats['new_codes_added'] += 1  # Count as modification
+                                    if self.verbose:
+                                        logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{validated_code['code']}' (v{new_version})")
+                                
+                                batch_results.append({
+                                    'cluster_id': cluster_id,
+                                    'status': 'code_modified',
+                                    'original_code': original_code_name,
+                                    'code': validated_code.get('code', ''),
+                                    'definition': validated_code.get('definition', ''),
+                                    'validation_details': validation_details,
+                                    'processing_time': time.time() - start_time
+                                })
+                            else:
+                                # Fallback to add as new if original not found
+                                added, new_version = await self.shared_codebook.add_code_if_new(
+                                    validated_code.get('code', ''),
+                                    validated_code.get('definition', '')
+                                )
+                                
+                                batch_results.append({
+                                    'cluster_id': cluster_id,
+                                    'status': 'modification_fallback_to_new',
+                                    'code': validated_code.get('code', ''),
+                                    'definition': validated_code.get('definition', ''),
+                                    'validation_details': validation_details,
+                                    'processing_time': time.time() - start_time
+                                })
+                        else:
+                            # Standard new code addition
+                            added, new_version = await self.shared_codebook.add_code_if_new(
+                                validated_code.get('code', ''),
+                                validated_code.get('definition', '')
+                            )
+                            
+                            if added:
+                                self.stats['new_codes_added'] += 1
+                                if self.verbose:
+                                    logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                            
+                            batch_results.append({
+                                'cluster_id': cluster_id,
+                                'status': 'new_code_added' if added else 'code_already_exists',
+                                'code': validated_code.get('code', ''),
+                                'definition': validated_code.get('definition', ''),
+                                'validation_details': validation_details,
+                                'processing_time': time.time() - start_time
+                            })
                     else:
                         batch_results.append({
                             'cluster_id': cluster_id,
