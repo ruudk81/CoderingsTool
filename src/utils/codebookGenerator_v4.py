@@ -937,13 +937,13 @@ Action Details:
                         if added:
                             self.stats['new_codes_added'] += 1
                             if self.verbose:
-                                logger.info(f"Cluster {cluster_id}: Added new code '{first_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                                logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
                         
                         batch_results.append({
                             'cluster_id': cluster_id,
                             'status': 'new_code_added' if added else 'code_already_exists',
-                            'code': first_code.get('code', ''),
-                            'definition': first_code.get('definition', ''),
+                            'code': validated_code.get('code', ''),
+                            'definition': validated_code.get('definition', ''),
                             'processing_time': time.time() - start_time
                         })
                     else:
