@@ -641,8 +641,8 @@ class LangChainBatchProcessor:
                     "code_text": code_text
                 }
                 
-                # Capture first prompt if needed
-                if self.prompt_printer and self._capture_counts['codebook'] < 2:
+                # Capture first prompt if needed (increased limit for concurrent batches)
+                if self.prompt_printer and self._capture_counts['codebook'] < 5:
                     self.prompt_printer.capture_prompt(
                         step_name="codebook_generation_v4",
                         utility_name="LangChainBatchProcessor",
@@ -688,8 +688,8 @@ class LangChainBatchProcessor:
                     "cluster_text": cluster_text
                 }
                 
-                # Capture Step 2 prompt if needed
-                if self.prompt_printer and self._capture_counts['summary'] < 2:
+                # Capture Step 2 prompt if needed (increased limit for concurrent batches)
+                if self.prompt_printer and self._capture_counts['summary'] < 5:
                     self.prompt_printer.capture_prompt(
                         step_name="codebook_generation_v4",
                         utility_name="LangChainBatchProcessor",
@@ -722,8 +722,8 @@ class LangChainBatchProcessor:
                     "summaries": str(summaries)
                 }
                 
-                # Capture Step 3 prompt if needed
-                if self.prompt_printer and self._capture_counts['match'] < 2:
+                # Capture Step 3 prompt if needed (increased limit for concurrent batches)
+                if self.prompt_printer and self._capture_counts['match'] < 5:
                     self.prompt_printer.capture_prompt(
                         step_name="codebook_generation_v4",
                         utility_name="LangChainBatchProcessor",
@@ -803,8 +803,8 @@ class LangChainBatchProcessor:
                         "redundancy_example": "Example: 'student concerns' and 'learner worries' are redundant"
                     }
                     
-                    # Capture Step 4 prompt if needed
-                    if self.prompt_printer and self._capture_counts['validation'] < 2:
+                    # Capture Step 4 prompt if needed (increased limit for concurrent batches)
+                    if self.prompt_printer and self._capture_counts['validation'] < 5:
                         self.prompt_printer.capture_prompt(
                             step_name="codebook_generation_v4",
                             utility_name="LangChainBatchProcessor",
