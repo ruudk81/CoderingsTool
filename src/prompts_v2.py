@@ -15,15 +15,11 @@ Given these codes from the codebook:
 </existing_codebook>
 
 Analyze these codes to help future matching decisions:
-1. What is the scope and abstraction level of each code?
-2. What specific aspects of the survey question do these codes address?
-3. What potential gaps exist - what types of responses might NOT fit these codes?
+1. What specific aspects of the survey question do these codes address?
+2. What potential gaps exist - what types of responses might NOT fit these codes?
 
-Output a structured analysis in {language}:
-"Code Analysis:
-[For each code: - CodeName: what this code covers at [specific/general] abstraction level]
-
-Coverage: These codes collectively address [aspects of the survey question].
+Output a concise analysis in {language} following this structure:
+"Coverage: These codes collectively address [aspects of the survey question].
 
 Gaps: Responses about [gap 1], [gap 2], and [gap 3] might not fit existing codes."
 
@@ -45,8 +41,8 @@ Extract the cluster's pattern to enable code matching:
 3. **Key components**: What are the 2-3 essential elements that define this cluster?
 4. **Distinguishing features**: What makes this cluster different from other possible themes?
 
-Output a concise analysis in {language}:
-"This cluster focuses on [core theme] at a [specific/general] level. The key components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect]."
+Output a concise analysis in {language} following this structure:
+"[cluster description] at a [specific/general] level. The key components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect]."
 
 IMPORTANT: Return ONLY the analysis text, no JSON formatting or additional explanation.
 """
