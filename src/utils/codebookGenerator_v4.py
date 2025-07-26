@@ -917,6 +917,8 @@ Action Details:
                     batch_results.append({
                         'cluster_id': cluster_id,
                         'status': 'no_new_code_needed',
+                        'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                        'step4_validated_code': None,  # No Step 4 for use_existing
                         'processing_time': time.time() - start_time
                     })
                     self.stats['clusters_processed'] += 1
@@ -1033,6 +1035,8 @@ Action Details:
                                     'original_code': original_code_name,
                                     'code': validated_code.get('code', ''),
                                     'definition': validated_code.get('definition', ''),
+                                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                                    'step4_validated_code': validated_code,
                                     'validation_details': validation_details,
                                     'processing_time': time.time() - start_time
                                 })
@@ -1048,6 +1052,8 @@ Action Details:
                                     'status': 'modification_fallback_to_new',
                                     'code': validated_code.get('code', ''),
                                     'definition': validated_code.get('definition', ''),
+                                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                                    'step4_validated_code': validated_code,
                                     'validation_details': validation_details,
                                     'processing_time': time.time() - start_time
                                 })
@@ -1068,6 +1074,8 @@ Action Details:
                                 'status': 'new_code_added' if added else 'code_already_exists',
                                 'code': validated_code.get('code', ''),
                                 'definition': validated_code.get('definition', ''),
+                                'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                                'step4_validated_code': validated_code,
                                 'validation_details': validation_details,
                                 'processing_time': time.time() - start_time
                             })
@@ -1075,6 +1083,8 @@ Action Details:
                         batch_results.append({
                             'cluster_id': cluster_id,
                             'status': 'no_codes_passed_validation',
+                            'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                            'step4_validated_code': None,  # No validated code if none passed validation
                             'validation_details': validation_details,
                             'processing_time': time.time() - start_time
                         })
@@ -1091,6 +1101,8 @@ Action Details:
                     'status': 'v4_processing_error',
                     'error': str(e),
                     'error_type': type(e).__name__,
+                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                    'step4_validated_code': None,  # No validated code if error occurred
                     'processing_time': time.time() - start_time if 'start_time' in locals() else 0
                 })
                 self.stats['errors'] += 1
@@ -1327,9 +1339,12 @@ class InductiveCodebookGenerator:
         # Process all clusters
         results = await batch_processor.process_all_clusters_concurrent(clusters)
         
-        # Build cluster assignments and validation details
+        # Build cluster assignments and detailed results
         cluster_to_code = {}
         validation_details = {}
+        step3_recommendations = {}
+        step4_validated_codes = {}
+        
         for result in results:
             cluster_id = result['cluster_id']
             if result.get('code'):
@@ -1340,6 +1355,14 @@ class InductiveCodebookGenerator:
             # Store validation details if available
             if result.get('validation_details'):
                 validation_details[cluster_id] = result['validation_details']
+            
+            # Store Step 3 recommendations if available
+            if result.get('step3_recommendation'):
+                step3_recommendations[cluster_id] = result['step3_recommendation']
+            
+            # Store Step 4 validated codes if available
+            if result.get('step4_validated_code'):
+                step4_validated_codes[cluster_id] = result['step4_validated_code']
         
         # Get final stats
         final_codes, final_version = await shared_codebook.get_current_snapshot()
@@ -1393,6 +1416,8 @@ class InductiveCodebookGenerator:
             'codebook': final_codes,
             'cluster_assignments': cluster_to_code,
             'validation_details': validation_details,
+            'step3_recommendations': step3_recommendations,
+            'step4_validated_codes': step4_validated_codes,
             'stats': final_stats,
             'generator_version': 'V4_MULTISTEP_PROMPTS_WITH_V3_FEATURES'  # Clear identifier
         }
