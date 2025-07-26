@@ -434,7 +434,7 @@ else:
 # === STEP 6 ========================================================================================================
 """GATOS Codebook Generation"""
 from utils import speculativeStarterCodes
-from utils import codebookGenerator_v3 as codebookGenerator
+from utils import codebookGenerator_v4 as codebookGenerator
 
 FORCE = True
 
@@ -475,47 +475,6 @@ else:
         )
     else:
         # Step 6.2: Inductive codebook generation
-        from utils import codebookGenerator as codebookGenerator
-        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
-            cluster_results=initial_cluster_results,
-            embedded_text=embedded_text,
-            starter_codes=starter_codes,
-            var_lab=var_lab,
-            k=5,
-            verbose=True,
-            batch_size=10,  # Process 10 clusters per batch
-            max_concurrent_requests=5  # Allow 5 concurrent API calls
-        )
-        codebook_resultsv1 = codebook_generator.generate()
-
-
-        from utils import codebookGenerator_v2 as codebookGenerator
-        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
-            cluster_results=initial_cluster_results,
-            embedded_text=embedded_text,
-            starter_codes=starter_codes,
-            var_lab=var_lab,
-            k=5,
-            verbose=True,
-            batch_size=10,  # Process 10 clusters per batch
-            max_concurrent_requests=5  # Allow 5 concurrent API calls
-        )
-        codebook_resultsv2 = codebook_generator.generate()
-
-        from utils import codebookGenerator_v3 as codebookGenerator
-        codebook_generator =  codebookGenerator.InductiveCodebookGenerator(
-            cluster_results=initial_cluster_results,
-            embedded_text=embedded_text,
-            starter_codes=starter_codes,
-            var_lab=var_lab,
-            k=5,
-            verbose=True,
-            batch_size=10,  # Process 10 clusters per batch
-            max_concurrent_requests=5  # Allow 5 concurrent API calls
-        )
-        codebook_resultsv3 = codebook_generator.generate()
-    
-        from utils import codebookGenerator_v4 as codebookGenerator
         prompt_printer = promptPrinter(enabled=True, print_realtime=True)
 
         generator = codebookGenerator.InductiveCodebookGenerator(
