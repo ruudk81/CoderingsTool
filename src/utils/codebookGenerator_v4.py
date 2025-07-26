@@ -78,14 +78,13 @@ class MatchRecommendation(BaseModel):
     justification: str = Field(description="Explanation of why this is the most parsimonious choice")
 
 class ValidationEvaluation(BaseModel):
-    """Evaluation scores and reasoning for Step 4"""
-    parsimony_score: int = Field(description="Score 0-10 for parsimony assessment", ge=0, le=10)
+    """Evaluation reasoning for Step 4"""
     parsimony_reasoning: str = Field(description="Assessment of whether existing options were exhausted")
-    redundancy_score: int = Field(description="Score 0-10 for redundancy assessment", ge=0, le=10)
     redundancy_reasoning: str = Field(description="Assessment of overlap with existing codes")
-    abstraction_score: int = Field(description="Score 0-10 for abstraction consistency", ge=0, le=10)
+    conceptual_unity_reasoning: str = Field(description="Assessment of whether this represents ONE clear concept")
+    mutual_exclusivity_reasoning: str = Field(description="Assessment of potential confusion with other codes")
+    appropriate_scope_reasoning: str = Field(description="Assessment of whether scope is too broad or trying to cover multiple themes")
     abstraction_reasoning: str = Field(description="Assessment of abstraction level consistency")
-    justification_score: int = Field(description="Score 0-10 for justification alignment", ge=0, le=10)
     justification_reasoning: str = Field(description="Assessment of decision alignment with reasoning")
 
 class ValidatedCode(BaseModel):
@@ -983,15 +982,12 @@ Action Details:
                             validation_details = {
                                 'decision': validation_results.decision,
                                 'decision_rationale': validation_results.decision_rationale,
-                                'scores': {
-                                    'parsimony': validation_results.evaluation.parsimony_score,
-                                    'redundancy': validation_results.evaluation.redundancy_score,
-                                    'abstraction': validation_results.evaluation.abstraction_score,
-                                    'justification': validation_results.evaluation.justification_score
-                                },
                                 'reasoning': {
                                     'parsimony': validation_results.evaluation.parsimony_reasoning,
                                     'redundancy': validation_results.evaluation.redundancy_reasoning,
+                                    'conceptual_unity': validation_results.evaluation.conceptual_unity_reasoning,
+                                    'mutual_exclusivity': validation_results.evaluation.mutual_exclusivity_reasoning,
+                                    'appropriate_scope': validation_results.evaluation.appropriate_scope_reasoning,
                                     'abstraction': validation_results.evaluation.abstraction_reasoning,
                                     'justification': validation_results.evaluation.justification_reasoning
                                 }
