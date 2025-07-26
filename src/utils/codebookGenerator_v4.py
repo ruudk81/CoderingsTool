@@ -61,6 +61,17 @@ class ClusterAnalysis(BaseModel):
     shared_terminology: List[str] = Field(description="Consistent concepts, phrases, or language patterns")
     cluster_coherence: str = Field(description="Explanation of what unites these ideas conceptually")
 
+class MatchRecommendation(BaseModel):
+    """Output for match and recommend step (Step 3)"""
+    cluster_theme: str = Field(description="The core theme identified in cluster analysis")
+    existing_code_matches: List[str] = Field(description="List of existing codes that match this theme")
+    coverage: str = Field(description="How well existing codes cover this theme: full/partial/none")
+    gap_analysis: str = Field(description="What's missing if coverage is partial or none")
+    recommendation: str = Field(description="Recommendation: use existing/create new")
+    new_code: Optional[str] = Field(description="New code name if creating new, null otherwise")
+    new_definition: Optional[str] = Field(description="New code definition if creating new, null otherwise")
+    justification: Optional[str] = Field(description="Justification for recommendation, null if not applicable")
+
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
 # ============================================================================
@@ -423,13 +434,13 @@ class LangChainBatchProcessor:
         # Step 3: Match and Recommend Chain (uses step3_llm)
         match_prompt = PromptTemplate(
             template=MATCH_AND_RECOMMEND_PROMPT,
-            input_variables=["system_message", "codebook_analysis", "summaries"]
+            input_variables=["system_message", "existing_codes", "clustered_ideas", "codebook_analysis", "summaries"]
         )
         
         self.match_chain = (
             match_prompt
             | self.step3_llm
-            | JsonOutputParser()
+            | PydanticOutputParser(pydantic_object=List[MatchRecommendation])
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain (uses step4_llm)
@@ -709,8 +720,10 @@ class LangChainBatchProcessor:
                 match_input = {
                     "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
-                    "codebook_analysis": str(codebook_analysis),
-                    "summaries": str(summaries)
+                    "existing_codes": code_text,
+                    "clustered_ideas": cluster_text,
+                    "codebook_analysis": codebook_analysis.model_dump_json(indent=2) if hasattr(codebook_analysis, 'model_dump_json') else str(codebook_analysis),
+                    "summaries": summaries.model_dump_json(indent=2) if hasattr(summaries, 'model_dump_json') else str(summaries)
                 }
                 
                 # Capture Step 3 prompt with diversity-first logic

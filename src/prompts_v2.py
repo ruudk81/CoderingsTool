@@ -62,18 +62,26 @@ Remember: the output needs to be in {language}
 MATCH_AND_RECOMMEND_PROMPT = """
 {system_message}
 
-Given this codebook analysis:
+You are analyzing a cluster of ideas to determine if existing codes adequately capture the concepts expressed.
+
+<existing_codes>
+{existing_codes}
+</existing_codes>
+
+<clustered_ideas>
+{clustered_ideas}
+</clustered_ideas>
+
 <codebook_analysis>
 {codebook_analysis}
 </codebook_analysis>
 
-And these response summaries:
-<summaries>
+<cluster_analysis>
 {summaries}
-</summaries>
+</cluster_analysis>
 
 Your task:
-1. For each theme in the summaries, identify if existing codes can describe it
+1. Examine the actual clustered ideas and determine if existing codes can adequately describe them
 2. If existing codes are insufficient, explain specifically why
 3. Only recommend new codes if absolutely necessary
 
@@ -82,17 +90,17 @@ Remember: You have a reputation for parsimony. Consider:
 - Can existing codes be slightly broadened?
 - Is the new concept truly distinct?
 
-Output ONLY valid JSON array with no additional text:
+Analyze this cluster as a single thematic unit. Output ONLY valid JSON array with no additional text:
 [
   {{
-    "theme": "theme name",
+    "cluster_theme": "the core theme identified in cluster analysis",
     "existing_code_matches": ["code1", "code2"],
     "coverage": "full/partial/none",
     "gap_analysis": "what's missing if partial/none",
     "recommendation": "use existing/create new",
     "new_code": "code name or null",
     "new_definition": "definition or null",
-    "justification": "justification or null"
+    "justification": "justification for recommendation or null"
   }}
 ]
 
