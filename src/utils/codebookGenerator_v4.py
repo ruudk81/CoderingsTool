@@ -45,6 +45,23 @@ logging.getLogger("httpx").disabled = True
 logging.getLogger("tenacity").setLevel(logging.WARNING)   
 
 # ============================================================================
+# PYDANTIC MODELS FOR STRUCTURED OUTPUT
+# ============================================================================
+
+class CodebookAnalysis(BaseModel):
+    """Output for codebook analysis step (Step 1)"""
+    thematic_coverage: str = Field(description="Description of the main thematic areas these codes address")
+    code_relationships: str = Field(description="How these codes connect and relate to each other thematically")
+
+class ClusterAnalysis(BaseModel):
+    """Output for cluster analysis step (Step 2)"""
+    core_theme: str = Field(description="Specific aspect of the approach being discussed")
+    sentiment_pattern: str = Field(description="Predominant sentiment: positive/negative/mixed")
+    reasoning_focus: str = Field(description="Main justification provided for satisfaction/dissatisfaction")
+    shared_terminology: List[str] = Field(description="Consistent concepts, phrases, or language patterns")
+    cluster_coherence: str = Field(description="Explanation of what unites these ideas conceptually")
+
+# ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
 # ============================================================================
 
@@ -400,7 +417,7 @@ class LangChainBatchProcessor:
         self.summary_chain = (
             summary_prompt
             | self.step2_llm
-            | JsonOutputParser()
+            | PydanticOutputParser(pydantic_object=ClusterAnalysis)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 3: Match and Recommend Chain (uses step3_llm)
