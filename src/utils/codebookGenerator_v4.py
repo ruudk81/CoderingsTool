@@ -688,6 +688,23 @@ class LangChainBatchProcessor:
                     "cluster_text": cluster_text
                 }
                 
+                # Capture Step 2 prompt if needed
+                if self.prompt_printer and self._capture_counts['summary'] < 2:
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation_v4",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=RESPONSE_SUMMARY_PROMPT.format(**summary_input),
+                        prompt_type="step2_response_summary",
+                        metadata={
+                            "model": self.step2_llm.model_name,
+                            "var_lab": self.var_lab,
+                            "stage": "2/4 - Response Summary",
+                            "cluster_id": cluster_id,
+                            "cluster_size": len(cluster_data['ideas'])
+                        }
+                    )
+                    self._capture_counts['summary'] += 1
+                
                 try:
                     summaries = await self._process_step2_with_retry(summary_input)
                 except (APIError, ProcessingError) as e:
@@ -704,6 +721,24 @@ class LangChainBatchProcessor:
                     "codebook_analysis": str(codebook_analysis),
                     "summaries": str(summaries)
                 }
+                
+                # Capture Step 3 prompt if needed
+                if self.prompt_printer and self._capture_counts['match'] < 2:
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation_v4",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=MATCH_AND_RECOMMEND_PROMPT.format(**match_input),
+                        prompt_type="step3_match_recommend",
+                        metadata={
+                            "model": self.step3_llm.model_name,
+                            "var_lab": self.var_lab,
+                            "stage": "3/4 - Match & Recommend",
+                            "cluster_id": cluster_id,
+                            "codebook_analysis_present": bool(codebook_analysis),
+                            "summaries_present": bool(summaries)
+                        }
+                    )
+                    self._capture_counts['match'] += 1
                 
                 try:
                     recommendations = await self._process_step3_with_retry(match_input)
@@ -767,6 +802,24 @@ class LangChainBatchProcessor:
                         "recommendations": str(proposed_codes),
                         "redundancy_example": "Example: 'student concerns' and 'learner worries' are redundant"
                     }
+                    
+                    # Capture Step 4 prompt if needed
+                    if self.prompt_printer and self._capture_counts['validation'] < 2:
+                        self.prompt_printer.capture_prompt(
+                            step_name="codebook_generation_v4",
+                            utility_name="LangChainBatchProcessor",
+                            prompt_content=VALIDATION_PROMPT.format(**validation_input),
+                            prompt_type="step4_validation",
+                            metadata={
+                                "model": self.step4_llm.model_name,
+                                "var_lab": self.var_lab,
+                                "stage": "4/4 - Validation",
+                                "cluster_id": cluster_id,
+                                "proposed_codes_count": len(proposed_codes),
+                                "proposed_codes": [c['code'] for c in proposed_codes]
+                            }
+                        )
+                        self._capture_counts['validation'] += 1
                     
                     try:
                         validation_results = await self._process_step4_with_retry(validation_input)
