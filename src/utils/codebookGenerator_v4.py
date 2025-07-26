@@ -543,21 +543,40 @@ class LangChainBatchProcessor:
                 
                 recommendations = await self.match_chain.ainvoke(match_input)
                 
-                # Extract new code recommendations
+                # Extract new code recommendations from new JSON array format
                 new_codes_needed = False
                 proposed_codes = []
                 
-                # Handle both list and dict formats
-                if isinstance(recommendations, dict) and 'analysis' in recommendations:
-                    analysis_text = recommendations['analysis']
-                    # Parse the analysis text to extract recommendations
-                    if "create new" in analysis_text.lower():
-                        new_codes_needed = True
-                        # Extract code and definition (you may need to adjust parsing logic)
-                        proposed_codes.append({
-                            'code': 'ExtractedCode',  # Parse from analysis
-                            'definition': 'ExtractedDefinition'  # Parse from analysis
-                        })
+                # Handle new JSON array format: [{"theme": ..., "recommendation": "create new", "new_code": ..., "new_definition": ...}]
+                try:
+                    if isinstance(recommendations, list):
+                        for theme_analysis in recommendations:
+                            if isinstance(theme_analysis, dict):
+                                recommendation = theme_analysis.get('recommendation', '').lower()
+                                if 'create new' in recommendation:
+                                    new_code = theme_analysis.get('new_code')
+                                    new_definition = theme_analysis.get('new_definition')
+                                    
+                                    # Only add if we have actual code and definition (not null/empty)
+                                    if new_code and new_definition and new_code.strip() and new_definition.strip():
+                                        new_codes_needed = True
+                                        proposed_codes.append({
+                                            'code': new_code.strip(),
+                                            'definition': new_definition.strip()
+                                        })
+                    elif isinstance(recommendations, dict):
+                        # Fallback for any remaining old format responses
+                        if 'analysis' in recommendations:
+                            analysis_text = recommendations['analysis']
+                            if "create new" in analysis_text.lower():
+                                new_codes_needed = True
+                                proposed_codes.append({
+                                    'code': 'ExtractedCode',
+                                    'definition': 'ExtractedDefinition'
+                                })
+                except Exception as e:
+                    logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
+                    logger.error(f"Recommendations content: {recommendations}")
                 
                 if not new_codes_needed:
                     self.stats['no_new_codes_needed'] += 1
@@ -580,8 +599,16 @@ class LangChainBatchProcessor:
                     
                     validation_results = await self.validation_chain.ainvoke(validation_input)
                     
-                    # Process validated codes
-                    validated_codes = validation_results.get('validated_codes', [])
+                    # Process validated codes from new JSON format
+                    validated_codes = []
+                    try:
+                        if isinstance(validation_results, dict):
+                            validated_codes = validation_results.get('validated_codes', [])
+                        else:
+                            logger.error(f"Unexpected validation result format for cluster {cluster_id}: {validation_results}")
+                    except Exception as e:
+                        logger.error(f"Error parsing validation results for cluster {cluster_id}: {e}")
+                        logger.error(f"Validation results content: {validation_results}")
                     
                     if validated_codes and len(validated_codes) > 0:
                         first_code = validated_codes[0]
