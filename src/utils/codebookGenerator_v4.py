@@ -909,9 +909,28 @@ Action Details:
                     
                     # Process validated codes from ValidationResponse format
                     validated_code = None
+                    validation_details = None
+                    
                     try:
                         if validation_results and hasattr(validation_results, 'decision'):
-                            # ValidationResponse object
+                            # ValidationResponse object - store detailed validation info
+                            validation_details = {
+                                'decision': validation_results.decision,
+                                'decision_rationale': validation_results.decision_rationale,
+                                'scores': {
+                                    'parsimony': validation_results.evaluation.parsimony_score,
+                                    'redundancy': validation_results.evaluation.redundancy_score,
+                                    'abstraction': validation_results.evaluation.abstraction_score,
+                                    'justification': validation_results.evaluation.justification_score
+                                },
+                                'reasoning': {
+                                    'parsimony': validation_results.evaluation.parsimony_reasoning,
+                                    'redundancy': validation_results.evaluation.redundancy_reasoning,
+                                    'abstraction': validation_results.evaluation.abstraction_reasoning,
+                                    'justification': validation_results.evaluation.justification_reasoning
+                                }
+                            }
+                            
                             if validation_results.decision == 'APPROVE' and validation_results.validated_code.code:
                                 validated_code = {
                                     'code': validation_results.validated_code.code,
@@ -944,12 +963,14 @@ Action Details:
                             'status': 'new_code_added' if added else 'code_already_exists',
                             'code': validated_code.get('code', ''),
                             'definition': validated_code.get('definition', ''),
+                            'validation_details': validation_details,
                             'processing_time': time.time() - start_time
                         })
                     else:
                         batch_results.append({
                             'cluster_id': cluster_id,
                             'status': 'no_codes_passed_validation',
+                            'validation_details': validation_details,
                             'processing_time': time.time() - start_time
                         })
                 
@@ -1201,14 +1222,19 @@ class InductiveCodebookGenerator:
         # Process all clusters
         results = await batch_processor.process_all_clusters_concurrent(clusters)
         
-        # Build cluster assignments
+        # Build cluster assignments and validation details
         cluster_to_code = {}
+        validation_details = {}
         for result in results:
             cluster_id = result['cluster_id']
             if result.get('code'):
                 cluster_to_code[cluster_id] = result['code']
             else:
                 cluster_to_code[cluster_id] = result['status']
+            
+            # Store validation details if available
+            if result.get('validation_details'):
+                validation_details[cluster_id] = result['validation_details']
         
         # Get final stats
         final_codes, final_version = await shared_codebook.get_current_snapshot()
@@ -1261,6 +1287,7 @@ class InductiveCodebookGenerator:
         return {
             'codebook': final_codes,
             'cluster_assignments': cluster_to_code,
+            'validation_details': validation_details,
             'stats': final_stats,
             'generator_version': 'V4_MULTISTEP_PROMPTS_WITH_V3_FEATURES'  # Clear identifier
         }
