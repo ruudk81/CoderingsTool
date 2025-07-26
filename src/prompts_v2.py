@@ -167,15 +167,16 @@ Output a validation assessment in {language}:
   "decision": "APPROVE/REVISE/REJECT",
   "decision_rationale": "explanation for the overall decision",
   "validated_code": {{
-    "code": "approved code name or null if rejected",
-    "definition": "approved definition or null if rejected"
+    "code": "final code name (approved/revised) or null if rejected",
+    "definition": "final definition (approved/revised) or null if rejected"
   }}
 }}
 
 IMPORTANT: 
 - Return ONLY the JSON object in {language}
 - APPROVE only if all scores ≥8
-- REVISE if scores 6-7 (provide specific suggestions)
-- REJECT if any score <6
+- REVISE if scores 6-7 (provide revised code in validated_code)
+- REJECT if any score <6 (set validated_code to null)
+- Always populate validated_code for APPROVE/REVISE decisions
 """
 
