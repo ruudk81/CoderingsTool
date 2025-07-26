@@ -59,34 +59,6 @@ IMPORTANT: Return ONLY the JSON object, no explanations or additional text. All 
 Remember: the output needs to be in {language}
 """
 
-
-RESPONSE_SUMMARY_PROMPT = """
-{system_message}
-
-Summarize the responses presented below to this survey question: "{survey_question}"
-You need to focus on main themes.
-
-<responses>
-{cluster_text}
-</responses>
-
-For each response, extract:
-1. Primary theme/concept
-2. Emotional tone
-3. Key phrases or terminology
-4. Unique aspects
-
-Output ONLY valid JSON array with no additional text:
-[
-  {{"theme": "...", "tone": "...", "key_phrases": ["...", "..."], "unique": "..."}},
-  {{"theme": "...", "tone": "...", "key_phrases": ["...", "..."], "unique": "..."}}
-]
-
-IMPORTANT: Return ONLY the JSON array, no explanations or additional text. All property names must be in double quotes.
-Remember: the output needs to be in {language}
-"""
-
-# PROMPT 3: Integrated Matching and Recommendation
 MATCH_AND_RECOMMEND_PROMPT = """
 {system_message}
 
