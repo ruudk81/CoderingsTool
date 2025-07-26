@@ -490,8 +490,14 @@ generator = codebookGenerator.InductiveCodebookGenerator(
      prompt_printer=prompt_printer  )
 results = generator.generate()
 
+idx = 1
 for key, value in results.items():
-    print(key)
+    if key == 'codebook':
+        for item in value:
+            print(f"{idx}: {item['code']}")
+            print(f"{item['definition']}\n")
+            idx += 1 
+
 
     
 # === STEP 7 ========================================================================================================
