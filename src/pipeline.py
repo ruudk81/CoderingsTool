@@ -31,9 +31,14 @@ var_name = "q19"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "data"  # Set to step name (e.g., "initial_clusters") to recalculate specific step
+FORCE_STEP = None  # Options: "data", "preprocessed", "quality_filter", "segmented_descriptions", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
+
+# STEP 5 CACHING IMPROVEMENT:
+# - Split Step 5 into 5a (embeddings) and 5b (clustering) for independent caching
+# - embedded_text is now cached as EmbeddingsModel and can be loaded separately for Step 6
+# - Granular control: FORCE_STEP = "embeddings" or "initial_clusters"
 
 # Clustering parameters
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
@@ -112,11 +117,7 @@ from utils import textNormalizer, spellChecker, textFinalizer
 from utils.verboseReporter import VerboseReporter
 from utils.promptPrinter import promptPrinter
 
-FORCE = False
-
 step_name        = "preprocessed"
-if  FORCE:
-    FORCE_STEP   = step_name
 
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 verbose_reporter = VerboseReporter(VERBOSE)
@@ -230,11 +231,7 @@ else:
 """quality filter"""
 from utils import qualityFilter
 
-FORCE = False
-
 step_name        = "quality_filter"
-if  FORCE:
-    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True) 
@@ -294,11 +291,7 @@ else:
 """Extract initial ideas"""
 from utils import ideaExtractor
 
-FORCE = False
-
 step_name        = "segmented_descriptions"
-if  FORCE:
-    FORCE_STEP   = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  
@@ -340,49 +333,71 @@ else:
 #         print(f"- {segment.idea}")
 
     
-# === STEP 5 ========================================================================================================
-"""reduce and cluster"""
+# === STEP 5A =======================================================================================================
+"""Generate embeddings"""
 from config import EmbeddingConfig
 from utils.embedder import Embedder
-from utils.clusterer import Clusterer
 
-FORCE = True
-
-step_name        = "initial_clusters"
-if  FORCE:
-    FORCE_STEP   = step_name
+step_name = "embeddings"
 
 verbose_reporter = VerboseReporter(VERBOSE)
-force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
+    total_embeddings = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
+    verbose_reporter.summary("EMBEDDINGS FROM CACHE", {
+        "Input": f"{len(encoded_text)} responses", 
+        "Total embeddings": f"{total_embeddings}"
+    })
+else:
+    verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
+    start_time = time.time()
+    print("\nEmbedding of extracted ideas")
+
+    embedding_config = EmbeddingConfig()
+    get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
+    input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
+    embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache(embedded_text, filename, step_name, elapsed_time)
+    print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
+
+#debug 
+# import random
+# n_samples = 1
+# sampled_items = random.sample(embedded_text, n_samples)
+# for item in sampled_items:
+#     print(f"{item.response}\n")
+#     for segment in item.response_ideas:
+#         print(f"- {segment.idea}")
+
+# === STEP 5B =======================================================================================================
+"""Generate initial clusters"""
+from utils.clusterer import Clusterer
+
+step_name = "initial_clusters"
+
+verbose_reporter = VerboseReporter(VERBOSE)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
     cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
     num_initial_clusters = len(cluster_ids)
     total_segments = sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)
-    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {"Input": f"{len(encoded_text)} responses","Total segments": f"{total_segments}", "Initial clusters": f"{num_initial_clusters}"})
+    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {
+        "Input": f"{len(embedded_text)} responses",
+        "Total segments": f"{total_segments}", 
+        "Initial clusters": f"{num_initial_clusters}"
+    })
 else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
     start_time = time.time()
-    # Step 5a: Generate embeddings
-    print("\nEmbedding of extracted ideas")
-
-    embedding_config = EmbeddingConfig()
- 
-    get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
-    input_data = [item.to_model(models.ClusterModel) for item in encoded_text]
-    embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
+    print("\nClustering embedded ideas")
     
-    #debug 
-    # import random
-    # n_samples = 1
-    # sampled_items = random.sample(embedded_text, n_samples)
-    # for item in sampled_items:
-    #     print(f"{item.response}\n")
-    #     for segment in item.response_ideas:
-    #         print(f"- {segment.idea}")
-    
-    # Step 5b: Generate initial clusters
     clusterer = Clusterer(embedded_text)
     clusterer.run()
     initial_cluster_results = clusterer.to_cluster_model()
@@ -390,7 +405,7 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
-    print(f"\n'Get initial clusters' completed in {elapsed_time:.2f} seconds.")
+    print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
 #debug - print random clusters  
 # import random
@@ -436,11 +451,7 @@ else:
 from utils import speculativeStarterCodes
 from utils import codebookGenerator_v4 as codebookGenerator
 
-FORCE = True
-
 step_name = "gatos_codebook"
-if FORCE:
-    FORCE_STEP = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
@@ -511,11 +522,7 @@ else:
 """Theme Identification"""
 from utils import themeIdentifier
 
-FORCE = False
-
 step_name = "theme_identification"
-if FORCE:
-    FORCE_STEP = step_name
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
