@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 import hashlib
 from enum import Enum
 
-# Retry logic imports
 from tenacity import (
     retry, stop_after_attempt, wait_exponential, 
     retry_if_exception_type, before_sleep_log,
@@ -41,7 +40,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").disabled = True
-logging.getLogger("tenacity").setLevel(logging.WARNING)  # Reduce tenacity noise
+logging.getLogger("tenacity").setLevel(logging.WARNING)   
 
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
@@ -206,7 +205,7 @@ class SharedCodebook:
             }
 
 # ============================================================================
-# OPTIMIZED EMBEDDING MANAGER
+# EMBEDDING MANAGER
 # ============================================================================
 
 class OptimizedEmbeddingManager:
@@ -569,7 +568,7 @@ class LangChainBatchProcessor:
                 _, version = await self.shared_codebook.get_current_snapshot()
                 
                 # Prepare inputs
-                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas'][:20]])
+                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
                 code_text = "\n".join([
                     f"- {code['code']}: {code['definition']}" 
                     for code in nearest_codes
@@ -624,7 +623,7 @@ class LangChainBatchProcessor:
                     if i in recovery_results:
                         initial_results.append(recovery_results[i])
                     else:
-                        initial_results.append(Exception(f"Failed to process cluster after retries"))
+                        initial_results.append(Exception("Failed to process cluster after retries"))
             
             # Prepare review inputs for clusters that need new codes
             review_inputs = []
@@ -692,7 +691,7 @@ class LangChainBatchProcessor:
                         if i in recovery_results:
                             review_results.append(recovery_results[i])
                         else:
-                            review_results.append(Exception(f"Failed to process review after retries"))
+                            review_results.append(Exception("Failed to process review after retries"))
                 
                 # Process review results sequentially to maintain codebook consistency
                 for idx, review_result in enumerate(review_results):
@@ -1021,13 +1020,13 @@ class InductiveCodebookGenerator:
         # Report results with comprehensive error statistics
         error_summary = {}
         if batch_processor.stats['errors'] > 0:
-            error_summary[f"Errors"] = batch_processor.stats['errors']
+            error_summary["Errors"] = batch_processor.stats['errors']
         if batch_processor.stats['retries'] > 0:
-            error_summary[f"Retries"] = batch_processor.stats['retries']
+            error_summary["Retries"] = batch_processor.stats['retries']
         if batch_processor.stats['partial_failures'] > 0:
-            error_summary[f"Partial failures"] = batch_processor.stats['partial_failures']
+            error_summary["Partial failures"] = batch_processor.stats['partial_failures']
         if batch_processor.stats['successful_recoveries'] > 0:
-            error_summary[f"Successful recoveries"] = batch_processor.stats['successful_recoveries']
+            error_summary["Successful recoveries"] = batch_processor.stats['successful_recoveries']
         
         summary_data = {
             "Initial codes": len(self.starter_codes),
@@ -1060,10 +1059,4 @@ class InductiveCodebookGenerator:
     def generate(self) -> Dict[str, Any]:
         """Synchronous wrapper for async generation"""
         return asyncio.run(self.generate_async())
-    
-    # Compatibility methods
-    def generate_batch_concurrent(self) -> Dict[str, Any]:
-        return self.generate()
-    
-    def generate_fully_concurrent(self) -> Dict[str, Any]:
-        return self.generate()
+   
