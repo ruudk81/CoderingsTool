@@ -385,33 +385,54 @@ class LangChainBatchProcessor:
         # Initialize LangChain components
         self._init_langchain_chain()
         
-        # Stats tracking
+        # Stats tracking (V3 enhanced)
         self.stats = {
             'clusters_processed': 0,
             'new_codes_added': 0,
             'no_new_codes_needed': 0,
             'errors': 0,
-            'retries': 0,
-            'partial_failures': 0,
-            'successful_recoveries': 0,
+            'retries': 0,  # V3 feature
+            'partial_failures': 0,  # V3 feature
+            'successful_recoveries': 0,  # V3 feature
             'llm_time': 0.0,
-            'embedding_time': 0.0
+            'embedding_time': 0.0  # V3 feature (activated)
         }
     
     def _init_langchain_chain(self):
-        """Initialize chains for V2 multi-step process"""
+        """Initialize chains for V2 multi-step process with V3 4-stage model architecture"""
         
-        # Single LLM instance for all steps
-        self.llm = ChatOpenAI(
+        # V3 Feature: Specialized LLMs for each of the 4 steps
+        self.step1_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_stage("review_codes"),
+            model=self.model_config.get_model_for_stage("initial_codes"),  # Codebook analysis
             temperature=0.0
         )
+        
+        self.step2_llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("review_codes"),  # Response summary
+            temperature=0.0
+        )
+        
+        self.step3_llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("initial_codes"),  # Match & recommend
+            temperature=0.0
+        )
+        
+        self.step4_llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=self.model_config.get_model_for_stage("review_codes"),  # Validation
+            temperature=0.0
+        )
+        
+        # Keep reference to primary LLM for compatibility (use step2_llm as default)
+        self.llm = self.step2_llm
         
         # Use JsonOutputParser for flexible parsing
         from langchain_core.output_parsers import JsonOutputParser
         
-        # Step 1: Codebook Analysis Chain
+        # Step 1: Codebook Analysis Chain (uses step1_llm)
         codebook_prompt = PromptTemplate(
             template=CODEBOOK_ANALYSIS_PROMPT,
             input_variables=["system_message", "language", "survey_question", "code_text"]
@@ -419,11 +440,11 @@ class LangChainBatchProcessor:
         
         self.codebook_chain = (
             codebook_prompt 
-            | self.llm 
+            | self.step1_llm 
             | JsonOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 2: Response Summary Chain  
+        # Step 2: Response Summary Chain (uses step2_llm)
         summary_prompt = PromptTemplate(
             template=RESPONSE_SUMMARY_PROMPT,
             input_variables=["system_message", "language", "survey_question", "cluster_text"]
@@ -431,11 +452,11 @@ class LangChainBatchProcessor:
         
         self.summary_chain = (
             summary_prompt
-            | self.llm
+            | self.step2_llm
             | JsonOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 3: Match and Recommend Chain
+        # Step 3: Match and Recommend Chain (uses step3_llm)
         match_prompt = PromptTemplate(
             template=MATCH_AND_RECOMMEND_PROMPT,
             input_variables=["system_message", "codebook_analysis", "summaries"]
@@ -443,11 +464,11 @@ class LangChainBatchProcessor:
         
         self.match_chain = (
             match_prompt
-            | self.llm
+            | self.step3_llm
             | JsonOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 4: Validation Chain
+        # Step 4: Validation Chain (uses step4_llm)
         validation_prompt = PromptTemplate(
             template=VALIDATION_PROMPT,
             input_variables=["system_message", "recommendations", "redundancy_example"]
@@ -455,7 +476,7 @@ class LangChainBatchProcessor:
         
         self.validation_chain = (
             validation_prompt
-            | self.llm
+            | self.step4_llm
             | JsonOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
@@ -467,60 +488,196 @@ class LangChainBatchProcessor:
             'validation': 0
         }
     
+    @retry(**API_RETRY_CONFIG)
+    async def _process_step1_with_retry(self, inputs: Dict) -> Dict:
+        """Process Step 1 (Codebook Analysis) with retry logic"""
+        try:
+            return await self.codebook_chain.ainvoke(inputs)
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1
+                raise APIError(f"Step 1 processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Step 1 processing error: {str(e)}", error_type)
+    
+    @retry(**API_RETRY_CONFIG)
+    async def _process_step2_with_retry(self, inputs: Dict) -> Dict:
+        """Process Step 2 (Response Summary) with retry logic"""
+        try:
+            return await self.summary_chain.ainvoke(inputs)
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1
+                raise APIError(f"Step 2 processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Step 2 processing error: {str(e)}", error_type)
+    
+    @retry(**API_RETRY_CONFIG)
+    async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
+        """Process Step 3 (Match & Recommend) with retry logic"""
+        try:
+            return await self.match_chain.ainvoke(inputs)
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1
+                raise APIError(f"Step 3 processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Step 3 processing error: {str(e)}", error_type)
+    
+    @retry(**API_RETRY_CONFIG)
+    async def _process_step4_with_retry(self, inputs: Dict) -> Dict:
+        """Process Step 4 (Validation) with retry logic"""
+        try:
+            return await self.validation_chain.ainvoke(inputs)
+        except Exception as e:
+            error_type = classify_error(e)
+            if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
+                            ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
+                self.stats['retries'] += 1
+                raise APIError(f"Step 4 processing error: {str(e)}", error_type)
+            else:
+                raise ProcessingError(f"Step 4 processing error: {str(e)}", error_type)
+    
+    async def _retry_individual_failures(self, failed_clusters: List[Tuple[int, Dict]], 
+                                        step_name: str = "unknown") -> Dict[int, Any]:
+        """Retry individual failed clusters from a batch (V3 feature)"""
+        recovery_results = {}
+        
+        for cluster_id, cluster_data in failed_clusters:
+            try:
+                # Process individual cluster as a single-item batch
+                individual_results = await self.process_batch_langchain([(cluster_id, cluster_data)])
+                
+                if individual_results and len(individual_results) > 0:
+                    recovery_results[cluster_id] = individual_results[0]
+                    self.stats['successful_recoveries'] += 1
+                    
+                    if self.verbose:
+                        logger.info(f"Successfully recovered processing for cluster {cluster_id} in {step_name}")
+                else:
+                    recovery_results[cluster_id] = {
+                        'cluster_id': cluster_id,
+                        'status': 'individual_recovery_no_results',
+                        'error': 'No results from individual processing'
+                    }
+                    
+            except Exception as e:
+                logger.error(f"Individual retry failed for cluster {cluster_id}: {str(e)}")
+                recovery_results[cluster_id] = {
+                    'cluster_id': cluster_id,
+                    'status': 'individual_recovery_failed', 
+                    'error': str(e),
+                    'error_type': type(e).__name__
+                }
+        
+        return recovery_results
+    
+    async def _process_cluster_individually_as_fallback(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
+        """Process a single cluster individually as fallback when batch processing fails (V3 feature)"""
+        try:
+            logger.info(f"V4: Attempting individual fallback for cluster {cluster_id}")
+            
+            # Process as a batch of 1
+            single_cluster_batch = [(cluster_id, cluster_data)]
+            results = await self.process_batch_langchain(single_cluster_batch)
+            
+            if results and len(results) > 0:
+                return results[0]
+            else:
+                return {
+                    'cluster_id': cluster_id,
+                    'status': 'v4_individual_fallback_failed',
+                    'error': 'No results from individual processing'
+                }
+                
+        except Exception as e:
+            logger.error(f"V4: Individual fallback failed for cluster {cluster_id}: {e}")
+            return {
+                'cluster_id': cluster_id,
+                'status': 'v4_individual_fallback_error',
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
+    
     async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
-        """Process a batch using V2 multi-step approach"""
+        """Process a batch using V2 multi-step approach with V3 nearest codes logic"""
         batch_results = []
         
-        # Step 1: Analyze codebook once for the batch
-        current_codes, version = await self.shared_codebook.get_current_snapshot()
-        
-        if current_codes:
-            code_text = "\n".join([
-                f"- {code['code']}: {code['definition']}" 
-                for code in current_codes
-            ])
-        else:
-            code_text = "No existing codes in codebook"
-        
-        # Get codebook analysis
-        try:
-            codebook_input = {
-                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
-                "language": DEFAULT_LANGUAGE,
-                "survey_question": self.var_lab,
-                "code_text": code_text
-            }
-            
-            # Capture first prompt if needed
-            if self.prompt_printer and self._capture_counts['codebook'] < 2:
-                self.prompt_printer.capture_prompt(
-                    step_name="codebook_generation_v2",
-                    utility_name="LangChainBatchProcessor",
-                    prompt_content=CODEBOOK_ANALYSIS_PROMPT.format(**codebook_input),
-                    prompt_type="step1_codebook_analysis",
-                    metadata={
-                        "model": self.llm.model_name,
-                        "var_lab": self.var_lab,
-                        "stage": "1/4 - Codebook Analysis"
-                    }
-                )
-                self._capture_counts['codebook'] += 1
-            
-            codebook_analysis = await self.codebook_chain.ainvoke(codebook_input)
-            
-        except Exception as e:
-            logger.error(f"Codebook analysis failed: {str(e)}")
-            # Fallback analysis
-            codebook_analysis = {
-                "codes": [c['code'] for c in current_codes] if current_codes else [],
-                "idea": "Analysis failed",
-                "themes": []
-            }
-        
-        # Process each cluster
+        # Process each cluster with nearest codes targeting (V3 logic)
         for cluster_id, cluster_data in batch_clusters:
             try:
                 start_time = time.time()
+                llm_start = time.time()  # Track LLM time separately
+                
+                # V3 Logic: Calculate cluster embedding and find nearest codes
+                embed_start = time.time()
+                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+                nearest_codes = await self._find_nearest_codes(cluster_embedding)
+                self.stats['embedding_time'] += time.time() - embed_start
+                
+                # Get current version for logging
+                _, version = await self.shared_codebook.get_current_snapshot()
+                
+                # Build targeted code_text using nearest codes (V3 approach)
+                if nearest_codes:
+                    code_text = "\n".join([
+                        f"- {code['code']}: {code['definition']}" 
+                        for code in nearest_codes
+                    ])
+                else:
+                    code_text = "No existing codes in codebook"
+                
+                # Step 1: Analyze nearest codes (not full codebook)
+                codebook_input = {
+                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                    "language": DEFAULT_LANGUAGE,
+                    "survey_question": self.var_lab,
+                    "code_text": code_text
+                }
+                
+                # Capture first prompt if needed
+                if self.prompt_printer and self._capture_counts['codebook'] < 2:
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation_v4",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=CODEBOOK_ANALYSIS_PROMPT.format(**codebook_input),
+                        prompt_type="step1_codebook_analysis",
+                        metadata={
+                            "model": self.llm.model_name,
+                            "var_lab": self.var_lab,
+                            "stage": "1/4 - Codebook Analysis",
+                            "nearest_codes_count": len(nearest_codes),
+                            "codebook_version": version
+                        }
+                    )
+                    self._capture_counts['codebook'] += 1
+                
+                # Execute Step 1: Codebook Analysis with retry
+                try:
+                    codebook_analysis = await self._process_step1_with_retry(codebook_input)
+                except (APIError, ProcessingError) as e:
+                    logger.error(f"Step 1 failed for cluster {cluster_id} after retries: {str(e)}")
+                    # Fallback analysis
+                    codebook_analysis = {
+                        "codes": [c['code'] for c in nearest_codes] if nearest_codes else [],
+                        "idea": "Analysis failed",
+                        "themes": []
+                    }
+                except Exception as e:
+                    logger.error(f"Step 1 unexpected error for cluster {cluster_id}: {str(e)}")
+                    codebook_analysis = {
+                        "codes": [c['code'] for c in nearest_codes] if nearest_codes else [],
+                        "idea": "Analysis failed",
+                        "themes": []
+                    }
+                
+                # Prepare cluster text for subsequent steps
                 cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
                 
                 # Step 2: Summarize responses
@@ -531,7 +688,14 @@ class LangChainBatchProcessor:
                     "cluster_text": cluster_text
                 }
                 
-                summaries = await self.summary_chain.ainvoke(summary_input)
+                try:
+                    summaries = await self._process_step2_with_retry(summary_input)
+                except (APIError, ProcessingError) as e:
+                    logger.error(f"Step 2 failed for cluster {cluster_id} after retries: {str(e)}")
+                    summaries = {"theme": "Analysis failed", "tone": "unknown", "key_phrases": [], "unique": "Error in analysis"}
+                except Exception as e:
+                    logger.error(f"Step 2 unexpected error for cluster {cluster_id}: {str(e)}")
+                    summaries = {"theme": "Analysis failed", "tone": "unknown", "key_phrases": [], "unique": "Error in analysis"}
                 
                 # Step 3: Match and recommend
                 match_input = {
@@ -541,13 +705,20 @@ class LangChainBatchProcessor:
                     "summaries": str(summaries)
                 }
                 
-                recommendations = await self.match_chain.ainvoke(match_input)
+                try:
+                    recommendations = await self._process_step3_with_retry(match_input)
+                except (APIError, ProcessingError) as e:
+                    logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
+                    recommendations = []
+                except Exception as e:
+                    logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
+                    recommendations = []
                 
-                # Extract new code recommendations from new JSON array format
+                # Extract new code recommendations from JSON array format
                 new_codes_needed = False
                 proposed_codes = []
                 
-                # Handle new JSON array format: [{"theme": ..., "recommendation": "create new", "new_code": ..., "new_definition": ...}]
+                # Handle JSON array format: [{"theme": ..., "recommendation": "create new", "new_code": ..., "new_definition": ...}]
                 try:
                     if isinstance(recommendations, list):
                         for theme_analysis in recommendations:
@@ -597,9 +768,16 @@ class LangChainBatchProcessor:
                         "redundancy_example": "Example: 'student concerns' and 'learner worries' are redundant"
                     }
                     
-                    validation_results = await self.validation_chain.ainvoke(validation_input)
+                    try:
+                        validation_results = await self._process_step4_with_retry(validation_input)
+                    except (APIError, ProcessingError) as e:
+                        logger.error(f"Step 4 failed for cluster {cluster_id} after retries: {str(e)}")
+                        validation_results = {"validated_codes": []}
+                    except Exception as e:
+                        logger.error(f"Step 4 unexpected error for cluster {cluster_id}: {str(e)}")
+                        validation_results = {"validated_codes": []}
                     
-                    # Process validated codes from new JSON format
+                    # Process validated codes from JSON format
                     validated_codes = []
                     try:
                         if isinstance(validation_results, dict):
@@ -620,7 +798,7 @@ class LangChainBatchProcessor:
                         if added:
                             self.stats['new_codes_added'] += 1
                             if self.verbose:
-                                logger.info(f"Cluster {cluster_id}: Added new code '{first_code['code']}' (v{new_version})")
+                                logger.info(f"Cluster {cluster_id}: Added new code '{first_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
                         
                         batch_results.append({
                             'cluster_id': cluster_id,
@@ -638,13 +816,17 @@ class LangChainBatchProcessor:
                 
                 self.stats['clusters_processed'] += 1
                 
+                # Track total LLM time for this cluster
+                self.stats['llm_time'] += time.time() - llm_start
+                
             except Exception as e:
-                logger.error(f"V2 processing error for cluster {cluster_id}: {e}")
+                logger.error(f"V4 processing error for cluster {cluster_id}: {e}")
                 batch_results.append({
                     'cluster_id': cluster_id,
-                    'status': 'v2_processing_error',
+                    'status': 'v4_processing_error',
                     'error': str(e),
-                    'error_type': type(e).__name__
+                    'error_type': type(e).__name__,
+                    'processing_time': time.time() - start_time if 'start_time' in locals() else 0
                 })
                 self.stats['errors'] += 1
         
@@ -842,8 +1024,8 @@ class InductiveCodebookGenerator:
         """Generate codebook with LangChain optimization"""
         start_time = time.time()
         
-        logger.info("🚀 STARTING V2 CODEBOOK GENERATION (Multi-step prompts)")
-        self.verbose_reporter.section_header("CODEBOOK GENERATION V4 - MULTI-STEP PROMPTS", emoji="📝")
+        logger.info("🚀 STARTING V4 CODEBOOK GENERATION (Multi-step prompts + V3 features)")
+        self.verbose_reporter.section_header("CODEBOOK GENERATION V4 - MULTI-STEP PROMPTS + V3 FEATURES", emoji="🔥")
         
         # Initialize shared codebook
         shared_codebook = SharedCodebook(self.starter_codes)
@@ -934,14 +1116,14 @@ class InductiveCodebookGenerator:
             
         self.verbose_reporter.summary("V3 GENERATION COMPLETE", summary_data)
         
-        # Log final results to confirm V3 was used
-        logger.info(f"✅ V3 GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
+        # Log final results to confirm enhanced V4 was used
+        logger.info(f"✅ V4 ENHANCED GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
         
         return {
             'codebook': final_codes,
             'cluster_assignments': cluster_to_code,
             'stats': final_stats,
-            'generator_version': 'V4_MULTISTEP_PROMPTS'  # Update identifier
+            'generator_version': 'V4_MULTISTEP_PROMPTS_WITH_V3_FEATURES'  # Clear identifier
         }
     
     def generate(self) -> Dict[str, Any]:
