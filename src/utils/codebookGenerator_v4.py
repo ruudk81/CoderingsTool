@@ -440,7 +440,7 @@ class LangChainBatchProcessor:
         self.match_chain = (
             match_prompt
             | self.step3_llm
-            | PydanticOutputParser(pydantic_object=List[MatchRecommendation])
+            | JsonOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain (uses step4_llm)
