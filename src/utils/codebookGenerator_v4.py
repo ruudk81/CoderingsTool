@@ -81,10 +81,6 @@ class ValidationEvaluation(BaseModel):
     """Evaluation reasoning for Step 4"""
     parsimony_reasoning: str = Field(description="Assessment of whether existing options were exhausted")
     redundancy_reasoning: str = Field(description="Assessment of overlap with existing codes")
-    conceptual_unity_reasoning: str = Field(description="Assessment of whether this represents ONE clear concept")
-    mutual_exclusivity_reasoning: str = Field(description="Assessment of potential confusion with other codes")
-    appropriate_scope_reasoning: str = Field(description="Assessment of whether scope is too broad or trying to cover multiple themes")
-    abstraction_reasoning: str = Field(description="Assessment of abstraction level consistency")
     justification_reasoning: str = Field(description="Assessment of decision alignment with reasoning")
 
 class ValidatedCode(BaseModel):
