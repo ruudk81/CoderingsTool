@@ -114,67 +114,15 @@ EMBEDDING_RETRY_CONFIG = {
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
 
-class CodeSuggestion(BaseModel):
-    """Structured output for initial code suggestion"""
-    needs_new_code: bool = Field(description="Whether a new code is needed")
-    code: Optional[str] = Field(default=None, description="The suggested code name")
-    definition: Optional[str] = Field(default=None, description="The code definition")
-    reasoning: Optional[str] = Field(default=None, description="Reasoning for the decision")
-
-class CodeReview(BaseModel):
-    """Structured output for code review"""
-    approve_new_code: bool = Field(description="Whether to approve the new code")
-    final_code: Optional[str] = Field(default=None, description="The final code name")
-    final_definition: Optional[str] = Field(default=None, description="The final definition")
-    revision_notes: Optional[str] = Field(default=None, description="Notes on any revisions made")
-
-class BatchCodeSuggestions(BaseModel):
-    """Batch processing multiple clusters for initial suggestions"""
-    suggestions: List[CodeSuggestion] = Field(description="Code suggestions for multiple clusters")
-
-class BatchCodeReviews(BaseModel):
-    """Batch processing multiple clusters for reviews"""
-    reviews: List[CodeReview] = Field(description="Code reviews for multiple clusters")
-
-class ClusterInput(BaseModel):
-    """Input data for a single cluster"""
-    cluster_id: int
-    cluster_text: str
-    nearest_codes: str
+# Pydantic models for structured LLM outputs
+# Only keeping models that are actively used - others will be created as needed
 
 class CodebookAnalysis(BaseModel):
     """Output for codebook analysis step"""
     thematic_coverage: str = Field(description="Description of the main thematic areas these codes address")
     code_relationships: str = Field(description="How these codes connect and relate to each other thematically")
 
-class ResponseSummary(BaseModel):
-    """Summary of a single response"""
-    theme: str = Field(description="Primary theme/concept")
-    tone: str = Field(description="Emotional tone")
-    key_phrases: List[str] = Field(description="Key phrases or terminology")
-    unique: str = Field(description="Unique aspects")
-
-class ThemeAnalysis(BaseModel):
-    """Analysis of a theme against existing codes"""
-    theme: str = Field(description="The theme being analyzed")
-    existing_code_matches: List[str] = Field(description="Codes that apply")
-    coverage: str = Field(description="Coverage level: full/partial/none")
-    gap_analysis: Optional[str] = Field(description="What's missing if partial/none")
-    recommendation: str = Field(description="use existing/create new")
-    new_code: Optional[str] = Field(default=None, description="New code if needed")
-    new_definition: Optional[str] = Field(default=None, description="Definition if new code")
-    justification: Optional[str] = Field(default=None, description="Justification if new code")
-
-class CodeValidation(BaseModel):
-    """Validation result for a proposed code"""
-    code: str = Field(description="The code being validated")
-    parsimony_score: int = Field(description="Parsimony score 0-10")
-    parsimony_reasoning: str = Field(description="Reasoning for parsimony score")
-    redundancy_score: int = Field(description="Non-redundancy score 0-10")
-    redundancy_reasoning: str = Field(description="Reasoning for redundancy score")
-    abstraction_score: int = Field(description="Abstraction consistency score 0-10")
-    abstraction_reasoning: str = Field(description="Reasoning for abstraction score")
-    decision: str = Field(description="KEEP or REJECT")
+# Future Pydantic models will be added here as we enhance Steps 2, 3, and 4
 
 
 # ============================================================================
