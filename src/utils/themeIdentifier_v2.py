@@ -257,18 +257,7 @@ INSTRUCTIONS:
 
 OUTPUT FORMAT (JSON):
 {{
-  "new_themes": [
-    {{
-      "theme_name": "[Name for new theme]",
-      "theme_description": "[What unites these codes]",
-      "codes": [
-        {{
-          "code_number": [number],
-          "code_name": "[name]"
-        }}
-      ]
-    }}
-  ],
+  "new_themes": [],
   "reassignments": [
     {{
       "code_number": [number],
@@ -277,13 +266,10 @@ OUTPUT FORMAT (JSON):
       "rationale": "[why this code fits better here]"
     }}
   ],
-  "remaining_miscellaneous": [
-    {{
-      "code_number": [number],
-      "code_name": "[name]"
-    }}
-  ]
+  "remaining_miscellaneous": []
 }}
+
+IMPORTANT: You MUST include all three fields (new_themes, reassignments, remaining_miscellaneous) even if some are empty arrays [].
 
 CRITICAL VALIDATION:
 Before submitting, verify that EVERY miscellaneous code ({len(misc_codes)} total) appears in either:
@@ -332,9 +318,9 @@ Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
         try:
             # Simple refinement structure
             class MiscellaneousRefinement(BaseModel):
-                new_themes: List[ThemeStructure] = Field(description="New themes created from miscellaneous codes")
-                reassignments: List[Dict[str, Any]] = Field(description="Codes to reassign to existing themes")
-                remaining_miscellaneous: List[CodeReference] = Field(description="Codes that remain miscellaneous")
+                new_themes: List[ThemeStructure] = Field(default=[], description="New themes created from miscellaneous codes")
+                reassignments: List[Dict[str, Any]] = Field(default=[], description="Codes to reassign to existing themes")
+                remaining_miscellaneous: List[CodeReference] = Field(default=[], description="Codes that remain miscellaneous")
             
             response = await self.client.chat.completions.create(
                 model=self.model_config.get_model_for_stage("theme_synthesis"),
