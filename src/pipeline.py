@@ -485,7 +485,7 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     codebook = cache_manager.load_from_cache(filename, step_name, models.Codebook)
     verbose_reporter.summary("CODEBOOK FROM CACHE", {"Total codes": len(codebook.codes)})
 else:
-    verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
+    verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
   
     starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
@@ -530,19 +530,6 @@ else:
                 codebook.append(codebook_entry)
                 idx += 1 
 
-    # idx = 1
-    # code = []
-    # definition = []
-    # topic = [] # keep empty for now
-    # theme = [] # keep empty for now
-    # for key, value in results.items():
-    #     if key == 'codebook':
-    #         for item in value:
-    #             print(f"{idx}: {item['code']}")
-    #             code.append(item['code'])
-    #             definition.append(item['definition'])
-    #             idx += 1 
-
     end_time = time.time()
     elapsed_time = end_time - start_time
     
@@ -551,33 +538,33 @@ else:
     print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug - decisions
-import random
-step3 = results.get('step3_recommendations', {})
-validation = results.get('validation_details', {})
-available_ids = list(step3.keys())
-sampled_id = random.choice(available_ids)
+# import random
+# step3 = results.get('step3_recommendations', {})
+# validation = results.get('validation_details', {})
+# available_ids = list(step3.keys())
+# sampled_id = random.choice(available_ids)
 
-rec = step3[sampled_id]
-print(f"ID: {sampled_id}")
-print(f"Cluster Theme: {rec.cluster_core_theme}")
-print(f"Best Matching Codes: {rec.best_matching_codes}")
-print(f"Coverage %: {rec.coverage_assessment.percentage}")
-print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
-print(f"Decision (Step 3): {rec.decision}")
-print(f"New Code Name: {rec.action_details.new_code_name}")
-print(f"New Code Definition: {rec.action_details.new_code_definition}")
-print(f"Justification: {rec.justification}")   
-print("\n") 
+# rec = step3[sampled_id]
+# print(f"ID: {sampled_id}")
+# print(f"Cluster Theme: {rec.cluster_core_theme}")
+# print(f"Best Matching Codes: {rec.best_matching_codes}")
+# print(f"Coverage %: {rec.coverage_assessment.percentage}")
+# print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+# print(f"Decision (Step 3): {rec.decision}")
+# print(f"New Code Name: {rec.action_details.new_code_name}")
+# print(f"New Code Definition: {rec.action_details.new_code_definition}")
+# print(f"Justification: {rec.justification}")   
+# print("\n") 
   
-val = validation.get(sampled_id)
-if val: 
-    print(f"Decision (Validation): {val['decision']}")
-    print(f"Decision Rationale: {val['decision_rationale']}")
-    reasoning = val.get('reasoning', {})
-    print("Reasoning:")
-    print(f"  Parsimony: {reasoning.get('parsimony', '—')}")
-    print(f"  Redundancy: {reasoning.get('redundancy', '—')}")
-    print(f"  Justification: {reasoning.get('justification', '—')}")
+# val = validation.get(sampled_id)
+# if val: 
+#     print(f"Decision (Validation): {val['decision']}")
+#     print(f"Decision Rationale: {val['decision_rationale']}")
+#     reasoning = val.get('reasoning', {})
+#     print("Reasoning:")
+#     print(f"  Parsimony: {reasoning.get('parsimony', '—')}")
+#     print(f"  Redundancy: {reasoning.get('redundancy', '—')}")
+#     print(f"  Justification: {reasoning.get('justification', '—')}")
 
 
 # for key, value in results.items():
