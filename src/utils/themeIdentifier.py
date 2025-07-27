@@ -197,9 +197,18 @@ class ThemeIdentifier:
         hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
         total_codes = len(self.codebook)
         
+        # Count total codes in input batches for validation
+        total_input_codes = sum(
+            len(domain.codes) 
+            for h in batch_hierarchies 
+            for theme in h.themes 
+            for domain in theme.domains
+        )
+        
         prompt = HIERARCHY_REDUCE_PROMPT.format(
             survey_question=self.var_lab,
             batch_hierarchies=hierarchies_text,
+            total_codes=total_input_codes,
             language=DEFAULT_LANGUAGE
         )
         
@@ -212,20 +221,38 @@ class ThemeIdentifier:
                 prompt_type="Hierarchy Consolidation"
             )
         
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_stage("theme_synthesis"),
-                messages=[{"role": "user", "content": prompt}],
-                response_model=HierarchicalStructure,
-                temperature=0.2,  # Lower temperature for consistency
-                max_retries=3
-            )
-            return response
-            
-        except Exception as e:
-            self.verbose_reporter.stat_line(f"Error in hierarchy reduction: {str(e)}")
-            # Return empty structure on error
-            return HierarchicalStructure(themes=[])
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model_config.get_model_for_stage("theme_synthesis"),
+                    messages=[{"role": "user", "content": prompt}],
+                    response_model=HierarchicalStructure,
+                    temperature=0.1 if attempt > 0 else 0.2,  # Lower temperature on retries
+                    max_retries=3
+                )
+                
+                # Validate that no codes were lost
+                response_code_count = sum(
+                    len(domain.codes) 
+                    for theme in response.themes 
+                    for domain in theme.domains
+                )
+                
+                if response_code_count == total_input_codes:
+                    return response
+                else:
+                    self.verbose_reporter.stat_line(
+                        f"⚠️  Attempt {attempt + 1}: Lost {total_input_codes - response_code_count} codes. "
+                        f"Expected {total_input_codes}, got {response_code_count}. Retrying..."
+                    )
+                    
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"Error in hierarchy reduction attempt {attempt + 1}: {str(e)}")
+        
+        # If all attempts failed, return empty structure
+        self.verbose_reporter.stat_line(f"❌ Failed to preserve all codes after {max_attempts} attempts")
+        return HierarchicalStructure(themes=[])
     
     def _build_final_codebook_structure(self, hierarchical_result: HierarchicalStructure) -> Dict[str, Any]:
         """Build final structure with complete traceability - directly extract from hierarchy"""
