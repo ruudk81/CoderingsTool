@@ -42,13 +42,6 @@ class ClusterSubmodel(EmbeddingsSubmodel):
 class ClusterModel(IdeasExtractedModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
-
-
-
-# =============================================================================
-# GATOS CODEBOOK MODELS
-# =============================================================================
-
 class CodeDefinition(BaseModel):
     """Single code with definition for GATOS codebook"""
     code: str
@@ -75,12 +68,6 @@ class CodeDefinition(BaseModel):
 #     suggested_themes: List[Theme]
 #     reflection: Dict[str, str]
 
-# class GATOSCodebook(BaseModel):
-#     """GATOS codebook structure"""
-#     codes: List[Dict[str, str]]  # code, definition, optional cluster_origin
-#     cluster_assignments: Dict[int, str]  # cluster_id -> code mapping
-#     themes: List[Theme] = []
-#     stats: Dict[str, Any] = {}
 
 # class GATOSFinalResults(BaseModel):
 #     """Final GATOS results with themes"""

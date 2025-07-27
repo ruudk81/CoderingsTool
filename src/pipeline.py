@@ -490,121 +490,193 @@ generator = codebookGenerator.InductiveCodebookGenerator(
      prompt_printer=prompt_printer  )
 results = generator.generate()
 
+    
 idx = 1
+codebook = []
 for key, value in results.items():
     if key == 'codebook':
         for item in value:
             print(f"{idx}: {item['code']}")
-            print(f"{item['definition']}\n")
+            codebook.append(item['code'])
+            #print(f"{item['definition']}\n")
             idx += 1 
 
-for key, value in results.items():
-    if key == 'cluster_assignments':
-        for cluster_id, cluster_assignment in value.items():
-            print(cluster_assignment)
+#debug - decisions
+import random
+step3 = results.get('step3_recommendations', {})
+validation = results.get('validation_details', {})
+available_ids = list(step3.keys())
+sampled_id = random.choice(available_ids)
 
-for key, value in results.items():
-    if key == 'step3_recommendations':
-        for id_, rec  in value.items():
-            print(f"ID: {id_}")
-            print(f"Cluster Theme: {rec.cluster_core_theme}")
-            print(f"Best Matching Codes: {rec.best_matching_codes}")
-            print(f"Coverage %: {rec.coverage_assessment.percentage}")
-            print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
-            print(f"Decision: {rec.decision}")
-            print(f"New Code Name: {rec.action_details.new_code_name}")
-            print(f"New Code Definition: {rec.action_details.new_code_definition}")
-            print(f"Justification: {rec.justification}")
-            print("-" * 80)
+rec = step3[sampled_id]
+print(f"ID: {sampled_id}")
+print(f"Cluster Theme: {rec.cluster_core_theme}")
+print(f"Best Matching Codes: {rec.best_matching_codes}")
+print(f"Coverage %: {rec.coverage_assessment.percentage}")
+print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+print(f"Decision (Step 3): {rec.decision}")
+print(f"New Code Name: {rec.action_details.new_code_name}")
+print(f"New Code Definition: {rec.action_details.new_code_definition}")
+print(f"Justification: {rec.justification}")   
+print("\n") 
+  
+val = validation.get(sampled_id)
+if val: 
+    print(f"Decision (Validation): {val['decision']}")
+    print(f"Decision Rationale: {val['decision_rationale']}")
+    reasoning = val.get('reasoning', {})
+    print("Reasoning:")
+    print(f"  Parsimony: {reasoning.get('parsimony', '—')}")
+    print(f"  Redundancy: {reasoning.get('redundancy', '—')}")
+    print(f"  Justification: {reasoning.get('justification', '—')}")
 
-idx = 1 
-for key, value in results.items():
-    if key == 'step4_validated_codes':
-        for id_, info in value.items(): 
-            print(f"ID: {idx}")
-            print(f"Code: {info['code']}")
-            print(f"Definition: {info['definition']}\n")
-            idx += 1 
+
+# for key, value in results.items():
+#     if key == 'cluster_assignments':
+#         for cluster_id, cluster_assignment in value.items():
+#             print(cluster_assignment)
+            
+ 
+# for id_, rec in step3.items():
+#     print(f"ID: {id_}")
+#     print(f"Cluster Theme: {rec.cluster_core_theme}")
+#     print(f"Best Matching Codes: {rec.best_matching_codes}")
+#     print(f"Coverage %: {rec.coverage_assessment.percentage}")
+#     print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+#     print(f"Decision (Step 3): {rec.decision}")
+#     print(f"New Code Name: {rec.action_details.new_code_name}")
+#     print(f"New Code Definition: {rec.action_details.new_code_definition}")
+#     print(f"Justification: {rec.justification}")
+    
+#     # Fetch corresponding validation details
+#     val = validation.get(id_)
+#     if val:
+#         print(f"Decision (Validation): {val['decision']}")
+#         print(f"Decision Rationale: {val['decision_rationale']}")
+#         reasoning = val.get('reasoning', {})
+#         print("Reasoning:")
+#         print(f"  Parsimony: {reasoning.get('parsimony', '—')}")
+#         print(f"  Redundancy: {reasoning.get('redundancy', '—')}")
+#         print(f"  Justification: {reasoning.get('justification', '—')}")
+#     else:
+#         print("No validation details found.")
+#     print("-" * 80)
+            
+
+# for key, value in results.items():
+#     if key == 'step3_recommendations':
+#         for id_, rec  in value.items():
+#             print(f"ID: {id_}")
+#             print(f"Cluster Theme: {rec.cluster_core_theme}")
+#             print(f"Best Matching Codes: {rec.best_matching_codes}")
+#             print(f"Coverage %: {rec.coverage_assessment.percentage}")
+#             print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+#             print(f"Decision: {rec.decision}")
+#             print(f"New Code Name: {rec.action_details.new_code_name}")
+#             print(f"New Code Definition: {rec.action_details.new_code_definition}")
+#             print(f"Justification: {rec.justification}")
+#             print("-" * 80)
+#             break
+
+# for key, value in results.items():
+#     if key == 'validation_details':
+#         for id_, rec in value.items():
+#             print(f"ID: {id_}")
+#             print(f"Decision: {rec['decision']}")
+#             print(f"Decision_rationale: {rec['decision_rationale']}")
+#             reasoning = rec.get('reasoning', {})
+#             print("Reasoning:")
+#             print(f"-Parsimony: {reasoning.get('parsimony', '—')}")
+#             print(f"-Redundancy: {reasoning.get('redundancy', '—')}")
+#             print(f"-Justification: {reasoning.get('justification', '—')}")
+#             print("-" * 80)
+#             break
+
+# idx = 1 
+# for key, value in results.items():
+#     if key == 'step4_validated_codes':
+#         for id_, info in value.items(): 
+#             print(f"ID: {idx}")
+#             print(f"Code: {info['code']}")
+#             print(f"Definition: {info['definition']}\n")
+#             idx += 1 
     
 for key, value in results.items():
     print(key)
 
+
+
+        
     
 # === STEP 7 ========================================================================================================
 """Codebook Generation"""
-from utils import speculativeStarterCodes
-from utils import codebookGenerator_v4 as codebookGenerator
+# from utils import speculativeStarterCodes
+# from utils import codebookGenerator_v4 as codebookGenerator
 
-FORCE = True
+# FORCE = True
 
-step_name = "codebook_generation"
-if  FORCE:
-    FORCE_STEP   = step_name
+# step_name = "codebook_generation"
+# if  FORCE:
+#     FORCE_STEP   = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+# verbose_reporter = VerboseReporter(VERBOSE)
+# prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    gatos_codebook = cache_manager.load_from_cache(filename, step_name, models.GATOSCodebook)
-    verbose_reporter.summary("GATOS CODEBOOK FROM CACHE", {
-        "Total codes": len(gatos_codebook.codes),
-        "Starter codes": gatos_codebook.stats.get('initial_codes', 20),
-        "New codes added": gatos_codebook.stats.get('new_codes', 0)
-    })
-else:
-    verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
-    start_time = time.time()
+# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+#     gatos_codebook = cache_manager.load_from_cache(filename, step_name, models.GATOSCodebook)
+#     verbose_reporter.summary("GATOS CODEBOOK FROM CACHE", {
+#         "Total codes": len(gatos_codebook.codes),
+#         "Starter codes": gatos_codebook.stats.get('initial_codes', 20),
+#         "New codes added": gatos_codebook.stats.get('new_codes', 0)
+#     })
+# else:
+#     verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
+#     start_time = time.time()
     
-    # Step 6.1: Generate speculative starter codes
-    starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-        var_lab=var_lab, 
-        verbose=VERBOSE, 
-        prompt_printer=prompt_printer
-    )
-    starter_codes = starter_generator.generate()
+#     # Step 6.1: Generate speculative starter codes
+#     starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+#         var_lab=var_lab, 
+#         verbose=VERBOSE, 
+#         prompt_printer=prompt_printer
+#     )
+#     starter_codes = starter_generator.generate()
     
-    if not starter_codes:
-        print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-        gatos_codebook = models.GATOSCodebook(
-            codes=[],
-            cluster_assignments={},
-            themes=[],
-            stats={'error': 'Failed to generate starter codes'}
-        )
-    else:
-        # Step 6.2: Inductive codebook generation
-        prompt_printer = promptPrinter(enabled=True, print_realtime=True)
+#     if not starter_codes:
+#         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
+#         gatos_codebook = models.GATOSCodebook(
+#             codes=[],
+#             cluster_assignments={},
+#             themes=[],
+#             stats={'error': 'Failed to generate starter codes'}
+#         )
+#     else:
+#         # Step 6.2: Inductive codebook generation
+#         prompt_printer = promptPrinter(enabled=True, print_realtime=True)
 
-        generator = codebookGenerator.InductiveCodebookGenerator(
-            cluster_results=initial_cluster_results,
-            embedded_text=embedded_text,
-            starter_codes=starter_codes,
-            var_lab=var_lab,
-            k=5,
-            verbose=True,
-            batch_size=10,
-            max_concurrent_requests=5,
-            prompt_printer=prompt_printer  
-        )
+#         generator = codebookGenerator.InductiveCodebookGenerator(
+#             cluster_results=initial_cluster_results,
+#             embedded_text=embedded_text,
+#             starter_codes=starter_codes,
+#             var_lab=var_lab,
+#             k=5,
+#             verbose=True,
+#             batch_size=10,
+#             max_concurrent_requests=5,
+#             prompt_printer=prompt_printer  
+#         )
         
-        # Run generation
-        results = generator.generate()
+#         # Run generation
+#         results = generator.generate()
 
-        # Create GATOS codebook model
-        gatos_codebook = models.GATOSCodebook(
-            codes=codebook_resultsv3['codebook'],
-            cluster_assignments=codebook_resultsv3['cluster_assignments'],
-            themes=[],  # Will be populated in Step 7
-            stats=codebook_resultsv3['stats']
-        )
+#         # Create GATOS codebook model
+
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    
-    # Cache the results
-    cache_manager.save_to_cache(gatos_codebook, filename, step_name, elapsed_time)
-    print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
+#     # Cache the results
+#     cache_manager.save_to_cache(gatos_codebook, filename, step_name, elapsed_time)
+#     print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 # === STEP 7 ========================================================================================================
 """Theme Identification"""
