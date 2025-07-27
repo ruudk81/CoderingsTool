@@ -106,8 +106,7 @@ class ThemeIdentifierV2:
         codes_text = self._format_codes_for_analysis()
         total_codes = len(self.codebook)
         
-        prompt = f"""
-You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+        prompt = f"""You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
 Your task is to identify themes by analyzing code names that emerged from survey responses.
 
 SURVEY QUESTION:
@@ -127,8 +126,8 @@ INSTRUCTIONS:
 - Identify themes that capture the main conceptual patterns
 - Each code must be assigned to exactly one theme
 - Themes should represent coherent patterns of meaning related to the survey question
-- If codes don't fit well elsewhere, include a "Miscellaneous" or "Other aspects" theme
 - Focus on what the codes collectively reveal about responses to this survey question
+- Only if codes don't fit any theme, include a "Miscellaneous" theme. But realize that your reputation as a qualitative researcher is on the line for creating meaningful, coherent themes that minimize miscellaneous categorization
 
 CRITICAL REQUIREMENTS:
 1. ALL {total_codes} codes must appear exactly once in your output
@@ -254,7 +253,7 @@ Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
                     model=self.model_config.get_model_for_stage("theme_synthesis"),
                     messages=[{"role": "user", "content": prompt}],
                     response_model=BraunClarkeCodebook,
-                    temperature=0.1 if attempt > 0 else 0.2,
+                    temperature=0.0,  # Deterministic for reproducible results
                     max_retries=2
                 )
                 
