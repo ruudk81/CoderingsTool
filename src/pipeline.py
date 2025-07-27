@@ -468,38 +468,87 @@ else:
 # === STEP 7 ========================================================================================================
 """Codebook Generation"""
 from utils import speculativeStarterCodes
-from utils import codebookGenerator_v4 as codebookGenerator
+from utils import codebookGenerator_v2 as codebookGenerator
 
-starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-     var_lab=var_lab, 
-     verbose=VERBOSE, 
-     prompt_printer=prompt_printer)
-starter_codes = starter_generator.generate()
+FORCE = True
 
+step_name = "codebook_generation"
+if  FORCE:
+    FORCE_STEP      = step_name
+    PROMPT_PRINTER  = True
 
-prompt_printer = promptPrinter(enabled=True, print_realtime=True)
-generator = codebookGenerator.InductiveCodebookGenerator(
-     cluster_results=initial_cluster_results,
-     embedded_text=embedded_text,
-     starter_codes=starter_codes,
-     var_lab=var_lab,
-     k=5,
-     verbose=True,
-     batch_size=10,
-     max_concurrent_requests=5,
-     prompt_printer=prompt_printer  )
-results = generator.generate()
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    codebook = cache_manager.load_from_cache(filename, step_name, models.Codebook)
+    verbose_reporter.summary("CODEBOOK FROM CACHE", {"Total codes": len(codebook.codes)})
+else:
+    verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
+    start_time = time.time()
+  
+    starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+        var_lab=var_lab, 
+        verbose=VERBOSE, 
+        prompt_printer=prompt_printer
+    )
+    starter_codes = starter_generator.generate()
+  
+    if not starter_codes:
+        print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
+        codebook = models.Codebook(
+            code=[],
+            definition= [],
+            topic = [],
+            theme = [])
+    else:
+        generator = codebookGenerator.InductiveCodebookGenerator(
+             cluster_results=initial_cluster_results,
+             embedded_text=embedded_text,
+             starter_codes=starter_codes,
+             var_lab=var_lab,
+             k=5,
+             verbose=True,
+             batch_size=10,
+             max_concurrent_requests=5,
+             prompt_printer=prompt_printer  )
+        results = generator.generate()
+        
+    idx = 1
+    codebook_entries = []
+    for key, value in results.items():
+        if key == 'codebook':
+            for item in value:
+                print(f"{idx}: {item['code']}")
+                codebook = models.Codebook(
+                    code = item['code'],
+                    definition = item['definition'],
+                    topic = None,  # keep empty for now
+                    theme = None  # keep empty for now
+                )
+                codebook_entries.append(codebook)
+                idx += 1 
+
+    # idx = 1
+    # code = []
+    # definition = []
+    # topic = [] # keep empty for now
+    # theme = [] # keep empty for now
+    # for key, value in results.items():
+    #     if key == 'codebook':
+    #         for item in value:
+    #             print(f"{idx}: {item['code']}")
+    #             code.append(item['code'])
+    #             definition.append(item['definition'])
+    #             idx += 1 
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
     
-idx = 1
-codebook = []
-for key, value in results.items():
-    if key == 'codebook':
-        for item in value:
-            print(f"{idx}: {item['code']}")
-            codebook.append(item['code'])
-            #print(f"{item['definition']}\n")
-            idx += 1 
+    # Cache the results
+    cache_manager.save_to_cache(codebook, filename, step_name, elapsed_time)
+    print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug - decisions
 import random
@@ -605,80 +654,7 @@ for key, value in results.items():
     print(key)
 
 
-
-        
-    
-# === STEP 7 ========================================================================================================
-"""Codebook Generation"""
-# from utils import speculativeStarterCodes
-# from utils import codebookGenerator_v4 as codebookGenerator
-
-# FORCE = True
-
-# step_name = "codebook_generation"
-# if  FORCE:
-#     FORCE_STEP   = step_name
-
-# verbose_reporter = VerboseReporter(VERBOSE)
-# prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
-# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-#     gatos_codebook = cache_manager.load_from_cache(filename, step_name, models.GATOSCodebook)
-#     verbose_reporter.summary("GATOS CODEBOOK FROM CACHE", {
-#         "Total codes": len(gatos_codebook.codes),
-#         "Starter codes": gatos_codebook.stats.get('initial_codes', 20),
-#         "New codes added": gatos_codebook.stats.get('new_codes', 0)
-#     })
-# else:
-#     verbose_reporter.section_header("GATOS CODEBOOK GENERATION PHASE")
-#     start_time = time.time()
-    
-#     # Step 6.1: Generate speculative starter codes
-#     starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-#         var_lab=var_lab, 
-#         verbose=VERBOSE, 
-#         prompt_printer=prompt_printer
-#     )
-#     starter_codes = starter_generator.generate()
-    
-#     if not starter_codes:
-#         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-#         gatos_codebook = models.GATOSCodebook(
-#             codes=[],
-#             cluster_assignments={},
-#             themes=[],
-#             stats={'error': 'Failed to generate starter codes'}
-#         )
-#     else:
-#         # Step 6.2: Inductive codebook generation
-#         prompt_printer = promptPrinter(enabled=True, print_realtime=True)
-
-#         generator = codebookGenerator.InductiveCodebookGenerator(
-#             cluster_results=initial_cluster_results,
-#             embedded_text=embedded_text,
-#             starter_codes=starter_codes,
-#             var_lab=var_lab,
-#             k=5,
-#             verbose=True,
-#             batch_size=10,
-#             max_concurrent_requests=5,
-#             prompt_printer=prompt_printer  
-#         )
-        
-#         # Run generation
-#         results = generator.generate()
-
-#         # Create GATOS codebook model
-
-#     end_time = time.time()
-#     elapsed_time = end_time - start_time
-    
-#     # Cache the results
-#     cache_manager.save_to_cache(gatos_codebook, filename, step_name, elapsed_time)
-#     print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
-
-# === STEP 7 ========================================================================================================
+# === STEP 8 ========================================================================================================
 """Theme Identification"""
 from utils import themeIdentifier
 

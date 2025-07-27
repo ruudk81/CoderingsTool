@@ -150,7 +150,7 @@ class Clusterer:
                 cluster_model = ClusterModel(
                     respondent_id=respondent_id,
                     response_ideas=cluster_submodels,
-                    idea_embeddings=cluster_submodels,
+                    #idea_embeddings=cluster_submodels,
                     idea_count=len(cluster_submodels)
                 )
 
