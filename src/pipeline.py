@@ -697,6 +697,23 @@ else:
                     idx += 1
                 else:
                     print(result['code'])
+                    
+        idx = 1
+        for result in hierarchical_results['hierarchy']:
+            key, themes = result 
+            for theme in themes:
+                print(f"\nTheme: {theme.theme_name}")
+                #print(f"Concept: {theme.theme_concept}")
+                for domain in theme.domains:
+                    print(f"  Domain: {domain.domain_name}")
+                    #print(f"  Description: {domain.domain_description}")
+                    for code in domain.codes:
+                        print(f"    Code {idx}: {code.code_name}")
+                        #print(f"    Code {code.code_number}: {code.code_name}")
+                        #print(f"      Fit rationale: {code.fit_rationale}")
+                        idx += 1
+                        
+                    
 
 
 
