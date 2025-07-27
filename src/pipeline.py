@@ -484,7 +484,7 @@ force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     codebook = cache_manager.load_from_cache(filename, step_name, models.Codebook)
-    verbose_reporter.summary("CODEBOOK FROM CACHE", {"Total codes": len(codebook.codes)})
+    verbose_reporter.section_header("CODEBOOK FROM CACHE")
 else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
