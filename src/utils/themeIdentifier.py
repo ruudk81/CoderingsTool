@@ -35,7 +35,7 @@ class ThemeIdentifier:
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose)
         self.prompt_printer = prompt_printer
-        self.model_config = ModelConfig
+        self.model_config = ModelConfig()
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
         
     def _format_codes_for_prompt(self) -> str:
@@ -95,7 +95,7 @@ class ThemeIdentifier:
                     "broad_or_narrow_themes": "Analysis failed due to error",
                     "contradictions_or_unexpected_patterns": "Could not analyze",
                     "potential_subthemes": "Analysis incomplete", 
-                    "unclassified_codes": str([code.get('code', '') for code in self.codebook])
+                    "unclassified_codes": str([code.code for code in self.codebook])
                 }
             )
     
@@ -149,7 +149,7 @@ class ThemeIdentifier:
         for theme in theme_analysis.suggested_themes:
             all_theme_codes.update(theme.codes)
             
-        codebook_codes = {code.get('code', '') for code in self.codebook}
+        codebook_codes = {code.code for code in self.codebook}
         unclassified = codebook_codes - all_theme_codes
         
         if unclassified and self.verbose:
