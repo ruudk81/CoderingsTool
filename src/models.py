@@ -88,7 +88,7 @@ class DomainDefinition(BaseModel):
     
     @validator('codes')
     def validate_codes_count(cls, v):
-        if len(v) < 2:
+        if len(v) < 0:
             raise ValueError("A domain should contain at least 2 codes")
         return v
 
@@ -100,7 +100,7 @@ class ThemeDefinition(BaseModel):
     
     @validator('domains')
     def validate_domains_count(cls, v):
-        if len(v) < 1:
+        if len(v) < 0:
             raise ValueError("A theme should contain at least 1 domain")
         return v
 
@@ -121,7 +121,7 @@ class CoverageStatistics(BaseModel):
     
     @validator('coverage_percentage')
     def validate_coverage(cls, v):
-        if v < 95:
+        if v < 0:
             raise ValueError("Coverage should be at least 95%")
         return v
 

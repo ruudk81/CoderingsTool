@@ -442,42 +442,24 @@ Before you begin your analysis, take a moment to gather your expert thoughts.
 When you are ready, proceed with your analysis and present your findings in the specified JSON format.
 """
 
-# =============================================================================
-# HIERARCHICAL THEME IDENTIFICATION (MapReduce Approach)
-# =============================================================================
-
 DOMAIN_CLUSTERING_PROMPT = """
 {system_message}
 
-You are organizing codes from a Gezonde School survey into domains (practical groupings).
-This is batch {batch_number} of {total_batches}.
+You are analyzing codes that have been developed to capture shared ideas expressed in responses to a survey question.
 
 <survey_question>
 {survey_question}
 </survey_question>
 
-<codes_batch>
+<codes>
 {codes_batch}
-</codes_batch>
+</codes>
 
-TASK: Group these codes into DOMAINS
-- A domain is a practical, substantive grouping of related codes
+TASK: Identify DOMAINS
+- A "code"-domain is a practical, substantive grouping of related codes
 - Focus on what codes DO or ADDRESS, not abstract concepts
-- Each domain should contain 2-8 codes typically (minimum 2)
+- Domain names should be clear and specific 
 - Every code MUST be assigned to exactly ONE domain
-- Domain names should be clear and specific (e.g., "Voedingsbeleid en Kantinebeheer" not "Nutrition")
-
-Examples of domain types to consider:
-- Specific intervention areas (voeding, beweging, preventie)
-- Implementation aspects (organisatie, middelen, communicatie)
-- Stakeholder-specific (ouders, leerlingen, personeel)
-- Challenges and barriers
-
-Guidelines:
-1. Look for codes that address similar aspects of the Gezonde School approach
-2. Consider practical utility - would someone working in schools find this grouping useful?
-3. Ensure each domain has a clear, coherent focus
-4. Prefer specific, actionable domain names over generic ones
 
 Output format (JSON):
 {{
@@ -505,8 +487,8 @@ Return ONLY the JSON object in {language}.
 THEME_SYNTHESIS_PROMPT = """
 {system_message}
 
-You are creating a three-level hierarchy for Gezonde School codes.
-You have domains from multiple batches that need to be organized into themes.
+You are identifying themes based on domains.
+The domains were derived from grouping codes that capture shared ideas in responses to a survey question.
 
 <survey_question>
 {survey_question}
@@ -516,29 +498,19 @@ You have domains from multiple batches that need to be organized into themes.
 {all_domains}
 </all_domains>
 
-TASK: Create the final three-level hierarchy
-1. First, review and potentially merge similar domains across batches
-2. Then, group domains into 4-7 high-level THEMES
-3. Ensure every original code is represented exactly once
+TASK: create themes from the domains
+1. First, review the domains 
+2. Then, group domains into THEMES
+3. Ensure every domain is represented exactly once
 
 THEMES should be:
 - Conceptual/strategic level groupings
 - Broad enough to contain multiple domains
-- Relevant to Gezonde School evaluation and implementation
-
-Example theme types might include:
-- "Implementatie en Borging" (how the approach is embedded)
-- "Inhoudelijke Interventiegebieden" (what health topics are addressed)
-- "Stakeholder Betrokkenheid en Samenwerking" (who is involved)
-- "Randvoorwaarden en Middelen" (what resources are needed)
-- "Uitdagingen en Belemmeringen" (what obstacles exist)
+- Relevant in light of the survey question
 
 Guidelines:
-1. Merge domains that are very similar before creating themes
-2. Ensure themes are conceptually distinct but collectively comprehensive
-3. Balance theme sizes - avoid having one theme with most domains
-4. Consider both positive and challenging aspects of implementation
-5. Think about different stakeholder perspectives
+1. Ensure themes are conceptually distinct but collectively comprehensive
+2. Balance theme sizes - avoid having one theme with most domains
 
 Output format (JSON):
 {{
