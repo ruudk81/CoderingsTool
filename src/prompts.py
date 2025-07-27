@@ -379,8 +379,8 @@ IMPORTANT:
 # =============================================================================
 
 HIERARCHY_MAP_PROMPT = """
-You are a {language} language expert and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
-Your task is to analyze exactly {batch_length} codes and organize them into themes.
+You are a {language} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
+Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
 
 <survey_question>
 {survey_question}
@@ -393,15 +393,17 @@ Your task is to analyze exactly {batch_length} codes and organize them into them
 <instructions>
 Step 1. Review the codes - these capture shared ideas from survey responses.
 Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
-Step 3. Group related codes with shared meaning into 2 or more THEMES.
-Step 4. Actively construe relationships - themes don't simply "emerge" from data.
-Step 5. Consider salience over frequency - meaningful patterns matter more than code counts.
-Step 6. Aim for distinctive yet coherent groupings that may even be contradictory.
-Step 7. Ensure ALL codes are included - none can be left out.
-Step 8. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
+Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
+Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
+Step 5. Actively construe relationships - themes don't simply "emerge" from data.
+Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
+Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
+Step 8. Ensure ALL codes are included - none can be left out.
+Step 9. Create balanced groupings - avoid unwieldy structures.
+step 10. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
 
 CRITICAL:
-1. You MUST include ALL {batch_length} codes in your output - check if these code numbers are included: {codes_to_include}
+1. You MUST include ALL 10 codes in your output - check if these code numbers are included: {codes_to_include}
 2. The codes are numbered - you must use these EXACT numbers
 3. Each code can appear ONLY ONCE in the hierarchy
 </instructions>
@@ -412,10 +414,15 @@ OUTPUT FORMAT (JSON):
   "themes": [
     {{
       "theme_name": "[Theme name in {language}]",
-      "codes": [
+      "domains": [
         {{
-          "code_number": [exact number from input],
-          "code_name": "[exact code text from input]"
+          "domain_name": "[Domain name in {language}]",
+          "codes": [
+            {{
+              "code_number": [exact number from input],
+              "code_name": "[exact code text from input]"
+            }}
+          ]
         }}
       ]
     }}
@@ -430,7 +437,7 @@ Return ONLY the JSON object with all content in {language}.
 
 HIERARCHY_REDUCE_PROMPT = """
 You are a {language} language expert and qualitative researcher specializing in thematic analysis following Braun & Clarke methodology. 
-Your task is to create a well-structured 3-level codebook from discovered domains.
+Your task is to create a well-structured codebook based on a first draft of the codebook. 
 This codebook will be used to categorize responses to an open-ended survey question, and consists of 3 levels: specific codes > concrete domains > broad themes.
 
 Here is the survey question:
@@ -438,34 +445,35 @@ Here is the survey question:
 {survey_question}
 </survey_question>
 
-Here are the domains discovered from analyzing the codes:
-<discovered_domains>
+Here is the first draft of the codebook:
+<first_draft_of_codebook>
 {batch_hierarchies}
-</discovered_domains>
+</first_draft_of_codebook>>
 
 CRITICAL: There are {total_codes} codes total that MUST ALL appear in your final codebook.
 
 <instructions>
-YOUR TASK: Create a 3-level hierarchical codebook by:
+YOUR TASK: Create a refined, consolidated codebook by:
 
-1. GROUPING DOMAINS INTO THEMES:
-   - Identify overarching concepts that span multiple domains
-   - Create 3-6 broad themes that capture the main narratives
-   - Group related domains under these themes
-
-2. REFINING STRUCTURE:
-   - Some domains may need to be split or merged
-   - Ensure domains within a theme are clearly distinguished
-   - Create balanced themes (avoid one huge theme with many tiny ones)
-
-3. IMPROVING LABELS:
-   - Theme names should capture overarching concepts
+1. IMPROVING LABELS:
+   - All labels should be concise and make sense as stand-alone terms in light of the survey question
+   - Theme names should capture overarching concepts (not just list topics)
    - Domain names should be clear and distinctive
    - Avoid overlapping or vague labels
 
+2. MERGING STRATEGICALLY:
+   - Combine themes that address the same overarching concept
+   - Merge domains that group similar types of codes
+   - Track which original themes/domains you're combining
+
+3. ENSURING QUALITY:
+   - Each theme should represent a coherent narrative
+   - Domains within a theme should be clearly distinguished
+   - Balance the structure (avoid one huge theme with many tiny ones)
+
 4. PRESERVING ALL CODES:
    - Every single code must appear exactly once
-   - If codes don't fit well, use "Overige" theme
+   - If codes don't fit well after merging, use "Overige" theme
    - Never duplicate or omit codes
 </instructions>
 
@@ -517,4 +525,3 @@ Before providing your final output, use a <scratchpad> to think through your pro
 After your thought process, provide your final refined codebook in the specified JSON format within <output> tags.
 Return ONLY the JSON object with all text in {language}.
 """
-
