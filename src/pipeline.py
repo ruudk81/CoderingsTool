@@ -651,7 +651,7 @@ FORCE = True
 step_name = "theme_identification"
 if  FORCE:
     FORCE_STEP      = step_name
-    PROMPT_PRINTER  = False
+    PROMPT_PRINTER  = True
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
@@ -685,12 +685,18 @@ else:
         print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
         print(f"Expected: 64 codes")
         
+        idx = 1
         for result in hierarchical_results['codebook']:
-                #original_code = next((c for c in codebook if c.code == result['code']), None)
-                #print(f"Code: {original_code.code}")
-                #print(f"Definition: {original_code.definition}")
-                print(f"Domain: {result['domain']}")
-                print(f"Theme: {result['theme']}\n")
+                original_code = next((c for c in codebook if c.code == result['code']), None)
+                if original_code:
+                    print(idx) 
+                    print(f"Code: {original_code.code}")
+                    #print(f"Definition: {original_code.definition}")
+                    print(f"Domain: {result['domain']}")
+                    print(f"Theme: {result['theme']}\n") 
+                    idx += 1
+                else:
+                    print(result['code'])
 
 
 

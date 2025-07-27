@@ -378,74 +378,11 @@ IMPORTANT:
 # STEP 8: THEME IDENTIFICATION  
 # =============================================================================
 
-THEME_IDENTIFICATION_PROMPT = """
-You are a qualitative researcher expert specializing in thematic analysis in the {language} language. 
-Your task is to analyze a list of codes and identify potential themes following the guidance of Braun and Clarke. 
-The goal is to identify themes that help to answer the following survey question:
-    
-<survey_question>
-{survey_question}
-</survey_question>
-
-You will be analyzing codes from writen answers in response to this question. 
-Here is the list of codes to analyze:
-
-<codes>
-{codes}
-</codes>
-
-Follow these steps to identify themes:
-
-1. Review the list of codes provided above.
-2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
-3. Identify overarching narratives that might represent broader themes or sub-themes.
-4. Actively construe relationships among the codes and examine how these relationships inform potential themes.
-5. Consider the importance and salience of potential themes. Remember, the number of codes supporting a theme is less important than whether the pattern communicates something meaningful that helps answer the research question.
-6. Aim for themes that are distinctive yet coherent with the overall analysis. Themes may even be contradictory to each other.
-7. Be willing to let go of codes or potential themes that don't fit the overall analysis. Consider creating a "miscellaneous" category for codes that don't fit elsewhere.
-8. Strive for a balance in the number of themes - not so many that the analysis becomes unwieldy, but enough to fully explore the depth and breadth of the data.
-9. For each theme, prepare a structured description including the theme name, its underlying concept, associated codes, and how these codes relate to each other and the overall theme.
-10. Reflect on your analysis considering: themes that seem too broad or narrow, contradictions or unexpected patterns, need for subthemes, and codes that don't fit well into the current themes.
-
-Present your analysis in JSON format in {language} with the following structure:
-    
-<json_structure>
-{{
-  "initial_observations": [
-    "observation1"
-  ],
-  "suggested_themes": [
-    {{
-      "theme_name": "Theme 1",
-      "concept": "Brief description of the underlying concept or narrative",
-      "codes": [
-        "Code 1"
-      ],
-      "relationship": "Brief explanation of how these codes relate to each other and the overall theme"
-    }}
-  ],
-  "reflection": {{
-    "broad_or_narrow_themes": "Discussion of any themes that seem too broad or too narrow",
-    "contradictions_or_unexpected_patterns": "Description of any contradictions or unexpected patterns", 
-    "potential_subthemes": "Discussion of any need for subthemes within the main themes",
-    "unclassified_codes": "List of any codes that were not included in the proposed themes"
-  }}
-}}
-</json_structure>
-
-Use this JSON structure as a template. 
-Expand on the template by adding as many observations, themes, and codes as necessary based on your analysis. 
-Ensure that your response remains a valid JSON object. 
-Do not include any text outside of this JSON structure.
-
-Before you begin your analysis, take a moment to gather your expert thoughts. 
-When you are ready, proceed with your analysis and present your findings in the specified JSON format.
-"""
-
 HIERARCHY_MAP_PROMPT = """
-{system_message}
-
-Create a complete hierarchy for these codes from survey responses:
+You are an {language} qualitative research expert specializing in thematic analysis. 
+Your task is to analyze the codes presented in the <codes> tag and create a 3-level hierarchy: codes → domains → themes, following Braun & Clarke methodology.
+The goal is to identify sub-themes and themes that help to answer the survey question  in the <survey_question> tag.
+Please follow these steps outlined in the <instructions> tag carefully.
 
 <survey_question>
 {survey_question}
@@ -455,20 +392,27 @@ Create a complete hierarchy for these codes from survey responses:
 {codes_batch}
 </codes>
 
-TASK: Create a 3-level hierarchy
-1. Group codes into 2-4 DOMAINS (practical groupings)
-2. Group domains into 1-3 THEMES (conceptual groupings)  
-3. Include ALL codes - none can be left out
+<instructions>
+Step 1. Review the codes - these capture shared ideas from survey responses.
+Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
+Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
+Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
+Step 5. Actively construe relationships - themes don't simply "emerge" from data.
+Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
+Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
+Step 8. Ensure ALL codes are included - none can be left out.
+Step 9. Create balanced groupings - avoid unwieldy structures.
+</instructions>
 
 Output format (JSON):
 {{
   "batch_id": {batch_number},
   "themes": [
     {{
-      "theme_name": "Theme name in Dutch",
+      "theme_name": "Theme name in {language}",
       "domains": [
         {{
-          "domain_name": "Domain name in Dutch", 
+          "domain_name": "Domain name in {language}", 
           "codes": [
             {{
               "code_number": 1,
