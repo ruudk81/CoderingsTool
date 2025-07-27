@@ -379,10 +379,8 @@ IMPORTANT:
 # =============================================================================
 
 HIERARCHY_MAP_PROMPT = """
-You are an {language} qualitative research expert specializing in thematic analysis. 
-Your task is to analyze the codes presented in the <codes> tag and create a 3-level hierarchy: codes → domains → themes, following Braun & Clarke methodology.
-The goal is to identify sub-themes and themes that help to answer the survey question  in the <survey_question> tag.
-Please follow these steps outlined in the <instructions> tag carefully.
+You are a qualitative research expert specializing in thematic analysis following Braun & Clarke methodology.
+Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
 
 <survey_question>
 {survey_question}
@@ -392,31 +390,38 @@ Please follow these steps outlined in the <instructions> tag carefully.
 {codes_batch}
 </codes>
 
-<instructions>
-Step 1. Review the codes - these capture shared ideas from survey responses.
-Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
-Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
-Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
-Step 5. Actively construe relationships - themes don't simply "emerge" from data.
-Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
-Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
-Step 8. Ensure ALL codes are included - none can be left out.
-Step 9. Create balanced groupings - avoid unwieldy structures.
-</instructions>
+CRITICAL REQUIREMENTS:
+1. You MUST include ALL 10 codes in your output - check the code numbers
+2. The codes are numbered - you must use these EXACT numbers
+3. Each code can appear ONLY ONCE in the hierarchy
+4. If a code doesn't fit well, place it in an "Overige" (Miscellaneous) theme
 
-Output format (JSON):
+STEPS TO FOLLOW:
+1. Count the codes provided (should be exactly 10)
+2. Group related codes into DOMAINS based on shared meaning
+3. Group related domains into THEMES based on overarching concepts
+4. Create "Overige" theme/domain for codes that don't fit elsewhere
+5. Verify: Count that your output contains exactly 10 codes with correct numbers
+
+HIERARCHY RULES:
+- Minimum 1 theme, maximum 4 themes
+- Each theme must have at least 1 domain
+- Each domain must have at least 1 code
+- Balance the structure - avoid having all codes in one domain
+
+OUTPUT FORMAT (JSON):
 {{
   "batch_id": {batch_number},
   "themes": [
     {{
-      "theme_name": "Theme name in {language}",
+      "theme_name": "[Theme name in {language}]",
       "domains": [
         {{
-          "domain_name": "Domain name in {language}", 
+          "domain_name": "[Domain name in {language}]",
           "codes": [
             {{
-              "code_number": 1,
-              "code_name": "Original code name"
+              "code_number": [exact number from input],
+              "code_name": "[exact code text from input]"
             }}
           ]
         }}
@@ -425,67 +430,102 @@ Output format (JSON):
   ]
 }}
 
-Return ONLY the JSON object in {language}.
+BEFORE SUBMITTING:
+1. Count: Do you have exactly 10 codes in your output?
+2. Check: Are all code numbers from the input present?
+3. Verify: Is each code included only once?
+
+Return ONLY the JSON object with all content in {language}.
 """
 
 HIERARCHY_REDUCE_PROMPT = """
-You are a {language} qualitative research expert specializing in thematic analysis. 
-Your task is consolidating several codebooks into one comprehensive codebook.
-This codebook has a 3-level hierarchy: codes → domains → themes, following Braun & Clarke methodology.
-With this codebook responses to a survey question in the <survey_question> tag will be analyzed.
+You are a qualitative research expert specializing in thematic analysis and codebook refinement.
+Your task is to IMPROVE and CONSOLIDATE multiple preliminary codebooks into one final, well-structured codebook.
 
 <survey_question>
 {survey_question}
 </survey_question>
 
-<batch_hierarchies>
+BELOW ARE PRELIMINARY CODEBOOKS:
+These are initial groupings that need refinement according to best practices.
+
+<preliminary_codebooks>
 {batch_hierarchies}
-</batch_hierarchies>
+</preliminary_codebooks>
 
 <total_codes>
-Total number of codes that MUST be preserved: {total_codes}
+CRITICAL: There are {total_codes} codes total that MUST ALL appear in your final codebook.
 </total_codes>
 
-CRITICAL TASK: Consolidate all hierarchies WITHOUT LOSING ANY CODES
-1. Merge similar themes across batches
-2. Merge similar domains within themes
-3. MANDATORY: Every single code from every batch MUST appear in the final structure
-4. Create a "Overige" (Miscellaneous) theme if needed for codes that don't fit elsewhere
+YOUR TASK: Create a refined, consolidated codebook by:
 
-<instructions>
-- Count all codes in the input batches
-- Ensure your output contains EXACTLY the same number of codes
-- If themes have similar concepts, merge them
-- If domains have similar purposes, merge them  
-- If a code doesn't fit well in existing themes/domains, place it in "Overige" theme
-- You may create an "Overige aspecten" domain within the "Overige" theme for such codes
-- Each code must appear exactly once (no duplicates)
-- Preserve the original code_number and code_name exactly as given
-</instructions>
+1. IMPROVING LABELS:
+   - Theme names should capture overarching concepts (not just list topics)
+   - Domain names should be clear and distinctive
+   - Avoid overlapping or vague labels
 
-Output format (JSON):
+2. MERGING STRATEGICALLY:
+   - Combine themes that address the same overarching concept
+   - Merge domains that group similar types of codes
+   - Track which original themes/domains you're combining
+
+3. ENSURING QUALITY:
+   - Each theme should represent a coherent narrative
+   - Domains within a theme should be clearly distinguished
+   - Balance the structure (avoid one huge theme with many tiny ones)
+
+4. PRESERVING ALL CODES:
+   - Every single code must appear exactly once
+   - If codes don't fit well after merging, use "Overige" theme
+   - Never duplicate or omit codes
+
+OUTPUT STRUCTURE:
 {{
   "themes": [
     {{
-      "theme_name": "Final theme name in {language}",
-      "theme_concept": "What this theme covers",
+      "theme_name": "[Refined theme name in {language}]",
+      "theme_concept": "[What unifying concept this theme represents]",
       "domains": [
         {{
-          "domain_name": "Final domain name in {language}",
-          "domain_description": "What this domain covers", 
+          "domain_name": "[Clear domain name in {language}]",
+          "domain_description": "[What distinguishes this domain]",
           "codes": [
             {{
-              "code_number": 1,
-              "code_name": "Original code name",
-              "fit_rationale": "Why this code belongs here"
+              "code_number": [exact number],
+              "code_name": "[exact original code name]",
+              "fit_rationale": "[Brief reason why this code belongs here]"
             }}
           ]
         }}
       ]
     }}
-  ]
+  ],
+  "transformation_notes": {{
+    "themes_merged": [
+      {{
+        "original": ["Theme A from Codebook 1", "Theme B from Codebook 2"],
+        "final": "New Combined Theme",
+        "reason": "Both addressed X concept"
+      }}
+    ],
+    "domains_merged": [
+      {{
+        "original": ["Domain 1", "Domain 2"],
+        "final": "Merged Domain",
+        "within_theme": "Theme Name",
+        "reason": "Both grouped Y type of codes"
+      }}
+    ]
+  }}
 }}
 
-Return ONLY the JSON object in {language}.
+VERIFICATION CHECKLIST:
+☑ Count all codes in preliminary codebooks
+☑ Ensure your output has EXACTLY {total_codes} codes
+☑ Check each code appears only once
+☑ Verify all code numbers and names match exactly
+☑ Document all mergers in transformation_notes
+
+Return ONLY the JSON object with all text in {language}.
 """
 
