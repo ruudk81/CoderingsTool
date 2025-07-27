@@ -13,7 +13,7 @@ import models
 # === CONFIG ========================================================================================================
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 from utils.verboseReporter import VerboseReporter
-from prompts import THEME_IDENTIFICATION_PROMPT, DOMAIN_CLUSTERING_PROMPT, THEME_SYNTHESIS_PROMPT
+from prompts import THEME_IDENTIFICATION_PROMPT, HIERARCHY_MAP_PROMPT, HIERARCHY_REDUCE_PROMPT
 
 # === UTILS ========================================================================================================
 try:
@@ -39,7 +39,7 @@ class ThemeIdentifier:
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
         
         # MapReduce configuration
-        self.batch_size = 10
+        self.batch_size = 15
         self.code_registry = {}
         self._initialize_code_registry()
         
@@ -205,14 +205,13 @@ class ThemeIdentifier:
             formatted_codes.append(f"{code_info['number']}. {code_info['code']}: {code_info['definition']}")
         return "\n".join(formatted_codes)
     
-    async def _identify_domains_for_batch(self, batch: List[Dict], batch_num: int, total_batches: int) -> models.DomainClusteringResult:
-        """Stage 1: Identify domains for a batch of codes"""
+    async def _create_hierarchy_for_batch(self, batch: List[Dict], batch_num: int, total_batches: int) -> models.BatchHierarchy:
+        """Map stage: Create complete hierarchy for a batch of codes"""
         codes_text = self._format_batch_for_prompt(batch)
         
-        prompt = DOMAIN_CLUSTERING_PROMPT.format(
+        prompt = HIERARCHY_MAP_PROMPT.format(
             system_message=f"Act as a {DEFAULT_LANGUAGE} qualitative data analyst specializing in thematic analysis.",
             batch_number=batch_num,
-            total_batches=total_batches,
             survey_question=self.var_lab,
             codes_batch=codes_text,
             language=DEFAULT_LANGUAGE
@@ -221,59 +220,54 @@ class ThemeIdentifier:
         # Capture prompt if printer is available (only print first batch as sample)
         if self.prompt_printer and batch_num == 1:
             self.prompt_printer.capture_prompt(
-                step_name="domain_clustering",
+                step_name="hierarchy_map",
                 utility_name="ThemeIdentifier",
                 prompt_content=prompt,
-                prompt_type="Domain Clustering (Sample Batch 1)"
+                prompt_type="Hierarchy Creation (Sample Batch 1)"
             )
         
         try:
             response = await self.client.chat.completions.create(
                 model=self.model_config.get_model_for_stage("domain_clustering"),
                 messages=[{"role": "user", "content": prompt}],
-                response_model=models.DomainClusteringResult,
+                response_model=models.BatchHierarchy,
                 temperature=0.3,
                 max_retries=3
             )
             return response
             
         except Exception as e:
-            self.verbose_reporter.stat_line(f"Error in domain clustering for batch {batch_num}: {str(e)}")
+            self.verbose_reporter.stat_line(f"Error in hierarchy creation for batch {batch_num}: {str(e)}")
             # Return empty result on error
-            return models.DomainClusteringResult(
+            return models.BatchHierarchy(
                 batch_id=batch_num,
-                identified_domains=[],
-                processing_notes=f"Error occurred: {str(e)}"
+                themes=[]
             )
     
-    def _consolidate_domains(self, domain_results: List[models.DomainClusteringResult]) -> List[models.DomainDefinition]:
-        """Consolidate all domains from Stage 1 batches"""
-        all_domains = []
-        for result in domain_results:
-            all_domains.extend(result.identified_domains)
-        return all_domains
+    def _format_hierarchies_for_reduction(self, batch_hierarchies: List[models.BatchHierarchy]) -> str:
+        """Format batch hierarchies for the reduce prompt"""
+        formatted_hierarchies = []
+        
+        for hierarchy in batch_hierarchies:
+            batch_text = f"Batch {hierarchy.batch_id}:\n"
+            for theme in hierarchy.themes:
+                batch_text += f"  Theme: {theme.theme_name}\n"
+                for domain in theme.domains:
+                    codes_text = ", ".join([f"{code.code_number}: {code.code_name}" for code in domain.codes])
+                    batch_text += f"    Domain: {domain.domain_name} - Codes: {codes_text}\n"
+            formatted_hierarchies.append(batch_text)
+        
+        return "\n".join(formatted_hierarchies)
     
-    def _format_domains_for_synthesis(self, domains: List[models.DomainDefinition]) -> str:
-        """Format domains for the theme synthesis prompt"""
-        formatted_domains = []
-        for i, domain in enumerate(domains, 1):
-            codes_text = ", ".join([f"{code.code_number}: {code.code_name}" for code in domain.codes])
-            formatted_domains.append(
-                f"Domain {i}: {domain.domain_name}\n"
-                f"Description: {domain.domain_description}\n"
-                f"Codes: {codes_text}\n"
-            )
-        return "\n".join(formatted_domains)
-    
-    async def _synthesize_themes(self, all_domains: List[models.DomainDefinition]) -> models.HierarchicalStructure:
-        """Stage 2: Organize domains into themes"""
-        domains_text = self._format_domains_for_synthesis(all_domains)
+    async def _reduce_hierarchies(self, batch_hierarchies: List[models.BatchHierarchy]) -> models.HierarchicalStructure:
+        """Reduce stage: Merge multiple hierarchies into one consolidated hierarchy"""
+        hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
         total_codes = len(self.codebook)
         
-        prompt = THEME_SYNTHESIS_PROMPT.format(
+        prompt = HIERARCHY_REDUCE_PROMPT.format(
             system_message=f"Act as a {DEFAULT_LANGUAGE} qualitative data analyst specializing in thematic analysis.",
             survey_question=self.var_lab,
-            all_domains=domains_text,
+            batch_hierarchies=hierarchies_text,
             total_codes=total_codes,
             language=DEFAULT_LANGUAGE
         )
@@ -281,10 +275,10 @@ class ThemeIdentifier:
         # Capture prompt if printer is available
         if self.prompt_printer:
             self.prompt_printer.capture_prompt(
-                step_name="theme_synthesis",
+                step_name="hierarchy_reduce",
                 utility_name="ThemeIdentifier",
                 prompt_content=prompt,
-                prompt_type="Theme Synthesis"
+                prompt_type="Hierarchy Consolidation"
             )
         
         try:
@@ -298,7 +292,7 @@ class ThemeIdentifier:
             return response
             
         except Exception as e:
-            self.verbose_reporter.stat_line(f"Error in theme synthesis: {str(e)}")
+            self.verbose_reporter.stat_line(f"Error in hierarchy reduction: {str(e)}")
             # Return empty structure on error
             return models.HierarchicalStructure(
                 themes=[],
@@ -310,7 +304,7 @@ class ThemeIdentifier:
                     domains_count=0,
                     avg_codes_per_domain=0.0
                 ),
-                quality_notes=f"Error occurred during synthesis: {str(e)}"
+                quality_notes=f"Error occurred during reduction: {str(e)}"
             )
     
     def _build_final_codebook_structure(self, hierarchical_result: models.HierarchicalStructure) -> Dict[str, Any]:
@@ -360,26 +354,27 @@ class ThemeIdentifier:
         total_codes = len(self.codebook)
         self.verbose_reporter.stat_line(f"Processing {total_codes} codes with MapReduce approach (batch size: {self.batch_size})")
         
-        # Stage 1: Parallel domain clustering
+        # Map Stage: Parallel hierarchy creation
         batches = self._create_code_batches()
-        self.verbose_reporter.stat_line(f"Created {len(batches)} batches for parallel processing")
+        self.verbose_reporter.stat_line(f"Created {len(batches)} batches for parallel hierarchy creation")
         
-        domain_tasks = []
+        hierarchy_tasks = []
         for i, batch in enumerate(batches, 1):
-            task = self._identify_domains_for_batch(batch, i, len(batches))
-            domain_tasks.append(task)
+            task = self._create_hierarchy_for_batch(batch, i, len(batches))
+            hierarchy_tasks.append(task)
         
-        # Execute all domain clustering tasks in parallel
-        self.verbose_reporter.stat_line("Starting parallel domain clustering...")
-        domain_results = await asyncio.gather(*domain_tasks)
+        # Execute all hierarchy creation tasks in parallel
+        self.verbose_reporter.stat_line("Starting parallel hierarchy creation (Map stage)...")
+        batch_hierarchies = await asyncio.gather(*hierarchy_tasks)
         
-        # Consolidate all domains
-        all_domains = self._consolidate_domains(domain_results)
-        self.verbose_reporter.stat_line(f"Consolidated {len(all_domains)} domains from all batches")
+        # Count total themes and domains from all batches
+        total_batch_themes = sum(len(h.themes) for h in batch_hierarchies)
+        total_batch_domains = sum(len(d) for h in batch_hierarchies for d in h.themes)
+        self.verbose_reporter.stat_line(f"Created {total_batch_themes} themes across {total_batch_domains} domains from all batches")
         
-        # Stage 2: Theme synthesis
-        self.verbose_reporter.stat_line("Starting theme synthesis...")
-        hierarchical_structure = await self._synthesize_themes(all_domains)
+        # Reduce Stage: Hierarchy consolidation
+        self.verbose_reporter.stat_line("Starting hierarchy consolidation (Reduce stage)...")
+        hierarchical_structure = await self._reduce_hierarchies(batch_hierarchies)
         
         # Build final structure with traceability
         final_structure = self._build_final_codebook_structure(hierarchical_structure)

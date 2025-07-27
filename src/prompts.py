@@ -442,10 +442,10 @@ Before you begin your analysis, take a moment to gather your expert thoughts.
 When you are ready, proceed with your analysis and present your findings in the specified JSON format.
 """
 
-DOMAIN_CLUSTERING_PROMPT = """
+HIERARCHY_MAP_PROMPT = """
 {system_message}
 
-You are analyzing codes that have been developed to capture shared ideas expressed in responses to a survey question.
+Create a complete hierarchy for these codes from survey responses:
 
 <survey_question>
 {survey_question}
@@ -455,78 +455,73 @@ You are analyzing codes that have been developed to capture shared ideas express
 {codes_batch}
 </codes>
 
-TASK: Identify DOMAINS
-- A "code"-domain is a practical, substantive grouping of related codes
-- Focus on what codes DO or ADDRESS, not abstract concepts
-- Domain names should be clear and specific 
-- Every code MUST be assigned to exactly ONE domain
+TASK: Create a 3-level hierarchy
+1. Group codes into 2-4 DOMAINS (practical groupings)
+2. Group domains into 1-3 THEMES (conceptual groupings)  
+3. Include ALL codes - none can be left out
 
 Output format (JSON):
 {{
   "batch_id": {batch_number},
-  "identified_domains": [
+  "themes": [
     {{
-      "domain_name": "Descriptive Dutch name",
-      "domain_description": "What unites these codes",
-      "codes": [
+      "theme_name": "Theme name in Dutch",
+      "domains": [
         {{
-          "code_number": 1,
-          "code_name": "Original code name",
-          "fit_rationale": "Why this code belongs here"
+          "domain_name": "Domain name in Dutch", 
+          "codes": [
+            {{
+              "code_number": 1,
+              "code_name": "Original code name"
+            }}
+          ]
         }}
       ]
     }}
-  ],
-  "processing_notes": "Any observations about patterns or difficult classifications"
+  ]
 }}
 
-CRITICAL: Ensure 100% code coverage - every code in the batch must appear exactly once.
 Return ONLY the JSON object in {language}.
 """
 
-THEME_SYNTHESIS_PROMPT = """
+HIERARCHY_REDUCE_PROMPT = """
 {system_message}
 
-You are identifying themes based on domains.
-The domains were derived from grouping codes that capture shared ideas in responses to a survey question.
+Merge these small hierarchies into one consolidated hierarchy:
 
 <survey_question>
 {survey_question}
 </survey_question>
 
-<all_domains>
-{all_domains}
-</all_domains>
+<batch_hierarchies>
+{batch_hierarchies}
+</batch_hierarchies>
 
-TASK: create themes from the domains
-1. First, review the domains 
-2. Then, group domains into THEMES
-3. Ensure every domain is represented exactly once
+TASK: Consolidate all hierarchies
+1. Merge similar themes across batches
+2. Merge similar domains within themes
+3. Keep ALL codes - none can be lost
+4. Create 4-7 final themes with logical domains
 
-THEMES should be:
-- Conceptual/strategic level groupings
-- Broad enough to contain multiple domains
-- Relevant in light of the survey question
-
-Guidelines:
-1. Ensure themes are conceptually distinct but collectively comprehensive
-2. Balance theme sizes - avoid having one theme with most domains
+Simple rules:
+- If themes have similar concepts, merge them
+- If domains have similar purposes, merge them  
+- Preserve every single code in the final structure
 
 Output format (JSON):
 {{
   "themes": [
     {{
-      "theme_name": "Theme name in Dutch",
-      "theme_concept": "Explanation of overarching concept",
+      "theme_name": "Final theme name in Dutch",
+      "theme_concept": "What this theme covers",
       "domains": [
         {{
-          "domain_name": "Domain name",
-          "domain_description": "Description of what unites these codes",
+          "domain_name": "Final domain name in Dutch",
+          "domain_description": "What this domain covers", 
           "codes": [
             {{
               "code_number": 1,
-              "code_name": "Original code name",
-              "fit_rationale": "Why this code belongs in this domain"
+              "code_name": "Original code name"
             }}
           ]
         }}
@@ -535,19 +530,14 @@ Output format (JSON):
   ],
   "coverage_statistics": {{
     "total_codes": {total_codes},
-    "classified_codes": 0,
-    "coverage_percentage": 0.0,
+    "classified_codes": {total_codes},
+    "coverage_percentage": 100.0,
     "themes_count": 0,
     "domains_count": 0,
     "avg_codes_per_domain": 0.0
-  }},
-  "quality_notes": "Reflections on the structure quality and any consolidation decisions made"
+  }}
 }}
 
-CRITICAL: 
-- Calculate and fill in the coverage_statistics accurately
-- Ensure 100% code coverage (coverage_percentage should be 100.0)
-- Every code must appear exactly once across all themes and domains
-- Return ONLY the JSON object in {language}
+Return ONLY the JSON object in {language}.
 """
 
