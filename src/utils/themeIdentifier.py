@@ -8,7 +8,7 @@ import instructor
 from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, root_validator
 
 # === CONFIG ========================================================================================================
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
@@ -270,6 +270,7 @@ class ThemeIdentifier:
             batch_number=batch_num,
             survey_question=self.var_lab,
             codes_batch=codes_text,
+            codes_to_include=', '.join(str(n) for n in expected_code_numbers),
             language=DEFAULT_LANGUAGE
         )
         
@@ -331,24 +332,35 @@ class ThemeIdentifier:
         return self._create_fallback_hierarchy(batch, batch_num)
     
     def _format_hierarchies_for_reduction(self, batch_hierarchies: List[BatchHierarchy]) -> str:
-        """Format batch hierarchies in a clean 3-level structure for the reduce prompt"""
+        """Format batch hierarchies as readable codebooks for reduce prompt"""
         formatted_parts = []
         
         for hierarchy in batch_hierarchies:
-            hierarchy_text = f"=== Codebook {hierarchy.batch_id} ===\n"
+            # Count codes for verification
+            total_codes = sum(len(domain.codes) for theme in hierarchy.themes for domain in theme.domains)
+            total_domains = sum(len(theme.domains) for theme in hierarchy.themes)
+            
+            codebook_text = f"CODEBOOK {hierarchy.batch_id}\n"
+            codebook_text += "=" * 60 + "\n\n"
             
             for theme in hierarchy.themes:
-                hierarchy_text += f"\nTheme: {theme.theme_name}\n"
+                codebook_text += f"THEME: {theme.theme_name}\n\n"
                 
                 for domain in theme.domains:
-                    hierarchy_text += f"  Domain: {domain.domain_name}\n"
+                    codebook_text += f"  DOMAIN: {domain.domain_name}\n"
                     
                     for code in domain.codes:
-                        hierarchy_text += f"    - Code {code.code_number}: {code.code_name}\n"
+                        codebook_text += f"    Code {code.code_number}: {code.code_name}\n"
+                    
+                    codebook_text += "\n"  # Space between domains
             
-            formatted_parts.append(hierarchy_text)
+            # Add verification summary
+            codebook_text += "-" * 60 + "\n"
+            codebook_text += f"Total: {total_codes} codes across {total_domains} domains in {len(hierarchy.themes)} theme(s)\n"
+            
+            formatted_parts.append(codebook_text)
         
-        return "\n".join(formatted_parts)
+        return "\n\n".join(formatted_parts)
     
     def _fix_missing_codes(self, reduced_structure: ConsolidatedHierarchy, batch_hierarchies: List[BatchHierarchy]) -> ConsolidatedHierarchy:
         """Programmatically add any missing codes to a Miscellaneous theme"""
@@ -423,7 +435,6 @@ class ThemeIdentifier:
     async def _reduce_hierarchies(self, batch_hierarchies: List[BatchHierarchy]) -> ConsolidatedHierarchy:
         """Reduce stage: Merge multiple hierarchies into one consolidated hierarchy"""
         hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
-        total_codes = len(self.codebook)
         
         # Count total codes in input batches for validation
         total_input_codes = sum(
