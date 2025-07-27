@@ -149,7 +149,7 @@ class ThemeIdentifier:
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
         
         # MapReduce configuration
-        self.batch_size = 10  # Reduced from 15 to 10 for better accuracy
+        self.batch_size = 30  
         self.code_registry = {}
         self._initialize_code_registry()
         self.max_hierarchy_retries = 5  # Increased retry attempts
