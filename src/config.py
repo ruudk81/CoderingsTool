@@ -64,6 +64,8 @@ class ModelConfig:
     
     # Step 8: Hierarchical organisation of codebook
     hierarchical_organisation_model: str = "gpt-4o"
+    domain_clustering_model: str = "gpt-4o-mini"
+    theme_synthesis_model: str = "gpt-4o"
 
     # =============================================================================
     # GLOBAL PARAMETERS
@@ -98,7 +100,9 @@ class ModelConfig:
             'cluster_analysis': self.response_summary_model,
             'recommend': self.match_and_recommend_model,
             'review': self.validation_model,
-            'hierarchical_organisation': self.hierarchical_organisation_model
+            'hierarchical_organisation': self.hierarchical_organisation_model,
+            'domain_clustering': self.domain_clustering_model,
+            'theme_synthesis': self.theme_synthesis_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
     
@@ -136,7 +140,8 @@ class CacheConfig:
         "embeddings": "005",     
         "initial_clusters": "006",
         "codebook_generation": "007",
-        "export": "008"
+        "theme_identification": "008",
+        "export": "009"
         })
     
     # Cache validity settings
