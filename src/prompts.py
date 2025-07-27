@@ -379,8 +379,8 @@ IMPORTANT:
 # =============================================================================
 
 HIERARCHY_MAP_PROMPT = """
-You are a {language} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
-Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
+You are a {language} language expert and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
+Your task is to analyze exactly {batch_lenght} codes and organize them into themes.
 
 <survey_question>
 {survey_question}
@@ -393,9 +393,8 @@ Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierar
 <instructions>
 Step 1. Review the codes - these capture shared ideas from survey responses.
 Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
-Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
-Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
-Step 5. Actively construe relationships - themes don't simply "emerge" from data.
+Step 3. Group related codes with shared meaning into 2 or more THEMES.
+Step 4. Actively construe relationships - themes don't simply "emerge" from data.
 Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
 Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
 Step 8. Ensure ALL codes are included - none can be left out.
@@ -403,7 +402,7 @@ Step 9. Create balanced groupings - avoid unwieldy structures.
 step 10. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
 
 CRITICAL:
-1. You MUST include ALL 10 codes in your output - check if these code numbers are included: {codes_to_include}
+1. You MUST include ALL {batch_lenght} codes in your output - check if these code numbers are included: {codes_to_include}
 2. The codes are numbered - you must use these EXACT numbers
 3. Each code can appear ONLY ONCE in the hierarchy
 </instructions>
@@ -414,17 +413,8 @@ OUTPUT FORMAT (JSON):
   "themes": [
     {{
       "theme_name": "[Theme name in {language}]",
-      "domains": [
-        {{
-          "domain_name": "[Domain name in {language}]",
-          "codes": [
-            {{
-              "code_number": [exact number from input],
-              "code_name": "[exact code text from input]"
-            }}
-          ]
-        }}
-      ]
+        "code_number": [exact number from input],
+        "code_name": "[exact code text from input]"
     }}
   ]
 }}
@@ -456,7 +446,6 @@ CRITICAL: There are {total_codes} codes total that MUST ALL appear in your final
 YOUR TASK: Create a refined, consolidated codebook by:
 
 1. IMPROVING LABELS:
-   - All labels should be concise and make sense as stand-alone terms in light of the survey question
    - Theme names should capture overarching concepts (not just list topics)
    - Domain names should be clear and distinctive
    - Avoid overlapping or vague labels
