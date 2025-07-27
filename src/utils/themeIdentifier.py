@@ -8,7 +8,7 @@ import instructor
 from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, model_validator
 
 # === CONFIG ========================================================================================================
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
@@ -64,21 +64,19 @@ class BatchHierarchy(BaseModel):
     batch_id: int = Field(description="Identifier for this batch")
     themes: List[ThemeInHierarchy] = Field(description="Complete hierarchy for this batch")
     
-    @root_validator
-    def validate_all_codes_present(cls, values):
+    @model_validator(mode='after')
+    def validate_all_codes_present(self):
         """Ensure all codes from the batch are present in the hierarchy"""
-        themes = values.get('themes', [])
-        
         # Extract all code numbers from the hierarchy
         found_codes = set()
-        for theme in themes:
+        for theme in self.themes:
             for domain in theme.domains:
                 for code in domain.codes:
                     found_codes.add(code.code_number)
         
-        # This will be checked during processing when we know the expected codes
-        values['_found_codes'] = found_codes
-        return values
+        # Store for later checking
+        self._found_codes = found_codes
+        return self
 
 class ThemeTransformation(BaseModel):
     """Track how themes were transformed during consolidation"""
@@ -99,17 +97,16 @@ class ConsolidatedHierarchy(BaseModel):
     theme_transformations: List[ThemeTransformation] = Field(description="How themes were consolidated")
     domain_transformations: List[DomainTransformation] = Field(description="How domains were consolidated")
     
-    @root_validator
-    def validate_all_codes_preserved(cls, values):
+    @model_validator(mode='after')
+    def validate_all_codes_preserved(self):
         """Ensure no codes were lost during consolidation"""
-        themes = values.get('themes', [])
         found_codes = set()
-        for theme in themes:
+        for theme in self.themes:
             for domain in theme.domains:
                 for code in domain.codes:
                     found_codes.add(code.code_number)
-        values['_found_codes'] = found_codes
-        return values
+        self._found_codes = found_codes
+        return self
 
 class HierarchicalStructure(BaseModel):
     """Complete three-level hierarchical structure"""
