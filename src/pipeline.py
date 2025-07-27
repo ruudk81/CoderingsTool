@@ -717,24 +717,16 @@ else:
         #                 #print(f"      Fit rationale: {code.fit_rationale}")
         #                 idx += 1
         
-        # from utils.themeIdentifier_v2 import ThemeIdentifierV2
-        # theme_identifier_instance = ThemeIdentifierV2(
-        #     codebook=codebook,
-        #     var_lab=var_lab,
-        #     verbose=VERBOSE,
-        #     prompt_printer=prompt_printer
-        # )
-        
-        # result = await theme_identifier_instance.identify_themes_braun_clarke()
-        
-        from utils.themeIdentifier_v3 import ThemeIdentifierV3
-        theme_identifier = ThemeIdentifierV3(
+        from utils.themeIdentifier_v2 import ThemeIdentifierV2
+        theme_identifier_instance = ThemeIdentifierV2(
             codebook=codebook,
             var_lab=var_lab,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
         )
-        result = await theme_identifier.identify_themes_braun_clarke_v3()
+        
+        result = await theme_identifier_instance.identify_themes_braun_clarke()
+   
         
         themes = result['themes']
 

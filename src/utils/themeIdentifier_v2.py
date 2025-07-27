@@ -242,7 +242,7 @@ INSTRUCTIONS:
 - Look for patterns among these {len(misc_codes)} miscellaneous codes
 - Consider if any groups of 2+ codes could form new coherent themes
 - Consider if individual codes actually belong in existing themes
-- It's OK to keep some codes as truly miscellaneous if they don't fit anywhere
+- Only if codes don't fit any theme, include a "Miscellaneous" theme. But realize that your reputation as a qualitative researcher is on the line for creating meaningful, coherent themes that minimize miscellaneous categorization
 - Focus on creating meaningful, defensible groupings
 
 OUTPUT FORMAT (JSON):
