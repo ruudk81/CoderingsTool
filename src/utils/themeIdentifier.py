@@ -8,7 +8,7 @@ import instructor
 from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator, root_validator
 
 # === CONFIG ========================================================================================================
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
@@ -63,6 +63,53 @@ class BatchHierarchy(BaseModel):
     """Output for Map stage: Complete hierarchy per batch"""
     batch_id: int = Field(description="Identifier for this batch")
     themes: List[ThemeInHierarchy] = Field(description="Complete hierarchy for this batch")
+    
+    @root_validator
+    def validate_all_codes_present(cls, values):
+        """Ensure all codes from the batch are present in the hierarchy"""
+        themes = values.get('themes', [])
+        
+        # Extract all code numbers from the hierarchy
+        found_codes = set()
+        for theme in themes:
+            for domain in theme.domains:
+                for code in domain.codes:
+                    found_codes.add(code.code_number)
+        
+        # This will be checked during processing when we know the expected codes
+        values['_found_codes'] = found_codes
+        return values
+
+class ThemeTransformation(BaseModel):
+    """Track how themes were transformed during consolidation"""
+    original_themes: List[str] = Field(description="Original theme names from batches")
+    final_theme: str = Field(description="Final consolidated theme name")
+    transformation_type: str = Field(description="Type: merged, renamed, unchanged")
+
+class DomainTransformation(BaseModel):
+    """Track how domains were transformed during consolidation"""
+    original_domains: List[str] = Field(description="Original domain names from batches")
+    final_domain: str = Field(description="Final consolidated domain name")
+    transformation_type: str = Field(description="Type: merged, renamed, unchanged")
+    theme: str = Field(description="Theme this domain belongs to")
+
+class ConsolidatedHierarchy(BaseModel):
+    """Enhanced hierarchical structure with transformation tracking"""
+    themes: List[ThemeDefinition] = Field(description="All themes with their domains and codes")
+    theme_transformations: List[ThemeTransformation] = Field(description="How themes were consolidated")
+    domain_transformations: List[DomainTransformation] = Field(description="How domains were consolidated")
+    
+    @root_validator
+    def validate_all_codes_preserved(cls, values):
+        """Ensure no codes were lost during consolidation"""
+        themes = values.get('themes', [])
+        found_codes = set()
+        for theme in themes:
+            for domain in theme.domains:
+                for code in domain.codes:
+                    found_codes.add(code.code_number)
+        values['_found_codes'] = found_codes
+        return values
 
 class HierarchicalStructure(BaseModel):
     """Complete three-level hierarchical structure"""
@@ -101,9 +148,10 @@ class ThemeIdentifier:
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
         
         # MapReduce configuration
-        self.batch_size = 15
+        self.batch_size = 10  # Reduced from 15 to 10 for better accuracy
         self.code_registry = {}
         self._initialize_code_registry()
+        self.max_hierarchy_retries = 5  # Increased retry attempts
     
     # === MAPREDUCE HIERARCHICAL THEME IDENTIFICATION ========================================================================================================
     
@@ -139,9 +187,84 @@ class ThemeIdentifier:
             formatted_codes.append(f"{code_info['number']}. {code_info['code']}: {code_info['definition']}")
         return "\n".join(formatted_codes)
     
+    def _add_missing_codes_to_batch(self, hierarchy: BatchHierarchy, batch: List[Dict], missing_code_numbers: set) -> BatchHierarchy:
+        """Add missing codes to a batch hierarchy under 'Overige' theme"""
+        # Find or create 'Overige' theme
+        overige_theme = None
+        for theme in hierarchy.themes:
+            if theme.theme_name.lower() in ["overige", "miscellaneous", "diversen"]:
+                overige_theme = theme
+                break
+        
+        if not overige_theme:
+            # Create new Overige theme
+            overige_theme = ThemeInHierarchy(
+                theme_name="Overige",
+                domains=[]
+            )
+            hierarchy.themes.append(overige_theme)
+        
+        # Find or create 'Overige aspecten' domain
+        overige_domain = None
+        for domain in overige_theme.domains:
+            if domain.domain_name.lower() in ["overige aspecten", "miscellaneous aspects", "diverse aspecten"]:
+                overige_domain = domain
+                break
+        
+        if not overige_domain:
+            overige_domain = DomainInHierarchy(
+                domain_name="Overige aspecten",
+                codes=[]
+            )
+            overige_theme.domains.append(overige_domain)
+        
+        # Add missing codes
+        code_lookup = {code['number']: code for code in batch}
+        for code_num in sorted(missing_code_numbers):
+            if code_num in code_lookup:
+                code_info = code_lookup[code_num]
+                overige_domain.codes.append(
+                    CodeInHierarchy(
+                        code_number=code_num,
+                        code_name=code_info['code']
+                    )
+                )
+        
+        return hierarchy
+    
+    def _create_fallback_hierarchy(self, batch: List[Dict], batch_num: int) -> BatchHierarchy:
+        """Create a fallback hierarchy with all codes in 'Overige' theme"""
+        self.verbose_reporter.stat_line(f"🆘 Creating fallback hierarchy for batch {batch_num}")
+        
+        # Put all codes in a single Overige theme
+        codes = []
+        for code_info in batch:
+            codes.append(
+                CodeInHierarchy(
+                    code_number=code_info['number'],
+                    code_name=code_info['code']
+                )
+            )
+        
+        return BatchHierarchy(
+            batch_id=batch_num,
+            themes=[
+                ThemeInHierarchy(
+                    theme_name="Overige",
+                    domains=[
+                        DomainInHierarchy(
+                            domain_name="Alle codes",
+                            codes=codes
+                        )
+                    ]
+                )
+            ]
+        )
+    
     async def _create_hierarchy_for_batch(self, batch: List[Dict], batch_num: int, total_batches: int) -> BatchHierarchy:
-        """Map stage: Create complete hierarchy for a batch of codes"""
+        """Map stage: Create complete hierarchy for a batch of codes with validation and retry"""
         codes_text = self._format_batch_for_prompt(batch)
+        expected_code_numbers = [code['number'] for code in batch]
         
         prompt = HIERARCHY_MAP_PROMPT.format(
             batch_number=batch_num,
@@ -159,40 +282,75 @@ class ThemeIdentifier:
                 prompt_type="Hierarchy Creation (Sample Batch 1)"
             )
         
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_stage("domain_clustering"),
-                messages=[{"role": "user", "content": prompt}],
-                response_model= BatchHierarchy,
-                temperature=0.3,
-                max_retries=3
-            )
-            return response
-            
-        except Exception as e:
-            self.verbose_reporter.stat_line(f"Error in hierarchy creation for batch {batch_num}: {str(e)}")
-            # Return empty result on error
-            return BatchHierarchy(
-                batch_id=batch_num,
-                themes=[]
-            )
+        # Try multiple attempts with validation
+        for attempt in range(self.max_hierarchy_retries):
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model_config.get_model_for_stage("domain_clustering"),
+                    messages=[{"role": "user", "content": prompt}],
+                    response_model=BatchHierarchy,
+                    temperature=0.1 if attempt > 0 else 0.3,  # Lower temperature on retries
+                    max_retries=3
+                )
+                
+                # Validate that all expected codes are present
+                found_codes = getattr(response, '_found_codes', set())
+                if not found_codes:
+                    # Manually extract codes if validator didn't run
+                    found_codes = set()
+                    for theme in response.themes:
+                        for domain in theme.domains:
+                            for code in domain.codes:
+                                found_codes.add(code.code_number)
+                
+                missing_codes = set(expected_code_numbers) - found_codes
+                
+                if not missing_codes:
+                    # All codes present, return success
+                    if attempt > 0:
+                        self.verbose_reporter.stat_line(f"✅ Batch {batch_num}: All {len(expected_code_numbers)} codes included on attempt {attempt + 1}")
+                    return response
+                else:
+                    self.verbose_reporter.stat_line(
+                        f"⚠️  Batch {batch_num} attempt {attempt + 1}: Missing {len(missing_codes)} codes: {sorted(missing_codes)}"
+                    )
+                    
+                    # If this is the last attempt, add missing codes programmatically
+                    if attempt == self.max_hierarchy_retries - 1:
+                        response = self._add_missing_codes_to_batch(response, batch, missing_codes)
+                        self.verbose_reporter.stat_line(f"🔧 Batch {batch_num}: Added {len(missing_codes)} missing codes to 'Overige' theme")
+                        return response
+                        
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"Error in hierarchy creation for batch {batch_num}, attempt {attempt + 1}: {str(e)}")
+                if attempt == self.max_hierarchy_retries - 1:
+                    # Last attempt failed, create hierarchy with all codes in miscellaneous
+                    return self._create_fallback_hierarchy(batch, batch_num)
+        
+        # Should not reach here, but just in case
+        return self._create_fallback_hierarchy(batch, batch_num)
     
     def _format_hierarchies_for_reduction(self, batch_hierarchies: List[BatchHierarchy]) -> str:
-        """Format batch hierarchies for the reduce prompt"""
-        formatted_hierarchies = []
+        """Format batch hierarchies in a clean 3-level structure for the reduce prompt"""
+        formatted_parts = []
         
         for hierarchy in batch_hierarchies:
-            batch_text = f"Batch {hierarchy.batch_id}:\n"
+            hierarchy_text = f"=== Codebook {hierarchy.batch_id} ===\n"
+            
             for theme in hierarchy.themes:
-                batch_text += f"  Theme: {theme.theme_name}\n"
+                hierarchy_text += f"\nTheme: {theme.theme_name}\n"
+                
                 for domain in theme.domains:
-                    codes_text = ", ".join([f"{code.code_number}: {code.code_name}" for code in domain.codes])
-                    batch_text += f"    Domain: {domain.domain_name} - Codes: {codes_text}\n"
-            formatted_hierarchies.append(batch_text)
+                    hierarchy_text += f"  Domain: {domain.domain_name}\n"
+                    
+                    for code in domain.codes:
+                        hierarchy_text += f"    - Code {code.code_number}: {code.code_name}\n"
+            
+            formatted_parts.append(hierarchy_text)
         
-        return "\n".join(formatted_hierarchies)
+        return "\n".join(formatted_parts)
     
-    def _fix_missing_codes(self, reduced_structure: HierarchicalStructure, batch_hierarchies: List[BatchHierarchy]) -> HierarchicalStructure:
+    def _fix_missing_codes(self, reduced_structure: ConsolidatedHierarchy, batch_hierarchies: List[BatchHierarchy]) -> ConsolidatedHierarchy:
         """Programmatically add any missing codes to a Miscellaneous theme"""
         # Get all codes from the reduced structure
         found_codes = set()
@@ -262,7 +420,7 @@ class ThemeIdentifier:
         
         return reduced_structure
     
-    async def _reduce_hierarchies(self, batch_hierarchies: List[BatchHierarchy]) -> HierarchicalStructure:
+    async def _reduce_hierarchies(self, batch_hierarchies: List[BatchHierarchy]) -> ConsolidatedHierarchy:
         """Reduce stage: Merge multiple hierarchies into one consolidated hierarchy"""
         hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
         total_codes = len(self.codebook)
@@ -299,7 +457,7 @@ class ThemeIdentifier:
                 response = await self.client.chat.completions.create(
                     model=self.model_config.get_model_for_stage("theme_synthesis"),
                     messages=[{"role": "user", "content": prompt}],
-                    response_model=HierarchicalStructure,
+                    response_model=ConsolidatedHierarchy,
                     temperature=0.1 if attempt > 0 else 0.2,  # Lower temperature on retries
                     max_retries=3
                 )
@@ -312,6 +470,9 @@ class ThemeIdentifier:
                 )
                 
                 if response_code_count == total_input_codes:
+                    # Log transformation information if available
+                    if hasattr(response, 'transformation_notes'):
+                        self.verbose_reporter.stat_line(f"✓ Tracked {len(getattr(response.transformation_notes, 'themes_merged', []))} theme mergers")
                     return response
                 else:
                     # Keep the best response (most codes preserved)
@@ -337,9 +498,13 @@ class ThemeIdentifier:
         else:
             # All attempts failed with exceptions - return empty structure
             self.verbose_reporter.stat_line(f"❌ All attempts failed with errors")
-            return HierarchicalStructure(themes=[])
+            return ConsolidatedHierarchy(
+                themes=[],
+                theme_transformations=[],
+                domain_transformations=[]
+            )
     
-    def _build_final_codebook_structure(self, hierarchical_result: HierarchicalStructure) -> Dict[str, Any]:
+    def _build_final_codebook_structure(self, hierarchical_result: ConsolidatedHierarchy) -> Dict[str, Any]:
         """Build final structure with complete traceability - directly extract from hierarchy"""
         
         # Directly extract from hierarchy instead of relying on registry matching
@@ -414,37 +579,41 @@ class ThemeIdentifier:
         self.verbose_reporter.stat_line("Starting hierarchy consolidation (Reduce stage)...")
         hierarchical_structure = await self._reduce_hierarchies(batch_hierarchies)
         
-        # Count codes after reduction
-        total_codes_after_reduce = sum(
-            len(domain.codes) 
-            for theme in hierarchical_structure.themes 
-            for domain in theme.domains
-        )
-        self.verbose_reporter.stat_line(f"Total codes after reduction: {total_codes_after_reduce} (expected: {total_codes})")
+        # Validate completeness
+        is_complete, missing_codes = self._validate_code_completeness(hierarchical_structure, total_codes)
         
-        if total_codes_after_reduce < total_codes:
-            # Find missing codes
-            all_code_numbers = set()
-            for theme in hierarchical_structure.themes:
-                for domain in theme.domains:
-                    for code in domain.codes:
-                        all_code_numbers.add(code.code_number)
+        if not is_complete:
+            self.verbose_reporter.stat_line(f"🔧 Applying programmatic fix for {len(missing_codes)} missing codes")
+            # Print details of missing codes
+            for num in sorted(missing_codes):
+                if num in self.code_registry:
+                    code_info = self.code_registry[num]
+                    self.verbose_reporter.stat_line(f"   Missing Code {num}: {code_info['code_text'][:60]}...")
             
-            expected_code_numbers = set(range(1, total_codes + 1))
-            missing_code_numbers = expected_code_numbers - all_code_numbers
+            # Apply fix
+            hierarchical_structure = self._fix_missing_codes(hierarchical_structure, batch_hierarchies)
             
-            if missing_code_numbers:
-                self.verbose_reporter.stat_line(f"⚠️  MISSING CODES: {sorted(missing_code_numbers)}")
-                # Print details of missing codes
-                for num in sorted(missing_code_numbers):
-                    if num in self.code_registry:
-                        code_info = self.code_registry[num]
-                        print(f"   Code {num}: {code_info['code_text']}")
+            # Validate again
+            is_complete, still_missing = self._validate_code_completeness(hierarchical_structure, total_codes)
+            if is_complete:
+                self.verbose_reporter.stat_line(f"✅ All codes now present after programmatic fix")
+            else:
+                self.verbose_reporter.stat_line(f"❌ Still missing {len(still_missing)} codes after fix: {sorted(still_missing)}")
+        else:
+            self.verbose_reporter.stat_line(f"✅ All {total_codes} codes successfully consolidated")
         
         # Build final structure with traceability
         final_structure = self._build_final_codebook_structure(hierarchical_structure)
         
         elapsed_time = time.time() - start_time
+        
+        # Report transformation details if available
+        if hasattr(hierarchical_structure, 'transformation_notes'):
+            notes = hierarchical_structure.transformation_notes
+            if hasattr(notes, 'themes_merged') and notes.themes_merged:
+                self.verbose_reporter.stat_line(f"🔄 Theme mergers: {len(notes.themes_merged)}")
+            if hasattr(notes, 'domains_merged') and notes.domains_merged:
+                self.verbose_reporter.stat_line(f"🔄 Domain mergers: {len(notes.domains_merged)}")
         
         # Report results
         self.verbose_reporter.summary("HIERARCHICAL THEME IDENTIFICATION COMPLETE", {
@@ -465,3 +634,34 @@ class ThemeIdentifier:
                     print(f"      Codes: {', '.join(code_names)}")
         
         return final_structure
+    
+    def _validate_code_completeness(self, hierarchy: ConsolidatedHierarchy, expected_total: int) -> tuple[bool, set]:
+        """Validate that all codes are present in the hierarchy"""
+        found_codes = set()
+        code_locations = {}  # Track where each code ended up
+        
+        for theme in hierarchy.themes:
+            for domain in theme.domains:
+                for code in domain.codes:
+                    if code.code_number in found_codes:
+                        self.verbose_reporter.stat_line(
+                            f"⚠️  Duplicate code {code.code_number} found in {theme.theme_name} > {domain.domain_name}"
+                        )
+                    found_codes.add(code.code_number)
+                    code_locations[code.code_number] = {
+                        'theme': theme.theme_name,
+                        'domain': domain.domain_name
+                    }
+        
+        expected_codes = set(range(1, expected_total + 1))
+        missing_codes = expected_codes - found_codes
+        
+        if missing_codes:
+            self.verbose_reporter.stat_line(f"❌ Missing {len(missing_codes)} codes: {sorted(missing_codes)}")
+            return False, missing_codes
+        
+        if len(found_codes) > expected_total:
+            extra_codes = found_codes - expected_codes
+            self.verbose_reporter.stat_line(f"⚠️  Found unexpected codes: {sorted(extra_codes)}")
+        
+        return True, set()
