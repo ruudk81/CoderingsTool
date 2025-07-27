@@ -413,10 +413,10 @@ OUTPUT FORMAT (JSON):
     {{
       "theme_name": "[Theme name in {language}]",
       "codes": [
-        {
+        {{
           "code_number": [exact number from input],
           "code_name": "[exact code text from input]"
-        }
+        }}
       ]
     }}
   ]
