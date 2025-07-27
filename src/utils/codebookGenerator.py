@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -20,11 +21,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 
+# === MODELS ========================================================================================================
+import models
+
+# === CONFIG ========================================================================================================
 from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
-import models
 from utils.verboseReporter import VerboseReporter
 
+# === UTILS ========================================================================================================
 try:
     import nest_asyncio
     nest_asyncio.apply()
