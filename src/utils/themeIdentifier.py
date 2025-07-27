@@ -59,10 +59,15 @@ class ThemeInHierarchy(BaseModel):
     theme_name: str = Field(description="Theme name")
     domains: List[DomainInHierarchy] = Field(description="Domains in this theme")
 
+class SimpleTheme(BaseModel):
+    """Simplified theme for map stage - themes with codes directly"""
+    theme_name: str = Field(description="Theme name")
+    codes: List[CodeInHierarchy] = Field(description="Codes in this theme")
+
 class BatchHierarchy(BaseModel):
     """Output for Map stage: Complete hierarchy per batch"""
     batch_id: int = Field(description="Identifier for this batch")
-    themes: List[ThemeInHierarchy] = Field(description="Complete hierarchy for this batch")
+    themes: List[SimpleTheme] = Field(description="Simplified themes for this batch")
     
     @model_validator(mode='after')
     def validate_all_codes_present(self):
@@ -70,9 +75,8 @@ class BatchHierarchy(BaseModel):
         # Extract all code numbers from the hierarchy
         found_codes = set()
         for theme in self.themes:
-            for domain in theme.domains:
-                for code in domain.codes:
-                    found_codes.add(code.code_number)
+            for code in theme.codes:
+                found_codes.add(code.code_number)
         
         # Store for later checking
         self._found_codes = found_codes
@@ -195,32 +199,18 @@ class ThemeIdentifier:
         
         if not overige_theme:
             # Create new Overige theme
-            overige_theme = ThemeInHierarchy(
+            overige_theme = SimpleTheme(
                 theme_name="Overige",
-                domains=[]
+                codes=[]
             )
             hierarchy.themes.append(overige_theme)
         
-        # Find or create 'Overige aspecten' domain
-        overige_domain = None
-        for domain in overige_theme.domains:
-            if domain.domain_name.lower() in ["overige aspecten", "miscellaneous aspects", "diverse aspecten"]:
-                overige_domain = domain
-                break
-        
-        if not overige_domain:
-            overige_domain = DomainInHierarchy(
-                domain_name="Overige aspecten",
-                codes=[]
-            )
-            overige_theme.domains.append(overige_domain)
-        
-        # Add missing codes
+        # Add missing codes directly to the theme
         code_lookup = {code['number']: code for code in batch}
         for code_num in sorted(missing_code_numbers):
             if code_num in code_lookup:
                 code_info = code_lookup[code_num]
-                overige_domain.codes.append(
+                overige_theme.codes.append(
                     CodeInHierarchy(
                         code_number=code_num,
                         code_name=code_info['code']
@@ -246,14 +236,9 @@ class ThemeIdentifier:
         return BatchHierarchy(
             batch_id=batch_num,
             themes=[
-                ThemeInHierarchy(
+                SimpleTheme(
                     theme_name="Overige",
-                    domains=[
-                        DomainInHierarchy(
-                            domain_name="Alle codes",
-                            codes=codes
-                        )
-                    ]
+                    codes=codes
                 )
             ]
         )
@@ -298,9 +283,8 @@ class ThemeIdentifier:
                     # Manually extract codes if validator didn't run
                     found_codes = set()
                     for theme in response.themes:
-                        for domain in theme.domains:
-                            for code in domain.codes:
-                                found_codes.add(code.code_number)
+                        for code in theme.codes:
+                            found_codes.add(code.code_number)
                 
                 missing_codes = set(expected_code_numbers) - found_codes
                 
