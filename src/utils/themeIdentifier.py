@@ -444,7 +444,7 @@ class ThemeIdentifier:
         
         # Count total themes and domains from all batches
         total_batch_themes = sum(len(h.themes) for h in batch_hierarchies)
-        total_batch_domains = sum(len(d) for h in batch_hierarchies for d in h.themes)
+        total_batch_domains = sum(len(theme.domains) for h in batch_hierarchies for theme in h.themes)
         self.verbose_reporter.stat_line(f"Created {total_batch_themes} themes across {total_batch_domains} domains from all batches")
         
         # Reduce Stage: Hierarchy consolidation
