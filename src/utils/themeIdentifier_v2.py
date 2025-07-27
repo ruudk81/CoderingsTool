@@ -181,32 +181,36 @@ Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
     
     def _add_missing_codes_to_miscellaneous(self, result: BraunClarkeCodebook, missing_codes: set) -> BraunClarkeCodebook:
         """Add missing codes to a miscellaneous theme"""
-        # Find or create miscellaneous theme
+        # Find existing miscellaneous theme
         misc_theme = None
         for theme in result.themes:
             if any(keyword in theme.theme_name.lower() for keyword in ["misc", "overig", "other", "diversen"]):
                 misc_theme = theme
                 break
         
-        if not misc_theme:
-            # Create new miscellaneous theme
-            misc_theme = ThemeStructure(
-                theme_name="Overige aspecten",
-                theme_description="Codes die niet goed in andere thema's passen",
-                codes=[]
-            )
-            result.themes.append(misc_theme)
-        
-        # Add missing codes
+        # Prepare missing codes as CodeReference objects
+        missing_code_refs = []
         for code_num in sorted(missing_codes):
             if code_num in self.code_registry:
                 code_info = self.code_registry[code_num]
-                misc_theme.codes.append(
+                missing_code_refs.append(
                     CodeReference(
                         code_number=code_num,
                         code_name=code_info['code_name']
                     )
                 )
+        
+        if not misc_theme:
+            # Create new miscellaneous theme with the missing codes
+            misc_theme = ThemeStructure(
+                theme_name="Overige aspecten",
+                theme_description="Codes die niet goed in andere thema's passen",
+                codes=missing_code_refs
+            )
+            result.themes.append(misc_theme)
+        else:
+            # Add missing codes to existing miscellaneous theme
+            misc_theme.codes.extend(missing_code_refs)
         
         return result
     
