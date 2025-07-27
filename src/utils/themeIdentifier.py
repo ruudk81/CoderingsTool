@@ -8,12 +8,14 @@ import instructor
 from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
-import models
+#import models
+from pydantic import BaseModel, Field
 
 # === CONFIG ========================================================================================================
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 from utils.verboseReporter import VerboseReporter
-from prompts import THEME_IDENTIFICATION_PROMPT, HIERARCHY_MAP_PROMPT, HIERARCHY_REDUCE_PROMPT
+#from prompts import THEME_IDENTIFICATION_PROMPT
+from prompts import HIERARCHY_MAP_PROMPT, HIERARCHY_REDUCE_PROMPT
 
 # === UTILS ========================================================================================================
 try:
@@ -21,6 +23,79 @@ try:
     nest_asyncio.apply()
 except ImportError:
     pass
+
+# ============================================================================
+# PYDANTIC MODELS FOR STRUCTURED OUTPUT
+# ============================================================================
+
+class CodeAssignment(BaseModel):
+    """Assignment of a code to a domain with rationale"""
+    code_number: int = Field(description="The original code number (1-64)")
+    code_name: str = Field(description="The original code name")
+    fit_rationale: str = Field(description="Brief explanation why this code fits this domain")
+
+class DomainDefinition(BaseModel):
+    """Domain level grouping of related codes"""
+    domain_name: str = Field(description="Clear, descriptive name for the domain")
+    domain_description: str = Field(description="Brief description of what unites these codes")
+    codes: List[CodeAssignment] = Field(description="Codes belonging to this domain")
+    
+class ThemeDefinition(BaseModel):
+    """High-level theme containing multiple domains"""
+    theme_name: str = Field(description="Conceptual name for the theme")
+    theme_concept: str = Field(description="Explanation of the overarching concept")
+    domains: List[DomainDefinition] = Field(description="Domains belonging to this theme")
+    
+class CodeInHierarchy(BaseModel):
+    """Simplified code reference in hierarchy"""
+    code_number: int = Field(description="Original code number")
+    code_name: str = Field(description="Original code name")
+
+class DomainInHierarchy(BaseModel):
+    """Domain in the simplified hierarchy"""
+    domain_name: str = Field(description="Domain name")
+    codes: List[CodeInHierarchy] = Field(description="Codes in this domain")
+
+class ThemeInHierarchy(BaseModel):
+    """Theme in the simplified hierarchy"""
+    theme_name: str = Field(description="Theme name")
+    domains: List[DomainInHierarchy] = Field(description="Domains in this theme")
+
+class BatchHierarchy(BaseModel):
+    """Output for Map stage: Complete hierarchy per batch"""
+    batch_id: int = Field(description="Identifier for this batch")
+    themes: List[ThemeInHierarchy] = Field(description="Complete hierarchy for this batch")
+
+class CoverageStatistics(BaseModel):
+    """Statistics about the hierarchical structure coverage"""
+    total_codes: int = Field(description="Total number of original codes")
+    classified_codes: int = Field(description="Number of codes assigned to domains")
+    coverage_percentage: float = Field(ge=0, le=100, description="Percentage of codes classified")
+    themes_count: int = Field(description="Number of themes identified")
+    domains_count: int = Field(description="Number of domains identified")
+    avg_codes_per_domain: float = Field(description="Average codes per domain")
+    
+class HierarchicalStructure(BaseModel):
+    """Complete three-level hierarchical structure"""
+    themes: List[ThemeDefinition] = Field(description="All themes with their domains and codes")
+    coverage_statistics: CoverageStatistics = Field(description="Coverage metrics")
+    quality_notes: str = Field(description="Reflections on the structure quality")
+    
+    def get_code_lookup(self) -> Dict[int, Dict[str, str]]:
+        """Build lookup table: code_id -> {domain, theme}"""
+        lookup = {}
+        for theme in self.themes:
+            for domain in theme.domains:
+                for code in domain.codes:
+                    lookup[code.code_number] = {
+                        'domain': domain.domain_name,
+                        'theme': theme.theme_name
+                    }
+        return lookup
+
+# ============================================================================
+# The theme identifier
+# ============================================================================
 
 class ThemeIdentifier:
     
@@ -43,133 +118,133 @@ class ThemeIdentifier:
         self.code_registry = {}
         self._initialize_code_registry()
         
-    def _format_codes_for_prompt(self) -> str:
+    # def _format_codes_for_prompt(self) -> str:
       
-        if not self.codebook:
-            return "No codes available"
+    #     if not self.codebook:
+    #         return "No codes available"
         
-        formatted_codes = []
-        for i, code in enumerate(self.codebook): 
-            code_text = code.code or f"Code {i+1}"
-            definition = code.definition or "No definition available"
-            formatted_codes.append(f"{i+1}. {code_text}: {definition}")
+    #     formatted_codes = []
+    #     for i, code in enumerate(self.codebook): 
+    #         code_text = code.code or f"Code {i+1}"
+    #         definition = code.definition or "No definition available"
+    #         formatted_codes.append(f"{i+1}. {code_text}: {definition}")
             
-        return "\n".join(formatted_codes)
+    #     return "\n".join(formatted_codes)
     
-    async def _identify_themes_async(self) -> models.ThemeAnalysis:
+    # async def _identify_themes_async(self) -> models.ThemeAnalysis:
       
-        # Format codes for prompt
-        codes_text = self._format_codes_for_prompt()
+    #     # Format codes for prompt
+    #     codes_text = self._format_codes_for_prompt()
         
-        # Build prompt using Braun & Clarke methodology
-        prompt = THEME_IDENTIFICATION_PROMPT.format(
-            language = DEFAULT_LANGUAGE,
-            survey_question=self.var_lab,
-            codes=codes_text
-        )
+    #     # Build prompt using Braun & Clarke methodology
+    #     prompt = THEME_IDENTIFICATION_PROMPT.format(
+    #         language = DEFAULT_LANGUAGE,
+    #         survey_question=self.var_lab,
+    #         codes=codes_text
+    #     )
         
-        # Capture prompt if printer is available
-        if self.prompt_printer:
-            self.prompt_printer.capture_prompt(
-                step_name="theme_identification",
-                utility_name="ThemeIdentifier",
-                prompt_content=prompt,
-                prompt_type="Theme Identification"
-            )
+    #     # Capture prompt if printer is available
+    #     if self.prompt_printer:
+    #         self.prompt_printer.capture_prompt(
+    #             step_name="theme_identification",
+    #             utility_name="ThemeIdentifier",
+    #             prompt_content=prompt,
+    #             prompt_type="Theme Identification"
+    #         )
         
-        try:
-            # Get structured response using instructor
-            response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_stage("hierarchical_organisation"),   
-                messages=[{"role": "user", "content": prompt}],
-                response_model=models.ThemeAnalysis,
-                temperature=0.3,
-                max_retries=3
-            )
+    #     try:
+    #         # Get structured response using instructor
+    #         response = await self.client.chat.completions.create(
+    #             model=self.model_config.get_model_for_stage("hierarchical_organisation"),   
+    #             messages=[{"role": "user", "content": prompt}],
+    #             response_model=models.ThemeAnalysis,
+    #             temperature=0.3,
+    #             max_retries=3
+    #         )
             
-            return response
+    #         return response
             
-        except Exception as e:
-            self.verbose_reporter.stat_line(f"Error identifying themes: {str(e)}")
+    #     except Exception as e:
+    #         self.verbose_reporter.stat_line(f"Error identifying themes: {str(e)}")
             
-            # Return empty analysis on error
-            return models.ThemeAnalysis(
-                initial_observations=["Error occurred during theme identification"],
-                suggested_themes=[],
-                reflection={
-                    "broad_or_narrow_themes": "Analysis failed due to error",
-                    "contradictions_or_unexpected_patterns": "Could not analyze",
-                    "potential_subthemes": "Analysis incomplete", 
-                    "unclassified_codes": str([code.code for code in self.codebook])
-                }
-            )
+    #         # Return empty analysis on error
+    #         return models.ThemeAnalysis(
+    #             initial_observations=["Error occurred during theme identification"],
+    #             suggested_themes=[],
+    #             reflection={
+    #                 "broad_or_narrow_themes": "Analysis failed due to error",
+    #                 "contradictions_or_unexpected_patterns": "Could not analyze",
+    #                 "potential_subthemes": "Analysis incomplete", 
+    #                 "unclassified_codes": str([code.code for code in self.codebook])
+    #             }
+    #         )
     
-    def identify_themes(self) -> Dict[str, Any]:
+    # def identify_themes(self) -> Dict[str, Any]:
        
-        self.verbose_reporter.section_header("THEME IDENTIFICATION")
-        start_time = time.time()
+    #     self.verbose_reporter.section_header("THEME IDENTIFICATION")
+    #     start_time = time.time()
         
-        # Check if codebook has codes
-        if not self.codebook:
-            self.verbose_reporter.stat_line("No codes available for theme identification")
-            return {
-                'suggested_themes': [],
-                'theme_analysis': models.ThemeAnalysis(
-                    initial_observations=["No codes provided for analysis"],
-                    suggested_themes=[],
-                    reflection={
-                        "broad_or_narrow_themes": "No analysis possible - no codes",
-                        "contradictions_or_unexpected_patterns": "N/A",
-                        "potential_subthemes": "N/A",
-                        "unclassified_codes": "N/A"
-                    }
-                )
-            }
+    #     # Check if codebook has codes
+    #     if not self.codebook:
+    #         self.verbose_reporter.stat_line("No codes available for theme identification")
+    #         return {
+    #             'suggested_themes': [],
+    #             'theme_analysis': models.ThemeAnalysis(
+    #                 initial_observations=["No codes provided for analysis"],
+    #                 suggested_themes=[],
+    #                 reflection={
+    #                     "broad_or_narrow_themes": "No analysis possible - no codes",
+    #                     "contradictions_or_unexpected_patterns": "N/A",
+    #                     "potential_subthemes": "N/A",
+    #                     "unclassified_codes": "N/A"
+    #                 }
+    #             )
+    #         }
         
-        self.verbose_reporter.stat_line(f"Analyzing {len(self.codebook)} codes for theme patterns")
+    #     self.verbose_reporter.stat_line(f"Analyzing {len(self.codebook)} codes for theme patterns")
         
-        # Run async theme identification
-        theme_analysis = asyncio.run(self._identify_themes_async())
+    #     # Run async theme identification
+    #     theme_analysis = asyncio.run(self._identify_themes_async())
         
-        elapsed_time = time.time() - start_time
+    #     elapsed_time = time.time() - start_time
         
-        # Report results
-        num_themes = len(theme_analysis.suggested_themes)
-        self.verbose_reporter.summary("THEME IDENTIFICATION COMPLETE", {
-            "Input codes": len(self.codebook),
-            "Themes identified": num_themes,
-            "Time elapsed": f"{elapsed_time:.2f}s"
-        })
+    #     # Report results
+    #     num_themes = len(theme_analysis.suggested_themes)
+    #     self.verbose_reporter.summary("THEME IDENTIFICATION COMPLETE", {
+    #         "Input codes": len(self.codebook),
+    #         "Themes identified": num_themes,
+    #         "Time elapsed": f"{elapsed_time:.2f}s"
+    #     })
         
-        # Print themes if verbose
-        if self.verbose and num_themes > 0:
-            print("\nIdentified themes:")
-            for i, theme in enumerate(theme_analysis.suggested_themes):
-                print(f"  {i+1}. {theme.theme_name}")
-                print(f"     Concept: {theme.concept}")
-                print(f"     Codes ({len(theme.codes)}): {', '.join(theme.codes)}")
+    #     # Print themes if verbose
+    #     if self.verbose and num_themes > 0:
+    #         print("\nIdentified themes:")
+    #         for i, theme in enumerate(theme_analysis.suggested_themes):
+    #             print(f"  {i+1}. {theme.theme_name}")
+    #             print(f"     Concept: {theme.concept}")
+    #             print(f"     Codes ({len(theme.codes)}): {', '.join(theme.codes)}")
                 
-        # Check for unclassified codes
-        all_theme_codes = set()
-        for theme in theme_analysis.suggested_themes:
-            all_theme_codes.update(theme.codes)
+    #     # Check for unclassified codes
+    #     all_theme_codes = set()
+    #     for theme in theme_analysis.suggested_themes:
+    #         all_theme_codes.update(theme.codes)
             
-        codebook_codes = {code.code for code in self.codebook}
-        unclassified = codebook_codes - all_theme_codes
+    #     codebook_codes = {code.code for code in self.codebook}
+    #     unclassified = codebook_codes - all_theme_codes
         
-        if unclassified and self.verbose:
-            print(f"\nUnclassified codes ({len(unclassified)}): {', '.join(unclassified)}")
+    #     if unclassified and self.verbose:
+    #         print(f"\nUnclassified codes ({len(unclassified)}): {', '.join(unclassified)}")
             
-        return {
-            'suggested_themes': theme_analysis.suggested_themes,
-            'theme_analysis': theme_analysis,
-            'stats': {
-                'total_codes': len(self.codebook),
-                'themes_identified': num_themes,
-                'codes_in_themes': len(all_theme_codes),
-                'unclassified_codes': len(unclassified)
-            }
-        }
+    #     return {
+    #         'suggested_themes': theme_analysis.suggested_themes,
+    #         'theme_analysis': theme_analysis,
+    #         'stats': {
+    #             'total_codes': len(self.codebook),
+    #             'themes_identified': num_themes,
+    #             'codes_in_themes': len(all_theme_codes),
+    #             'unclassified_codes': len(unclassified)
+    #         }
+    #     }
     
     # === MAPREDUCE HIERARCHICAL THEME IDENTIFICATION ========================================================================================================
     
@@ -205,7 +280,7 @@ class ThemeIdentifier:
             formatted_codes.append(f"{code_info['number']}. {code_info['code']}: {code_info['definition']}")
         return "\n".join(formatted_codes)
     
-    async def _create_hierarchy_for_batch(self, batch: List[Dict], batch_num: int, total_batches: int) -> models.BatchHierarchy:
+    async def _create_hierarchy_for_batch(self, batch: List[Dict], batch_num: int, total_batches: int) -> BatchHierarchy:
         """Map stage: Create complete hierarchy for a batch of codes"""
         codes_text = self._format_batch_for_prompt(batch)
         
@@ -230,7 +305,7 @@ class ThemeIdentifier:
             response = await self.client.chat.completions.create(
                 model=self.model_config.get_model_for_stage("domain_clustering"),
                 messages=[{"role": "user", "content": prompt}],
-                response_model=models.BatchHierarchy,
+                response_model= BatchHierarchy,
                 temperature=0.3,
                 max_retries=3
             )
@@ -239,12 +314,12 @@ class ThemeIdentifier:
         except Exception as e:
             self.verbose_reporter.stat_line(f"Error in hierarchy creation for batch {batch_num}: {str(e)}")
             # Return empty result on error
-            return models.BatchHierarchy(
+            return BatchHierarchy(
                 batch_id=batch_num,
                 themes=[]
             )
     
-    def _format_hierarchies_for_reduction(self, batch_hierarchies: List[models.BatchHierarchy]) -> str:
+    def _format_hierarchies_for_reduction(self, batch_hierarchies: List[BatchHierarchy]) -> str:
         """Format batch hierarchies for the reduce prompt"""
         formatted_hierarchies = []
         
@@ -259,7 +334,7 @@ class ThemeIdentifier:
         
         return "\n".join(formatted_hierarchies)
     
-    async def _reduce_hierarchies(self, batch_hierarchies: List[models.BatchHierarchy]) -> models.HierarchicalStructure:
+    async def _reduce_hierarchies(self, batch_hierarchies: List[BatchHierarchy]) -> HierarchicalStructure:
         """Reduce stage: Merge multiple hierarchies into one consolidated hierarchy"""
         hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
         total_codes = len(self.codebook)
@@ -285,7 +360,7 @@ class ThemeIdentifier:
             response = await self.client.chat.completions.create(
                 model=self.model_config.get_model_for_stage("theme_synthesis"),
                 messages=[{"role": "user", "content": prompt}],
-                response_model=models.HierarchicalStructure,
+                response_model= HierarchicalStructure,
                 temperature=0.2,  # Lower temperature for consistency
                 max_retries=3
             )
@@ -294,9 +369,9 @@ class ThemeIdentifier:
         except Exception as e:
             self.verbose_reporter.stat_line(f"Error in hierarchy reduction: {str(e)}")
             # Return empty structure on error
-            return models.HierarchicalStructure(
+            return HierarchicalStructure(
                 themes=[],
-                coverage_statistics=models.CoverageStatistics(
+                coverage_statistics= CoverageStatistics(
                     total_codes=total_codes,
                     classified_codes=0,
                     coverage_percentage=0.0,
@@ -307,7 +382,7 @@ class ThemeIdentifier:
                 quality_notes=f"Error occurred during reduction: {str(e)}"
             )
     
-    def _build_final_codebook_structure(self, hierarchical_result: models.HierarchicalStructure) -> Dict[str, Any]:
+    def _build_final_codebook_structure(self, hierarchical_result: HierarchicalStructure) -> Dict[str, Any]:
         """Build final structure with complete traceability - directly extract from hierarchy"""
         
         # Directly extract from hierarchy instead of relying on registry matching
@@ -408,57 +483,57 @@ class ThemeIdentifier:
     
     # === VALIDATION FUNCTIONS ========================================================================================================
     
-    def validate_hierarchy_completeness(self, hierarchy: models.HierarchicalStructure) -> Dict[str, Any]:
-        """Validate that no codes are lost in the hierarchy"""
+    # def validate_hierarchy_completeness(self, hierarchy: HierarchicalStructure) -> Dict[str, Any]:
+    #     """Validate that no codes are lost in the hierarchy"""
         
-        # Extract all code IDs from hierarchy
-        hierarchical_code_ids = set()
-        for theme in hierarchy.themes:
-            for domain in theme.domains:
-                for code in domain.codes:
-                    hierarchical_code_ids.add(code.code_number)
+    #     # Extract all code IDs from hierarchy
+    #     hierarchical_code_ids = set()
+    #     for theme in hierarchy.themes:
+    #         for domain in theme.domains:
+    #             for code in domain.codes:
+    #                 hierarchical_code_ids.add(code.code_number)
         
-        # Compare with original
-        original_code_ids = set(range(1, len(self.codebook) + 1))
+    #     # Compare with original
+    #     original_code_ids = set(range(1, len(self.codebook) + 1))
         
-        missing_codes = original_code_ids - hierarchical_code_ids
-        duplicate_codes = []
+    #     missing_codes = original_code_ids - hierarchical_code_ids
+    #     duplicate_codes = []
         
-        # Check for duplicates
-        all_codes = []
-        for theme in hierarchy.themes:
-            for domain in theme.domains:
-                for code in domain.codes:
-                    all_codes.append(code.code_number)
+    #     # Check for duplicates
+    #     all_codes = []
+    #     for theme in hierarchy.themes:
+    #         for domain in theme.domains:
+    #             for code in domain.codes:
+    #                 all_codes.append(code.code_number)
         
-        for code_id in set(all_codes):
-            if all_codes.count(code_id) > 1:
-                duplicate_codes.append(code_id)
+    #     for code_id in set(all_codes):
+    #         if all_codes.count(code_id) > 1:
+    #             duplicate_codes.append(code_id)
         
-        return {
-            'complete': len(missing_codes) == 0 and len(duplicate_codes) == 0,
-            'missing_codes': list(missing_codes),
-            'duplicate_codes': duplicate_codes,
-            'coverage_percentage': (len(hierarchical_code_ids) / len(original_code_ids)) * 100 if original_code_ids else 0,
-            'total_codes_processed': len(hierarchical_code_ids),
-            'total_codes_original': len(original_code_ids)
-        }
+    #     return {
+    #         'complete': len(missing_codes) == 0 and len(duplicate_codes) == 0,
+    #         'missing_codes': list(missing_codes),
+    #         'duplicate_codes': duplicate_codes,
+    #         'coverage_percentage': (len(hierarchical_code_ids) / len(original_code_ids)) * 100 if original_code_ids else 0,
+    #         'total_codes_processed': len(hierarchical_code_ids),
+    #         'total_codes_original': len(original_code_ids)
+    #     }
     
-    def get_coverage_report(self, hierarchy: models.HierarchicalStructure) -> str:
-        """Generate a human-readable coverage report"""
-        validation = self.validate_hierarchy_completeness(hierarchy)
+    # def get_coverage_report(self, hierarchy: HierarchicalStructure) -> str:
+    #     """Generate a human-readable coverage report"""
+    #     validation = self.validate_hierarchy_completeness(hierarchy)
         
-        report = f"Coverage Report:\n"
-        report += f"- Total codes: {validation['total_codes_original']}\n"
-        report += f"- Processed codes: {validation['total_codes_processed']}\n"
-        report += f"- Coverage: {validation['coverage_percentage']:.1f}%\n"
+    #     report = "Coverage Report:\n"
+    #     report += f"- Total codes: {validation['total_codes_original']}\n"
+    #     report += f"- Processed codes: {validation['total_codes_processed']}\n"
+    #     report += f"- Coverage: {validation['coverage_percentage']:.1f}%\n"
         
-        if validation['missing_codes']:
-            report += f"- Missing codes: {validation['missing_codes']}\n"
+    #     if validation['missing_codes']:
+    #         report += f"- Missing codes: {validation['missing_codes']}\n"
         
-        if validation['duplicate_codes']:
-            report += f"- Duplicate codes: {validation['duplicate_codes']}\n"
+    #     if validation['duplicate_codes']:
+    #         report += f"- Duplicate codes: {validation['duplicate_codes']}\n"
         
-        report += f"- Status: {'✓ Complete' if validation['complete'] else '✗ Incomplete'}\n"
+    #     report += f"- Status: {'✓ Complete' if validation['complete'] else '✗ Incomplete'}\n"
         
-        return report
+    #     return report
