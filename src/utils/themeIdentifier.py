@@ -192,6 +192,76 @@ class ThemeIdentifier:
         
         return "\n".join(formatted_hierarchies)
     
+    def _fix_missing_codes(self, reduced_structure: HierarchicalStructure, batch_hierarchies: List[BatchHierarchy]) -> HierarchicalStructure:
+        """Programmatically add any missing codes to a Miscellaneous theme"""
+        # Get all codes from the reduced structure
+        found_codes = set()
+        for theme in reduced_structure.themes:
+            for domain in theme.domains:
+                for code in domain.codes:
+                    found_codes.add(code.code_number)
+        
+        # Get all codes from the original batches
+        all_codes = {}
+        for batch in batch_hierarchies:
+            for theme in batch.themes:
+                for domain in theme.domains:
+                    for code in domain.codes:
+                        all_codes[code.code_number] = code
+        
+        # Find missing codes
+        missing_code_numbers = set(all_codes.keys()) - found_codes
+        
+        if missing_code_numbers:
+            self.verbose_reporter.stat_line(f"📌 Adding {len(missing_code_numbers)} missing codes to Miscellaneous theme")
+            
+            # Find or create Miscellaneous theme
+            misc_theme = None
+            for theme in reduced_structure.themes:
+                if theme.theme_name.lower() in ["overige", "miscellaneous", "diversen"]:
+                    misc_theme = theme
+                    break
+            
+            if not misc_theme:
+                # Create new Miscellaneous theme
+                misc_theme = ThemeDefinition(
+                    theme_name="Overige",
+                    theme_concept="Diverse aspecten die niet in andere thema's passen",
+                    domains=[]
+                )
+                reduced_structure.themes.append(misc_theme)
+            
+            # Find or create Miscellaneous domain
+            misc_domain = None
+            for domain in misc_theme.domains:
+                if domain.domain_name.lower() in ["overige aspecten", "miscellaneous aspects", "diverse aspecten"]:
+                    misc_domain = domain
+                    break
+            
+            if not misc_domain:
+                # Create new Miscellaneous domain
+                misc_domain = DomainDefinition(
+                    domain_name="Overige aspecten",
+                    domain_description="Codes die niet goed in andere domeinen passen",
+                    codes=[]
+                )
+                misc_theme.domains.append(misc_domain)
+            
+            # Add missing codes to the miscellaneous domain
+            for code_num in sorted(missing_code_numbers):
+                original_code = all_codes[code_num]
+                misc_domain.codes.append(
+                    CodeAssignment(
+                        code_number=code_num,
+                        code_name=original_code.code_name,
+                        fit_rationale="Toegevoegd om volledigheid te garanderen"
+                    )
+                )
+            
+            self.verbose_reporter.stat_line(f"✅ All missing codes have been added to {misc_theme.theme_name} > {misc_domain.domain_name}")
+        
+        return reduced_structure
+    
     async def _reduce_hierarchies(self, batch_hierarchies: List[BatchHierarchy]) -> HierarchicalStructure:
         """Reduce stage: Merge multiple hierarchies into one consolidated hierarchy"""
         hierarchies_text = self._format_hierarchies_for_reduction(batch_hierarchies)
@@ -241,6 +311,13 @@ class ThemeIdentifier:
                 
                 if response_code_count == total_input_codes:
                     return response
+                elif attempt == max_attempts - 1:
+                    # Last attempt - fix it programmatically
+                    self.verbose_reporter.stat_line(
+                        f"⚠️  Final attempt: Lost {total_input_codes - response_code_count} codes. "
+                        f"Applying programmatic fix..."
+                    )
+                    return self._fix_missing_codes(response, batch_hierarchies)
                 else:
                     self.verbose_reporter.stat_line(
                         f"⚠️  Attempt {attempt + 1}: Lost {total_input_codes - response_code_count} codes. "
