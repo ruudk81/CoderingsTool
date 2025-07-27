@@ -283,6 +283,123 @@ Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
         
         return prompt
     
+    def _create_individual_code_assignment_prompt(self, code_ref: CodeReference, existing_themes: List[ThemeStructure]) -> str:
+        """Create prompt for analyzing a single miscellaneous code"""
+        
+        existing_themes_text = ""
+        for i, theme in enumerate(existing_themes, 1):
+            if any(keyword in theme.theme_name.lower() for keyword in ["misc", "overig", "other", "diversen"]):
+                continue  # Skip miscellaneous theme itself
+            existing_themes_text += f"{i}. {theme.theme_name}: {theme.theme_description}\n"
+        
+        prompt = f"""You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+Your task is to find the BEST placement for a single code that was previously categorized as "miscellaneous".
+
+SURVEY QUESTION:
+{self.var_lab}
+
+EXISTING THEMES:
+{existing_themes_text}
+
+CODE TO ANALYZE:
+Code {code_ref.code_number}: {code_ref.code_name}
+
+INSTRUCTIONS:
+- Examine this single code carefully in the context of the survey question
+- Consider which existing theme this code fits BEST conceptually
+- Focus on the underlying meaning and purpose of the code
+- If the code truly doesn't fit any existing theme, you may recommend keeping it miscellaneous
+- Prioritize conceptual fit over surface-level keyword matching
+
+DECISION CRITERIA:
+1. Does this code share the same underlying concept as an existing theme?
+2. Would including this code strengthen or weaken the theme's coherence?
+3. Does the code address the same aspect of the survey question as an existing theme?
+
+OUTPUT FORMAT (JSON):
+{{
+  "decision": "assign|miscellaneous",
+  "target_theme": "[exact theme name from list above, or null if miscellaneous]",
+  "confidence": "high|medium|low",
+  "rationale": "[detailed explanation of why this code belongs with this theme or remains miscellaneous]"
+}}
+
+CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
+
+Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
+        
+        return prompt
+    
+    async def _assign_individual_code(self, code_ref: CodeReference, existing_themes: List[ThemeStructure]) -> Dict[str, Any]:
+        """Analyze a single miscellaneous code for best theme assignment"""
+        
+        prompt = self._create_individual_code_assignment_prompt(code_ref, existing_themes)
+        
+        try:
+            class IndividualCodeAssignment(BaseModel):
+                decision: str = Field(description="Whether to assign or keep miscellaneous")
+                target_theme: Optional[str] = Field(description="Target theme name or null")
+                confidence: str = Field(description="Confidence level")
+                rationale: str = Field(description="Detailed explanation")
+            
+            response = await self.client.chat.completions.create(
+                model=self.model_config.get_model_for_stage("theme_synthesis"),
+                messages=[{"role": "user", "content": prompt}],
+                response_model=IndividualCodeAssignment,
+                temperature=0.0,
+                max_retries=2
+            )
+            
+            return {
+                "code": code_ref,
+                "decision": response.decision,
+                "target_theme": response.target_theme,
+                "confidence": response.confidence,
+                "rationale": response.rationale
+            }
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"Error processing Code {code_ref.code_number}: {str(e)}")
+            return {
+                "code": code_ref,
+                "decision": "miscellaneous",
+                "target_theme": None,
+                "confidence": "low",
+                "rationale": f"Processing failed: {str(e)}"
+            }
+    
+    async def _process_miscellaneous_codes_individually(self, misc_codes: List[CodeReference], existing_themes: List[ThemeStructure]) -> List[Dict[str, Any]]:
+        """Process miscellaneous codes individually in concurrent batches"""
+        
+        import asyncio
+        
+        batch_size = 10
+        all_assignments = []
+        
+        # Process in batches of 10 for concurrency control
+        for i in range(0, len(misc_codes), batch_size):
+            batch = misc_codes[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (len(misc_codes) + batch_size - 1) // batch_size
+            
+            self.verbose_reporter.stat_line(f"Processing batch {batch_num}/{total_batches}: {len(batch)} codes...")
+            
+            # Create concurrent tasks for this batch
+            tasks = [
+                self._assign_individual_code(code_ref, existing_themes)
+                for code_ref in batch
+            ]
+            
+            # Execute batch concurrently
+            batch_results = await asyncio.gather(*tasks)
+            all_assignments.extend(batch_results)
+            
+            # Brief pause between batches to be respectful to API
+            if i + batch_size < len(misc_codes):
+                await asyncio.sleep(0.5)
+        
+        return all_assignments
+    
     async def _refine_miscellaneous_codes(self, initial_result: BraunClarkeCodebook) -> BraunClarkeCodebook:
         """Stage 2: Analyze miscellaneous codes for better themes or assignments"""
         
@@ -300,80 +417,72 @@ Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
             self.verbose_reporter.stat_line("No miscellaneous refinement needed")
             return initial_result
         
-        self.verbose_reporter.stat_line(f"Stage 2: Refining {len(misc_codes)} miscellaneous codes...")
+        self.verbose_reporter.stat_line(f"Stage 2: Processing {len(misc_codes)} miscellaneous codes individually...")
         
-        # Create refinement prompt
+        # Get other themes for context
         other_themes = [t for t in initial_result.themes if t != misc_theme]
-        refinement_prompt = self._create_miscellaneous_refinement_prompt(misc_codes, other_themes)
         
-        # Capture prompt if printer is available
-        if self.prompt_printer:
+        # Process codes individually with concurrent batches
+        individual_assignments = await self._process_miscellaneous_codes_individually(misc_codes, other_themes)
+        
+        # Capture sample prompt if printer is available
+        if self.prompt_printer and misc_codes:
+            sample_prompt = self._create_individual_code_assignment_prompt(misc_codes[0], other_themes)
             self.prompt_printer.capture_prompt(
-                step_name="braun_clarke_refinement",
+                step_name="braun_clarke_individual_refinement",
                 utility_name="ThemeIdentifierV2",
-                prompt_content=refinement_prompt,
-                prompt_type="Stage 2: Miscellaneous Refinement"
+                prompt_content=sample_prompt,
+                prompt_type="Stage 2: Individual Code Assignment (Sample)"
             )
         
-        try:
-            # Simple refinement structure
-            class MiscellaneousRefinement(BaseModel):
-                new_themes: List[ThemeStructure] = Field(default=[], description="New themes created from miscellaneous codes")
-                reassignments: List[Dict[str, Any]] = Field(default=[], description="Codes to reassign to existing themes")
-                remaining_miscellaneous: List[CodeReference] = Field(default=[], description="Codes that remain miscellaneous")
+        # Apply individual assignments to create updated result
+        updated_themes = other_themes.copy()
+        remaining_misc_codes = []
+        
+        # Process each individual assignment
+        for assignment in individual_assignments:
+            code_ref = assignment["code"]
+            decision = assignment["decision"]
+            target_theme = assignment["target_theme"]
+            confidence = assignment["confidence"]
+            rationale = assignment["rationale"]
             
-            response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_stage("theme_synthesis"),
-                messages=[{"role": "user", "content": refinement_prompt}],
-                response_model=MiscellaneousRefinement,
-                temperature=0.0,
-                max_retries=2
-            )
-            
-            # Apply refinements to create updated result
-            updated_themes = other_themes.copy()
-            
-            # Add new themes
-            for new_theme in response.new_themes:
-                updated_themes.append(new_theme)
-                self.verbose_reporter.stat_line(f"✓ Created new theme: '{new_theme.theme_name}' with {len(new_theme.codes)} codes")
-            
-            # Apply reassignments
-            for reassignment in response.reassignments:
-                target_theme_name = reassignment['target_theme']
-                code_to_reassign = CodeReference(
-                    code_number=reassignment['code_number'],
-                    code_name=reassignment['code_name']
-                )
-                
+            if decision == "assign" and target_theme:
                 # Find target theme and add code
+                theme_found = False
                 for theme in updated_themes:
-                    if theme.theme_name == target_theme_name:
-                        theme.codes.append(code_to_reassign)
-                        self.verbose_reporter.stat_line(f"✓ Reassigned Code {code_to_reassign.code_number} to '{target_theme_name}'")
+                    if theme.theme_name == target_theme:
+                        theme.codes.append(code_ref)
+                        self.verbose_reporter.stat_line(f"✓ Code {code_ref.code_number} → '{target_theme}' ({confidence} confidence)")
+                        theme_found = True
                         break
-            
-            # Handle remaining miscellaneous codes
-            if response.remaining_miscellaneous:
-                remaining_misc_theme = ThemeStructure(
-                    theme_name="Overige aspecten",
-                    theme_description="Codes die niet in andere thema's passen",
-                    codes=response.remaining_miscellaneous
-                )
-                updated_themes.append(remaining_misc_theme)
-                self.verbose_reporter.stat_line(f"✓ {len(response.remaining_miscellaneous)} codes remain in miscellaneous")
+                
+                if not theme_found:
+                    self.verbose_reporter.stat_line(f"⚠️  Target theme '{target_theme}' not found for Code {code_ref.code_number}, keeping miscellaneous")
+                    remaining_misc_codes.append(code_ref)
             else:
-                self.verbose_reporter.stat_line("✓ All miscellaneous codes successfully categorized!")
-            
-            # Create updated result
-            return BraunClarkeCodebook(
-                themes=updated_themes,
-                methodology_notes=f"{initial_result.methodology_notes} - Enhanced with two-stage refinement"
+                # Keep as miscellaneous
+                remaining_misc_codes.append(code_ref)
+                if assignment["decision"] == "miscellaneous":
+                    self.verbose_reporter.stat_line(f"○ Code {code_ref.code_number} remains miscellaneous ({confidence} confidence)")
+        
+        # Handle remaining miscellaneous codes
+        if remaining_misc_codes:
+            remaining_misc_theme = ThemeStructure(
+                theme_name="Overige aspecten",
+                theme_description="Codes die niet in andere thema's passen",
+                codes=remaining_misc_codes
             )
-            
-        except Exception as e:
-            self.verbose_reporter.stat_line(f"Stage 2 refinement failed: {str(e)}")
-            return initial_result
+            updated_themes.append(remaining_misc_theme)
+            self.verbose_reporter.stat_line(f"✓ {len(remaining_misc_codes)} codes remain in miscellaneous")
+        else:
+            self.verbose_reporter.stat_line("🎉 All miscellaneous codes successfully categorized!")
+        
+        # Create updated result
+        return BraunClarkeCodebook(
+            themes=updated_themes,
+            methodology_notes=f"{initial_result.methodology_notes} - Enhanced with individual code refinement"
+        )
     
     async def identify_themes_braun_clarke(self) -> Dict[str, Any]:
         """
