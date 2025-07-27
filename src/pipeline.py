@@ -678,22 +678,14 @@ else:
         #     verbose=VERBOSE,
         #     prompt_printer=prompt_printer
         # )
+        
         # hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
 
-        from utils.themeIdentifier_v2 import ThemeIdentifierV2
-        theme_identifier_instance = ThemeIdentifierV2(
-            codebook=codebook,
-            var_lab=var_lab,
-            verbose=VERBOSE,
-            prompt_printer=prompt_printer
-        )
         
-        result = await theme_identifier_instance.identify_themes_braun_clarke()
+         
         
-        
-        
-        print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
-        print(f"Expected: 64 codes")
+        # print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
+        # print(f"Expected: 64 codes")
         
         # idx = 1
         # for result in hierarchical_results['codebook']:
@@ -708,22 +700,54 @@ else:
         #         else:
         #             print(result['code'])
                     
-        idx = 1
-        for result in hierarchical_results['hierarchy']:
-            key, themes = result 
-            for theme in themes:
-                if theme.__class__.__name__ != "ThemeDefinition":
-                    continue  
-                print(f"\nTheme: {theme.theme_name}")
-                #print(f"Concept: {theme.theme_concept}")
-                for domain in theme.domains:
-                    print(f"  Domain: {domain.domain_name}")
-                    #print(f"  Description: {domain.domain_description}")
-                    for code in domain.codes:
-                        print(f"    Code {idx}: {code.code_name}")
-                        #print(f"    Code {code.code_number}: {code.code_name}")
-                        #print(f"      Fit rationale: {code.fit_rationale}")
-                        idx += 1
+        # idx = 1
+        # for result in hierarchical_results['hierarchy']:
+        #     key, themes = result 
+        #     for theme in themes:
+        #         if theme.__class__.__name__ != "ThemeDefinition":
+        #             continue  
+        #         print(f"\nTheme: {theme.theme_name}")
+        #         #print(f"Concept: {theme.theme_concept}")
+        #         for domain in theme.domains:
+        #             print(f"  Domain: {domain.domain_name}")
+        #             #print(f"  Description: {domain.domain_description}")
+        #             for code in domain.codes:
+        #                 print(f"    Code {idx}: {code.code_name}")
+        #                 #print(f"    Code {code.code_number}: {code.code_name}")
+        #                 #print(f"      Fit rationale: {code.fit_rationale}")
+        #                 idx += 1
+        
+        # from utils.themeIdentifier_v2 import ThemeIdentifierV2
+        # theme_identifier_instance = ThemeIdentifierV2(
+        #     codebook=codebook,
+        #     var_lab=var_lab,
+        #     verbose=VERBOSE,
+        #     prompt_printer=prompt_printer
+        # )
+        
+        # result = await theme_identifier_instance.identify_themes_braun_clarke()
+        
+        from utils.themeIdentifier_v3 import ThemeIdentifierV3
+        theme_identifier = ThemeIdentifierV3(
+            codebook=codebook,
+            var_lab=var_lab,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        result = await theme_identifier.identify_themes_braun_clarke_v3()
+        
+        themes = result['themes']
+
+        for theme in themes:
+            print(f"\n🟣 Theme: {theme.theme_name}")
+            print(f"   Description: {theme.theme_description}")
+            print("   Codes:")
+            for code in theme.codes:
+                print(f"     - Code {code.code_number}: {code.code_name}")
+        
+
+        
+    
                         
                     
 
