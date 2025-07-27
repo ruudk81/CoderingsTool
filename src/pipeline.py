@@ -468,7 +468,7 @@ else:
 # === STEP 7 ========================================================================================================
 """Codebook Generation"""
 from utils import speculativeStarterCodes
-from utils import codebookGenerator_v2 as codebookGenerator
+from utils import codebookGenerator as codebookGenerator
 
 FORCE = True
 
@@ -516,18 +516,18 @@ else:
         results = generator.generate()
         
     idx = 1
-    codebook_entries = []
+    codebook = []
     for key, value in results.items():
         if key == 'codebook':
             for item in value:
                 print(f"{idx}: {item['code']}")
-                codebook = models.Codebook(
+                codebook_entry = models.Codebook(
                     code = item['code'],
                     definition = item['definition'],
                     topic = None,  # keep empty for now
                     theme = None  # keep empty for now
                 )
-                codebook_entries.append(codebook)
+                codebook.append(codebook_entry)
                 idx += 1 
 
     # idx = 1
