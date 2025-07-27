@@ -289,11 +289,45 @@ class ThemeIdentifier:
         # Count total themes and domains from all batches
         total_batch_themes = sum(len(h.themes) for h in batch_hierarchies)
         total_batch_domains = sum(len(theme.domains) for h in batch_hierarchies for theme in h.themes)
+        total_codes_in_batches = sum(
+            len(domain.codes) 
+            for h in batch_hierarchies 
+            for theme in h.themes 
+            for domain in theme.domains
+        )
         self.verbose_reporter.stat_line(f"Created {total_batch_themes} themes across {total_batch_domains} domains from all batches")
+        self.verbose_reporter.stat_line(f"Total codes in all batches: {total_codes_in_batches} (expected: {total_codes})")
         
         # Reduce Stage: Hierarchy consolidation
         self.verbose_reporter.stat_line("Starting hierarchy consolidation (Reduce stage)...")
         hierarchical_structure = await self._reduce_hierarchies(batch_hierarchies)
+        
+        # Count codes after reduction
+        total_codes_after_reduce = sum(
+            len(domain.codes) 
+            for theme in hierarchical_structure.themes 
+            for domain in theme.domains
+        )
+        self.verbose_reporter.stat_line(f"Total codes after reduction: {total_codes_after_reduce} (expected: {total_codes})")
+        
+        if total_codes_after_reduce < total_codes:
+            # Find missing codes
+            all_code_numbers = set()
+            for theme in hierarchical_structure.themes:
+                for domain in theme.domains:
+                    for code in domain.codes:
+                        all_code_numbers.add(code.code_number)
+            
+            expected_code_numbers = set(range(1, total_codes + 1))
+            missing_code_numbers = expected_code_numbers - all_code_numbers
+            
+            if missing_code_numbers:
+                self.verbose_reporter.stat_line(f"⚠️  MISSING CODES: {sorted(missing_code_numbers)}")
+                # Print details of missing codes
+                for num in sorted(missing_code_numbers):
+                    if num in self.code_registry:
+                        code_info = self.code_registry[num]
+                        print(f"   Code {num}: {code_info['code_text']}")
         
         # Build final structure with traceability
         final_structure = self._build_final_codebook_structure(hierarchical_structure)
