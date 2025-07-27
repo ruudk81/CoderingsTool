@@ -104,8 +104,28 @@ class ThemeDefinition(BaseModel):
             raise ValueError("A theme should contain at least 1 domain")
         return v
 
+class CodeInHierarchy(BaseModel):
+    """Simplified code reference in hierarchy"""
+    code_number: int = Field(description="Original code number")
+    code_name: str = Field(description="Original code name")
+
+class DomainInHierarchy(BaseModel):
+    """Domain in the simplified hierarchy"""
+    domain_name: str = Field(description="Domain name")
+    codes: List[CodeInHierarchy] = Field(description="Codes in this domain")
+
+class ThemeInHierarchy(BaseModel):
+    """Theme in the simplified hierarchy"""
+    theme_name: str = Field(description="Theme name")
+    domains: List[DomainInHierarchy] = Field(description="Domains in this theme")
+
+class BatchHierarchy(BaseModel):
+    """Output for Map stage: Complete hierarchy per batch"""
+    batch_id: int = Field(description="Identifier for this batch")
+    themes: List[ThemeInHierarchy] = Field(description="Complete hierarchy for this batch")
+
 class DomainClusteringResult(BaseModel):
-    """Output for Stage 1: Domain clustering per batch"""
+    """Output for Stage 1: Domain clustering per batch - DEPRECATED"""
     batch_id: int = Field(description="Identifier for this batch")
     identified_domains: List[DomainDefinition] = Field(description="Domains identified in this batch")
     processing_notes: str = Field(description="Any observations about domain identification")
