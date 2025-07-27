@@ -218,13 +218,13 @@ class ThemeIdentifier:
             language=DEFAULT_LANGUAGE
         )
         
-        # Capture prompt if printer is available
-        if self.prompt_printer:
+        # Capture prompt if printer is available (only print first batch as sample)
+        if self.prompt_printer and batch_num == 1:
             self.prompt_printer.capture_prompt(
                 step_name="domain_clustering",
                 utility_name="ThemeIdentifier",
                 prompt_content=prompt,
-                prompt_type=f"Domain Clustering - Batch {batch_num}"
+                prompt_type="Domain Clustering (Sample Batch 1)"
             )
         
         try:
