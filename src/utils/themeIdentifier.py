@@ -314,27 +314,27 @@ class ThemeIdentifier:
             )
     
     def _build_final_codebook_structure(self, hierarchical_result: models.HierarchicalStructure) -> Dict[str, Any]:
-        """Build final structure with complete traceability"""
+        """Build final structure with complete traceability - directly extract from hierarchy"""
         
-        # Update code registry with assignments
+        # Directly extract from hierarchy instead of relying on registry matching
+        codebook_data = []
+        
         for theme in hierarchical_result.themes:
             for domain in theme.domains:
                 for code_assignment in domain.codes:
-                    code_id = code_assignment.code_number
-                    if code_id in self.code_registry:
-                        self.code_registry[code_id]['domain_assignment'] = domain.domain_name
-                        self.code_registry[code_id]['theme_assignment'] = theme.theme_name
+                    # Get the original definition from registry (fallback to code name if not found)
+                    original_definition = self.code_registry.get(code_assignment.code_number, {}).get('definition', code_assignment.code_name)
+                    
+                    codebook_data.append({
+                        'code_id': code_assignment.code_number,
+                        'code': code_assignment.code_name,
+                        'definition': original_definition,
+                        'domain': domain.domain_name,
+                        'theme': theme.theme_name
+                    })
         
-        # Build the final codebook structure
-        codebook_data = []
-        for code_id, code_record in self.code_registry.items():
-            codebook_data.append({
-                'code_id': code_id,
-                'code': code_record['code_text'],
-                'definition': code_record['definition'],
-                'domain': code_record['domain_assignment'],
-                'theme': code_record['theme_assignment']
-            })
+        # Sort by code_id to maintain original order
+        codebook_data.sort(key=lambda x: x['code_id'])
         
         return {
             'codebook': codebook_data,
