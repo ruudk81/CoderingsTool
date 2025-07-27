@@ -54,9 +54,13 @@ class ModelConfig:
     
     # Step 6: Codebook generation
     speculative_codes_model: str = DEFAULT_MODEL  
+
+    # Step 7: Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
-    initial_code_generation_model: str = DEFAULT_MODEL       
-    review_code_generation_model: str = "gpt-4o"         
+    codebook_analysis_model: str = DEFAULT_MODEL     
+    response_summary_model: str = DEFAULT_MODEL     
+    match_and_recommend_model: str = DEFAULT_MODEL     
+    validation_model: str = DEFAULT_MODEL      
  
     # =============================================================================
     # GLOBAL PARAMETERS
@@ -72,11 +76,6 @@ class ModelConfig:
     
     spell_check_temperature: float = 0.0
     quality_filter_temperature: float = 0.0
-    segmentation_temperature: float = 0.0
-    description_temperature: float = 0.0
-    cluster_merge_temperature: float = 0.0   
-    labelling_temperature: float = 0.0
-    phase3_themes_temperature: float = 0.0  # Keep deterministic even for premium model
     
     # =============================================================================
     # HELPER METHODS
@@ -92,8 +91,10 @@ class ModelConfig:
             'embedding': self.embedding_model,
             'speculative_codes': self.speculative_codes_model,
             'tiktoken': self.token_codebook_generation_model,
-            'initial_codes': self.initial_code_generation_model,
-            'review_codes': self.review_code_generation_model
+            'codes_analysis': self.codebook_analysis_model,
+            'cluster_analysis': self.response_summary_model,
+            'recommend': self.match_and_recommend_model,
+            'review': self.validation_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
     
@@ -130,7 +131,7 @@ class CacheConfig:
         "extracted_ideas": "004",         
         "embeddings": "005",     
         "initial_clusters": "006",
-        "codebook": "007",
+        "codebook_generation": "007",
         "export": "008"
         })
     

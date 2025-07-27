@@ -9,6 +9,7 @@ import logging
 import numpy as np
 import time
 from pydantic import BaseModel, Field
+from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 import hashlib
 from enum import Enum
 
@@ -22,10 +23,7 @@ from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.runnables import RunnableLambda
 
-#from prompts import SYSTEM_MESSAGE_CODEBOOK, INITIAL_CODEBOOK_GENERATION, REVIEW_CODEBOOK_GENERATION
 from prompts_v2 import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
@@ -47,13 +45,6 @@ logging.getLogger("tenacity").setLevel(logging.WARNING)
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
-
-# Note: CodebookAnalysis no longer used - Step 1 now returns plain text
-# class CodebookAnalysis(BaseModel):
-#     """Output for codebook analysis step (Step 1)"""
-#     code_scope_analysis: Dict[str, str] = Field(description="Analysis of what each code covers and its abstraction level")
-#     coverage_landscape: str = Field(description="What aspects of the survey question these codes collectively address")
-#     potential_gaps: str = Field(description="What types of responses might not fit into existing codes")
 
 class CoverageAssessment(BaseModel):
     """Coverage assessment details"""
@@ -160,16 +151,6 @@ EMBEDDING_RETRY_CONFIG = {
     "before_sleep": before_sleep_log(logger, logging.WARNING),
     "reraise": True
 }
-
-# ============================================================================
-# PYDANTIC MODELS FOR STRUCTURED OUTPUT
-# ============================================================================
-
-# Pydantic models for structured LLM outputs
-# Only keeping models that are actively used - others will be created as needed
-
-# Future Pydantic models will be added here as we enhance Steps 2, 3, and 4
-
 
 # ============================================================================
 # SHARED CODEBOOK WITH REAL-TIME UPDATES
@@ -289,24 +270,24 @@ class OptimizedEmbeddingManager:
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
     
-    async def get_embeddings_for_current_codebook(self) -> Tuple[List[Dict[str, str]], List[np.ndarray], int]:
-        """Get embeddings for the current codebook state"""
-        # Get current snapshot
-        codes, version = await self.shared_codebook.get_current_snapshot()
+    # async def get_embeddings_for_current_codebook(self) -> Tuple[List[Dict[str, str]], List[np.ndarray], int]:
+    #     """Get embeddings for the current codebook state"""
+    #     # Get current snapshot
+    #     codes, version = await self.shared_codebook.get_current_snapshot()
         
-        # Check if we have cached embeddings for this version
-        cached_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
-        if cached_embeddings is not None:
-            return codes, cached_embeddings, version
+    #     # Check if we have cached embeddings for this version
+    #     cached_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
+    #     if cached_embeddings is not None:
+    #         return codes, cached_embeddings, version
         
-        # Generate embeddings for new version
-        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
-        embeddings = await self._embed_texts(code_texts)
+    #     # Generate embeddings for new version
+    #     code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+    #     embeddings = await self._embed_texts(code_texts)
         
-        # Cache for this version
-        await self.shared_codebook.cache_embeddings(version, embeddings)
+    #     # Cache for this version
+    #     await self.shared_codebook.cache_embeddings(version, embeddings)
         
-        return codes, embeddings, version
+    #     return codes, embeddings, version
     
     async def get_snapshot_embeddings(self, codes: List[Dict[str, str]], version: int) -> Tuple[List[Dict[str, str]], List[np.ndarray]]:
         """Get embeddings for a codebook snapshot like v2 - always fresh, no version caching"""
@@ -345,43 +326,43 @@ class OptimizedEmbeddingManager:
             else:
                 raise ProcessingError(f"Embedding processing error: {str(e)}", error_type)
     
-    async def _embed_texts(self, texts: List[str]) -> List[np.ndarray]:
-        """Embed multiple texts with caching and retry logic"""
-        # Check cache first
-        embeddings = []
-        new_texts = []
-        new_indices = []
+    # async def _embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+    #     """Embed multiple texts with caching and retry logic"""
+    #     # Check cache first
+    #     embeddings = []
+    #     new_texts = []
+    #     new_indices = []
         
-        for i, text in enumerate(texts):
-            text_hash = self._get_text_hash(text)
-            if text_hash in self._individual_cache:
-                embeddings.append((i, self._individual_cache[text_hash]))
-            else:
-                new_texts.append(text)
-                new_indices.append(i)
+    #     for i, text in enumerate(texts):
+    #         text_hash = self._get_text_hash(text)
+    #         if text_hash in self._individual_cache:
+    #             embeddings.append((i, self._individual_cache[text_hash]))
+    #         else:
+    #             new_texts.append(text)
+    #             new_indices.append(i)
         
-        # Embed new texts if any
-        if new_texts:
-            try:
-                new_embeddings = await self._embed_texts_with_retry(new_texts)
+    #     # Embed new texts if any
+    #     if new_texts:
+    #         try:
+    #             new_embeddings = await self._embed_texts_with_retry(new_texts)
                 
-                # Cache new embeddings
-                for j, embedding in enumerate(new_embeddings):
-                    text = new_texts[j]
-                    text_hash = self._get_text_hash(text)
-                    self._individual_cache[text_hash] = embedding
-                    embeddings.append((new_indices[j], embedding))
+    #             # Cache new embeddings
+    #             for j, embedding in enumerate(new_embeddings):
+    #                 text = new_texts[j]
+    #                 text_hash = self._get_text_hash(text)
+    #                 self._individual_cache[text_hash] = embedding
+    #                 embeddings.append((new_indices[j], embedding))
                     
-            except (APIError, ProcessingError) as e:
-                logger.error(f"Failed to embed texts after retries: {str(e)}")
-                return []
-            except RetryError as e:
-                logger.error(f"Retry exhausted for embedding: {str(e)}")
-                return []
+    #         except (APIError, ProcessingError) as e:
+    #             logger.error(f"Failed to embed texts after retries: {str(e)}")
+    #             return []
+    #         except RetryError as e:
+    #             logger.error(f"Retry exhausted for embedding: {str(e)}")
+    #             return []
         
-        # Sort by index and return
-        embeddings.sort(key=lambda x: x[0])
-        return [emb[1] for emb in embeddings]
+    #     # Sort by index and return
+    #     embeddings.sort(key=lambda x: x[0])
+    #     return [emb[1] for emb in embeddings]
 
 # ============================================================================
 # LANGCHAIN BATCH PROCESSOR
@@ -428,38 +409,33 @@ class LangChainBatchProcessor:
         }
     
     def _init_langchain_chain(self):
-        """Initialize chains for V2 multi-step process with V3 4-stage model architecture"""
+        """Initialize chains"""
         
-        # V3 Feature: Specialized LLMs for each of the 4 steps
         self.step1_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_stage("initial_codes"),  # Codebook analysis
+            model=self.model_config.get_model_for_stage("codes_analysis"),   
             temperature=0.0
         )
         
         self.step2_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_stage("review_codes"),  # Response summary
+            model=self.model_config.get_model_for_stage("cluster_analysis"),   
             temperature=0.0
         )
         
         self.step3_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_stage("initial_codes"),  # Match & recommend
+            model=self.model_config.get_model_for_stage("recommend"),   
             temperature=0.0
         )
         
         self.step4_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
-            model=self.model_config.get_model_for_stage("review_codes"),  # Validation
+            model=self.model_config.get_model_for_stage("review"),   
             temperature=0.0
         )
         
-        # Keep reference to primary LLM for compatibility (use step2_llm as default)
-        self.llm = self.step2_llm
-        
-        # Import output parsers for chain construction
-        from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
+        #self.llm = self.step2_llm
         
         # Step 1: Codebook Analysis Chain (uses step1_llm with Pydantic validation)
         codebook_prompt = PromptTemplate(
@@ -523,7 +499,7 @@ class LangChainBatchProcessor:
         self._diversity_complete = False
     
     def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
-        """Format Step 3 recommendation in a human-readable way for Step 4"""
+        """Format prompt 3 for Step 4"""
         if not recommendation:
             return "No recommendation available"
             
@@ -576,7 +552,7 @@ Action Details:
             if missing_steps:
                 logger.info(f"🎯 Prompt capture progress: {len(self._captured_steps)}/4 - captured {step_type}, still need: {', '.join(sorted(missing_steps))}")
             else:
-                logger.info(f"✅ All 4 prompts captured! Pipeline structure complete.")
+                logger.info("✅ All 4 prompts captured! Pipeline structure complete.")
     
     @retry(**API_RETRY_CONFIG)
     async def _process_step1_with_retry(self, inputs: Dict) -> Dict:
@@ -634,78 +610,76 @@ Action Details:
             else:
                 raise ProcessingError(f"Step 4 processing error: {str(e)}", error_type)
     
-    async def _retry_individual_failures(self, failed_clusters: List[Tuple[int, Dict]], 
-                                        step_name: str = "unknown") -> Dict[int, Any]:
-        """Retry individual failed clusters from a batch (V3 feature)"""
-        recovery_results = {}
+    # async def _retry_individual_failures(self, failed_clusters: List[Tuple[int, Dict]], 
+    #                                     step_name: str = "unknown") -> Dict[int, Any]:
+    #     """Retry individual failed clusters from a batch (V3 feature)"""
+    #     recovery_results = {}
         
-        for cluster_id, cluster_data in failed_clusters:
-            try:
-                # Process individual cluster as a single-item batch
-                individual_results = await self.process_batch_langchain([(cluster_id, cluster_data)])
+    #     for cluster_id, cluster_data in failed_clusters:
+    #         try:
+    #             # Process individual cluster as a single-item batch
+    #             individual_results = await self.process_batch_langchain([(cluster_id, cluster_data)])
                 
-                if individual_results and len(individual_results) > 0:
-                    recovery_results[cluster_id] = individual_results[0]
-                    self.stats['successful_recoveries'] += 1
+    #             if individual_results and len(individual_results) > 0:
+    #                 recovery_results[cluster_id] = individual_results[0]
+    #                 self.stats['successful_recoveries'] += 1
                     
-                    if self.verbose:
-                        logger.info(f"Successfully recovered processing for cluster {cluster_id} in {step_name}")
-                else:
-                    recovery_results[cluster_id] = {
-                        'cluster_id': cluster_id,
-                        'status': 'individual_recovery_no_results',
-                        'error': 'No results from individual processing'
-                    }
+    #                 if self.verbose:
+    #                     logger.info(f"Successfully recovered processing for cluster {cluster_id} in {step_name}")
+    #             else:
+    #                 recovery_results[cluster_id] = {
+    #                     'cluster_id': cluster_id,
+    #                     'status': 'individual_recovery_no_results',
+    #                     'error': 'No results from individual processing'
+    #                 }
                     
-            except Exception as e:
-                logger.error(f"Individual retry failed for cluster {cluster_id}: {str(e)}")
-                recovery_results[cluster_id] = {
-                    'cluster_id': cluster_id,
-                    'status': 'individual_recovery_failed', 
-                    'error': str(e),
-                    'error_type': type(e).__name__
-                }
+    #         except Exception as e:
+    #             logger.error(f"Individual retry failed for cluster {cluster_id}: {str(e)}")
+    #             recovery_results[cluster_id] = {
+    #                 'cluster_id': cluster_id,
+    #                 'status': 'individual_recovery_failed', 
+    #                 'error': str(e),
+    #                 'error_type': type(e).__name__
+    #             }
         
-        return recovery_results
+    #     return recovery_results
     
-    async def _process_cluster_individually_as_fallback(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
-        """Process a single cluster individually as fallback when batch processing fails (V3 feature)"""
-        try:
-            logger.info(f"V4: Attempting individual fallback for cluster {cluster_id}")
+    # async def _process_cluster_individually_as_fallback(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
+    #     """Process a single cluster individually as fallback when batch processing fails (V3 feature)"""
+    #     try:
+    #         logger.info(f"V4: Attempting individual fallback for cluster {cluster_id}")
             
-            # Process as a batch of 1
-            single_cluster_batch = [(cluster_id, cluster_data)]
-            results = await self.process_batch_langchain(single_cluster_batch)
+    #         # Process as a batch of 1
+    #         single_cluster_batch = [(cluster_id, cluster_data)]
+    #         results = await self.process_batch_langchain(single_cluster_batch)
             
-            if results and len(results) > 0:
-                return results[0]
-            else:
-                return {
-                    'cluster_id': cluster_id,
-                    'status': 'v4_individual_fallback_failed',
-                    'error': 'No results from individual processing'
-                }
+    #         if results and len(results) > 0:
+    #             return results[0]
+    #         else:
+    #             return {
+    #                 'cluster_id': cluster_id,
+    #                 'status': 'v4_individual_fallback_failed',
+    #                 'error': 'No results from individual processing'
+    #             }
                 
-        except Exception as e:
-            logger.error(f"V4: Individual fallback failed for cluster {cluster_id}: {e}")
-            return {
-                'cluster_id': cluster_id,
-                'status': 'v4_individual_fallback_error',
-                'error': str(e),
-                'error_type': type(e).__name__
-            }
+    #     except Exception as e:
+    #         logger.error(f"V4: Individual fallback failed for cluster {cluster_id}: {e}")
+    #         return {
+    #             'cluster_id': cluster_id,
+    #             'status': 'v4_individual_fallback_error',
+    #             'error': str(e),
+    #             'error_type': type(e).__name__
+    #         }
     
     async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
         """Process a batch using V2 multi-step approach with V3 nearest codes logic"""
         batch_results = []
         
-        # Process each cluster with nearest codes targeting (V3 logic)
         for cluster_id, cluster_data in batch_clusters:
             try:
                 start_time = time.time()
                 llm_start = time.time()  # Track LLM time separately
                 
-                # V3 Logic: Calculate cluster embedding and find nearest codes
                 embed_start = time.time()
                 cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
                 nearest_codes = await self._find_nearest_codes(cluster_embedding)
@@ -714,7 +688,7 @@ Action Details:
                 # Get current version for logging
                 _, version = await self.shared_codebook.get_current_snapshot()
                 
-                # Build targeted code_text using nearest codes (V3 approach)
+                # Build targeted code_text using nearest codes  
                 if nearest_codes:
                     code_text = "\n".join([
                         f"- {code['code']}: {code['definition']}" 
@@ -844,9 +818,7 @@ Action Details:
                 new_codes_needed = False
                 proposed_codes = []
                 
-                # Handle new MatchRecommendation structure
                 try:
-                    # recommendations is now a single MatchRecommendation object
                     if hasattr(recommendations, 'decision'):
                         decision = recommendations.decision.lower()
                         
@@ -1421,8 +1393,8 @@ class InductiveCodebookGenerator:
         """Generate codebook with LangChain optimization"""
         start_time = time.time()
         
-        logger.info("🚀 STARTING V4 CODEBOOK GENERATION (Multi-step prompts + V3 features)")
-        self.verbose_reporter.section_header("CODEBOOK GENERATION V4 - MULTI-STEP PROMPTS + V3 FEATURES", emoji="🔥")
+        logger.info("🚀 STARTING V4 CODEBOOK GENERATION (Multi-step prompts)")
+        self.verbose_reporter.section_header("CODEBOOK GENERATION - MULTI-STEP PROMPTS", emoji="🔥")
         
         # Initialize shared codebook
         shared_codebook = SharedCodebook(self.starter_codes)
