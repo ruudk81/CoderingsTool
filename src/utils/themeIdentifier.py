@@ -265,6 +265,7 @@ class ThemeIdentifier:
         
         prompt = HIERARCHY_MAP_PROMPT.format(
             batch_number=batch_num,
+            batch_length=len(batch),
             survey_question=self.var_lab,
             codes_batch=codes_text,
             codes_to_include=', '.join(str(n) for n in expected_code_numbers),
@@ -329,35 +330,34 @@ class ThemeIdentifier:
         return self._create_fallback_hierarchy(batch, batch_num)
     
     def _format_hierarchies_for_reduction(self, batch_hierarchies: List[BatchHierarchy]) -> str:
-        """Format batch hierarchies as readable codebooks for reduce prompt"""
-        formatted_parts = []
+        """Format batch hierarchies as domains discovered from all batches for reduce prompt"""
+        
+        # Extract all themes from all batches and present them as domains
+        domain_counter = 1
+        formatted_domains = []
+        total_codes = 0
         
         for hierarchy in batch_hierarchies:
-            # Count codes for verification
-            total_codes = sum(len(domain.codes) for theme in hierarchy.themes for domain in theme.domains)
-            total_domains = sum(len(theme.domains) for theme in hierarchy.themes)
-            
-            codebook_text = f"CODEBOOK {hierarchy.batch_id}\n"
-            codebook_text += "=" * 60 + "\n\n"
-            
             for theme in hierarchy.themes:
-                codebook_text += f"THEME: {theme.theme_name}\n\n"
+                # Each "theme" from map stage becomes a domain in reduce stage
+                domain_text = f"DOMAIN {domain_counter}: {theme.theme_name}\n"
                 
-                for domain in theme.domains:
-                    codebook_text += f"  DOMAIN: {domain.domain_name}\n"
-                    
-                    for code in domain.codes:
-                        codebook_text += f"    Code {code.code_number}: {code.code_name}\n"
-                    
-                    codebook_text += "\n"  # Space between domains
-            
-            # Add verification summary
-            codebook_text += "-" * 60 + "\n"
-            codebook_text += f"Total: {total_codes} codes across {total_domains} domains in {len(hierarchy.themes)} theme(s)\n"
-            
-            formatted_parts.append(codebook_text)
+                # Add codes directly under the domain (themes from map stage have codes directly)
+                for code in theme.codes:
+                    domain_text += f"  Code {code.code_number}: {code.code_name}\n"
+                    total_codes += 1
+                
+                formatted_domains.append(domain_text)
+                domain_counter += 1
         
-        return "\n\n".join(formatted_parts)
+        # Create the formatted output
+        result = "DISCOVERED DOMAINS\n"
+        result += "=" * 60 + "\n\n"
+        result += "\n".join(formatted_domains)
+        result += "\n" + "-" * 60 + "\n"
+        result += f"Total: {total_codes} codes across {len(formatted_domains)} domains\n"
+        
+        return result
     
     def _fix_missing_codes(self, reduced_structure: ConsolidatedHierarchy, batch_hierarchies: List[BatchHierarchy]) -> ConsolidatedHierarchy:
         """Programmatically add any missing codes to a Miscellaneous theme"""
