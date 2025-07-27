@@ -450,14 +450,15 @@ CRITICAL TASK: Consolidate all hierarchies WITHOUT LOSING ANY CODES
 1. Merge similar themes across batches
 2. Merge similar domains within themes
 3. MANDATORY: Every single code from every batch MUST appear in the final structure
-4. If you drop even ONE code, your response is invalid
+4. Create a "Overige" (Miscellaneous) theme if needed for codes that don't fit elsewhere
 
 <instructions>
 - Count all codes in the input batches
 - Ensure your output contains EXACTLY the same number of codes
 - If themes have similar concepts, merge them
 - If domains have similar purposes, merge them  
-- NEVER drop a code - if unsure where it fits, create a new domain for it
+- If a code doesn't fit well in existing themes/domains, place it in "Overige" theme
+- You may create an "Overige aspecten" domain within the "Overige" theme for such codes
 - Each code must appear exactly once (no duplicates)
 - Preserve the original code_number and code_name exactly as given
 </instructions>
