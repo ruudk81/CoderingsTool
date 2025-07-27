@@ -419,10 +419,9 @@ class ThemeIdentifier:
         
         # Count total codes in input batches for validation
         total_input_codes = sum(
-            len(domain.codes) 
+            len(theme.codes) 
             for h in batch_hierarchies 
-            for theme in h.themes 
-            for domain in theme.domains
+            for theme in h.themes
         )
         
         prompt = HIERARCHY_REDUCE_PROMPT.format(
@@ -555,16 +554,14 @@ class ThemeIdentifier:
         self.verbose_reporter.stat_line("Starting parallel hierarchy creation (Map stage)...")
         batch_hierarchies = await asyncio.gather(*hierarchy_tasks)
         
-        # Count total themes and domains from all batches
+        # Count total themes and codes from all batches (no domains in map stage)
         total_batch_themes = sum(len(h.themes) for h in batch_hierarchies)
-        total_batch_domains = sum(len(theme.domains) for h in batch_hierarchies for theme in h.themes)
         total_codes_in_batches = sum(
-            len(domain.codes) 
+            len(theme.codes) 
             for h in batch_hierarchies 
-            for theme in h.themes 
-            for domain in theme.domains
+            for theme in h.themes
         )
-        self.verbose_reporter.stat_line(f"Created {total_batch_themes} themes across {total_batch_domains} domains from all batches")
+        self.verbose_reporter.stat_line(f"Created {total_batch_themes} themes from all batches")
         self.verbose_reporter.stat_line(f"Total codes in all batches: {total_codes_in_batches} (expected: {total_codes})")
         
         # Reduce Stage: Hierarchy consolidation
