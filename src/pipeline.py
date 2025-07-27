@@ -2,6 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # ===  MODULES ========================================================================================================
 import time
+import asyncio
 import pandas as pd
 import nest_asyncio
 nest_asyncio.apply()
@@ -657,10 +658,11 @@ prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    final_results = cache_manager.load_from_cache(filename, step_name, models.GATOSFinalResults)
+    enriched_codebook = cache_manager.load_from_cache(filename, step_name, list)
     verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
-        "Total themes": len(final_results.themes),
-        "Total codes": len(final_results.codebook.codes)
+        "Total codes": len(enriched_codebook),
+        "With domains": len([c for c in enriched_codebook if c.topic]),
+        "With themes": len([c for c in enriched_codebook if c.theme])
     })
 else:
     verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
@@ -668,6 +670,7 @@ else:
     
     if not codebook:
         print("Error: No codes available for theme identification.")
+        enriched_codebook = []
     else:
         theme_identifier_instance = themeIdentifier.ThemeIdentifier(
             codebook=codebook,
@@ -675,36 +678,83 @@ else:
             verbose=VERBOSE,
             prompt_printer=prompt_printer
         )
-        theme_results = theme_identifier_instance.identify_themes()
         
-        # Create final results
-        final_results = models.codebook(
-            codes = [entry.code for entry in codebook],
-            definition = [entry.definition for entry in codebook],
-            themes=theme_results['suggested_themes'],
-            theme_analysis=theme_results['theme_analysis']
-        )
+        # Use the new hierarchical approach
+        hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
+        
+        # Build enriched codebook with domains and themes
+        enriched_codebook = []
+        for result in hierarchical_results['codebook']:
+            # Find the original codebook entry
+            original_code = next((c for c in codebook if c.code == result['code']), None)
+            
+            if original_code:
+                enriched_entry = models.Codebook(
+                    code=original_code.code,
+                    definition=original_code.definition,
+                    topic=result['domain'],  # Domain goes in topic field
+                    theme=result['theme']    # Theme goes in theme field
+                )
+                enriched_codebook.append(enriched_entry)
+        
+        # Validate the hierarchical results
+        if hierarchical_results['hierarchy']:
+            validation_report = theme_identifier_instance.validate_hierarchy_completeness(hierarchical_results['hierarchy'])
+            if validation_report['coverage_percentage'] < 95:
+                print(f"⚠️  Warning: Only {validation_report['coverage_percentage']:.1f}% code coverage achieved")
+                if validation_report['missing_codes']:
+                    print(f"   Missing codes: {validation_report['missing_codes']}")
+            else:
+                print(f"✅ Excellent coverage: {validation_report['coverage_percentage']:.1f}%")
+            
+            # Also store the traditional theme results for backward compatibility
+            theme_results = {
+                'suggested_themes': [],
+                'theme_analysis': hierarchical_results['hierarchy'],
+                'hierarchical_structure': hierarchical_results['hierarchy'],
+                'coverage_lookup': hierarchical_results['coverage_lookup'],
+                'validation_report': validation_report
+            }
     
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the results
-    cache_manager.save_to_cache(final_results, filename, step_name, elapsed_time)
-    print(f"\n'Theme identification' completed in {elapsed_time:.2f} seconds.\n")
+    # Cache the enriched codebook
+    cache_manager.save_to_cache(enriched_codebook, filename, step_name, elapsed_time)
+    print(f"\n'Hierarchical theme identification' completed in {elapsed_time:.2f} seconds.\n")
+
+# Update the main codebook with enriched data
+if enriched_codebook:
+    codebook = enriched_codebook
 
 # Print final summary
 print("\n" + "=" * 80)
 print("GATOS PIPELINE COMPLETED")
 print("=" * 80)
 print("📊 Final Results:")
-print(f"   • Generated codes: {len(final_results.codebook.codes)}")
-print(f"   • Identified themes: {len(final_results.themes)}")
-if final_results.themes:
-    print("📋 Themes identified:")
-    for i, theme in enumerate(final_results.themes[:5]):  # Show first 5 themes
-        print(f"   {i+1}. {theme.theme_name} ({len(theme.codes)} codes)")
-    if len(final_results.themes) > 5:
-        print(f"   ... and {len(final_results.themes) - 5} more themes")
+if 'enriched_codebook' in locals() and enriched_codebook:
+    print(f"   • Generated codes: {len(enriched_codebook)}")
+    codes_with_domains = len([c for c in enriched_codebook if c.topic])
+    codes_with_themes = len([c for c in enriched_codebook if c.theme])
+    print(f"   • Codes with domains: {codes_with_domains}")
+    print(f"   • Codes with themes: {codes_with_themes}")
+    
+    # Show unique themes and domains
+    unique_themes = set(c.theme for c in enriched_codebook if c.theme)
+    unique_domains = set(c.topic for c in enriched_codebook if c.topic)
+    
+    print(f"   • Total themes: {len(unique_themes)}")
+    print(f"   • Total domains: {len(unique_domains)}")
+    
+    if unique_themes:
+        print("📋 Themes identified:")
+        for i, theme in enumerate(sorted(unique_themes)[:5]):  # Show first 5 themes
+            theme_codes = [c for c in enriched_codebook if c.theme == theme]
+            print(f"   {i+1}. {theme} ({len(theme_codes)} codes)")
+        if len(unique_themes) > 5:
+            print(f"   ... and {len(unique_themes) - 5} more themes")
+else:
+    print("   • No hierarchical results available")
 print("=" * 80)
 # """export results"""
 # from utils.resultsExporter import ResultsExporter

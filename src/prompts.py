@@ -442,3 +442,140 @@ Before you begin your analysis, take a moment to gather your expert thoughts.
 When you are ready, proceed with your analysis and present your findings in the specified JSON format.
 """
 
+# =============================================================================
+# HIERARCHICAL THEME IDENTIFICATION (MapReduce Approach)
+# =============================================================================
+
+DOMAIN_CLUSTERING_PROMPT = """
+{system_message}
+
+You are organizing codes from a Gezonde School survey into domains (practical groupings).
+This is batch {batch_number} of {total_batches}.
+
+<survey_question>
+{survey_question}
+</survey_question>
+
+<codes_batch>
+{codes_batch}
+</codes_batch>
+
+TASK: Group these codes into DOMAINS
+- A domain is a practical, substantive grouping of related codes
+- Focus on what codes DO or ADDRESS, not abstract concepts
+- Each domain should contain 2-8 codes typically (minimum 2)
+- Every code MUST be assigned to exactly ONE domain
+- Domain names should be clear and specific (e.g., "Voedingsbeleid en Kantinebeheer" not "Nutrition")
+
+Examples of domain types to consider:
+- Specific intervention areas (voeding, beweging, preventie)
+- Implementation aspects (organisatie, middelen, communicatie)
+- Stakeholder-specific (ouders, leerlingen, personeel)
+- Challenges and barriers
+
+Guidelines:
+1. Look for codes that address similar aspects of the Gezonde School approach
+2. Consider practical utility - would someone working in schools find this grouping useful?
+3. Ensure each domain has a clear, coherent focus
+4. Prefer specific, actionable domain names over generic ones
+
+Output format (JSON):
+{{
+  "batch_id": {batch_number},
+  "identified_domains": [
+    {{
+      "domain_name": "Descriptive Dutch name",
+      "domain_description": "What unites these codes",
+      "codes": [
+        {{
+          "code_number": 1,
+          "code_name": "Original code name",
+          "fit_rationale": "Why this code belongs here"
+        }}
+      ]
+    }}
+  ],
+  "processing_notes": "Any observations about patterns or difficult classifications"
+}}
+
+CRITICAL: Ensure 100% code coverage - every code in the batch must appear exactly once.
+Return ONLY the JSON object in {language}.
+"""
+
+THEME_SYNTHESIS_PROMPT = """
+{system_message}
+
+You are creating a three-level hierarchy for Gezonde School codes.
+You have domains from multiple batches that need to be organized into themes.
+
+<survey_question>
+{survey_question}
+</survey_question>
+
+<all_domains>
+{all_domains}
+</all_domains>
+
+TASK: Create the final three-level hierarchy
+1. First, review and potentially merge similar domains across batches
+2. Then, group domains into 4-7 high-level THEMES
+3. Ensure every original code is represented exactly once
+
+THEMES should be:
+- Conceptual/strategic level groupings
+- Broad enough to contain multiple domains
+- Relevant to Gezonde School evaluation and implementation
+
+Example theme types might include:
+- "Implementatie en Borging" (how the approach is embedded)
+- "Inhoudelijke Interventiegebieden" (what health topics are addressed)
+- "Stakeholder Betrokkenheid en Samenwerking" (who is involved)
+- "Randvoorwaarden en Middelen" (what resources are needed)
+- "Uitdagingen en Belemmeringen" (what obstacles exist)
+
+Guidelines:
+1. Merge domains that are very similar before creating themes
+2. Ensure themes are conceptually distinct but collectively comprehensive
+3. Balance theme sizes - avoid having one theme with most domains
+4. Consider both positive and challenging aspects of implementation
+5. Think about different stakeholder perspectives
+
+Output format (JSON):
+{{
+  "themes": [
+    {{
+      "theme_name": "Theme name in Dutch",
+      "theme_concept": "Explanation of overarching concept",
+      "domains": [
+        {{
+          "domain_name": "Domain name",
+          "domain_description": "Description of what unites these codes",
+          "codes": [
+            {{
+              "code_number": 1,
+              "code_name": "Original code name",
+              "fit_rationale": "Why this code belongs in this domain"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "coverage_statistics": {{
+    "total_codes": {total_codes},
+    "classified_codes": 0,
+    "coverage_percentage": 0.0,
+    "themes_count": 0,
+    "domains_count": 0,
+    "avg_codes_per_domain": 0.0
+  }},
+  "quality_notes": "Reflections on the structure quality and any consolidation decisions made"
+}}
+
+CRITICAL: 
+- Calculate and fill in the coverage_statistics accurately
+- Ensure 100% code coverage (coverage_percentage should be 100.0)
+- Every code must appear exactly once across all themes and domains
+- Return ONLY the JSON object in {language}
+"""
+
