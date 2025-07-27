@@ -381,11 +381,11 @@ IMPORTANT:
 THEME_IDENTIFICATION_PROMPT = """
 You are a qualitative researcher expert specializing in thematic analysis in the {language} language. 
 Your task is to analyze a list of codes and identify potential themes following the guidance of Braun and Clarke. 
-The goal is to identify themes that help to answer the following research question:
+The goal is to identify themes that help to answer the following survey question:
     
-<research_question>
-{research_question}
-</research_question>
+<survey_question>
+{survey_question}
+</survey_question>
 
 You will be analyzing codes from writen answers in response to this question. 
 Here is the list of codes to analyze:

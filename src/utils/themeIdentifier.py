@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 import models
 
 # === CONFIG ========================================================================================================
-from config import ModelConfig
+from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 from utils.verboseReporter import VerboseReporter
 from prompts import THEME_IDENTIFICATION_PROMPT
 
@@ -22,70 +22,44 @@ try:
 except ImportError:
     pass
 
-# === CONSTANTS ========================================================================================================
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-
 class ThemeIdentifier:
-    """
-    Identifies overarching themes from a generated codebook using Braun & Clarke methodology.
-    This is the final step in GATOS codebook generation process.
-    """
     
     def __init__(self, 
                  codebook: List[Dict[str, str]], 
                  var_lab: str,
                  verbose: bool = False, 
                  prompt_printer = None):
-        """
-        Initialize the theme identifier.
-        
-        Args:
-            codebook: List of code dictionaries with 'code' and 'definition' keys
-            var_lab: Survey question/variable label (serves as research question)
-            verbose: Enable verbose output
-            prompt_printer: Optional prompt capture utility
-        """
+ 
         self.codebook = codebook
         self.var_lab = var_lab
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose)
         self.prompt_printer = prompt_printer
-        self.model_config = ModelConfig()
+        self.model_config = ModelConfig
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
         
     def _format_codes_for_prompt(self) -> str:
-        """
-        Format the codebook for inclusion in the prompt.
-        
-        Returns:
-            Formatted string of codes with definitions
-        """
+      
         if not self.codebook:
             return "No codes available"
-            
+        
         formatted_codes = []
-        for i, code in enumerate(self.codebook):
-            code_text = code.get('code', f'Code {i+1}')
-            definition = code.get('definition', 'No definition available')
+        for i, code in enumerate(self.codebook): 
+            code_text = code.code or f"Code {i+1}"
+            definition = code.definition or "No definition available"
             formatted_codes.append(f"{i+1}. {code_text}: {definition}")
             
         return "\n".join(formatted_codes)
     
     async def _identify_themes_async(self) -> models.ThemeAnalysis:
-        """
-        Identify themes using the LLM with structured output.
-        
-        Returns:
-            ThemeAnalysis object with themes and reflection
-        """
+      
         # Format codes for prompt
         codes_text = self._format_codes_for_prompt()
         
         # Build prompt using Braun & Clarke methodology
         prompt = THEME_IDENTIFICATION_PROMPT.format(
-            research_question=self.var_lab,
-            data_type="survey response",
-            data_collection_context=f"a survey asking: {self.var_lab}",
+            language = DEFAULT_LANGUAGE,
+            survey_question=self.var_lab,
             codes=codes_text
         )
         
@@ -101,7 +75,7 @@ class ThemeIdentifier:
         try:
             # Get structured response using instructor
             response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_phase("phase3_themes"),  # Use premium model for theme analysis
+                model=self.model_config.get_model_for_stage("hierarchical_organisation"),   
                 messages=[{"role": "user", "content": prompt}],
                 response_model=models.ThemeAnalysis,
                 temperature=0.3,
@@ -126,12 +100,7 @@ class ThemeIdentifier:
             )
     
     def identify_themes(self) -> Dict[str, Any]:
-        """
-        Main entry point - identifies themes from the codebook.
-        
-        Returns:
-            Dict containing theme analysis results
-        """
+       
         self.verbose_reporter.section_header("THEME IDENTIFICATION")
         start_time = time.time()
         

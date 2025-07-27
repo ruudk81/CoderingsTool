@@ -470,7 +470,7 @@ else:
 from utils import speculativeStarterCodes
 from utils import codebookGenerator as codebookGenerator
 
-FORCE = True
+FORCE = False
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -637,15 +637,20 @@ else:
 #             print(f"Definition: {info['definition']}\n")
 #             idx += 1 
     
-for key, value in results.items():
-    print(key)
+# for key, value in results.items():
+#     print(key)
 
 
 # === STEP 8 ========================================================================================================
 """Theme Identification"""
 from utils import themeIdentifier
 
+FORCE = True
+
 step_name = "theme_identification"
+if  FORCE:
+    FORCE_STEP      = step_name
+    PROMPT_PRINTER  = True
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
@@ -661,21 +666,11 @@ else:
     verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
     start_time = time.time()
     
-    if not gatos_codebook.codes:
+    if not codebook:
         print("Error: No codes available for theme identification.")
-        final_results = models.GATOSFinalResults(
-            codebook=gatos_codebook,
-            themes=[],
-            theme_analysis=models.ThemeAnalysis(
-                initial_observations=["No codes available"],
-                suggested_themes=[],
-                reflection={"error": "No codes provided"}
-            )
-        )
     else:
-        # Step 7: Identify themes from codebook
         theme_identifier_instance = themeIdentifier.ThemeIdentifier(
-            codebook=gatos_codebook.codes,
+            codebook=codebook,
             var_lab=var_lab,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
@@ -683,8 +678,9 @@ else:
         theme_results = theme_identifier_instance.identify_themes()
         
         # Create final results
-        final_results = models.GATOSFinalResults(
-            codebook=gatos_codebook,
+        final_results = models.codebook(
+            codes = [entry.code for entry in codebook],
+            definition = [entry.definition for entry in codebook],
             themes=theme_results['suggested_themes'],
             theme_analysis=theme_results['theme_analysis']
         )
