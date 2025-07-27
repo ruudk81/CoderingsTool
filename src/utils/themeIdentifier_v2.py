@@ -1,7 +1,6 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-import asyncio
 import time
 from typing import List, Dict, Any
 import instructor
@@ -66,10 +65,6 @@ class BraunClarkeCodebook(BaseModel):
 # ============================================================================
 
 class ThemeIdentifierV2:
-    """
-    Theme identifier using Braun & Clarke methodology
-    Analyzes only code names (not definitions) for better LLM performance
-    """
     
     def __init__(self, 
                  codebook: List[Dict[str, str]], 
@@ -111,7 +106,8 @@ class ThemeIdentifierV2:
         codes_text = self._format_codes_for_analysis()
         total_codes = len(self.codebook)
         
-        prompt = f"""You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+        prompt = f"""
+You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
 Your task is to identify themes by analyzing code names that emerged from survey responses.
 
 SURVEY QUESTION:
@@ -128,8 +124,7 @@ BRAUN & CLARKE METHODOLOGY:
 5. **Coherent Narrative**: Each theme should tell a meaningful story about the data
 
 INSTRUCTIONS:
-- Analyze the CODE NAMES ONLY (ignore any underlying definitions you might infer)
-- Identify 3-6 themes that capture the main conceptual patterns
+- Identify themes that capture the main conceptual patterns
 - Each code must be assigned to exactly one theme
 - Themes should represent coherent patterns of meaning related to the survey question
 - If codes don't fit well elsewhere, include a "Miscellaneous" or "Other aspects" theme

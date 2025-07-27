@@ -672,15 +672,25 @@ else:
         print("Error: No codes available for theme identification.")
         enriched_codebook = []
     else:
-        theme_identifier_instance = themeIdentifier.ThemeIdentifier(
+        # theme_identifier_instance = themeIdentifier.ThemeIdentifier(
+        #     codebook=codebook,
+        #     var_lab=var_lab,
+        #     verbose=VERBOSE,
+        #     prompt_printer=prompt_printer
+        # )
+        # hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
+
+        from utils.themeIdentifier_v2 import ThemeIdentifierV2
+        theme_identifier_instance = ThemeIdentifierV2(
             codebook=codebook,
             var_lab=var_lab,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
         )
         
-        # Use the new hierarchical approach
-        hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
+        result = await theme_identifier_instance.identify_themes_braun_clarke()
+        
+        
         
         print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
         print(f"Expected: 64 codes")
@@ -702,6 +712,8 @@ else:
         for result in hierarchical_results['hierarchy']:
             key, themes = result 
             for theme in themes:
+                if theme.__class__.__name__ != "ThemeDefinition":
+                    continue  
                 print(f"\nTheme: {theme.theme_name}")
                 #print(f"Concept: {theme.theme_concept}")
                 for domain in theme.domains:
