@@ -651,7 +651,7 @@ FORCE = True
 step_name = "theme_identification"
 if  FORCE:
     FORCE_STEP      = step_name
-    PROMPT_PRINTER  = True
+    PROMPT_PRINTER  = False
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
@@ -682,39 +682,70 @@ else:
         # Use the new hierarchical approach
         hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
         
-        # Build enriched codebook with domains and themes
-        enriched_codebook = []
-        for result in hierarchical_results['codebook']:
-            # Find the original codebook entry
-            original_code = next((c for c in codebook if c.code == result['code']), None)
-            
-            if original_code:
-                enriched_entry = models.Codebook(
-                    code=original_code.code,
-                    definition=original_code.definition,
-                    topic=result['domain'],  # Domain goes in topic field
-                    theme=result['theme']    # Theme goes in theme field
-                )
-                enriched_codebook.append(enriched_entry)
+        print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
+        print(f"Expected: 64 codes")
         
-        # Validate the hierarchical results
-        if hierarchical_results['hierarchy']:
-            validation_report = theme_identifier_instance.validate_hierarchy_completeness(hierarchical_results['hierarchy'])
-            if validation_report['coverage_percentage'] < 95:
-                print(f"⚠️  Warning: Only {validation_report['coverage_percentage']:.1f}% code coverage achieved")
-                if validation_report['missing_codes']:
-                    print(f"   Missing codes: {validation_report['missing_codes']}")
-            else:
-                print(f"✅ Excellent coverage: {validation_report['coverage_percentage']:.1f}%")
+        for result in hierarchical_results['codebook']:
+                #original_code = next((c for c in codebook if c.code == result['code']), None)
+                #print(f"Code: {original_code.code}")
+                #print(f"Definition: {original_code.definition}")
+                print(f"Domain: {result['domain']}")
+                print(f"Theme: {result['theme']}\n")
+
+
+
+
+
+
+
+
+
+
+for key, value in hierarchical_results.items():
+    print(key)
+        
+for result in hierarchical_results['codebook']:
+        #original_code = next((c for c in codebook if c.code == result['code']), None)
+        #print(f"Code: {original_code.code}")
+        #print(f"Definition: {original_code.definition}")
+        print(f"Domain: {result['domain']}")
+        print(f"Theme: {result['theme']}\n")
+
+        
+        
+        # # Build enriched codebook with domains and themes
+        # enriched_codebook = []
+        # for result in hierarchical_results['codebook']:
+        #     # Find the original codebook entry
+        #     original_code = next((c for c in codebook if c.code == result['code']), None)
             
-            # Also store the traditional theme results for backward compatibility
-            theme_results = {
-                'suggested_themes': [],
-                'theme_analysis': hierarchical_results['hierarchy'],
-                'hierarchical_structure': hierarchical_results['hierarchy'],
-                'coverage_lookup': hierarchical_results['coverage_lookup'],
-                'validation_report': validation_report
-            }
+        #     if original_code:
+        #         enriched_entry = models.Codebook(
+        #             code=original_code.code,
+        #             definition=original_code.definition,
+        #             topic=result['domain'],  # Domain goes in topic field
+        #             theme=result['theme']    # Theme goes in theme field
+        #         )
+        #         enriched_codebook.append(enriched_entry)
+        
+        # # Validate the hierarchical results
+        # if hierarchical_results['hierarchy']:
+        #     validation_report = theme_identifier_instance.validate_hierarchy_completeness(hierarchical_results['hierarchy'])
+        #     if validation_report['coverage_percentage'] < 95:
+        #         print(f"⚠️  Warning: Only {validation_report['coverage_percentage']:.1f}% code coverage achieved")
+        #         if validation_report['missing_codes']:
+        #             print(f"   Missing codes: {validation_report['missing_codes']}")
+        #     else:
+        #         print(f"✅ Excellent coverage: {validation_report['coverage_percentage']:.1f}%")
+            
+        #     # Also store the traditional theme results for backward compatibility
+        #     theme_results = {
+        #         'suggested_themes': [],
+        #         'theme_analysis': hierarchical_results['hierarchy'],
+        #         'hierarchical_structure': hierarchical_results['hierarchy'],
+        #         'coverage_lookup': hierarchical_results['coverage_lookup'],
+        #         'validation_report': validation_report
+        #     }
     
     end_time = time.time()
     elapsed_time = end_time - start_time
