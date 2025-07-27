@@ -429,9 +429,10 @@ Return ONLY the JSON object in {language}.
 """
 
 HIERARCHY_REDUCE_PROMPT = """
-{system_message}
-
-Merge these small hierarchies into one consolidated hierarchy:
+You are a {language} qualitative research expert specializing in thematic analysis. 
+Your task is consolidating several codebooks into one comprehensive codebook.
+This codebook has a 3-level hierarchy: codes → domains → themes, following Braun & Clarke methodology.
+With this codebook responses to a survey question in the <survey_question> tag will be analyzed.
 
 <survey_question>
 {survey_question}
@@ -445,41 +446,35 @@ TASK: Consolidate all hierarchies
 1. Merge similar themes across batches
 2. Merge similar domains within themes
 3. Keep ALL codes - none can be lost
-4. Create 4-7 final themes with logical domains
 
-Simple rules:
+<instructions>
 - If themes have similar concepts, merge them
 - If domains have similar purposes, merge them  
 - Preserve every single code in the final structure
+- Aim for balanced, meaningful groupings
+</instructions>
 
 Output format (JSON):
 {{
   "themes": [
     {{
-      "theme_name": "Final theme name in Dutch",
+      "theme_name": "Final theme name in {language}",
       "theme_concept": "What this theme covers",
       "domains": [
         {{
-          "domain_name": "Final domain name in Dutch",
+          "domain_name": "Final domain name in {language}",
           "domain_description": "What this domain covers", 
           "codes": [
             {{
               "code_number": 1,
-              "code_name": "Original code name"
+              "code_name": "Original code name",
+              "fit_rationale": "Why this code belongs here"
             }}
           ]
         }}
       ]
     }}
-  ],
-  "coverage_statistics": {{
-    "total_codes": {total_codes},
-    "classified_codes": {total_codes},
-    "coverage_percentage": 100.0,
-    "themes_count": 0,
-    "domains_count": 0,
-    "avg_codes_per_domain": 0.0
-  }}
+  ]
 }}
 
 Return ONLY the JSON object in {language}.
