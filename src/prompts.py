@@ -442,16 +442,24 @@ With this codebook responses to a survey question in the <survey_question> tag w
 {batch_hierarchies}
 </batch_hierarchies>
 
-TASK: Consolidate all hierarchies
+<total_codes>
+Total number of codes that MUST be preserved: {total_codes}
+</total_codes>
+
+CRITICAL TASK: Consolidate all hierarchies WITHOUT LOSING ANY CODES
 1. Merge similar themes across batches
 2. Merge similar domains within themes
-3. Keep ALL codes - none can be lost
+3. MANDATORY: Every single code from every batch MUST appear in the final structure
+4. If you drop even ONE code, your response is invalid
 
 <instructions>
+- Count all codes in the input batches
+- Ensure your output contains EXACTLY the same number of codes
 - If themes have similar concepts, merge them
 - If domains have similar purposes, merge them  
-- Preserve every single code in the final structure
-- Aim for balanced, meaningful groupings
+- NEVER drop a code - if unsure where it fits, create a new domain for it
+- Each code must appear exactly once (no duplicates)
+- Preserve the original code_number and code_name exactly as given
 </instructions>
 
 Output format (JSON):
