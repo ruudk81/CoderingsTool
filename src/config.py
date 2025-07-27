@@ -61,7 +61,10 @@ class ModelConfig:
     response_summary_model: str = DEFAULT_MODEL     
     match_and_recommend_model: str = DEFAULT_MODEL     
     validation_model: str = DEFAULT_MODEL      
- 
+    
+    # Step 8: Hierarchical organisation of codebook
+    hierarchical_organisation_model: str = "gpt-4o"
+
     # =============================================================================
     # GLOBAL PARAMETERS
     # =============================================================================
@@ -94,7 +97,8 @@ class ModelConfig:
             'codes_analysis': self.codebook_analysis_model,
             'cluster_analysis': self.response_summary_model,
             'recommend': self.match_and_recommend_model,
-            'review': self.validation_model
+            'review': self.validation_model,
+            'hierarchical_organisation': self.hierarchical_organisation_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
     

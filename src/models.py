@@ -1,8 +1,9 @@
-from typing import List, Any, Optional, Type, Union, Dict
+from typing import List, Any, Optional, Type, Union
 from pydantic import BaseModel, ConfigDict
 import numpy as np
 import numpy.typing as npt
 
+# === GROWING RESPONSE/RESULT MODELS ========================================================================================================
 
 class ResponseModel(BaseModel):
     respondent_id: Any
@@ -42,6 +43,8 @@ class ClusterSubmodel(EmbeddingsSubmodel):
 class ClusterModel(IdeasExtractedModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
+# === CODEBOOK MODELS ========================================================================================================
+
 class CodeDefinition(BaseModel):
     code: str
     definition: str
@@ -52,4 +55,22 @@ class Codebook(BaseModel):
     topic: Optional[str] = None   
     theme: Optional[str] = None   
     
+class SuggestedTheme(BaseModel):
+    theme_name: str
+    concept: str
+    codes: List[str]
+    relationship: str
+
+class Reflection(BaseModel):
+    broad_or_narrow_themes: Optional[str] = None
+    contradictions_or_unexpected_patterns: Optional[str] = None
+    potential_subthemes: Optional[str] = None
+    unclassified_codes: Optional[List[str]] = None
+
+class ThemeAnalysis(BaseModel):
+    initial_observations: List[str]
+    suggested_themes: List[SuggestedTheme]
+    reflection: Reflection
+
+
 
