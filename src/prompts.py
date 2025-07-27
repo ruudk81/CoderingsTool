@@ -379,7 +379,7 @@ IMPORTANT:
 # =============================================================================
 
 HIERARCHY_MAP_PROMPT = """
-You are a {languae} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
+You are a {language} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
 Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
 
 <survey_question>
@@ -400,7 +400,7 @@ Step 6. Consider salience over frequency - meaningful patterns matter more than 
 Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
 Step 8. Ensure ALL codes are included - none can be left out.
 Step 9. Create balanced groupings - avoid unwieldy structures.
-step 10. Be willing to let go of codes or potential themes that don’t fit the overall analysis. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
+step 10. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
 
 CRITICAL:
 1. You MUST include ALL 10 codes in your output - check if these code numbers are included: {codes_to_include}
@@ -436,7 +436,7 @@ Return ONLY the JSON object with all content in {language}.
 """
 
 HIERARCHY_REDUCE_PROMPT = """
-You are a {languae} language expert and qualitative researcher specializing in thematic analysis following Braun & Clarke methodology. 
+You are a {language} language expert and qualitative researcher specializing in thematic analysis following Braun & Clarke methodology. 
 Your task is to create a well-structured codebook based on a first draft of the codebook. 
 This codebook will be used to categorize responses to an open-ended survey question, and consists of 3 levels: specific codes > concrete domains > broad themes.
 
