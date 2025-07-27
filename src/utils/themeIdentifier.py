@@ -292,6 +292,8 @@ class ThemeIdentifier:
             )
         
         max_attempts = 3
+        best_response = None
+        
         for attempt in range(max_attempts):
             try:
                 response = await self.client.chat.completions.create(
@@ -311,25 +313,31 @@ class ThemeIdentifier:
                 
                 if response_code_count == total_input_codes:
                     return response
-                elif attempt == max_attempts - 1:
-                    # Last attempt - fix it programmatically
-                    self.verbose_reporter.stat_line(
-                        f"⚠️  Final attempt: Lost {total_input_codes - response_code_count} codes. "
-                        f"Applying programmatic fix..."
-                    )
-                    return self._fix_missing_codes(response, batch_hierarchies)
                 else:
+                    # Keep the best response (most codes preserved)
+                    if best_response is None or response_code_count > sum(
+                        len(domain.codes) 
+                        for theme in best_response.themes 
+                        for domain in theme.domains
+                    ):
+                        best_response = response
+                    
                     self.verbose_reporter.stat_line(
                         f"⚠️  Attempt {attempt + 1}: Lost {total_input_codes - response_code_count} codes. "
-                        f"Expected {total_input_codes}, got {response_code_count}. Retrying..."
+                        f"Expected {total_input_codes}, got {response_code_count}."
                     )
                     
             except Exception as e:
                 self.verbose_reporter.stat_line(f"Error in hierarchy reduction attempt {attempt + 1}: {str(e)}")
         
-        # If all attempts failed, return empty structure
-        self.verbose_reporter.stat_line(f"❌ Failed to preserve all codes after {max_attempts} attempts")
-        return HierarchicalStructure(themes=[])
+        # If we reach here, no attempt succeeded - apply programmatic fix to best response
+        if best_response is not None:
+            self.verbose_reporter.stat_line(f"🔧 Applying programmatic fix to preserve all codes...")
+            return self._fix_missing_codes(best_response, batch_hierarchies)
+        else:
+            # All attempts failed with exceptions - return empty structure
+            self.verbose_reporter.stat_line(f"❌ All attempts failed with errors")
+            return HierarchicalStructure(themes=[])
     
     def _build_final_codebook_structure(self, hierarchical_result: HierarchicalStructure) -> Dict[str, Any]:
         """Build final structure with complete traceability - directly extract from hierarchy"""
