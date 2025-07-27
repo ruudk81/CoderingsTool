@@ -238,12 +238,22 @@ EXISTING THEMES (from Stage 1):
 MISCELLANEOUS CODES TO ANALYZE:
 {misc_codes_text}
 
+GUIDANCE FOR BETTER PLACEMENT:
+- Physical activity/movement codes → likely fit "Gezondheid en Welzijn" themes
+- Monitoring/compliance/implementation codes → likely fit "Organisatie en Implementatie" themes  
+- Prevention/education codes → likely fit "Gezondheid en Welzijn" or "Bewustwording" themes
+- Organizational activity codes → likely fit "Organisatie en Implementatie" themes
+- Look for conceptual overlap rather than exact keyword matching
+
 INSTRUCTIONS:
 - Look for patterns among these {len(misc_codes)} miscellaneous codes
 - Consider if any groups of 2+ codes could form new coherent themes
 - Consider if individual codes actually belong in existing themes
+- PRIORITIZE reassigning codes to existing themes where they conceptually fit
+- Only create new themes if you find clear patterns among multiple codes
 - Only if codes don't fit any theme, include a "Miscellaneous" theme. But realize that your reputation as a qualitative researcher is on the line for creating meaningful, coherent themes that minimize miscellaneous categorization
 - Focus on creating meaningful, defensible groupings
+- GOAL: Assign ALL miscellaneous codes to meaningful themes (existing or new)
 
 OUTPUT FORMAT (JSON):
 {{
@@ -274,6 +284,14 @@ OUTPUT FORMAT (JSON):
     }}
   ]
 }}
+
+CRITICAL VALIDATION:
+Before submitting, verify that EVERY miscellaneous code ({len(misc_codes)} total) appears in either:
+- new_themes, OR  
+- reassignments, OR
+- remaining_miscellaneous (only as last resort)
+
+The sum of codes across all three categories must equal {len(misc_codes)}.
 
 Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
         
