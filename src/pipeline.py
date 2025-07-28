@@ -953,6 +953,64 @@ if 'code_assigned_results' in locals() and code_assigned_results:
     if all_confidences:
         avg_confidence = sum(all_confidences) / len(all_confidences)
         print(f"   • Average assignment confidence: {avg_confidence:.2f}")
+    
+    # Code frequency analysis
+    print("\n📈 Code Assignment Statistics:")
+    code_frequency = {}
+    theme_frequency = {}
+    
+    for resp in code_assigned_results:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if idea and idea.assigned_codes:
+                    for code in idea.assigned_codes:
+                        code_frequency[code] = code_frequency.get(code, 0) + 1
+                if idea and idea.assigned_themes:
+                    for theme in idea.assigned_themes:
+                        theme_frequency[theme] = theme_frequency.get(theme, 0) + 1
+    
+    # Show top 10 most frequent codes
+    if code_frequency:
+        sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
+        print(f"   🏷️  Top 10 most assigned codes:")
+        for i, (code, count) in enumerate(sorted_codes[:10]):
+            print(f"      {i+1:2d}. {code}: {count} times")
+        if len(sorted_codes) > 10:
+            print(f"      ... and {len(sorted_codes) - 10} more codes")
+    
+    # Show theme frequency
+    if theme_frequency:
+        sorted_themes = sorted(theme_frequency.items(), key=lambda x: x[1], reverse=True)
+        print(f"   🎯 Theme assignment frequency:")
+        for i, (theme, count) in enumerate(sorted_themes):
+            print(f"      {i+1:2d}. {theme}: {count} assignments")
+
+# Cluster distribution analysis (if cluster data is available)
+if 'initial_cluster_results' in locals() and initial_cluster_results:
+    print("\n📊 Cluster Distribution:")
+    cluster_counts = {}
+    for resp in initial_cluster_results:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if hasattr(idea, 'initial_cluster') and idea.initial_cluster is not None:
+                    cluster_id = idea.initial_cluster
+                    cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
+    
+    if cluster_counts:
+        sorted_clusters = sorted(cluster_counts.items(), key=lambda x: x[1], reverse=True)
+        print(f"   • Total clusters: {len(sorted_clusters)}")
+        print(f"   • Largest cluster: {sorted_clusters[0][1]} ideas (Cluster {sorted_clusters[0][0]})")
+        print(f"   • Smallest cluster: {sorted_clusters[-1][1]} ideas (Cluster {sorted_clusters[-1][0]})")
+        
+        # Show cluster size distribution
+        cluster_sizes = [count for _, count in sorted_clusters]
+        avg_cluster_size = sum(cluster_sizes) / len(cluster_sizes)
+        print(f"   • Average cluster size: {avg_cluster_size:.1f} ideas")
+        
+        # Show top 5 clusters
+        print("   🔢 Top 5 largest clusters:")
+        for i, (cluster_id, count) in enumerate(sorted_clusters[:5]):
+            print(f"      {i+1}. Cluster {cluster_id}: {count} ideas")
 
 print("=" * 80)
 # """export results"""
