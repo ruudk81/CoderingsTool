@@ -28,9 +28,27 @@ def verify_alignment(encoded_text, embedded_text, initial_cluster_results):
     total_ideas_embedded = sum(len(r.response_ideas) for r in embedded_text if r.response_ideas)
     total_ideas_clustered = sum(len(r.response_ideas) for r in initial_cluster_results if r.response_ideas)
     
+    # Count ideas that actually have embeddings
+    ideas_with_embeddings = 0
+    for resp in embedded_text:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                    ideas_with_embeddings += 1
+    
+    # Count ideas in clusters that still have embeddings
+    cluster_ideas_with_embeddings = 0
+    for resp in initial_cluster_results:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                    cluster_ideas_with_embeddings += 1
+    
     print(f"   - Total ideas extracted: {total_ideas_extracted}")
     print(f"   - Total ideas with embeddings: {total_ideas_embedded}")
+    print(f"   - Ideas that actually have embeddings: {ideas_with_embeddings}")
     print(f"   - Total ideas with clusters: {total_ideas_clustered}")
+    print(f"   - Cluster ideas that preserved embeddings: {cluster_ideas_with_embeddings}")
     
     # 2. Check respondent ID consistency
     print("\n2. Respondent ID Consistency:")
