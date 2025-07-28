@@ -260,17 +260,17 @@ Please provide your response as a JSON array of objects, where each object has "
 Here's an example of the STRUCTURE to follow (using generic placeholders):
 <example>
 [
-  {{"code": "[Quality] assessment", "definition": "References to evaluating the [quality/characteristic] of [topic-specific element]."}},
-  {{"code": "[Process] difficulties", "definition": "Mentions of challenges in [topic-specific process]."}},
-  {{"code": "[Actor] perspectives", "definition": "References to viewpoints of [relevant actors/participants]."}},
-  {{"code": "[Outcome] experiences", "definition": "Mentions of [positive/negative] outcomes experienced."}}
+  {{"code": "Quality assessment", "definition": "References to evaluating the quality/characteristic of topic-specific element."}},
+  {{"code": "Process difficulties", "definition": "Mentions of challenges in topic-specific process."}},
+  {{"code": "Actor perspectives", "definition": "References to viewpoints of relevant actors/participants."}},
+  {{"code": "Outcome experiences", "definition": "Mentions of positive/negative outcomes experienced."}}
 ]
 </example>
 
 BAD examples to AVOID:
-- Too compound: "[Aspect A] and [Aspect B]" (combines two concepts)
-- Too vague: "Various [things]" (no clear boundaries)  
-- Too interpretive: "Underlying [patterns]" (not directly observable)
+- Too compound: "Aspect A and Aspect B" (combines two concepts)
+- Too vague: "Various things" (no clear boundaries)  
+- Too interpretive: "Underlying patterns" (not directly observable)
 
 Ensure each code is atomic, has clear boundaries, and follows the exact definition format.
 Return ONLY the JSON array in {language}.
