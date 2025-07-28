@@ -363,12 +363,12 @@ class LabellerConfig:
 @dataclass
 class CodeAssignmentConfig:
     """Configuration for code assignment step"""
-    batch_size: int = 10
+    batch_size: int = 20  # Increased from 10 for better throughput
     temperature: float = 0.0
     max_tokens: int = 4000
     retries: int = 3
     retry_delay: int = 2
-    max_concurrent_requests: int = 5
+    max_concurrent_requests: int = 20  # Increased from 5 (though semaphore removed)
     top_k_similar_codes: int = 5  # Number of most similar codes to present
     min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
     # Model configuration - will be overridden by ModelConfig
