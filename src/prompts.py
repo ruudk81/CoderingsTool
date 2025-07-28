@@ -227,31 +227,46 @@ Begin your analysis now and return ONLY the JSON array in {language}.
 # =============================================================================
 
 INITIAL_CODEBOOK_CREATION_PROMPT = """
-You are an expert qualitative data analyst specializing in applying codes to analyze qualitative data. 
+You are an expert qualitative data analyst specializing in rigorous thematic analysis and code creation.
 Your task is to generate hypothetical codes that might be encountered when analyzing written answers to a specific survey question.
+
+CRITICAL CODING PRINCIPLES:
+- **ATOMIC**: Each code must capture ONE concept only - no compound ideas with "and", "including", "with"
+- **PRECISE**: Clear boundaries that enable reliable coding decisions
+- **CONCISE**: Code names must be 2-5 words maximum
+- **OPERATIONAL**: Definitions must use observable criteria, not interpretations
+- **MUTUALLY EXCLUSIVE**: Minimal overlap between codes
 
 Here are the details for your task:
 - Language to use: <language>{language}</language>
 - Number of codes to generate: <n_codes>{n_codes}</n_codes>
 - Survey question to analyze: <survey_question>{survey_question}</survey_question>
 
-Generate {n_codes} hypothetical codes based on the given survey question. Each code should be a short phrase in plain {language} without examples. Do not include any additional text or explanations beyond the codes and their definitions.
+REQUIRED DEFINITION FORMAT:
+All definitions must follow this structure:
+"References to [specific concept/aspect]. [Second sentence only if needed for exclusion criteria]."
 
-Begin your list now using the following template:
-{code_template}
+Generate {n_codes} diverse, hypothetical codes that might emerge from analyzing responses to this survey question. 
+Think about different aspects respondents might mention - both positive and negative experiences, practical and emotional aspects, processes and outcomes.
 
 Please provide your response as a JSON array of objects, where each object has "code" and "definition" fields.  
-Here's an example of the input and desired output format:
+Here's an example of GOOD codes following the required format:
 <example>
 [
-  {{"code": "Technical difficulties", "definition": "Issues related to technology or system failures"}},
-  {{"code": "Communication problems", "definition": "Challenges in exchanging information or understanding"}}
+  {{"code": "Financial constraints", "definition": "References to budget limitations or lack of funding affecting implementation."}},
+  {{"code": "Staff resistance", "definition": "Mentions of personnel opposing or reluctant to adopt new practices."}},
+  {{"code": "Time pressures", "definition": "References to insufficient time for activities or feeling rushed. Excludes scheduling conflicts."}},
+  {{"code": "Leadership support", "definition": "Mentions of management actively facilitating or championing initiatives."}}
 ]
 </example>
 
-Ensure that your output adheres to this format exactly, with no additional text before or after the JSON array.
-Remember to provide your output in the specified language: {language}.
-Begin generating the codes now and present them in the required JSON format.
+BAD examples to AVOID:
+- Too compound: "Time and resource constraints" (combines two concepts)
+- Too vague: "Various challenges" (no clear boundaries)  
+- Too interpretive: "Hidden resistance patterns" (not directly observable)
+
+Ensure each code is atomic, has clear boundaries, and follows the exact definition format.
+Return ONLY the JSON array in {language}.
 """
 
 SYSTEM_MESSAGE = """
