@@ -314,12 +314,14 @@ Specifically, you need to recommend whether or not a new code needs to be create
 INPUT DATA:
 <existing_codes>
 {existing_codes}
+
 Analysis notes: {codebook_analysis}
 </existing_codes>
 Note: These are the 5 codes nearest to this cluster's centroid embedding.
 
 <clustered_ideas>
 {clustered_ideas}
+
 Cluster analysis: {summaries}
 </clustered_ideas>
 Note: These responses were grouped by HDBSCAN based on semantic similarity.
@@ -457,6 +459,12 @@ BRAUN & CLARKE PRINCIPLES:
 - Each theme should tell a meaningful story about the data
 - Themes should be distinct yet coherent
 
+LABELS:
+- Theme names should capture overarching concepts (not just list topics)
+- Theme names should also make semantic sense as stand-a-lone concepts in light of the survey question
+- Theme descriptions should consists of concise phrases or sentences that clarify the theme name in light of the survey question.
+- Avoid overlapping or vague labels
+
 OUTPUT FORMAT (JSON):
 {{
   "decision": "create_new|use_existing",
@@ -471,7 +479,6 @@ IMPORTANT:
 - Theme names and descriptions must be in {language}
 - If using existing theme, use the EXACT theme name from the list above
 - Base your decision on conceptual fit, not just similarity scores
-- Be conservative: prefer existing themes when they adequately fit
 
 Return ONLY the JSON object."""
 

@@ -681,16 +681,18 @@ else:
             prompt_printer=prompt_printer
         )
         
+        #result = await theme_identifier.identify_themes_by_clustering()
+      
+        
         async def run_theme_identification():
             return  await theme_identifier.identify_themes_by_clustering()
             
         result =  asyncio.run(run_theme_identification())    
         
-        #result = await theme_identifier.identify_themes_by_clustering()
         
-    themes = result['themes']
+        themes = result['themes']
 
-    for theme in themes:
+        for theme in themes:
             print(f"\n🟣 Theme: {theme['theme_name']}")
             #print(f"   Description: {theme['theme_description']}")
             print(f"   Cluster ID: {theme['cluster_id']}")
@@ -698,9 +700,9 @@ else:
             for code in theme['codes']:
                 print(f"     - Code {code['code_number']}: {code['code_name']}")
                 
-    for i, item in enumerate(codebook, 1):
-             print(f"{i}. {item.code}")
-             print(f"   → {item.definition}\n")
+        # for i, item in enumerate(codebook, 1):
+        #      print(f"{i}. {item.code}")
+        #      print(f"   → {item.definition}\n")
                 
       
     end_time = time.time()
