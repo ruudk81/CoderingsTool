@@ -13,8 +13,7 @@ import spacy
 import subprocess
 from collections import defaultdict
 
-from config import (DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, 
-                    DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG)
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
