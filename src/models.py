@@ -35,12 +35,12 @@ class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
     
 class EmbeddingsModel(IdeasExtractedModel):
-    idea_embeddings: Optional[List[EmbeddingsSubmodel]] = None
+    response_ideas: Optional[List[EmbeddingsSubmodel]] = None
 
 class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[int] = None   
     
-class ClusterModel(IdeasExtractedModel):
+class ClusterModel(EmbeddingsModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
 class AssignedIdeaSubmodel(ClusterSubmodel):

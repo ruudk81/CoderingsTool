@@ -43,8 +43,8 @@ class Clusterer:
         self.output_list = []
         processing_order = 0
         for respondent_item in input_list:
-            if respondent_item.idea_embeddings: 
-                for embedding_item in respondent_item.idea_embeddings:  
+            if respondent_item.response_ideas: 
+                for embedding_item in respondent_item.response_ideas:  
                     if embedding_item.idea_embedding is None:
                         continue
                     result = ResultMapper(

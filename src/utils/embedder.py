@@ -183,8 +183,7 @@ class Embedder:
                 response_type=getattr(respondent_data, 'response_type', None),
                 quality_filter=getattr(respondent_data, 'quality_filter', None),
                 quality_filter_code=getattr(respondent_data, 'quality_filter_code', None),
-                response_ideas=embeddings_submodels if hasattr(respondent_data, 'response_ideas') else None,
-                idea_embeddings=embeddings_submodels,
+                response_ideas=embeddings_submodels,
                 idea_count=len(embeddings_submodels)
             )
             result.append(embeddings_model)
