@@ -22,6 +22,7 @@ class CodeAssignmentResponse(BaseModel):
     idea_id: str
     idea: str
     assigned_codes: List[str]
+    assigned_themes: List[str]
     assignment_confidence: float
     assignment_rationale: str
 
@@ -53,6 +54,9 @@ class CodeAssigner:
         
         # Cache for code embeddings
         self._code_embeddings = None
+        
+        # Theme mapping (will be set by pipeline if available)
+        self.code_to_theme_mapping = {}
         
         # Initialize tokenizer
         try:
@@ -115,6 +119,15 @@ class CodeAssigner:
         
         # Return corresponding codes
         return [self.codebook[i] for i in top_indices]
+
+    def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
+        """Map assigned codes to their themes using cached mapping"""
+        themes = []
+        for code in assigned_codes:
+            theme = self.code_to_theme_mapping.get(code)
+            if theme and theme not in themes:
+                themes.append(theme)
+        return themes
 
     def _extract_all_ideas(self) -> List[tuple]:
         """Extract all individual ideas with their embeddings for processing"""
@@ -185,16 +198,35 @@ class CodeAssigner:
         # Make API call with retries
         for attempt in range(self.config.retries):
             try:
-                response = await self.client.chat.completions.create(
+                # Note: The LLM response model doesn't include themes, so we need a temporary model
+                from pydantic import BaseModel
+                class LLMCodeAssignmentResponse(BaseModel):
+                    idea_id: str
+                    idea: str
+                    assigned_codes: List[str]
+                    assignment_confidence: float
+                    assignment_rationale: str
+                
+                llm_response = await self.client.chat.completions.create(
                     model=self.config.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                     seed=self.model_config.seed,
-                    response_model=CodeAssignmentResponse
+                    response_model=LLMCodeAssignmentResponse
                 )
                 
-                return response
+                # Add theme assignments based on assigned codes
+                assigned_themes = self._assign_themes_to_codes(llm_response.assigned_codes)
+                
+                return CodeAssignmentResponse(
+                    idea_id=llm_response.idea_id,
+                    idea=llm_response.idea,
+                    assigned_codes=llm_response.assigned_codes,
+                    assigned_themes=assigned_themes,
+                    assignment_confidence=llm_response.assignment_confidence,
+                    assignment_rationale=llm_response.assignment_rationale
+                )
                 
             except Exception as e:
                 if attempt < self.config.retries - 1:
@@ -203,10 +235,13 @@ class CodeAssigner:
                 else:
                     self.verbose_reporter.stat_line(f"Failed to process idea {idea_id} after {self.config.retries} attempts: {e}")
                     # Return fallback response
+                    fallback_code = similar_codes[0].code if similar_codes else "Unknown"
+                    fallback_themes = self._assign_themes_to_codes([fallback_code]) if fallback_code != "Unknown" else []
                     return CodeAssignmentResponse(
                         idea_id=idea_id,
                         idea=idea_text,
-                        assigned_codes=[similar_codes[0].code] if similar_codes else ["Unknown"],
+                        assigned_codes=[fallback_code],
+                        assigned_themes=fallback_themes,
                         assignment_confidence=0.1,
                         assignment_rationale="Failed to process - assigned most similar code as fallback"
                     )
@@ -230,6 +265,7 @@ class CodeAssigner:
                     idea_id=idea_id,
                     idea=idea_text,
                     assigned_codes=["Processing_Error"],
+                    assigned_themes=[],
                     assignment_confidence=0.0,
                     assignment_rationale="Processing failed - assigned error code"
                 ))
@@ -261,21 +297,26 @@ class CodeAssigner:
             if coded_model.response_ideas:
                 updated_ideas = []
                 for idea_submodel in coded_model.response_ideas:
-                    # Convert to AssignedCodeSubmodel
-                    assigned_idea = models.AssignedCodeSubmodel(
+                    # Convert to AssignedIdeaSubmodel (extends ClusterSubmodel)
+                    assigned_idea = models.AssignedIdeaSubmodel(
                         idea_id=idea_submodel.idea_id,
-                        idea=idea_submodel.idea
+                        idea=idea_submodel.idea,
+                        # Copy cluster information if available
+                        initial_cluster=getattr(idea_submodel, 'initial_cluster', None),
+                        idea_embedding=getattr(idea_submodel, 'idea_embedding', None)
                     )
                     
                     # Add assignment data if available
                     if idea_submodel.idea_id in assignments_lookup:
                         assignment = assignments_lookup[idea_submodel.idea_id]
                         assigned_idea.assigned_codes = assignment.assigned_codes
+                        assigned_idea.assigned_themes = assignment.assigned_themes
                         assigned_idea.assignment_confidence = assignment.assignment_confidence
                         assigned_idea.assignment_rationale = assignment.assignment_rationale
                     else:
                         # Fallback if no assignment found
                         assigned_idea.assigned_codes = ["Unassigned"]
+                        assigned_idea.assigned_themes = []
                         assigned_idea.assignment_confidence = 0.0
                         assigned_idea.assignment_rationale = "No assignment found"
                     

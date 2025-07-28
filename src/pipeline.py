@@ -483,8 +483,14 @@ prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    codebook = cache_manager.load_from_cache(filename, step_name, models.Codebook)
-    verbose_reporter.section_header("CODEBOOK FROM CACHE")
+    codebook_model = cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
+    verbose_reporter.summary("CODEBOOK FROM CACHE", {
+        "Total codes": len(codebook_model.codes),
+        "Source variable": codebook_model.source_variable
+    })
+    # Extract legacy codebook list for backward compatibility
+    codebook = [models.Codebook(code=entry.code, definition=entry.definition) 
+                for entry in codebook_model.codes]
 else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
@@ -498,11 +504,12 @@ else:
   
     if not starter_codes:
         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-        codebook = models.Codebook(
-            code=[],
-            definition= [],
-            topic = [],
-            theme = [])
+        codebook_model = models.CodebookModel(
+            codes=[],
+            generation_metadata={"error": "Failed to generate starter codes"},
+            source_variable=var_name
+        )
+        codebook = []
     else:
         generator = codebookGenerator.InductiveCodebookGenerator(
              cluster_results=initial_cluster_results,
@@ -516,27 +523,50 @@ else:
              prompt_printer=prompt_printer  )
         results = generator.generate()
         
-    idx = 1
-    codebook = []
-    for key, value in results.items():
-        if key == 'codebook':
-            for item in value:
-                #print(f"{idx}: {item['code']}")
-                print(f"{idx}. {item['code']} : {item['definition']}")
-                codebook_entry = models.Codebook(
-                    code = item['code'],
-                    definition = item['definition'],
-                    topic = None,  # keep empty for now
-                    theme = None  # keep empty for now
-                )
-                codebook.append(codebook_entry)
-                idx += 1 
+        # Convert results to new CodebookModel structure
+        codebook_entries = []
+        codebook = []  # Legacy format for backward compatibility
+        idx = 1
+        for key, value in results.items():
+            if key == 'codebook':
+                for item in value:
+                    print(f"{idx}. {item['code']} : {item['definition']}")
+                    
+                    # New structured format
+                    codebook_entry = models.CodebookEntry(
+                        code=item['code'],
+                        definition=item['definition'],
+                        source_clusters=None  # Could be enhanced later with cluster tracing
+                    )
+                    codebook_entries.append(codebook_entry)
+                    
+                    # Legacy format for backward compatibility
+                    legacy_entry = models.Codebook(
+                        code=item['code'],
+                        definition=item['definition'],
+                        topic=None,
+                        theme=None
+                    )
+                    codebook.append(legacy_entry)
+                    idx += 1
+        
+        # Create structured codebook model
+        codebook_model = models.CodebookModel(
+            codes=codebook_entries,
+            generation_metadata={
+                "methodology": "Inductive codebook generation from clusters",
+                "starter_codes_count": len(starter_codes) if starter_codes else 0,
+                "total_codes_generated": len(codebook_entries),
+                "k_parameter": 5
+            },
+            source_variable=var_name
+        )
 
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the results
-    cache_manager.save_to_cache(codebook, filename, step_name, elapsed_time)
+    # Cache the structured codebook model
+    cache_manager.save_to_cache(codebook_model, filename, step_name, elapsed_time)
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug - decisions
@@ -659,22 +689,32 @@ prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    enriched_codebook = cache_manager.load_from_cache(filename, step_name, list)
+    theme_enriched_codebook = cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
     verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
-        "Total codes": len(enriched_codebook),
-        "With domains": len([c for c in enriched_codebook if c.topic]),
-        "With themes": len([c for c in enriched_codebook if c.theme])
+        "Total codes": len(theme_enriched_codebook.codes),
+        "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
+        "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
     })
+    # Extract legacy codebook for backward compatibility
+    enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition, 
+                                        topic=entry.theme, theme=entry.theme) 
+                        for entry in theme_enriched_codebook.codes]
 else:
     verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
     start_time = time.time()
     
     if not codebook:
         print("Error: No codes available for theme identification.")
+        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+            codes=[],
+            generation_metadata={"error": "No codes available"},
+            source_variable=var_name,
+            themes_summary=[],
+            code_to_theme_mapping={},
+            theme_methodology="No theme identification performed"
+        )
         enriched_codebook = []
     else:
-        
-
         theme_identifier = ThemeIdentifier(
             codebook=codebook,
             var_lab=var_lab,
@@ -682,38 +722,82 @@ else:
             prompt_printer=prompt_printer
         )
         
-        #result = await theme_identifier.identify_themes_by_clustering()
-      
-        
         async def run_theme_identification():
-            return  await theme_identifier.identify_themes_by_clustering()
+            return await theme_identifier.identify_themes_by_clustering()
             
-        result =  asyncio.run(run_theme_identification())    
+        result = asyncio.run(run_theme_identification())    
         
-        
+        # Process theme results into structured format
+        enriched_entries = []
+        code_to_theme_mapping = {}
         themes = result['themes']
 
+        # Build code-to-theme mapping
         for theme in themes:
-            print(f"\n🟣 Theme: {theme['theme_name']}")
-            #print(f"   Description: {theme['theme_description']}")
-            print(f"   Cluster ID: {theme['cluster_id']}")
+            theme_name = theme['theme_name']
+            theme_desc = theme.get('theme_description', '')
+            cluster_id = theme.get('cluster_id', -1)
+            is_misc = theme.get('is_miscellaneous', False)
+            
+            print(f"\n🟣 Theme: {theme_name}")
+            print(f"   Cluster ID: {cluster_id}")
             print("   Codes:")
-            for code in theme['codes']:
-                print(f"     - Code {code['code_number']}: {code['code_name']}")
-                
-        # for i, item in enumerate(codebook, 1):
-        #      print(f"{i}. {item.code}")
-        #      print(f"   → {item.definition}\n")
-                
+            
+            for code_info in theme['codes']:
+                code_name = code_info['code_name']
+                code_to_theme_mapping[code_name] = theme_name
+                print(f"     - Code {code_info['code_number']}: {code_name}")
+        
+        # Enrich codebook entries with theme information
+        for entry in codebook_model.codes:
+            theme_name = code_to_theme_mapping.get(entry.code)
+            theme_info = None
+            theme_cluster_id = None
+            is_misc = False
+            
+            if theme_name:
+                # Find theme details
+                for theme in themes:
+                    if theme['theme_name'] == theme_name:
+                        theme_info = theme.get('theme_description', '')
+                        theme_cluster_id = theme.get('cluster_id', -1)
+                        is_misc = theme.get('is_miscellaneous', False)
+                        break
+            
+            enriched_entry = models.ThemeEnrichedCodebookEntry(
+                code=entry.code,
+                definition=entry.definition,
+                source_clusters=entry.source_clusters,
+                theme=theme_name,
+                theme_description=theme_info,
+                theme_cluster_id=theme_cluster_id,
+                is_miscellaneous=is_misc
+            )
+            enriched_entries.append(enriched_entry)
+        
+        # Create structured theme-enriched codebook
+        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+            codes=enriched_entries,
+            generation_metadata=codebook_model.generation_metadata,
+            source_variable=codebook_model.source_variable,
+            themes_summary=themes,
+            code_to_theme_mapping=code_to_theme_mapping,
+            theme_methodology=result.get('methodology', 'Clustering-based theme identification')
+        )
+        
+        # Create legacy enriched codebook for backward compatibility
+        enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition,
+                                           topic=entry.theme, theme=entry.theme)
+                           for entry in enriched_entries]
       
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the enriched codebook
-    cache_manager.save_to_cache(enriched_codebook, filename, step_name, elapsed_time)
+    # Cache the structured theme-enriched codebook
+    cache_manager.save_to_cache(theme_enriched_codebook, filename, step_name, elapsed_time)
     print(f"\n'Hierarchical theme identification' completed in {elapsed_time:.2f} seconds.\n")
 
-# Update the main codebook with enriched data
+# Update the main codebook with enriched data (for backward compatibility)
 if enriched_codebook:
     codebook = enriched_codebook
 
@@ -735,34 +819,75 @@ force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     code_assigned_results = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
     total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
-    total_assignments = sum(len([idea for idea in resp.response_ideas if idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
     verbose_reporter.summary("CODE ASSIGNMENTS FROM CACHE", {
         "Input responses": len(code_assigned_results),
         "Ideas processed": total_ideas,
-        "Code assignments": total_assignments
+        "Code assignments": total_assignments,
+        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
     })
 else:
     verbose_reporter.section_header("CODE ASSIGNMENT PHASE")
     start_time = time.time()
     
-    if not codebook:
-        print("Error: No codebook available for code assignment.")
+    # Check inputs from both Step 6 (clusters) and Step 8 (enriched codebook)
+    if not theme_enriched_codebook or not theme_enriched_codebook.codes:
+        print("Error: No enriched codebook available for code assignment.")
         code_assigned_results = []
-    elif not embedded_text:
-        print("Error: No embedded text available for code assignment.")
+    elif not initial_cluster_results:
+        print("Error: No cluster results available for code assignment.")
         code_assigned_results = []
     else:
-        print(f"\nAssigning codes from {len(codebook)} code codebook to extracted ideas")
+        print(f"\nAssigning codes and themes from {len(theme_enriched_codebook.codes)} enriched codes to {sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)} ideas")
         
-        code_assigner_instance = codeAssigner.CodeAssigner(
-            ideas_extracted_models=embedded_text,  # Using embedded_text which contains ideas with embeddings
-            codebook=codebook,
-            var_lab=var_lab,
-            verbose=VERBOSE,
-            prompt_printer=prompt_printer
-        )
+        # Convert cluster results to use embedded text (they should have embeddings from Step 5)
+        ideas_with_embeddings = []
+        for cluster_result in initial_cluster_results:
+            if hasattr(cluster_result, 'response_ideas') and cluster_result.response_ideas:
+                for idea in cluster_result.response_ideas:
+                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                        ideas_with_embeddings.append(cluster_result)
+                        break
         
-        code_assigned_results = code_assigner_instance.assign()
+        if not ideas_with_embeddings:
+            print("Error: No embedded ideas found in cluster results.")
+            code_assigned_results = []
+        else:
+            code_assigner_instance = codeAssigner.CodeAssigner(
+                ideas_extracted_models=initial_cluster_results,  # Use cluster results with embeddings
+                codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
+                         for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
+                var_lab=var_lab,
+                verbose=VERBOSE,
+                prompt_printer=prompt_printer
+            )
+            
+            # Pass theme mapping to the assigner for theme assignment
+            code_assigner_instance.code_to_theme_mapping = theme_enriched_codebook.code_to_theme_mapping
+            
+            assignment_results = code_assigner_instance.assign()
+            
+            # Convert to CodeAssignedModel (extends ClusterModel)
+            code_assigned_results = []
+            for i, cluster_result in enumerate(initial_cluster_results):
+                if i < len(assignment_results):
+                    assigned_result = assignment_results[i]
+                    
+                    # Convert to CodeAssignedModel structure
+                    code_assigned_model = models.CodeAssignedModel(
+                        respondent_id=cluster_result.respondent_id,
+                        response=cluster_result.response,
+                        quality_filter=cluster_result.quality_filter,
+                        quality_filter_code=cluster_result.quality_filter_code,
+                        response_ideas=assigned_result.response_ideas if hasattr(assigned_result, 'response_ideas') else None,
+                        idea_count=assigned_result.idea_count if hasattr(assigned_result, 'idea_count') else 0,
+                        assignment_metadata={
+                            "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
+                            "theme_methodology": theme_enriched_codebook.theme_methodology,
+                            "assignment_timestamp": start_time
+                        }
+                    )
+                    code_assigned_results.append(code_assigned_model)
         
     end_time = time.time()
     elapsed_time = end_time - start_time
