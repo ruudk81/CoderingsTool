@@ -378,150 +378,237 @@ IMPORTANT:
 # STEP 8: THEME IDENTIFICATION  
 # =============================================================================
 
-HIERARCHY_MAP_PROMPT = """
-You are a {language} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
-Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
+THEME_IDENTIFICATION_PROMPT = """
+You are {language) language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+You have been given a cluster of semantically related codes that were grouped using HDBSCAN clustering based on their embedding similarity.
 
-<survey_question>
+SURVEY QUESTION:
 {survey_question}
-</survey_question>
 
-<codes>
-{codes_batch}
-</codes>
+CLUSTER CODES ({codes_count} codes):
+{codes_text}
 
-<instructions>
-Step 1. Review the codes - these capture shared ideas from survey responses.
-Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
-Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
-Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
-Step 5. Actively construe relationships - themes don't simply "emerge" from data.
-Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
-Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
-Step 8. Ensure ALL codes are included - none can be left out.
-Step 9. Create balanced groupings - avoid unwieldy structures.
-step 10. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
+EXISTING THEMES:
+{existing_themes_text}
 
-CRITICAL:
-1. You MUST include ALL 10 codes in your output - check if these code numbers are included: {codes_to_include}
-2. The codes are numbered - you must use these EXACT numbers
-3. Each code can appear ONLY ONCE in the hierarchy
-</instructions>
+YOUR TASK:
+Analyze this cluster of codes and decide whether to:
+1. CREATE A NEW THEME that captures the shared conceptual pattern of these codes, OR
+2. USE AN EXISTING THEME if one of the existing themes above adequately represents this cluster
+
+DECISION CRITERIA:
+- For CREATE NEW: The codes share a coherent conceptual pattern that is distinct from existing themes
+- For USE EXISTING: An existing theme adequately captures the essence of these codes  
+- Focus on conceptual meaning rather than surface-level keyword matching
+- Consider the survey question context
+
+BRAUN & CLARKE PRINCIPLES:
+- Themes should capture coherent patterns of meaning
+- Focus on conceptual importance, not just frequency
+- Each theme should tell a meaningful story about the data
+- Themes should be distinct yet coherent
 
 OUTPUT FORMAT (JSON):
 {{
-  "batch_id": {batch_number},
-  "themes": [
-    {{
-      "theme_name": "[Theme name in {language}]",
-      "domains": [
-        {{
-          "domain_name": "[Domain name in {language}]",
-          "codes": [
-            {{
-              "code_number": [exact number from input],
-              "code_name": "[exact code text from input]"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
+  "decision": "create_new|use_existing",
+  "theme_name": "[Theme name in {language}]",
+  "theme_description": "[Brief description of what unites these codes conceptually]",
+  "existing_theme_used": "[Name of existing theme if used, or null]",
+  "confidence": "high|medium|low",
+  "rationale": "[Detailed explanation of your decision]"
 }}
 
-BEFORE SUBMITTING:
-Verify: Is each code included only exactly once?
+IMPORTANT:
+- Theme names and descriptions must be in {language}
+- If using existing theme, use the EXACT theme name from the list above
+- Base your decision on conceptual fit, not just similarity scores
+- Be conservative: prefer existing themes when they adequately fit
 
-Return ONLY the JSON object with all content in {language}.
-"""
+Return ONLY the JSON object."""
 
-HIERARCHY_REDUCE_PROMPT = """
-You are a {language} language expert and qualitative researcher specializing in thematic analysis following Braun & Clarke methodology. 
-Your task is to create a well-structured codebook based on a first draft of the codebook. 
-This codebook will be used to categorize responses to an open-ended survey question, and consists of 3 levels: specific codes > concrete domains > broad themes.
+ASSIGN_MISCELLANEOUS_PROMPT = """
+You are {language) language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+Your task is to find the BEST placement for a single code that was classified as noise/outlier by the clustering algorithm.
 
-Here is the survey question:
-<survey_question>
+SURVEY QUESTION:
 {survey_question}
-</survey_question>
 
-Here is the first draft of the codebook:
-<first_draft_of_codebook>
-{batch_hierarchies}
-</first_draft_of_codebook>>
+EXISTING THEMES:
+{existing_themes_text}
 
-CRITICAL: There are {total_codes} codes total that MUST ALL appear in your final codebook.
+CODE TO ANALYZE:
+Code {code_number}: {code_name}
+Definition: {definition}
 
-<instructions>
-YOUR TASK: Create a refined, consolidated codebook by:
+INSTRUCTIONS:
+- Examine this single code carefully in the context of the survey question
+- Consider which existing theme this code fits BEST conceptually
+- Focus on the underlying meaning and purpose of the code
+- If the code truly doesn't fit any existing theme, you may recommend keeping it miscellaneous
+- Prioritize conceptual fit over surface-level keyword matching
 
-1. IMPROVING LABELS:
-   - All labels should be concise and make sense as stand-alone terms in light of the survey question
-   - Theme names should capture overarching concepts (not just list topics)
-   - Domain names should be clear and distinctive
-   - Avoid overlapping or vague labels
+DECISION CRITERIA:
+1. Does this code share the same underlying concept as an existing theme?
+2. Would including this code strengthen or weaken the theme's coherence?
+3. Does the code address the same aspect of the survey question as an existing theme?
 
-2. MERGING STRATEGICALLY:
-   - Combine themes that address the same overarching concept
-   - Merge domains that group similar types of codes
-   - Track which original themes/domains you're combining
-
-3. ENSURING QUALITY:
-   - Each theme should represent a coherent narrative
-   - Domains within a theme should be clearly distinguished
-   - Balance the structure (avoid one huge theme with many tiny ones)
-
-4. PRESERVING ALL CODES:
-   - Every single code must appear exactly once
-   - If codes don't fit well after merging, use "Overige" theme
-   - Never duplicate or omit codes
-</instructions>
-
-Your output should follow this structure:
-
-<output>
+OUTPUT FORMAT (JSON):
 {{
-  "themes": [
-    {{
-      "theme_name": "[Refined theme name in {language}]",
-      "theme_concept": "[What unifying concept this theme represents]",
-      "domains": [
-        {{
-          "domain_name": "[Clear domain name in {language}]",
-          "domain_description": "[What distinguishes this domain]",
-          "codes": [
-            {{
-              "code_number": [exact number],
-              "code_name": "[exact original code name]",
-              "fit_rationale": "[Brief reason why this code belongs here]"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ],
-  "transformation_notes": {{
-    "themes_merged": [
-      {{
-        "original": ["Theme A from Codebook 1", "Theme B from Codebook 2"],
-        "final": "New Combined Theme",
-        "reason": "Both addressed X concept"
-      }}
-    ],
-    "domains_merged": [
-      {{
-        "original": ["Domain 1", "Domain 2"],
-        "final": "Merged Domain",
-        "within_theme": "Theme Name",
-        "reason": "Both grouped Y type of codes"
-      }}
-    ]
-  }}
+  "decision": "assign|miscellaneous",
+  "target_theme": "[exact theme name from list above, or null if miscellaneous]",
+  "confidence": "high|medium|low",
+  "rationale": "[detailed explanation of why this code belongs with this theme or remains miscellaneous]"
 }}
-</output>
 
-Remember, it is CRITICAL that all {total_codes} codes from the original codebook appear exactly once in your final codebook. Do not omit or duplicate any codes.
-Before providing your final output, use a <scratchpad> to think through your process of refining and consolidating the codebook. Consider how you will improve labels, merge themes and domains strategically, ensure quality, and preserve all codes.
-After your thought process, provide your final refined codebook in the specified JSON format within <output> tags.
-Return ONLY the JSON object with all text in {language}.
-"""
+CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
+
+Return ONLY the JSON object with all content in {language}."""
+
+
+# HIERARCHY_MAP_PROMPT = """
+# You are a {language} language exeprt and a qualitative researcher  specializing in thematic analysis following Braun & Clarke methodology.
+# Your task is to analyze EXACTLY 10 codes and organize them into a 3-level hierarchy: codes → domains → themes.
+
+# <survey_question>
+# {survey_question}
+# </survey_question>
+
+# <codes>
+# {codes_batch}
+# </codes>
+
+# <instructions>
+# Step 1. Review the codes - these capture shared ideas from survey responses.
+# Step 2. Look for patterns and shared meanings among the codes. Consider how different codes might be combined based on underlying concepts or features of the data.
+# Step 3. Group related codes with shared meaning into 2 or more practical DOMAINS
+# Step 4. Group related domains that share an overarching narrative into 1 or more broad THEMES.
+# Step 5. Actively construe relationships - themes don't simply "emerge" from data.
+# Step 6. Consider salience over frequency - meaningful patterns matter more than code counts.
+# Step 7. Aim for distinctive yet coherent groupings that may even be contradictory.
+# Step 8. Ensure ALL codes are included - none can be left out.
+# Step 9. Create balanced groupings - avoid unwieldy structures.
+# step 10. Consider creating a ”miscellaneous” category for codes that don’t fit elsewhere.
+
+# CRITICAL:
+# 1. You MUST include ALL 10 codes in your output - check if these code numbers are included: {codes_to_include}
+# 2. The codes are numbered - you must use these EXACT numbers
+# 3. Each code can appear ONLY ONCE in the hierarchy
+# </instructions>
+
+# OUTPUT FORMAT (JSON):
+# {{
+#   "batch_id": {batch_number},
+#   "themes": [
+#     {{
+#       "theme_name": "[Theme name in {language}]",
+#       "domains": [
+#         {{
+#           "domain_name": "[Domain name in {language}]",
+#           "codes": [
+#             {{
+#               "code_number": [exact number from input],
+#               "code_name": "[exact code text from input]"
+#             }}
+#           ]
+#         }}
+#       ]
+#     }}
+#   ]
+# }}
+
+# BEFORE SUBMITTING:
+# Verify: Is each code included only exactly once?
+
+# Return ONLY the JSON object with all content in {language}.
+# """
+
+# HIERARCHY_REDUCE_PROMPT = """
+# You are a {language} language expert and qualitative researcher specializing in thematic analysis following Braun & Clarke methodology. 
+# Your task is to create a well-structured codebook based on a first draft of the codebook. 
+# This codebook will be used to categorize responses to an open-ended survey question, and consists of 3 levels: specific codes > concrete domains > broad themes.
+
+# Here is the survey question:
+# <survey_question>
+# {survey_question}
+# </survey_question>
+
+# Here is the first draft of the codebook:
+# <first_draft_of_codebook>
+# {batch_hierarchies}
+# </first_draft_of_codebook>>
+
+# CRITICAL: There are {total_codes} codes total that MUST ALL appear in your final codebook.
+
+# <instructions>
+# YOUR TASK: Create a refined, consolidated codebook by:
+
+# 1. IMPROVING LABELS:
+#    - All labels should be concise and make sense as stand-alone terms in light of the survey question
+#    - Theme names should capture overarching concepts (not just list topics)
+#    - Domain names should be clear and distinctive
+#    - Avoid overlapping or vague labels
+
+# 2. MERGING STRATEGICALLY:
+#    - Combine themes that address the same overarching concept
+#    - Merge domains that group similar types of codes
+#    - Track which original themes/domains you're combining
+
+# 3. ENSURING QUALITY:
+#    - Each theme should represent a coherent narrative
+#    - Domains within a theme should be clearly distinguished
+#    - Balance the structure (avoid one huge theme with many tiny ones)
+
+# 4. PRESERVING ALL CODES:
+#    - Every single code must appear exactly once
+#    - If codes don't fit well after merging, use "Overige" theme
+#    - Never duplicate or omit codes
+# </instructions>
+
+# Your output should follow this structure:
+
+# <output>
+# {{
+#   "themes": [
+#     {{
+#       "theme_name": "[Refined theme name in {language}]",
+#       "theme_concept": "[What unifying concept this theme represents]",
+#       "domains": [
+#         {{
+#           "domain_name": "[Clear domain name in {language}]",
+#           "domain_description": "[What distinguishes this domain]",
+#           "codes": [
+#             {{
+#               "code_number": [exact number],
+#               "code_name": "[exact original code name]",
+#               "fit_rationale": "[Brief reason why this code belongs here]"
+#             }}
+#           ]
+#         }}
+#       ]
+#     }}
+#   ],
+#   "transformation_notes": {{
+#     "themes_merged": [
+#       {{
+#         "original": ["Theme A from Codebook 1", "Theme B from Codebook 2"],
+#         "final": "New Combined Theme",
+#         "reason": "Both addressed X concept"
+#       }}
+#     ],
+#     "domains_merged": [
+#       {{
+#         "original": ["Domain 1", "Domain 2"],
+#         "final": "Merged Domain",
+#         "within_theme": "Theme Name",
+#         "reason": "Both grouped Y type of codes"
+#       }}
+#     ]
+#   }}
+# }}
+# </output>
+
+# Remember, it is CRITICAL that all {total_codes} codes from the original codebook appear exactly once in your final codebook. Do not omit or duplicate any codes.
+# Before providing your final output, use a <scratchpad> to think through your process of refining and consolidating the codebook. Consider how you will improve labels, merge themes and domains strategically, ensure quality, and preserve all codes.
+# After your thought process, provide your final refined codebook in the specified JSON format within <output> tags.
+# Return ONLY the JSON object with all text in {language}.
+# """
