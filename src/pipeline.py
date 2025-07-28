@@ -513,7 +513,6 @@ else:
     else:
         generator = codeGenerator.InductiveCodeGenerator(
              cluster_results=initial_cluster_results,
-             embedded_text=embedded_text,
              starter_codes=starter_codes,
              var_lab=var_lab,
              k=5,

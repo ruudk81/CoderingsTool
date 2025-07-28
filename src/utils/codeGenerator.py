@@ -1186,27 +1186,18 @@ class CodebookDataProcessor:
     
     def __init__(self, 
                  cluster_results: List[models.ClusterModel], 
-                 embedded_text: List[models.EmbeddingsModel],
-                 k: int = 5):
+                 k: int = 5,
+                 embedded_text: List[models.EmbeddingsModel] = None):  # Deprecated
         
         self.cluster_results = cluster_results
-        self.embedded_text = embedded_text
+        if embedded_text is not None:
+            logger.warning("embedded_text parameter is deprecated - embeddings are now in cluster_results")
         self.k = k
         
     def prepare_cluster_text(self) -> Dict[int, Dict]:
-        """Prepare cluster data with ideas and embeddings"""
-        # Create embedding map
-        embedding_map = {}
-        for result in self.embedded_text:
-            if hasattr(result, 'idea_embeddings') and result.idea_embeddings:
-                for idea in result.idea_embeddings:
-                    embedding_map[idea.idea_id] = {
-                        'idea': idea.idea,
-                        'embedding': idea.idea_embedding
-                    }
-        
-        # Group by cluster
+        """Prepare cluster data with ideas and embeddings (simplified for clean model inheritance)"""
         clusters = {}
+        
         for result in self.cluster_results:
             ideas_list = result.response_ideas or []
             
@@ -1214,14 +1205,13 @@ class CodebookDataProcessor:
                 if idea.initial_cluster is not None and idea.initial_cluster != -1:
                     cluster_id = idea.initial_cluster
                     
-                    if idea.idea_id in embedding_map:
-                        embedding_data = embedding_map[idea.idea_id]
-                        
+                    # ClusterModel now contains embeddings directly
+                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
                         if cluster_id not in clusters:
                             clusters[cluster_id] = {'ideas': [], 'embeddings': []}
                         
-                        clusters[cluster_id]['ideas'].append(embedding_data['idea'])
-                        clusters[cluster_id]['embeddings'].append(embedding_data['embedding'])
+                        clusters[cluster_id]['ideas'].append(idea.idea)
+                        clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
         
         # Filter out empty clusters
         return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
@@ -1236,7 +1226,6 @@ class InductiveCodeGenerator:
     def __init__(
         self,
         cluster_results: List[models.ClusterModel], 
-        embedded_text: List[models.EmbeddingsModel],
         starter_codes: List[Dict[str, str]], 
         var_lab: str, 
         k: int = 5,
@@ -1244,11 +1233,14 @@ class InductiveCodeGenerator:
         prompt_printer = None,
         batch_size: int = 10,
         max_concurrent_requests: int = 5,
-        config = None  # For compatibility
+        config = None,  # For compatibility
+        embedded_text: List[models.EmbeddingsModel] = None  # Deprecated - for backward compatibility
     ):
-        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR V3 (LangChain optimized)")
+        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR V4 (Clean model inheritance)")
         self.cluster_results = cluster_results
-        self.embedded_text = embedded_text
+        # Note: embedded_text is no longer needed since ClusterModel contains embeddings
+        if embedded_text is not None:
+            logger.warning("embedded_text parameter is deprecated - embeddings are now in cluster_results")
         self.starter_codes = starter_codes
         self.var_lab = var_lab
         self.k = k
@@ -1261,7 +1253,6 @@ class InductiveCodeGenerator:
         self.model_config = ModelConfig()
         self.data_processor = CodebookDataProcessor(
             cluster_results=cluster_results,
-            embedded_text=embedded_text,
             k=k
         )
         self.verbose_reporter = VerboseReporter(verbose)
