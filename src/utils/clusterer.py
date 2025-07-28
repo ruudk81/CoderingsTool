@@ -139,6 +139,7 @@ class Clusterer:
                 ClusterSubmodel(
                     idea_id=item.idea_id,
                     idea=item.idea,
+                    idea_embedding=item.idea_embedding,
                     initial_cluster=item.initial_idea_cluster
                 ) for item in items
             ]
