@@ -359,7 +359,7 @@ Output ONE recommendation as valid JSON:
   "cluster_core_theme": "identify from cluster analysis notes",
   "best_matching_codes": ["code1", "code2"],
   "coverage_assessment": {{
-    "adequacy": "adequate|inadequate",
+    "percentage": 80,
     "rationale": "explain specifically what aspects are/aren't covered by existing codes"
   }},
   "decision": "use_existing|modify_existing|create_new",
@@ -376,7 +376,11 @@ Output ONE recommendation as valid JSON:
 IMPORTANT:
 - Return ONLY the JSON object in {language}
 - Fill only relevant fields in action_details based on your decision
-- Coverage adequacy should reflect whether existing codes fundamentally capture the cluster's meaning
+- Coverage percentage: estimate how well existing codes capture the cluster's core concept (0-100%)
+  - 90-100%: Existing codes fully capture the cluster's meaning
+  - 70-89%: Existing codes capture most but miss some nuances
+  - 50-69%: Partial coverage, significant aspects missing
+  - Below 50%: Poor coverage, new code likely needed
 - One cluster = one recommendation
 """
 
