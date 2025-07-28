@@ -151,10 +151,10 @@ class IdeaExtractor:
             
             # Process response - array of IdeaResponse objects
             ideas = []
-            for idea_response in response_data:
+            for i, idea_response in enumerate(response_data):
                 if idea_response.idea:
                     ideas.append(models.IdeasExtractedSubmodel(
-                        idea_id=idea_response.idea_id,
+                        idea_id=f"{respondent_id}_{i+1}",  # Manual generation for data integrity
                         idea=idea_response.idea
                     ))
             
