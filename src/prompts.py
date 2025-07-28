@@ -244,7 +244,7 @@ Here are the details for your task:
 
 REQUIRED DEFINITION FORMAT:
 All definitions must follow this structure:
-"References to [specific concept/aspect]. [Second sentence only if needed for exclusion criteria]."
+"References to [specific concept/aspect]."
 
 Generate {n_codes} diverse, hypothetical codes that might emerge from analyzing responses to this survey question. 
 Think about different aspects respondents might mention - both positive and negative experiences, practical and emotional aspects, processes and outcomes.
@@ -255,7 +255,7 @@ Here's an example of GOOD codes following the required format:
 [
   {{"code": "Financial constraints", "definition": "References to budget limitations or lack of funding affecting implementation."}},
   {{"code": "Staff resistance", "definition": "Mentions of personnel opposing or reluctant to adopt new practices."}},
-  {{"code": "Time pressures", "definition": "References to insufficient time for activities or feeling rushed. Excludes scheduling conflicts."}},
+  {{"code": "Time pressures", "definition": "References to insufficient time for activities or feeling rushed."}},
   {{"code": "Leadership support", "definition": "Mentions of management actively facilitating or championing initiatives."}}
 ]
 </example>
@@ -363,10 +363,9 @@ CREATION CRITERIA:
 
 DEFINITION FORMAT GUIDELINES:
 - Start with active language: "References to...", "Mentions of...", "Expressions of..."
-- First sentence: What IS included (positive criteria)
-- Second sentence (if needed): What is NOT included (negative criteria)
+- Focus on what IS included (positive criteria)
 - Use observable language - what respondents explicitly state, not interpretations
-- Keep under 2 sentences total
+- Keep definitions concise and specific
 - Avoid lists of examples; focus on the core concept
 
 Output ONE recommendation as valid JSON:
@@ -439,11 +438,11 @@ CODING PRINCIPLES FOR HIGH-QUALITY CODES:
 - **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
 
 REQUIRED DEFINITION STRUCTURE:
-"References to [specific concept/aspect]. [Second sentence only if needed for exclusion criteria]."
+"References to [specific concept/aspect]."
 
 Examples of GOOD definitions:
 - "References to financial constraints affecting program implementation."
-- "Mentions of positive student behavioral changes. Excludes academic performance."
+- "Mentions of positive student behavioral changes."
 - "Expressions of frustration with administrative procedures."
 
 Examples of POOR definitions (avoid these):
@@ -475,8 +474,8 @@ IMPORTANT:
 - Return ONLY the JSON object in {language}
 - For REVISE decisions, provide an improved version in validated_code
 - Code names MUST be 2-5 words maximum (no compound concepts)
-- Definitions MUST follow the structure: "References to [concept]. [Exclusion if needed]."
-- Validated definitions should be 1-2 sentences maximum
+- Definitions MUST follow the structure: "References to [specific concept]."
+- Keep definitions concise and specific
 - Focus on observable content, not interpretations
 - Ensure the code is truly atomic (one concept only)
 """
