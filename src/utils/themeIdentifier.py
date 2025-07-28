@@ -625,15 +625,15 @@ class ThemeIdentifier:
         })
         
         # Print detailed results if verbose
-        if self.verbose and identified_themes:
-            print("\nIdentified Themes (by cluster):")
-            for theme in identified_themes:
-                cluster_info = f"Cluster {theme.cluster_id}" if not theme.is_miscellaneous else "Noise"
-                print(f"\n  {cluster_info} - {theme.theme_name}")
-                print(f"    Description: {theme.theme_description}")
-                print(f"    Codes ({len(theme.codes)}): {', '.join([f'{c.code_number}. {c.code_name[:30]}...' if len(c.code_name) > 30 else f'{c.code_number}. {c.code_name}' for c in theme.codes[:5]])}")
-                if len(theme.codes) > 5:
-                    print(f"    ... and {len(theme.codes) - 5} more codes")
+        # if self.verbose and identified_themes:
+        #     print("\nIdentified Themes (by cluster):")
+        #     for theme in identified_themes:
+        #         cluster_info = f"Cluster {theme.cluster_id}" if not theme.is_miscellaneous else "Noise"
+        #         print(f"\n  {cluster_info} - {theme.theme_name}")
+        #         print(f"    Description: {theme.theme_description}")
+        #         print(f"    Codes ({len(theme.codes)}): {', '.join([f'{c.code_number}. {c.code_name[:30]}...' if len(c.code_name) > 30 else f'{c.code_number}. {c.code_name}' for c in theme.codes[:5]])}")
+        #         if len(theme.codes) > 5:
+        #             print(f"    ... and {len(theme.codes) - 5} more codes")
         
         return final_structure
     
