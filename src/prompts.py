@@ -156,7 +156,7 @@ Please follow these instructions carefully:
    - An emotion, attitude, or evaluation expressed
 
 3. **Extraction Guidelines**:
-   - Keep each idea atomic (one concept per idea)
+   - Keep each idea atomic - each idea must capture ONE concept only - no compound ideas with "and", "including", "with"
    - Preserve the respondent's intended meaning
    - Use the respondent's own words where possible, but clarify if ambiguous
    - Include both explicit statements and clearly implied ideas
@@ -296,15 +296,10 @@ Given these codes from the codebook:
 {code_text}
 </existing_codebook>
 
-Analyze these codes to help future matching decisions:
-1. What specific aspects or dimensions of the survey question do these codes address?
-2. What potential gaps exist - what types of responses or themes might NOT fit these codes?
-3. Are there any conceptual overlaps or boundary issues between codes?    
+Analyze what specific aspects or dimensions of the survey question do these codes address?
 
-Output a concise analysis in {language} following this structure:
-"Coverage: These codes collectively address [aspects of the survey question].
-Gaps: Responses about [gap 1], [gap 2], and [gap 3] might not fit existing codes.
-Boundaries: [Note any overlap or ambiguity between existing codes, if relevant]."
+Output a concise summary in {language} following this structure:
+"Coverage: These codes address [aspects of the survey question]"
 
 IMPORTANT: Return ONLY the analysis text following this exact format, no JSON or additional explanation.
 """
@@ -393,75 +388,63 @@ Output ONE recommendation as valid JSON:
   "justification": "explain why this decision best balances parsimony with conceptual accuracy"
 }}
 
-IMPORTANT:
-- Return ONLY the JSON object in {language}
-- Fill only relevant fields in action_details based on your decision
-- Coverage percentage: estimate how well existing codes capture the cluster's core concept (0-100%)
-  - 90-100%: Existing codes fully capture the cluster's meaning
-  - 70-89%: Existing codes capture most but miss some nuances
-  - 50-69%: Partial coverage, significant aspects missing
-  - Below 50%: Poor coverage, new code likely needed
-- One cluster = one recommendation
+Return ONLY the JSON object in {language}
+Fill only relevant fields in action_details based on your decision
 """
 
 VALIDATION_PROMPT = """
-{system_message}
+You are a (language) language expert and qualitative researcher tasked with validating recommendations for adding new codes to a codebook used for analyzing survey responses. 
+Your goal is to ensure the codebook remains comprehensive, non-redundant, and clear. 
 
-This time we will focus on written responses to the following survey question: "{survey_question}".
-You are reviewing a code recommendation for clustered ideas extracted from survey responses.
-Your job is to APPROVE, REVISE or REJECT the recommendation, and to provide a final validated code name and definition.
-
-This is the extracted ideas: 
-<clustered_ideas>
-{clustered_ideas}
-</clustered_ideas>
-Note: These are ideas extracted from the original survey responses that prompted this recommendation.
-
-This is the recommendation:
-<recommendation>
-{step3_recommendation}
-</recommendation>
-Note: This is the complete recommendation from the matching analysis.
-
-These are existing codes in the code book:
+You will be evaluating a recommendation to add a new code to a codebook created to help analyze responses to this survey question:
 <existing_codebook>
 {existing_codes}
 </existing_codebook>
-Note: These are the 5 codes most similar to the recommended definition by semantic similarity.
 
-EVALUATION CRITERIA:
+Next, examine the extracted ideas from survey responses:
+<extracted ideas>
+{clustered_ideas}
+</extracted ideas s>
+
+Now, consider the recommendation for adding a new code:
+<recommendation>
+{step3_recommendation}
+</recommendation>
+
+Your task is to APPROVE, REVISE, or REJECT this recommendation based on the following evaluation criteria:
+    
 1. **Parsimony**: Were existing code options properly exhausted? Would using/modifying existing codes sacrifice important nuance?
 2. **Non-redundancy**: Is there minimal conceptual overlap with any existing code?
 3. **Clarity**: Is the code name intuitive and the definition unambiguous?
 4. **Scope appropriateness**: Does the code capture a single concept without being too narrow or broad?
 5. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
 
-CODING PRINCIPLES FOR HIGH-QUALITY CODES:
+Use these decision guidelines:
+- APPROVE: All criteria met, code is well-formed and truly necessary
+- REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
+- REJECT: Fails parsimony (existing codes suffice), significant redundancy, or covers multiple unrelated concepts
+
+When creating or revising codes, adhere to these principles for high-quality validated codes:
 - **ATOMIC**: One concept per code - no compound ideas with "and", "including", "with"
 - **PRECISE BOUNDARIES**: Clear inclusion/exclusion criteria that enable consistent application
 - **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
 - **OPERATIONAL DEFINITIONS**: Observable criteria, not interpretive assumptions
 - **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
 
-REQUIRED DEFINITION STRUCTURE:
+Use this required definition structure:
 "References to [specific concept/aspect]."
 
-Examples of GOOD definition structures:
+Examples of good definition structures:
 - "References to [specific limitation/constraint] affecting [process/outcome]."
 - "Mentions of [positive/negative] changes in [behavior/practice]."
 - "Expressions of [emotion/attitude] regarding [situation/process]."
 
-Examples of POOR definitions (avoid these):
+Avoid these poor definition structures:
 - Too compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
 - Too vague: "Mentions of various [things] related to [topic]"
 - Too interpretive: "Underlying [abstract concept] manifesting in different ways"
 
-DECISION GUIDELINES:
-- APPROVE: All criteria met, code is well-formed and truly necessary
-- REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
-- REJECT: Fails parsimony (existing codes suffice), significant redundancy, or covers multiple unrelated concepts
-
-Output a validation assessment in {language}:
+Provide your validation assessment in {language} using this JSON format:
 {{
   "evaluation": {{
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
@@ -476,7 +459,7 @@ Output a validation assessment in {language}:
   }}
 }}
 
-IMPORTANT: 
+Important:
 - Return ONLY the JSON object in {language}
 - For REVISE decisions, provide an improved version in validated_code
 - Code names MUST be 2-5 words maximum (no compound concepts)
