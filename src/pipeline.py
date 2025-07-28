@@ -31,7 +31,7 @@ var_name = "q19"
 # var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
