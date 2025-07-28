@@ -672,71 +672,115 @@ else:
         print("Error: No codes available for theme identification.")
         enriched_codebook = []
     else:
-        theme_identifier_instance = themeIdentifier.ThemeIdentifier(
-            codebook=codebook,
-            var_lab=var_lab,
-            verbose=VERBOSE,
-            prompt_printer=prompt_printer
-        )
+        # theme_identifier_instance = themeIdentifier.ThemeIdentifier(
+        #     codebook=codebook,
+        #     var_lab=var_lab,
+        #     verbose=VERBOSE,
+        #     prompt_printer=prompt_printer
+        # )
         
-        hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
+        # hierarchical_results = asyncio.run(theme_identifier_instance.identify_themes_hierarchical())
 
         
-        print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
-        print(f"Expected: 64 codes")
+        # print(f"\n🔍 DEBUG: Hierarchy contains {len(hierarchical_results['codebook'])} codes")
+        # print(f"Expected: 64 codes")
         
-        # idx = 1
-        # for result in hierarchical_results['codebook']:
-        #         original_code = next((c for c in codebook if c.code == result['code']), None)
-        #         if original_code:
-        #             print(idx) 
-        #             print(f"Code: {original_code.code}")
-        #             #print(f"Definition: {original_code.definition}")
-        #             print(f"Domain: {result['domain']}")
-        #             print(f"Theme: {result['theme']}\n") 
-        #             idx += 1
-        #         else:
-        #             print(result['code'])
+        # # idx = 1
+        # # for result in hierarchical_results['codebook']:
+        # #         original_code = next((c for c in codebook if c.code == result['code']), None)
+        # #         if original_code:
+        # #             print(idx) 
+        # #             print(f"Code: {original_code.code}")
+        # #             #print(f"Definition: {original_code.definition}")
+        # #             print(f"Domain: {result['domain']}")
+        # #             print(f"Theme: {result['theme']}\n") 
+        # #             idx += 1
+        # #         else:
+        # #             print(result['code'])
                     
-        idx = 1
-        for result in hierarchical_results['hierarchy']:
-            key, themes = result 
-            for theme in themes:
-                if theme.__class__.__name__ != "ThemeDefinition":
-                    continue  
-                print(f"\nTheme: {theme.theme_name}")
-                #print(f"Concept: {theme.theme_concept}")
-                for domain in theme.domains:
-                    print(f"  Domain: {domain.domain_name}")
-                    #print(f"  Description: {domain.domain_description}")
-                    for code in domain.codes:
-                        print(f"    Code {idx}: {code.code_name}")
-                        #print(f"    Code {code.code_number}: {code.code_name}")
-                        #print(f"      Fit rationale: {code.fit_rationale}")
-                        idx += 1
+        # idx = 1
+        # for result in hierarchical_results['hierarchy']:
+        #     key, themes = result 
+        #     for theme in themes:
+        #         if theme.__class__.__name__ != "ThemeDefinition":
+        #             continue  
+        #         print(f"\nTheme: {theme.theme_name}")
+        #         #print(f"Concept: {theme.theme_concept}")
+        #         for domain in theme.domains:
+        #             print(f"  Domain: {domain.domain_name}")
+        #             #print(f"  Description: {domain.domain_description}")
+        #             for code in domain.codes:
+        #                 print(f"    Code {idx}: {code.code_name}")
+        #                 #print(f"    Code {code.code_number}: {code.code_name}")
+        #                 #print(f"      Fit rationale: {code.fit_rationale}")
+        #                 idx += 1
         
-        from utils.themeIdentifier_v2 import ThemeIdentifierV2
-        theme_identifier_instance = ThemeIdentifierV2(
+        # from utils.themeIdentifier_v2 import ThemeIdentifierV2
+        # theme_identifier_instance = ThemeIdentifierV2(
+        #     codebook=codebook,
+        #     var_lab=var_lab,
+        #     verbose=VERBOSE,
+        #     prompt_printer=prompt_printer
+        # )
+        
+        # result = await theme_identifier_instance.identify_themes_braun_clarke()
+        
+                
+        # themes = result['themes']
+
+        # for theme in themes:
+        #     print(f"\n🟣 Theme: {theme.theme_name}")
+        #     print(f"   Description: {theme.theme_description}")
+        #     print("   Codes:")
+        #     for code in theme.codes:
+        #         print(f"     - Code {code.code_number}: {code.code_name}")
+        
+        
+        from utils.themeIdentifier_v3 import ThemeIdentifierV3
+        theme_identifier_instance = ThemeIdentifierV3(
             codebook=codebook,
             var_lab=var_lab,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
         )
         
-        result = await theme_identifier_instance.identify_themes_braun_clarke()
-   
+        result = await theme_identifier_instance.identify_themes_iteratively()
         
         themes = result['themes']
-
+        
         for theme in themes:
-            print(f"\n🟣 Theme: {theme.theme_name}")
-            print(f"   Description: {theme.theme_description}")
+            print(f"\n🟣 Theme: {theme['theme_name']}")
+            #print(f"   Description: {theme['theme_description']}")
+            print(f"   Iteration: {theme['iteration']}")
             print("   Codes:")
-            for code in theme.codes:
+            for code in theme['codes']:
                 print(f"     - Code {code.code_number}: {code.code_name}")
+      
+        for i, item in enumerate(codebook, 1):
+            print(f"{i}. {item.code}")
+            print(f"   → {item.definition}\n")
+      
         
+        # # Group by theme
+        # from collections import defaultdict
+        # theme_groups = defaultdict(list)
+      
+        # for item in result['codebook']:
+        #     theme_groups[item['theme']].append(item)
+      
+        # # Display themes
+        # for theme_name, codes in theme_groups.items():
+        #     print(f"\n🟣 Theme: {theme_name}")
+        #     #print(f"   Description: {codes[0]['theme_description']}")
+        #     print(f"   Codes ({len(codes)}):")
+        #     for code in codes:
+        #         print(f"     - Code {code['code_id']}: {code['code']}")
 
+      
         
+        
+     
+
     
                         
                     
