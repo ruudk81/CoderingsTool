@@ -42,7 +42,8 @@ class ModelConfig:
     # =============================================================================
     
     # Step 2: Text preprocessing models
-    spell_check_model: str = DEFAULT_MODEL         
+    spell_check_model: str = DEFAULT_MODEL
+    token_model: str = "gpt-4o-mini"      
     
     # Step 3: Quality filtering and segmentation models  
     quality_filter_model: str = DEFAULT_MODEL      
@@ -90,6 +91,7 @@ class ModelConfig:
         """Get the appropriate model for a pipeline stage"""
         stage_models = {
             'spell_check': self.spell_check_model,
+            'tiktoken_spellChecker' : self.token_model,
             'quality_filter': self.quality_filter_model,
             'segmentation': self.segmentation_model,
             'description': self.description_model,
