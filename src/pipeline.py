@@ -673,7 +673,7 @@ else:
         enriched_codebook = []
     else:
 
-        theme_identifier = ThemeIdentifierV(
+        theme_identifier = ThemeIdentifier(
             codebook=codebook,
             var_lab=var_lab,
             verbose=VERBOSE,

@@ -19,7 +19,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from pydantic import BaseModel, Field, model_validator
 
 # === CONFIG ========================================================================================================
-from prompts import THEME_IDENTIFICATION_PROMPT, ASSIGN_MISCELLANEOUS_PROMP
+from prompts import THEME_IDENTIFICATION_PROMPT, ASSIGN_MISCELLANEOUS_PROMPT
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 from utils.verboseReporter import VerboseReporter
 
@@ -291,7 +291,13 @@ class ThemeIdentifier:
             for i, option in enumerate(existing_options, 1):
                 existing_themes_text += f"{i}. {option.theme_name}: {option.theme_description} (similarity: {option.similarity_score:.3f})\n"
         
-        prompt = THEME_IDENTIFICATION_PROMPT 
+        prompt = THEME_IDENTIFICATION_PROMPT.format(
+            language=DEFAULT_LANGUAGE,
+            survey_question=self.var_lab,
+            codes_count=len(cluster_codes),
+            codes_text=codes_text,
+            existing_themes_text=existing_themes_text
+        )
         
         return prompt
     
@@ -334,7 +340,14 @@ class ThemeIdentifier:
                 continue  # Skip miscellaneous theme itself
             existing_themes_text += f"{i}. {theme.theme_name}: {theme.theme_description}\n"
         
-        prompt = ASSIGN_MISCELLANEOUS_PROMP
+        prompt = ASSIGN_MISCELLANEOUS_PROMPT.format(
+            language=DEFAULT_LANGUAGE,
+            survey_question=self.var_lab,
+            existing_themes_text=existing_themes_text,
+            code_number=code.code_number,
+            code_name=code.code_name,
+            definition=code.definition
+        )
         
         return prompt
     
@@ -463,7 +476,7 @@ class ThemeIdentifier:
                     sample_prompt = self._create_individual_noise_assignment_prompt(cluster_codes[0], identified_themes)
                     self.prompt_printer.capture_prompt(
                         step_name="individual_noise_code_assignment",
-                        utility_name="ThemeIdentifierV4",
+                        utility_name="ThemeIdentifier",
                         prompt_content=sample_prompt,
                         prompt_type="Individual Noise Code Assignment"
                     )
@@ -539,7 +552,7 @@ class ThemeIdentifier:
                 sample_prompt = self._create_cluster_theme_prompt(cluster_codes, existing_options)
                 self.prompt_printer.capture_prompt(
                     step_name="clustering_based_theme_identification",
-                    utility_name="ThemeIdentifierV4",
+                    utility_name="ThemeIdentifier",
                     prompt_content=sample_prompt,
                     prompt_type="Clustering-based Theme Decision"
                 )

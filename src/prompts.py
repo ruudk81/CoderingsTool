@@ -379,7 +379,7 @@ IMPORTANT:
 # =============================================================================
 
 THEME_IDENTIFICATION_PROMPT = """
-You are {language) language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+You are {language} language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
 You have been given a cluster of semantically related codes that were grouped using HDBSCAN clustering based on their embedding similarity.
 
 SURVEY QUESTION:
@@ -427,7 +427,7 @@ IMPORTANT:
 Return ONLY the JSON object."""
 
 ASSIGN_MISCELLANEOUS_PROMPT = """
-You are {language) language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+You are {language} language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
 Your task is to find the BEST placement for a single code that was classified as noise/outlier by the clustering algorithm.
 
 SURVEY QUESTION:
