@@ -16,6 +16,8 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
 class IdeaResponse(BaseModel):
+    respondent_id: str
+    idea_id: str
     idea: str
 
 class IdeaExtractor:
@@ -149,10 +151,10 @@ class IdeaExtractor:
             
             # Process response - array of IdeaResponse objects
             ideas = []
-            for i, idea_response in enumerate(response_data):
+            for idea_response in response_data:
                 if idea_response.idea:
                     ideas.append(models.IdeasExtractedSubmodel(
-                        idea_id=f"{respondent_id}_{i+1}",
+                        idea_id=idea_response.idea_id,
                         idea=idea_response.idea
                     ))
             
