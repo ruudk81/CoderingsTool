@@ -247,23 +247,30 @@ All definitions must follow this structure:
 "References to [specific concept/aspect]."
 
 Generate {n_codes} diverse, hypothetical codes that might emerge from analyzing responses to this survey question. 
-Think about different aspects respondents might mention - both positive and negative experiences, practical and emotional aspects, processes and outcomes.
+Create codes that could apply to ANY survey topic. Do not assume the survey is about education, healthcare, or any specific domain. Let the survey question guide your code generation.
+
+Think about different code types:
+- **Attribute codes**: Qualities or characteristics mentioned
+- **Process codes**: Actions, procedures, or methods described
+- **Relational codes**: Interactions or connections between elements
+- **State codes**: Conditions, situations, or circumstances
+- **Evaluative codes**: Assessments, judgments, or opinions expressed
 
 Please provide your response as a JSON array of objects, where each object has "code" and "definition" fields.  
-Here's an example of GOOD codes following the required format:
+Here's an example of the STRUCTURE to follow (using generic placeholders):
 <example>
 [
-  {{"code": "Financial constraints", "definition": "References to budget limitations or lack of funding affecting implementation."}},
-  {{"code": "Staff resistance", "definition": "Mentions of personnel opposing or reluctant to adopt new practices."}},
-  {{"code": "Time pressures", "definition": "References to insufficient time for activities or feeling rushed."}},
-  {{"code": "Leadership support", "definition": "Mentions of management actively facilitating or championing initiatives."}}
+  {{"code": "[Quality] assessment", "definition": "References to evaluating the [quality/characteristic] of [topic-specific element]."}},
+  {{"code": "[Process] difficulties", "definition": "Mentions of challenges in [topic-specific process]."}},
+  {{"code": "[Actor] perspectives", "definition": "References to viewpoints of [relevant actors/participants]."}},
+  {{"code": "[Outcome] experiences", "definition": "Mentions of [positive/negative] outcomes experienced."}}
 ]
 </example>
 
 BAD examples to AVOID:
-- Too compound: "Time and resource constraints" (combines two concepts)
-- Too vague: "Various challenges" (no clear boundaries)  
-- Too interpretive: "Hidden resistance patterns" (not directly observable)
+- Too compound: "[Aspect A] and [Aspect B]" (combines two concepts)
+- Too vague: "Various [things]" (no clear boundaries)  
+- Too interpretive: "Underlying [patterns]" (not directly observable)
 
 Ensure each code is atomic, has clear boundaries, and follows the exact definition format.
 Return ONLY the JSON array in {language}.
@@ -440,15 +447,15 @@ CODING PRINCIPLES FOR HIGH-QUALITY CODES:
 REQUIRED DEFINITION STRUCTURE:
 "References to [specific concept/aspect]."
 
-Examples of GOOD definitions:
-- "References to financial constraints affecting program implementation."
-- "Mentions of positive student behavioral changes."
-- "Expressions of frustration with administrative procedures."
+Examples of GOOD definition structures:
+- "References to [specific limitation/constraint] affecting [process/outcome]."
+- "Mentions of [positive/negative] changes in [behavior/practice]."
+- "Expressions of [emotion/attitude] regarding [situation/process]."
 
 Examples of POOR definitions (avoid these):
-- Too compound: "References to budget issues including staffing, materials, and facility constraints"
-- Too vague: "Mentions of various challenges faced by the school"
-- Too interpretive: "Underlying resistance to change manifesting in different ways"
+- Too compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
+- Too vague: "Mentions of various [things] related to [topic]"
+- Too interpretive: "Underlying [abstract concept] manifesting in different ways"
 
 DECISION GUIDELINES:
 - APPROVE: All criteria met, code is well-formed and truly necessary
