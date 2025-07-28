@@ -31,7 +31,7 @@ var_name = "q19"
 # var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -471,7 +471,7 @@ else:
 from utils import speculativeStarterCodes
 from utils import codebookGenerator as codebookGenerator
 
-FORCE = False
+FORCE = True
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -672,6 +672,7 @@ else:
         print("Error: No codes available for theme identification.")
         enriched_codebook = []
     else:
+        
 
         theme_identifier = ThemeIdentifier(
             codebook=codebook,
@@ -680,11 +681,16 @@ else:
             prompt_printer=prompt_printer
         )
         
-        result = await theme_identifier.identify_themes_by_clustering()
+        async def run_theme_identification():
+            return  await theme_identifier.identify_themes_by_clustering()
+            
+        result =  asyncio.run(run_theme_identification())    
         
-        themes = result['themes']
+        #result = await theme_identifier.identify_themes_by_clustering()
+        
+    themes = result['themes']
 
-        for theme in themes:
+    for theme in themes:
             print(f"\n🟣 Theme: {theme['theme_name']}")
             #print(f"   Description: {theme['theme_description']}")
             print(f"   Cluster ID: {theme['cluster_id']}")
@@ -692,75 +698,11 @@ else:
             for code in theme['codes']:
                 print(f"     - Code {code['code_number']}: {code['code_name']}")
                 
-        for i, item in enumerate(codebook, 1):
+    for i, item in enumerate(codebook, 1):
              print(f"{i}. {item.code}")
              print(f"   → {item.definition}\n")
                 
       
-      
-        
-        
-     
-
-    
-                        
-                    
-
-
-
-
-
-
-
-
-
-
-for key, value in hierarchical_results.items():
-    print(key)
-        
-for result in hierarchical_results['codebook']:
-        #original_code = next((c for c in codebook if c.code == result['code']), None)
-        #print(f"Code: {original_code.code}")
-        #print(f"Definition: {original_code.definition}")
-        print(f"Domain: {result['domain']}")
-        print(f"Theme: {result['theme']}\n")
-
-        
-        
-        # # Build enriched codebook with domains and themes
-        # enriched_codebook = []
-        # for result in hierarchical_results['codebook']:
-        #     # Find the original codebook entry
-        #     original_code = next((c for c in codebook if c.code == result['code']), None)
-            
-        #     if original_code:
-        #         enriched_entry = models.Codebook(
-        #             code=original_code.code,
-        #             definition=original_code.definition,
-        #             topic=result['domain'],  # Domain goes in topic field
-        #             theme=result['theme']    # Theme goes in theme field
-        #         )
-        #         enriched_codebook.append(enriched_entry)
-        
-        # # Validate the hierarchical results
-        # if hierarchical_results['hierarchy']:
-        #     validation_report = theme_identifier_instance.validate_hierarchy_completeness(hierarchical_results['hierarchy'])
-        #     if validation_report['coverage_percentage'] < 95:
-        #         print(f"⚠️  Warning: Only {validation_report['coverage_percentage']:.1f}% code coverage achieved")
-        #         if validation_report['missing_codes']:
-        #             print(f"   Missing codes: {validation_report['missing_codes']}")
-        #     else:
-        #         print(f"✅ Excellent coverage: {validation_report['coverage_percentage']:.1f}%")
-            
-        #     # Also store the traditional theme results for backward compatibility
-        #     theme_results = {
-        #         'suggested_themes': [],
-        #         'theme_analysis': hierarchical_results['hierarchy'],
-        #         'hierarchical_structure': hierarchical_results['hierarchy'],
-        #         'coverage_lookup': hierarchical_results['coverage_lookup'],
-        #         'validation_report': validation_report
-        #     }
-    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
