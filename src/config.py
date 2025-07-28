@@ -67,6 +67,9 @@ class ModelConfig:
     hierarchical_organisation_model: str = "gpt-4o"
     domain_clustering_model: str = "gpt-4o-mini"
     theme_synthesis_model: str = "gpt-4o"
+    
+    # Step 9: Code assignment
+    code_assignment_model: str = DEFAULT_MODEL
 
     # =============================================================================
     # GLOBAL PARAMETERS
@@ -104,7 +107,8 @@ class ModelConfig:
             'review': self.validation_model,
             'hierarchical_organisation': self.hierarchical_organisation_model,
             'domain_clustering': self.domain_clustering_model,
-            'theme_synthesis': self.theme_synthesis_model
+            'theme_synthesis': self.theme_synthesis_model,
+            'code_assignment': self.code_assignment_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
     
@@ -143,7 +147,8 @@ class CacheConfig:
         "initial_clusters": "006",
         "codebook_generation": "007",
         "theme_identification": "008",
-        "export": "009"
+        "code_assignment": "009",
+        "export": "010"
         })
     
     # Cache validity settings
@@ -352,6 +357,25 @@ class LabellerConfig:
     confidence_batch_size: int = 10  # Clusters to process per confidence scoring batch
 
 # =============================================================================
+# CODE ASSIGNMENT CONFIGURATION
+# =============================================================================
+
+@dataclass
+class CodeAssignmentConfig:
+    """Configuration for code assignment step"""
+    batch_size: int = 10
+    temperature: float = 0.0
+    max_tokens: int = 4000
+    retries: int = 3
+    retry_delay: int = 2
+    max_concurrent_requests: int = 5
+    top_k_similar_codes: int = 5  # Number of most similar codes to present
+    min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
+    # Model configuration - will be overridden by ModelConfig
+    model: str = "gpt-4o-mini"  # Fallback model
+    max_assignment_examples: int = 3  # For verbose output
+
+# =============================================================================
 # EXPORT CONFIGURATION
 # =============================================================================
 
@@ -411,6 +435,7 @@ DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
+DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
 
 

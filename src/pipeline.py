@@ -32,7 +32,7 @@ var_name = "q19"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
+FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
@@ -717,6 +717,60 @@ else:
 if enriched_codebook:
     codebook = enriched_codebook
 
+# === STEP 9 ========================================================================================================
+"""Code Assignment"""
+from utils import codeAssigner
+
+FORCE = False
+
+step_name = "code_assignment"
+if  FORCE:
+    FORCE_STEP      = step_name
+    PROMPT_PRINTER  = True
+
+verbose_reporter = VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    code_assigned_results = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
+    verbose_reporter.summary("CODE ASSIGNMENTS FROM CACHE", {
+        "Input responses": len(code_assigned_results),
+        "Ideas processed": total_ideas,
+        "Code assignments": total_assignments
+    })
+else:
+    verbose_reporter.section_header("CODE ASSIGNMENT PHASE")
+    start_time = time.time()
+    
+    if not codebook:
+        print("Error: No codebook available for code assignment.")
+        code_assigned_results = []
+    elif not embedded_text:
+        print("Error: No embedded text available for code assignment.")
+        code_assigned_results = []
+    else:
+        print(f"\nAssigning codes from {len(codebook)} code codebook to extracted ideas")
+        
+        code_assigner_instance = codeAssigner.CodeAssigner(
+            ideas_extracted_models=embedded_text,  # Using embedded_text which contains ideas with embeddings
+            codebook=codebook,
+            var_lab=var_lab,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        
+        code_assigned_results = code_assigner_instance.assign()
+        
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Cache the results
+    cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
+    print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds.\n")
+
 # Print final summary
 print("\n" + "=" * 80)
 print("GATOS PIPELINE COMPLETED")
@@ -745,6 +799,25 @@ if 'enriched_codebook' in locals() and enriched_codebook:
             print(f"   ... and {len(unique_themes) - 5} more themes")
 else:
     print("   • No hierarchical results available")
+
+if 'code_assigned_results' in locals() and code_assigned_results:
+    total_responses = len(code_assigned_results)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
+    print(f"   • Code assignments: {total_assignments} assignments for {total_ideas} ideas across {total_responses} responses")
+    
+    # Show average confidence
+    all_confidences = []
+    for resp in code_assigned_results:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if idea and idea.assignment_confidence is not None:
+                    all_confidences.append(idea.assignment_confidence)
+    
+    if all_confidences:
+        avg_confidence = sum(all_confidences) / len(all_confidences)
+        print(f"   • Average assignment confidence: {avg_confidence:.2f}")
+
 print("=" * 80)
 # """export results"""
 # from utils.resultsExporter import ResultsExporter
