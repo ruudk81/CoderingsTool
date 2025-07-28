@@ -13,7 +13,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig
 from prompts import CODE_ASSIGNMENT_PROMPT
 import models
-from .verboseReporter import VerboseReporter, ProcessingStats
+from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
@@ -43,7 +43,6 @@ class CodeAssigner:
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.CodeAssignedModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
-        self._stats = ProcessingStats()
         self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
@@ -195,7 +194,6 @@ class CodeAssigner:
                     response_model=CodeAssignmentResponse
                 )
                 
-                self._stats.increment_api_calls()
                 return response
                 
             except Exception as e:
@@ -308,7 +306,6 @@ class CodeAssigner:
         # Report summary
         self.verbose_reporter.summary("CODE ASSIGNMENT COMPLETED", {
             "Total ideas processed": len(all_results),
-            "API calls made": self._stats.api_calls,
             "Average confidence": f"{np.mean([r.assignment_confidence for r in all_results]):.2f}" if all_results else "N/A"
         })
         
