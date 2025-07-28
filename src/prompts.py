@@ -353,10 +353,16 @@ Adhere to these code creation criteria:
 2. Operational clarity: Can coders reliably identify when this code applies vs. when it doesn't?
 3. Parsimony: Is this the simplest way to capture this concept without losing essential meaning?
 
-Follow these definition format guidelines:
-- Start with active language: "References to...", "Mentions of...", "Expressions of..."
-- Use observable language - what respondents explicitly state, not interpretations
-- Avoid lists of examples; focus on the core concept
+Examples of good definition structures:
+- "References to [specific limitation/constraint] affecting [process/outcome]."
+- "Mentions of [positive/negative] changes in [behavior/practice]."
+- "Expressions of [emotion/attitude] regarding [situation/process]."
+
+Avoid these poor definition structures:
+- Too compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
+- Too vague: "Mentions of various [things] related to [topic]"
+- Too interpretive: "Underlying [abstract concept] manifesting in different ways"
+
 
 Output ONE recommendation as valid JSON:
 {{
@@ -379,18 +385,23 @@ Output ONE recommendation as valid JSON:
 
 Return ONLY the JSON object in {language}
 Fill only relevant fields in action_details based on your decision
+Remember that your goals is to help develop a codebook that is parsimonious, non-redundant, and clear.
 """
 
 VALIDATION_PROMPT = """
 You are a (language) language expert and qualitative researcher tasked with validating recommendations for adding new codes to a codebook used for analyzing survey responses. 
-Your goal is to ensure the codebook remains comprehensive, non-redundant, and clear. 
+Your goal is to ensure the codebook will be parsimonious, non-redundant, and clear. 
 
 You will be evaluating a recommendation to add a new code to a codebook created to help analyze responses to this survey question:
-<existing_codebook>
-{existing_codes}
-</existing_codebook>
+<survey_question>
+{survey_question}
+</survey_question>
 
-Next, examine the extracted ideas from survey responses:
+Next, examine the existing codes and analysis notes:
+<existing_codes>
+{existing_codes}
+
+Npw, examine the extracted ideas from survey responses:
 <extracted ideas>
 {clustered_ideas}
 </extracted ideas s>
@@ -404,9 +415,7 @@ Your task is to APPROVE, REVISE, or REJECT this recommendation based on the foll
     
 1. **Parsimony**: Were existing code options properly exhausted? Would using/modifying existing codes sacrifice important nuance?
 2. **Non-redundancy**: Is there minimal conceptual overlap with any existing code?
-3. **Clarity**: Is the code name intuitive and the definition unambiguous?
-4. **Scope appropriateness**: Does the code capture a single concept without being too narrow or broad?
-5. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
+3. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
 
 Use these decision guidelines:
 - APPROVE: All criteria met, code is well-formed and truly necessary
@@ -415,23 +424,11 @@ Use these decision guidelines:
 
 When creating or revising codes, adhere to these principles for high-quality validated codes:
 - **ATOMIC**: One concept per code - no compound ideas with "and", "including", "with"
-- **PRECISE BOUNDARIES**: Clear inclusion/exclusion criteria that enable consistent application
 - **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
-- **OPERATIONAL DEFINITIONS**: Observable criteria, not interpretive assumptions
 - **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
 
 Use this required definition structure:
 "References to [specific concept/aspect]."
-
-Examples of good definition structures:
-- "References to [specific limitation/constraint] affecting [process/outcome]."
-- "Mentions of [positive/negative] changes in [behavior/practice]."
-- "Expressions of [emotion/attitude] regarding [situation/process]."
-
-Avoid these poor definition structures:
-- Too compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
-- Too vague: "Mentions of various [things] related to [topic]"
-- Too interpretive: "Underlying [abstract concept] manifesting in different ways"
 
 Provide your validation assessment in {language} using this JSON format:
 {{
@@ -450,12 +447,8 @@ Provide your validation assessment in {language} using this JSON format:
 
 Important:
 - Return ONLY the JSON object in {language}
-- For REVISE decisions, provide an improved version in validated_code
-- Code names MUST be 2-5 words maximum (no compound concepts)
-- Definitions MUST follow the structure: "References to [specific concept]."
-- Keep definitions concise and specific
 - Focus on observable content, not interpretations
-- Ensure the code is truly atomic (one concept only)
+- Ensure that the codebook will be parsimonious, non-redundant, and clear.
 """
 
 # =============================================================================
@@ -553,11 +546,10 @@ BRAUN & CLARKE PRINCIPLES:
 - Each theme should tell a meaningful story about the data
 - Themes should be distinct yet coherent
 
-LABELS:
-- Theme names should capture overarching concepts (not just list topics)
-- Theme names should also make semantic sense as stand-a-lone concepts in light of the survey question
-- Theme descriptions should consists of concise phrases or sentences that clarify the theme name in light of the survey question.
-- Avoid overlapping or vague labels
+When creating themes, adhere to these principles for high-quality validated themes:
+- **ATOMIC**: One concept per theme - no compound ideas with "and", "including", "with"
+- **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
+- **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
 
 OUTPUT FORMAT (JSON):
 {{

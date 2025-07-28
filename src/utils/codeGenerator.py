@@ -448,11 +448,11 @@ class LangChainBatchProcessor:
             
         formatted = f"""
 Decision: {recommendation.decision.replace('_', ' ').title()}
-Action Details:
 """
 # Cluster Theme: {recommendation.cluster_core_theme}
 # Coverage Assessment: {recommendation.coverage_assessment.rationale}
 # Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
+#Action Details:
 
         
         if recommendation.action_details.codes_to_use:
@@ -462,9 +462,9 @@ Action Details:
             formatted += f"- Modification: {recommendation.action_details.modification_suggestion}\n"
         if recommendation.action_details.new_code_name:
             formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
-            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
+            #formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
             
-        formatted += f"\nJustification: {recommendation.justification}"
+        #formatted += f"\nJustification: {recommendation.justification}"
         
         return formatted.strip()
 
