@@ -1,9 +1,9 @@
 from typing import List, Any, Optional, Type, Union, Dict
-from pydantic import BaseModel, ConfigDict, Field, validator
+from pydantic import BaseModel, ConfigDict
 import numpy as np
 import numpy.typing as npt
 
-# === GROWING RESPONSE/RESULT MODELS ========================================================================================================
+# === GROWING RESULT MODELS ========================================================================================================
 
 class ResponseModel(BaseModel):
     respondent_id: Any
@@ -43,7 +43,30 @@ class ClusterSubmodel(EmbeddingsSubmodel):
 class ClusterModel(IdeasExtractedModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
-# === CODEBOOK SIDESTEP MODELS ========================================================================================================
+class AssignedIdeaSubmodel(ClusterSubmodel):
+    """Idea with cluster info + assigned codes and themes"""
+    assigned_codes: Optional[List[str]] = None
+    assigned_themes: Optional[List[str]] = None
+    assignment_confidence: Optional[float] = None
+    assignment_rationale: Optional[str] = None
+
+class CodeAssignedModel(ClusterModel):
+    """ClusterModel + Code/Theme Assignments (Step 9)"""
+    response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
+    assignment_metadata: Optional[Dict[str, Any]] = None
+
+
+# === CODEBOOK  MODELS ========================================================================================================
+
+class CodeDefinition(BaseModel):
+    code: str
+    definition: str
+
+class Codebook(BaseModel):
+    code: str
+    definition: str    
+    topic: Optional[str] = None   
+    theme: Optional[str] = None   
 
 class CodebookEntry(BaseModel):
     """Individual code from generated codebook"""
@@ -73,48 +96,23 @@ class ThemeEnrichedCodebookModel(CodebookModel):
     code_to_theme_mapping: Optional[Dict[str, str]] = None
     theme_methodology: Optional[str] = None
 
-# === CODE ASSIGNMENT MODELS (Main Response Flow) ========================================================================================================
-
-class AssignedIdeaSubmodel(ClusterSubmodel):
-    """Idea with cluster info + assigned codes and themes"""
-    assigned_codes: Optional[List[str]] = None
-    assigned_themes: Optional[List[str]] = None
-    assignment_confidence: Optional[float] = None
-    assignment_rationale: Optional[str] = None
-
-class CodeAssignedModel(ClusterModel):
-    """ClusterModel + Code/Theme Assignments (Step 9)"""
-    response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
-    assignment_metadata: Optional[Dict[str, Any]] = None
-
-# === LEGACY CODEBOOK MODELS (for backward compatibility) ========================================================================================================
-
-class CodeDefinition(BaseModel):
-    code: str
-    definition: str
-
-class Codebook(BaseModel):
-    code: str
-    definition: str    
-    topic: Optional[str] = None   
-    theme: Optional[str] = None   
     
-class SuggestedTheme(BaseModel):
-    theme_name: str
-    concept: str
-    codes: List[str]
-    relationship: str
+# class SuggestedTheme(BaseModel):
+#     theme_name: str
+#     concept: str
+#     codes: List[str]
+#     relationship: str
 
-class Reflection(BaseModel):
-    broad_or_narrow_themes: Optional[str] = None
-    contradictions_or_unexpected_patterns: Optional[str] = None
-    potential_subthemes: Optional[str] = None
-    unclassified_codes: Optional[List[str]] = None
+# class Reflection(BaseModel):
+#     broad_or_narrow_themes: Optional[str] = None
+#     contradictions_or_unexpected_patterns: Optional[str] = None
+#     potential_subthemes: Optional[str] = None
+#     unclassified_codes: Optional[List[str]] = None
 
-class ThemeAnalysis(BaseModel):
-    initial_observations: List[str]
-    suggested_themes: List[SuggestedTheme]
-    reflection: Reflection
+# class ThemeAnalysis(BaseModel):
+#     initial_observations: List[str]
+#     suggested_themes: List[SuggestedTheme]
+#     reflection: Reflection
 
 
 
