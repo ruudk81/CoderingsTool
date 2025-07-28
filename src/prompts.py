@@ -326,15 +326,15 @@ Note: These responses were grouped by HDBSCAN based on semantic similarity.
 
 EVALUATION PROCESS:
 1. Compare the cluster's core theme against each existing code
-2. Assess thematic coverage: what percentage of the cluster's meaning is captured by existing codes?
-3. Consider modification potential: could a slight broadening of an existing code cover this cluster?
-4. Decide on new code creation only when coverage is insufficient (<70%) and modification isn't viable
-5. Always favor parsimony: when coverage is borderline (70-85%), prefer using existing codes
+2. Assess thematic coverage: how well do existing codes capture the cluster's essential meaning?
+3. Always favor parsimony: use existing codes when they adequately represent the cluster
+4. Create new codes only when existing codes fundamentally cannot capture the cluster's core concept
+5. Modification should be rare and only for minor extensions, not major broadening
 
 CREATION CRITERIA:   
 1. **Conceptual unity**: Does the new code represent ONE clear, cohesive concept?
-2. **Mutual exclusivity**: Is there clear differentiation from existing codes (no overlap >30%)?
-3. **Appropriate scope**: Not too narrow (applies to <3 responses) or too broad (could split into subconcepts)?
+2. **Mutual exclusivity**: Is there clear differentiation from existing codes with minimal conceptual overlap?
+3. **Appropriate scope**: Neither too narrow nor too broad - captures a meaningful, distinct concept?
 4. **Abstraction consistency**: Matches the abstraction level of existing codes?
 
 Output ONE recommendation as valid JSON:
@@ -342,8 +342,8 @@ Output ONE recommendation as valid JSON:
   "cluster_core_theme": "identify from cluster analysis notes",
   "best_matching_codes": ["code1", "code2"],
   "coverage_assessment": {{
-    "percentage": 0-100,
-    "rationale": "explain specifically what aspects are/aren't covered"
+    "adequacy": "adequate|inadequate",
+    "rationale": "explain specifically what aspects are/aren't covered by existing codes"
   }},
   "decision": "use_existing|modify_existing|create_new",
   "action_details": {{
@@ -353,13 +353,13 @@ Output ONE recommendation as valid JSON:
     "new_code_name": "name if create_new" or null,
     "new_code_definition": "definition if create_new" or null
   }},
-  "justification": "explain why this is the most parsimonious choice given the coverage assessment"
+  "justification": "explain why this decision best balances parsimony with conceptual accuracy"
 }}
 
 IMPORTANT:
 - Return ONLY the JSON object in {language}
 - Fill only relevant fields in action_details based on your decision
-- Coverage percentage should reflect how well existing codes capture the cluster's meaning
+- Coverage adequacy should reflect whether existing codes fundamentally capture the cluster's meaning
 - One cluster = one recommendation
 """
 
@@ -390,21 +390,21 @@ Note: These are the 5 codes most similar to the recommended definition by semant
 
 EVALUATION CRITERIA:
 1. **Parsimony**: Were existing code options properly exhausted? Would using/modifying existing codes sacrifice important nuance?
-2. **Non-redundancy**: Is there <30% conceptual overlap with any existing code?
+2. **Non-redundancy**: Is there minimal conceptual overlap with any existing code?
 3. **Clarity**: Is the code name intuitive and the definition unambiguous?
 4. **Scope appropriateness**: Does the code capture a single concept without being too narrow or broad?
 5. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
 
 DECISION GUIDELINES:
-- APPROVE: All criteria met, code is well-formed and necessary
+- APPROVE: All criteria met, code is well-formed and truly necessary
 - REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
-- REJECT: Fails parsimony (existing codes suffice), high redundancy (>50% overlap), or covers multiple unrelated concepts
+- REJECT: Fails parsimony (existing codes suffice), significant redundancy, or covers multiple unrelated concepts
 
 Output a validation assessment in {language}:
 {{
   "evaluation": {{
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
-    "redundancy_reasoning": "assessment of conceptual overlap with existing codes (specify % if relevant)",
+    "redundancy_reasoning": "assessment of conceptual overlap with existing codes",
     "justification_reasoning": "assessment of logic consistency in the recommendation"
   }},
   "decision": "APPROVE/REVISE/REJECT",
