@@ -63,15 +63,15 @@ class CodeAssigner:
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
 
 
-    async def _get_code_embeddings(self):
+    def _get_code_embeddings(self):
         """Generate embeddings for all codes in the codebook for similarity matching"""
         if self._code_embeddings is None:
             code_texts = [f"{code.code}: {code.definition}" for code in self.codebook]
             
-            # Create temporary models for embedding generation
+            # Create temporary models for embedding generation - need EmbeddingsModel
             temp_models = []
             for i, code_text in enumerate(code_texts):
-                temp_model = models.IdeasExtractedModel(
+                temp_model = models.EmbeddingsModel(
                     respondent_id=f"code_{i}",
                     response=code_text,
                     response_ideas=[models.IdeasExtractedSubmodel(
@@ -82,14 +82,15 @@ class CodeAssigner:
                 )
                 temp_models.append(temp_model)
             
-            # Generate embeddings
-            embedded_codes = await self.embedder.get_embeddings_with_tracking_async(temp_models, "Code embeddings")
+            # Generate embeddings (synchronous method that uses asyncio internally)
+            embedded_codes = self.embedder.get_embeddings_with_tracking(temp_models, "Code embeddings")
             
             # Extract embeddings array
             embeddings = []
             for model in embedded_codes:
-                if model.response_ideas and len(model.response_ideas) > 0:
-                    embedding = model.response_ideas[0].idea_embedding
+                if hasattr(model, 'idea_embeddings') and model.idea_embeddings and len(model.idea_embeddings) > 0:
+                    # Use the new structure with idea_embeddings
+                    embedding = model.idea_embeddings[0].idea_embedding
                     if embedding is not None:
                         embeddings.append(embedding)
                     else:
@@ -121,7 +122,21 @@ class CodeAssigner:
         all_ideas = []
         
         for model in self.ideas_extracted_models:
-            if model.response_ideas:
+            # Check if model has idea_embeddings (EmbeddingsModel structure)
+            if hasattr(model, 'idea_embeddings') and model.idea_embeddings:
+                for idea_submodel in model.idea_embeddings:
+                    if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
+                        all_ideas.append((
+                            model.respondent_id,
+                            idea_submodel.idea_id,
+                            idea_submodel.idea,
+                            idea_submodel.idea_embedding
+                        ))
+                    else:
+                        # If no embedding, skip this idea (shouldn't happen in normal flow)
+                        self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
+            # Fallback to response_ideas if idea_embeddings not available
+            elif hasattr(model, 'response_ideas') and model.response_ideas:
                 for idea_submodel in model.response_ideas:
                     # Check if this is an EmbeddingsSubmodel with embedding
                     if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
@@ -260,7 +275,7 @@ class CodeAssigner:
         
         # Initialize code embeddings
         self.verbose_reporter.stat_line("Generating code embeddings for similarity matching...")
-        await self._get_code_embeddings()
+        self._get_code_embeddings()
         
         # Extract all ideas
         all_ideas = self._extract_all_ideas()
