@@ -43,6 +43,16 @@ class ClusterSubmodel(EmbeddingsSubmodel):
 class ClusterModel(IdeasExtractedModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
+# === CODE ASSIGNMENT MODELS ========================================================================================================
+
+class AssignedCodeSubmodel(IdeasExtractedSubmodel):
+    assigned_codes: Optional[List[str]] = None
+    assignment_confidence: Optional[float] = None
+    assignment_rationale: Optional[str] = None
+
+class CodeAssignedModel(IdeasExtractedModel):
+    response_ideas: Optional[List[AssignedCodeSubmodel]] = None
+
 # === CODEBOOK MODELS ========================================================================================================
 
 class CodeDefinition(BaseModel):
