@@ -255,8 +255,13 @@ Begin generating the codes now and present them in the required JSON format.
 """
 
 SYSTEM_MESSAGE = """
-Act as a {language} qualitative data analyst specializing in thematic analysis.
-You specialize in creating codebooks.
+Act as a {language} qualitative data analyst specializing in rigorous thematic analysis.
+You create precise, mutually exclusive codes following these principles:
+- Codes must be ATOMIC: Each code captures ONE coherent concept only
+- Definitions must be PRECISE: Clear boundaries that enable reliable inter-coder agreement  
+- Labels must be CONCISE: 2-5 words maximum, avoiding compound concepts
+- Definitions must be OPERATIONAL: State explicit inclusion/exclusion criteria
+- Structure must be CONSISTENT: All codes follow the same definition format
 A codebook in this setting is a collection of labels and definitions for those labels that can be used to describe pieces of data collected in a survey with open-ended questions. 
 """
 
@@ -334,10 +339,20 @@ EVALUATION PROCESS:
 5. Modification should be rare and only for minor extensions, not major broadening
 
 CREATION CRITERIA:   
-1. **Conceptual unity**: Does the new code represent ONE clear, cohesive concept?
+1. **Conceptual unity (ATOMIC)**: Does the new code represent ONE clear concept only? No compound ideas joined by "and", "including", or "with"
 2. **Mutual exclusivity**: Is there clear differentiation from existing codes with minimal conceptual overlap?
-3. **Appropriate scope**: Neither too narrow nor too broad - captures a meaningful, distinct concept?
+3. **Appropriate scope**: Neither too narrow nor too broad - captures a meaningful, distinct concept at the right granularity?
 4. **Abstraction consistency**: Matches the abstraction level of existing codes?
+5. **Operational clarity**: Can coders reliably identify when this code applies vs. when it doesn't?
+6. **Parsimony**: Is this the simplest way to capture this concept without losing essential meaning?
+
+DEFINITION FORMAT GUIDELINES:
+- Start with active language: "References to...", "Mentions of...", "Expressions of..."
+- First sentence: What IS included (positive criteria)
+- Second sentence (if needed): What is NOT included (negative criteria)
+- Use observable language - what respondents explicitly state, not interpretations
+- Keep under 2 sentences total
+- Avoid lists of examples; focus on the core concept
 
 Output ONE recommendation as valid JSON:
 {{
@@ -397,6 +412,26 @@ EVALUATION CRITERIA:
 4. **Scope appropriateness**: Does the code capture a single concept without being too narrow or broad?
 5. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
 
+CODING PRINCIPLES FOR HIGH-QUALITY CODES:
+- **ATOMIC**: One concept per code - no compound ideas with "and", "including", "with"
+- **PRECISE BOUNDARIES**: Clear inclusion/exclusion criteria that enable consistent application
+- **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
+- **OPERATIONAL DEFINITIONS**: Observable criteria, not interpretive assumptions
+- **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
+
+REQUIRED DEFINITION STRUCTURE:
+"References to [specific concept/aspect]. [Second sentence only if needed for exclusion criteria]."
+
+Examples of GOOD definitions:
+- "References to financial constraints affecting program implementation."
+- "Mentions of positive student behavioral changes. Excludes academic performance."
+- "Expressions of frustration with administrative procedures."
+
+Examples of POOR definitions (avoid these):
+- Too compound: "References to budget issues including staffing, materials, and facility constraints"
+- Too vague: "Mentions of various challenges faced by the school"
+- Too interpretive: "Underlying resistance to change manifesting in different ways"
+
 DECISION GUIDELINES:
 - APPROVE: All criteria met, code is well-formed and truly necessary
 - REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
@@ -420,9 +455,11 @@ Output a validation assessment in {language}:
 IMPORTANT: 
 - Return ONLY the JSON object in {language}
 - For REVISE decisions, provide an improved version in validated_code
-- Ensure code names are concise (2-5 words) and definitions are complete sentences
-- Validated definitions should clearly delineate what is included/excluded
-- Prioritize codes that coders can apply consistently
+- Code names MUST be 2-5 words maximum (no compound concepts)
+- Definitions MUST follow the structure: "References to [concept]. [Exclusion if needed]."
+- Validated definitions should be 1-2 sentences maximum
+- Focus on observable content, not interpretations
+- Ensure the code is truly atomic (one concept only)
 """
 
 # =============================================================================
