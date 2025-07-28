@@ -447,15 +447,9 @@ class LangChainBatchProcessor:
             
         formatted = f"""
 Cluster Theme: {recommendation.cluster_core_theme}
-
 Decision: {recommendation.decision.replace('_', ' ').title()}
-
-Coverage Assessment:
-- Percentage: {recommendation.coverage_assessment.percentage}%
-- Rationale: {recommendation.coverage_assessment.rationale}
-
+Coverage Assessment:Rationale: {recommendation.coverage_assessment.rationale}
 Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
-
 Action Details:
 """
         

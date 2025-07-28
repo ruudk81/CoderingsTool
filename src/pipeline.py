@@ -428,22 +428,22 @@ else:
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
 #debug - print random clusters  
-# import random
-# cluster_ids = list(set([
-#     response_idea.initial_cluster 
-#     for result in initial_cluster_results 
-#     for response_idea in result.response_ideas   
-#     if response_idea.initial_cluster is not None]))
-# sampled_cluster = random.sample(cluster_ids, 1)[0]
-# print(f"\nCluster {sampled_cluster}:\n")
-# cluster_segments = []
-# for result in initial_cluster_results:
-#     for response_idea in result.response_ideas:   
-#         if response_idea.initial_cluster == sampled_cluster:
-#             cluster_segments.append(response_idea.idea)
-# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-# for segment_desc in sampled_segments:
-#     print(f"-    {segment_desc}")
+import random
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas   
+    if response_idea.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for result in initial_cluster_results:
+    for response_idea in result.response_ideas:   
+        if response_idea.initial_cluster == sampled_cluster:
+            cluster_segments.append(response_idea.idea)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
     
     
 # #debug - print all clusters
@@ -467,7 +467,7 @@ else:
         
 
 # === STEP 7 ========================================================================================================
-"""Codebook Generation"""
+"""Code Generation"""
 from utils import speculativeStarterCodes
 from utils import codebookGenerator as codebookGenerator
 
@@ -522,7 +522,7 @@ else:
         if key == 'codebook':
             for item in value:
                 #print(f"{idx}: {item['code']}")
-                print(f"{idx}. {item['code']} : {item['definition']}\n")
+                print(f"{idx}. {item['code']} : {item['definition']}")
                 codebook_entry = models.Codebook(
                     code = item['code'],
                     definition = item['definition'],
@@ -701,9 +701,9 @@ else:
             for code in theme['codes']:
                 print(f"     - Code {code['code_number']}: {code['code_name']}")
                 
-        for i, item in enumerate(codebook, 1):
-             print(f"{i}. {item.code}")
-             print(f"   → {item.definition}\n")
+        # for i, item in enumerate(codebook, 1):
+        #      print(f"{i}. {item.code}")
+        #      print(f"   → {item.definition}\n")
                 
       
     end_time = time.time()
