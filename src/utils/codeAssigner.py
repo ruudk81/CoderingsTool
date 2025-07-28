@@ -176,7 +176,11 @@ class CodeAssigner:
         
         # Capture prompt for debugging if enabled
         if self.prompt_printer and not self._captured_prompt:
-            self.prompt_printer.capture_prompt("Code Assignment", prompt, print_now=True)
+            self.prompt_printer.capture_prompt(
+                step_name="code_assignment",
+                utility_name="CodeAssigner",
+                prompt_content=prompt
+            )
             self._captured_prompt = True
         
         # Make API call with retries
