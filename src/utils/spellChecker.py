@@ -265,7 +265,9 @@ class SpellChecker:
         
     
     def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
-        encoding = tiktoken.encoding_for_model(self.openai_model)
+        # Use gpt-4o-mini for tiktoken compatibility, even if using different model for API calls
+        tiktoken_model = "gpt-4o-mini" if "gpt-4.1" in self.openai_model else self.openai_model
+        encoding = tiktoken.encoding_for_model(tiktoken_model)
         token_budget = max_tokens - len(encoding.encode(prompt_header)) - completion_reserve
         
         batches = []

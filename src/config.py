@@ -31,7 +31,7 @@ DEFAULT_LANGUAGE = "Dutch"
 
 # LLM settings (core settings)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-4.1-mini"
 
 @dataclass
 class ModelConfig:
