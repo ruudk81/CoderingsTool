@@ -13,7 +13,7 @@ import spacy
 import subprocess
 from collections import defaultdict
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -264,8 +264,8 @@ class SpellChecker:
         
     
     def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
-        # Use gpt-4o-mini for tiktoken compatibility, even if using different model for API calls
-        tiktoken_model = "gpt-4o-mini" if "gpt-4.1" in self.openai_model else self.openai_model
+        # Use configured token model for tiktoken compatibility
+        tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
         encoding = tiktoken.encoding_for_model(tiktoken_model)
         token_budget = max_tokens - len(encoding.encode(prompt_header)) - completion_reserve
         
