@@ -32,7 +32,7 @@ var_name = "q19"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
+FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
@@ -463,7 +463,7 @@ else:
 # === STEP 7 ========================================================================================================
 """Generate codes"""
 from utils import speculativeStarterCodes
-from utils import codebookGenerator as codebookGenerator
+from utils import codeGenerator as codeGenerator
 
 FORCE = False
 
@@ -511,7 +511,7 @@ else:
         )
         codebook = []
     else:
-        generator = codebookGenerator.InductiveCodebookGenerator(
+        generator = codeGenerator.InductiveCodeGenerator(
              cluster_results=initial_cluster_results,
              embedded_text=embedded_text,
              starter_codes=starter_codes,

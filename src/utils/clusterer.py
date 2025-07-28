@@ -1,8 +1,8 @@
 from typing import List, Optional, Any
 import numpy as np
 import numpy.typing as npt
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+#from sklearn.decomposition import PCA
+#from sklearn.preprocessing import StandardScaler
 from umap import UMAP
 import hdbscan
 from pydantic import BaseModel
@@ -62,27 +62,27 @@ class Clusterer:
 
         embeddings = np.array([item.idea_embedding for item in self.output_list])
 
-        # === Step 1: PCA ===
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(embeddings)
+        # # === Step 1: PCA ===
+        # scaler = StandardScaler()
+        # scaled = scaler.fit_transform(embeddings)
 
-        pca = PCA()
-        pca_embeddings = pca.fit_transform(scaled)
+        # pca = PCA()
+        # pca_embeddings = pca.fit_transform(scaled)
 
-        total_variance = 0.0
-        optimal_dims = 0
-        for i, variance in enumerate(pca.explained_variance_ratio_):
-            total_variance += variance
-            if total_variance >= self.variance_threshold:
-                optimal_dims = i + 1
-                break
+        # total_variance = 0.0
+        # optimal_dims = 0
+        # for i, variance in enumerate(pca.explained_variance_ratio_):
+        #     total_variance += variance
+        #     if total_variance >= self.variance_threshold:
+        #         optimal_dims = i + 1
+        #         break
 
-        pca_embeddings = pca_embeddings[:, :optimal_dims]
+        # pca_embeddings = pca_embeddings[:, :optimal_dims]
 
-        for item, pca_embed in zip(self.output_list, pca_embeddings):
-            item.pca_embedding = pca_embed
+        # for item, pca_embed in zip(self.output_list, pca_embeddings):
+        #     item.pca_embedding = pca_embed
 
-        print(f"[PCA] Reduced {embeddings.shape[1]} → {optimal_dims} dims ({total_variance * 100:.2f}% variance retained)")
+        # print(f"[PCA] Reduced {embeddings.shape[1]} → {optimal_dims} dims ({total_variance * 100:.2f}% variance retained)")
 
         # === Step 2: UMAP ===
         umap = UMAP(
@@ -95,12 +95,13 @@ class Clusterer:
             low_memory = True,
             transform_seed = 42
         )
-        umap_embeddings = umap.fit_transform(pca_embeddings)
+        #umap_embeddings = umap.fit_transform(pca_embeddings)
+        umap_embeddings = umap.fit_transform(embeddings)
 
         for item, umap_embed in zip(self.output_list, umap_embeddings):
             item.umap_embedding = umap_embed
 
-        print(f"[UMAP] Reduced {optimal_dims} → {self.umap_n_components} dims")
+        #print(f"[UMAP] Reduced {optimal_dims} → {self.umap_n_components} dims")
 
         # === Step 3: HDBSCAN ===
         hdb = hdbscan.HDBSCAN(

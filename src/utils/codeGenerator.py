@@ -275,7 +275,8 @@ class OptimizedEmbeddingManager:
             return [], []
         
         # Generate embeddings fresh each time (like v2)
-        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+        #code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+        code_texts = [f"{code['code']}" for code in codes]
         embeddings = await self._embed_texts_with_retry(code_texts)
         
         return codes, embeddings
@@ -446,12 +447,13 @@ class LangChainBatchProcessor:
             return "No recommendation available"
             
         formatted = f"""
-Cluster Theme: {recommendation.cluster_core_theme}
 Decision: {recommendation.decision.replace('_', ' ').title()}
-Coverage Assessment:Rationale: {recommendation.coverage_assessment.rationale}
-Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
 Action Details:
 """
+# Cluster Theme: {recommendation.cluster_core_theme}
+# Coverage Assessment: {recommendation.coverage_assessment.rationale}
+# Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
+
         
         if recommendation.action_details.codes_to_use:
             formatted += f"- Codes to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
@@ -1228,7 +1230,7 @@ class CodebookDataProcessor:
 # MAIN GENERATOR
 # ============================================================================
 
-class InductiveCodebookGenerator:
+class InductiveCodeGenerator:
     """V4 Generator using LangChain optimization and shared memory pattern"""
     
     def __init__(
