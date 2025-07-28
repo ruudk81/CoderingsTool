@@ -874,54 +874,31 @@ else:
     else:
         print(f"\nAssigning codes and themes from {len(theme_enriched_codebook.codes)} enriched codes to {sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)} ideas")
         
-        # Convert cluster results to use embedded text (they should have embeddings from Step 5)
-        ideas_with_embeddings = []
-        for cluster_result in initial_cluster_results:
-            if hasattr(cluster_result, 'response_ideas') and cluster_result.response_ideas:
-                for idea in cluster_result.response_ideas:
-                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        ideas_with_embeddings.append(cluster_result)
-                        break
+        # Create CodeAssigner instance - use embedded_text from Step 5 which has embeddings
+        code_assigner_instance = codeAssigner.CodeAssigner(
+            ideas_extracted_models=embedded_text,  # Use embeddings from Step 5
+            codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
+                     for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
+            var_lab=var_lab,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
         
-        if not ideas_with_embeddings:
-            print("Error: No embedded ideas found in cluster results.")
-            code_assigned_results = []
-        else:
-            code_assigner_instance = codeAssigner.CodeAssigner(
-                ideas_extracted_models=initial_cluster_results,  # Use cluster results with embeddings
-                codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
-                         for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
-                var_lab=var_lab,
-                verbose=VERBOSE,
-                prompt_printer=prompt_printer
-            )
-            
-            # Pass theme mapping to the assigner for theme assignment
-            code_assigner_instance.code_to_theme_mapping = theme_enriched_codebook.code_to_theme_mapping
-            
-            assignment_results = code_assigner_instance.assign()
-            
-            # Convert to CodeAssignedModel (extends ClusterModel)
-            code_assigned_results = []
-            for i, cluster_result in enumerate(initial_cluster_results):
-                if i < len(assignment_results):
-                    assigned_result = assignment_results[i]
-                    
-                    # Convert to CodeAssignedModel structure
-                    code_assigned_model = models.CodeAssignedModel(
-                        respondent_id=cluster_result.respondent_id,
-                        response=cluster_result.response,
-                        quality_filter=cluster_result.quality_filter,
-                        quality_filter_code=cluster_result.quality_filter_code,
-                        response_ideas=assigned_result.response_ideas if hasattr(assigned_result, 'response_ideas') else None,
-                        idea_count=assigned_result.idea_count if hasattr(assigned_result, 'idea_count') else 0,
-                        assignment_metadata={
-                            "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
-                            "theme_methodology": theme_enriched_codebook.theme_methodology,
-                            "assignment_timestamp": start_time
-                        }
-                    )
-                    code_assigned_results.append(code_assigned_model)
+        # Pass theme mapping to the assigner for theme assignment
+        code_assigner_instance.code_to_theme_mapping = theme_enriched_codebook.code_to_theme_mapping
+        
+        # Assignment results are already CodeAssignedModel objects
+        code_assigned_results = code_assigner_instance.assign()
+        
+        # Add assignment metadata to each result
+        for result in code_assigned_results:
+            if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
+                result.assignment_metadata = {}
+            result.assignment_metadata.update({
+                "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
+                "theme_methodology": theme_enriched_codebook.theme_methodology,
+                "assignment_timestamp": start_time
+            })
         
     end_time = time.time()
     elapsed_time = end_time - start_time
