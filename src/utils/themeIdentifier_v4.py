@@ -74,6 +74,13 @@ class ClusterThemeDecision(BaseModel):
                 raise ValueError("existing_theme_used required when using existing theme")
         return self
 
+class IndividualCodeAssignment(BaseModel):
+    """Decision about individual code assignment to existing themes"""
+    decision: str = Field(description="Whether to assign or keep miscellaneous")
+    target_theme: Optional[str] = Field(description="Target theme name or null")
+    confidence: str = Field(description="Confidence level")
+    rationale: str = Field(description="Detailed explanation")
+
 class ThemeStructure(BaseModel):
     """Theme with codes following clustering-based methodology"""
     theme_name: str = Field(description="Descriptive theme name in target language")
@@ -359,6 +366,123 @@ Return ONLY the JSON object."""
                 rationale=f"Error during processing: {str(e)}"
             )
     
+    def _create_individual_noise_assignment_prompt(self, code: CodeEmbedding, existing_themes: List[ThemeStructure]) -> str:
+        """Create prompt for analyzing a single noise point code (adapted from v2)"""
+        
+        existing_themes_text = ""
+        for i, theme in enumerate(existing_themes, 1):
+            if theme.is_miscellaneous:
+                continue  # Skip miscellaneous theme itself
+            existing_themes_text += f"{i}. {theme.theme_name}: {theme.theme_description}\n"
+        
+        prompt = f"""You are a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
+Your task is to find the BEST placement for a single code that was classified as noise/outlier by the clustering algorithm.
+
+SURVEY QUESTION:
+{self.var_lab}
+
+EXISTING THEMES:
+{existing_themes_text}
+
+CODE TO ANALYZE:
+Code {code.code_number}: {code.code_name}
+Definition: {code.definition}
+
+INSTRUCTIONS:
+- Examine this single code carefully in the context of the survey question
+- Consider which existing theme this code fits BEST conceptually
+- Focus on the underlying meaning and purpose of the code
+- If the code truly doesn't fit any existing theme, you may recommend keeping it miscellaneous
+- Prioritize conceptual fit over surface-level keyword matching
+
+DECISION CRITERIA:
+1. Does this code share the same underlying concept as an existing theme?
+2. Would including this code strengthen or weaken the theme's coherence?
+3. Does the code address the same aspect of the survey question as an existing theme?
+
+OUTPUT FORMAT (JSON):
+{{
+  "decision": "assign|miscellaneous",
+  "target_theme": "[exact theme name from list above, or null if miscellaneous]",
+  "confidence": "high|medium|low",
+  "rationale": "[detailed explanation of why this code belongs with this theme or remains miscellaneous]"
+}}
+
+CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
+
+Return ONLY the JSON object with all content in {DEFAULT_LANGUAGE}."""
+        
+        return prompt
+    
+    async def _assign_individual_noise_code(self, code: CodeEmbedding, existing_themes: List[ThemeStructure]) -> Dict[str, Any]:
+        """Analyze a single noise code for best theme assignment (adapted from v2)"""
+        
+        prompt = self._create_individual_noise_assignment_prompt(code, existing_themes)
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_config.get_model_for_stage("theme_synthesis"),
+                messages=[{"role": "user", "content": prompt}],
+                response_model=IndividualCodeAssignment,
+                temperature=0.0,
+                max_retries=2
+            )
+            
+            return {
+                "code": code,
+                "decision": response.decision,
+                "target_theme": response.target_theme,
+                "confidence": response.confidence,
+                "rationale": response.rationale
+            }
+            
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"Error processing Code {code.code_number}: {str(e)}")
+            return {
+                "code": code,
+                "decision": "miscellaneous",
+                "target_theme": None,
+                "confidence": "low",
+                "rationale": f"Processing failed: {str(e)}"
+            }
+    
+    async def _process_noise_codes_individually(self, noise_codes: List[CodeEmbedding], existing_themes: List[ThemeStructure]) -> List[Dict[str, Any]]:
+        """Process noise codes individually in concurrent batches (adapted from v2)"""
+        
+        if not noise_codes:
+            return []
+        
+        self.verbose_reporter.stat_line(f"Post-processing {len(noise_codes)} noise codes individually...")
+        
+        import asyncio
+        
+        batch_size = 10
+        all_assignments = []
+        
+        # Process in batches of 10 for concurrency control
+        for i in range(0, len(noise_codes), batch_size):
+            batch = noise_codes[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (len(noise_codes) + batch_size - 1) // batch_size
+            
+            self.verbose_reporter.stat_line(f"Processing batch {batch_num}/{total_batches}: {len(batch)} codes...")
+            
+            # Create concurrent tasks for this batch
+            tasks = [
+                self._assign_individual_noise_code(code, existing_themes)
+                for code in batch
+            ]
+            
+            # Execute batch concurrently
+            batch_results = await asyncio.gather(*tasks)
+            all_assignments.extend(batch_results)
+            
+            # Brief pause between batches to be respectful to API
+            if i + batch_size < len(noise_codes):
+                await asyncio.sleep(0.5)
+        
+        return all_assignments
+    
     async def identify_themes_by_clustering(self) -> Dict[str, Any]:
         """
         Main method: Identify themes using clustering-based approach
@@ -407,26 +531,77 @@ Return ONLY the JSON object."""
             cluster_codes = clusters[cluster_id]
             
             if cluster_id == -1:
-                # Handle noise as miscellaneous
-                misc_codes = [
-                    CodeReference(
-                        code_number=code.code_number,
-                        code_name=code.code_name,
-                        definition=code.definition
+                # Process noise codes individually for intelligent reassignment
+                self.verbose_reporter.stat_line(f"\nProcessing Cluster {cluster_id} (noise): {len(cluster_codes)} codes individually")
+                
+                # Capture sample prompt for first noise code
+                if self.prompt_printer and cluster_codes:
+                    sample_prompt = self._create_individual_noise_assignment_prompt(cluster_codes[0], identified_themes)
+                    self.prompt_printer.capture_prompt(
+                        step_name="individual_noise_code_assignment",
+                        utility_name="ThemeIdentifierV4",
+                        prompt_content=sample_prompt,
+                        prompt_type="Individual Noise Code Assignment"
                     )
-                    for code in cluster_codes
-                ]
                 
-                misc_theme = ThemeStructure(
-                    theme_name="Overige aspecten",
-                    theme_description="Codes die niet in andere thema's passen",
-                    codes=misc_codes,
-                    cluster_id=cluster_id,
-                    is_miscellaneous=True
-                )
-                identified_themes.append(misc_theme)
+                noise_assignments = await self._process_noise_codes_individually(cluster_codes, identified_themes)
                 
-                self.verbose_reporter.stat_line(f"📦 Cluster {cluster_id} (noise) → Miscellaneous theme with {len(misc_codes)} codes")
+                # Apply individual assignments
+                remaining_misc_codes = []
+                
+                for assignment in noise_assignments:
+                    code = assignment["code"]
+                    decision = assignment["decision"]
+                    target_theme = assignment["target_theme"]
+                    confidence = assignment["confidence"]
+                    
+                    if decision == "assign" and target_theme:
+                        # Find target theme and add code
+                        theme_found = False
+                        for theme in identified_themes:
+                            if theme.theme_name == target_theme:
+                                new_code_ref = CodeReference(
+                                    code_number=code.code_number,
+                                    code_name=code.code_name,
+                                    definition=code.definition
+                                )
+                                theme.codes.append(new_code_ref)
+                                self.verbose_reporter.stat_line(f"✓ Code {code.code_number} → '{target_theme}' ({confidence} confidence)")
+                                theme_found = True
+                                break
+                        
+                        if not theme_found:
+                            self.verbose_reporter.stat_line(f"⚠️ Target theme '{target_theme}' not found for Code {code.code_number}, keeping miscellaneous")
+                            remaining_misc_codes.append(code)
+                    else:
+                        # Keep as miscellaneous
+                        remaining_misc_codes.append(code)
+                        if decision == "miscellaneous":
+                            self.verbose_reporter.stat_line(f"○ Code {code.code_number} remains miscellaneous ({confidence} confidence)")
+                
+                # Handle remaining miscellaneous codes
+                if remaining_misc_codes:
+                    misc_codes = [
+                        CodeReference(
+                            code_number=code.code_number,
+                            code_name=code.code_name,
+                            definition=code.definition
+                        )
+                        for code in remaining_misc_codes
+                    ]
+                    
+                    misc_theme = ThemeStructure(
+                        theme_name="Overige aspecten",
+                        theme_description="Codes die niet in andere thema's passen",
+                        codes=misc_codes,
+                        cluster_id=cluster_id,
+                        is_miscellaneous=True
+                    )
+                    identified_themes.append(misc_theme)
+                    self.verbose_reporter.stat_line(f"📦 {len(misc_codes)} codes remain in miscellaneous theme")
+                else:
+                    self.verbose_reporter.stat_line("🎉 All noise codes successfully reassigned to existing themes!")
+                
                 continue
             
             self.verbose_reporter.stat_line(f"\nProcessing Cluster {cluster_id}: {len(cluster_codes)} codes")
