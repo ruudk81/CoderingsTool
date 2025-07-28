@@ -483,14 +483,20 @@ prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    codebook_model = cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
-    verbose_reporter.summary("CODEBOOK FROM CACHE", {
-        "Total codes": len(codebook_model.codes),
-        "Source variable": codebook_model.source_variable
-    })
-    # Extract legacy codebook list for backward compatibility
-    codebook = [models.Codebook(code=entry.code, definition=entry.definition) 
-                for entry in codebook_model.codes]
+    codebook_models = cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
+    if codebook_models and len(codebook_models) > 0:
+        codebook_model = codebook_models[0]  # Extract the single model from the list
+        verbose_reporter.summary("CODEBOOK FROM CACHE", {
+            "Total codes": len(codebook_model.codes),
+            "Source variable": codebook_model.source_variable
+        })
+        # Extract legacy codebook list for backward compatibility
+        codebook = [models.Codebook(code=entry.code, definition=entry.definition) 
+                    for entry in codebook_model.codes]
+    else:
+        print("ERROR: Failed to load codebook from cache")
+        codebook_model = models.CodebookModel(codes=[], source_variable=var_name)
+        codebook = []
 else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
@@ -526,29 +532,33 @@ else:
         # Convert results to new CodebookModel structure
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility
-        idx = 1
-        for key, value in results.items():
-            if key == 'codebook':
-                for item in value:
-                    print(f"{idx}. {item['code']} : {item['definition']}")
-                    
-                    # New structured format
-                    codebook_entry = models.CodebookEntry(
-                        code=item['code'],
-                        definition=item['definition'],
-                        source_clusters=None  # Could be enhanced later with cluster tracing
-                    )
-                    codebook_entries.append(codebook_entry)
-                    
-                    # Legacy format for backward compatibility
-                    legacy_entry = models.Codebook(
-                        code=item['code'],
-                        definition=item['definition'],
-                        topic=None,
-                        theme=None
-                    )
-                    codebook.append(legacy_entry)
-                    idx += 1
+        
+        if results and isinstance(results, dict):
+            idx = 1
+            for key, value in results.items():
+                if key == 'codebook':
+                    for item in value:
+                        print(f"{idx}. {item['code']} : {item['definition']}")
+                        
+                        # New structured format
+                        codebook_entry = models.CodebookEntry(
+                            code=item['code'],
+                            definition=item['definition'],
+                            source_clusters=None  # Could be enhanced later with cluster tracing
+                        )
+                        codebook_entries.append(codebook_entry)
+                        
+                        # Legacy format for backward compatibility
+                        legacy_entry = models.Codebook(
+                            code=item['code'],
+                            definition=item['definition'],
+                            topic=None,
+                            theme=None
+                        )
+                        codebook.append(legacy_entry)
+                        idx += 1
+        else:
+            print("Warning: Codebook generator returned no results")
         
         # Create structured codebook model
         codebook_model = models.CodebookModel(
@@ -557,7 +567,8 @@ else:
                 "methodology": "Inductive codebook generation from clusters",
                 "starter_codes_count": len(starter_codes) if starter_codes else 0,
                 "total_codes_generated": len(codebook_entries),
-                "k_parameter": 5
+                "k_parameter": 5,
+                "generation_success": len(codebook_entries) > 0
             },
             source_variable=var_name
         )
@@ -565,8 +576,19 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the structured codebook model
-    cache_manager.save_to_cache(codebook_model, filename, step_name, elapsed_time)
+    # Debug: Check what we're trying to cache
+    if 'codebook_model' not in locals():
+        print("ERROR: codebook_model was not created!")
+        codebook_model = models.CodebookModel(
+            codes=[],
+            generation_metadata={"error": "Failed to create codebook model"},
+            source_variable=var_name
+        )
+    
+    print(f"DEBUG: Attempting to cache CodebookModel with {len(codebook_model.codes)} codes")
+    
+    # Cache the structured codebook model (wrap in list as cache manager expects List[T])
+    cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug - decisions
@@ -689,16 +711,28 @@ prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    theme_enriched_codebook = cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
-    verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
-        "Total codes": len(theme_enriched_codebook.codes),
-        "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
-        "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
-    })
-    # Extract legacy codebook for backward compatibility
-    enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition, 
-                                        topic=entry.theme, theme=entry.theme) 
-                        for entry in theme_enriched_codebook.codes]
+    theme_enriched_codebooks = cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
+    if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
+        theme_enriched_codebook = theme_enriched_codebooks[0]  # Extract the single model from the list
+        verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
+            "Total codes": len(theme_enriched_codebook.codes),
+            "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
+            "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
+        })
+        # Extract legacy codebook for backward compatibility
+        enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition, 
+                                            topic=entry.theme, theme=entry.theme) 
+                            for entry in theme_enriched_codebook.codes]
+    else:
+        print("ERROR: Failed to load theme enriched codebook from cache")
+        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+            codes=[], 
+            source_variable=var_name,
+            themes_summary=[],
+            code_to_theme_mapping={},
+            theme_methodology="Error loading from cache"
+        )
+        enriched_codebook = []
 else:
     verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
     start_time = time.time()
@@ -793,8 +827,8 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the structured theme-enriched codebook
-    cache_manager.save_to_cache(theme_enriched_codebook, filename, step_name, elapsed_time)
+    # Cache the structured theme-enriched codebook (wrap in list as cache manager expects List[T])
+    cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, elapsed_time)
     print(f"\n'Hierarchical theme identification' completed in {elapsed_time:.2f} seconds.\n")
 
 # Update the main codebook with enriched data (for backward compatibility)
