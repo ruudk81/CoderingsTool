@@ -277,14 +277,8 @@ Return ONLY the JSON array in {language}.
 """
 
 SYSTEM_MESSAGE = """
-Act as a {language} qualitative data analyst specializing in rigorous thematic analysis for the development of a codebooks.
-A codebook in this setting is a collection of codes and definitions for those codes that can be used to describe pieces of data collected in a survey with open-ended questions. 
-You create precise, mutually exclusive codes following these principles:
-- Codes must be ATOMIC: Each code captures ONE coherent concept only
-- Definitions must be PRECISE: Clear boundaries that enable reliable inter-coder agreement  
-- Labels must be CONCISE: 2-5 words maximum, avoiding compound concepts
-- Definitions must be OPERATIONAL: State explicit inclusion/exclusion criteria
-- Structure must be CONSISTENT: All codes follow the same definition format
+Act as a {language} qualitative data analyst who is a helpful assistent in the development of a codebook.
+A codebook in this setting is a collection of codes and definitions that can be used to describe pieces of data collected from an open-ended question in a survey. 
 """
 
 CODEBOOK_ANALYSIS_PROMPT = """
@@ -326,47 +320,42 @@ IMPORTANT: Return ONLY the analysis text, no JSON formatting or additional expla
 """
 
 MATCH_AND_RECOMMEND_PROMPT = """
-{system_message}
+You are a  (language) language expert and qualitative researcher tasked with deciding if a new code should be added to a codebook. 
+Your goal is to ensure the codebook is parsimonious, non-redundant, and clear. Follow these instructions carefully to complete your task.
 
-This time we will focus on written responses to the following survey question: "{survey_question}".
-You are making a codebook recommendation for a cluster of semantically similar survey responses.
-Specifically, you need to recommend whether or not a new code needs to be created.
+First, review the survey question that generated the responses:
+<survey_question>
+{survey_question}
+</survey_question>
 
-INPUT DATA:
+Next, examine the existing codes and analysis notes:
 <existing_codes>
 {existing_codes}
 
 Analysis notes: {codebook_analysis}
 </existing_codes>
-Note: These are the 5 codes nearest to this cluster's centroid embedding.
 
+Now, review the clustered ideas that may require a new code:
 <clustered_ideas>
 {clustered_ideas}
 
 Cluster analysis: {summaries}
 </clustered_ideas>
-Note: These responses were grouped by HDBSCAN based on semantic similarity.
 
-EVALUATION PROCESS:
+Follow this evaluation process:
 1. Compare the cluster's core theme against each existing code
 2. Assess thematic coverage: how well do existing codes capture the cluster's essential meaning?
-3. Always favor parsimony: use existing codes when they adequately represent the cluster
+3. CRITICAL: Always favor parsimony: use existing codes when they adequately represent the cluster
 4. Create new codes only when existing codes fundamentally cannot capture the cluster's core concept
-5. Modification should be rare and only for minor extensions, not major broadening
 
-CREATION CRITERIA:   
-1. **Conceptual unity (ATOMIC)**: Does the new code represent ONE clear concept only? No compound ideas joined by "and", "including", or "with"
-2. **Mutual exclusivity**: Is there clear differentiation from existing codes with minimal conceptual overlap?
-3. **Appropriate scope**: Neither too narrow nor too broad - captures a meaningful, distinct concept at the right granularity?
-4. **Abstraction consistency**: Matches the abstraction level of existing codes?
-5. **Operational clarity**: Can coders reliably identify when this code applies vs. when it doesn't?
-6. **Parsimony**: Is this the simplest way to capture this concept without losing essential meaning?
+Adhere to these code creation criteria:   
+1. Conceptual unity (ATOMIC): Does the new code represent ONE clear concept only? No compound ideas joined by "and", "including", or "with"
+2. Operational clarity: Can coders reliably identify when this code applies vs. when it doesn't?
+3. Parsimony: Is this the simplest way to capture this concept without losing essential meaning?
 
-DEFINITION FORMAT GUIDELINES:
+Follow these definition format guidelines:
 - Start with active language: "References to...", "Mentions of...", "Expressions of..."
-- Focus on what IS included (positive criteria)
 - Use observable language - what respondents explicitly state, not interpretations
-- Keep definitions concise and specific
 - Avoid lists of examples; focus on the core concept
 
 Output ONE recommendation as valid JSON:
