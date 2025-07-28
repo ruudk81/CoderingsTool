@@ -211,16 +211,32 @@ class CodeAssigner:
                         assignment_rationale="Failed to process - assigned most similar code as fallback"
                     )
 
-    async def _process_batch(self, batch: List[tuple]) -> List[CodeAssignmentResponse]:
-        """Process a batch of ideas concurrently"""
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
+    async def _process_batch(self, batch: List[tuple], batch_index: int = 0) -> List[CodeAssignmentResponse]:
+        """Process a batch of ideas concurrently (following qualityFilter/ideaExtractor pattern)"""
+        # Create tasks for all ideas in this batch - no semaphore limits like other processors
+        tasks = [self._process_idea_assignment(idea_data) for idea_data in batch]
         
-        async def process_with_semaphore(idea_data):
-            async with semaphore:
-                return await self._process_idea_assignment(idea_data)
+        # Process all ideas in batch concurrently (no limits)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        tasks = [process_with_semaphore(idea_data) for idea_data in batch]
-        return await asyncio.gather(*tasks)
+        # Handle results and exceptions
+        batch_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                # Create fallback result for failed idea
+                respondent_id, idea_id, idea_text, idea_embedding = batch[i]
+                self.verbose_reporter.stat_line(f"Failed to process idea {idea_id}: {str(result)}")
+                batch_results.append(CodeAssignmentResponse(
+                    idea_id=idea_id,
+                    idea=idea_text,
+                    assigned_codes=["Processing_Error"],
+                    assignment_confidence=0.0,
+                    assignment_rationale="Processing failed - assigned error code"
+                ))
+            else:
+                batch_results.append(result)
+        
+        return batch_results
 
     def _create_batches(self, all_ideas: List[tuple]) -> List[List[tuple]]:
         """Create batches for processing"""
@@ -293,12 +309,26 @@ class CodeAssigner:
         batches = self._create_batches(all_ideas)
         total_batches = len(batches)
         
-        # Process all batches
+        # Process all batches concurrently (following qualityFilter/ideaExtractor pattern)
+        self.verbose_reporter.stat_line(f"Processing {total_ideas} ideas in {total_batches} batches concurrently...")
+        
+        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        
+        # Collect results from all batches
         all_results = []
-        for i, batch in enumerate(batches, 1):
-            self.verbose_reporter.stat_line(f"Processing batch {i}/{total_batches} ({len(batch)} ideas)")
-            batch_results = await self._process_batch(batch)
-            all_results.extend(batch_results)
+        total_failures = 0
+        for i, batch_result in enumerate(batch_results):
+            if isinstance(batch_result, Exception):
+                self.verbose_reporter.stat_line(f"Batch {i+1} processing failed: {str(batch_result)}")
+                total_failures += 1
+                continue
+            
+            # Add all results from this batch
+            all_results.extend(batch_result)
+        
+        if total_failures > 0:
+            self.verbose_reporter.stat_line(f"{total_failures} out of {total_batches} batches failed completely")
         
         # Merge results back into model structure
         self._results = self._merge_results_into_models(all_results)
