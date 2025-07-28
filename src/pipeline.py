@@ -34,12 +34,7 @@ var_name = "q19"
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
-
-# STEP 5 CACHING IMPROVEMENT:
-# - Split Step 5 into 5a (embeddings) and 5b (clustering) for independent caching
-# - embedded_text is now cached as EmbeddingsModel and can be loaded separately for Step 6
-# - Granular control: FORCE_STEP = "embeddings" or "initial_clusters"
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
@@ -297,7 +292,7 @@ else:
 
 
 # === STEP 4 ========================================================================================================
-"""Extract initial ideas"""
+"""Response segments/ideas"""
 from utils import ideaExtractor
 
 FORCE = False
@@ -331,7 +326,6 @@ else:
     cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
     print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
     
-
 # for text in encoded_text:
 #     print(text)
 #     break
@@ -391,7 +385,7 @@ else:
 #         print(f"- {segment.idea}")
 
 # === STEP 6 =======================================================================================================
-"""Generate initial clusters"""
+"""Reduce data/get clusters"""
 from utils.clusterer import Clusterer
 
 FORCE = False
@@ -427,23 +421,23 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
-#debug - print random clusters  
-import random
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas   
-    if response_idea.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for result in initial_cluster_results:
-    for response_idea in result.response_ideas:   
-        if response_idea.initial_cluster == sampled_cluster:
-            cluster_segments.append(response_idea.idea)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
+# #debug - print random clusters  
+# import random
+# cluster_ids = list(set([
+#     response_idea.initial_cluster 
+#     for result in initial_cluster_results 
+#     for response_idea in result.response_ideas   
+#     if response_idea.initial_cluster is not None]))
+# sampled_cluster = random.sample(cluster_ids, 1)[0]
+# print(f"\nCluster {sampled_cluster}:\n")
+# cluster_segments = []
+# for result in initial_cluster_results:
+#     for response_idea in result.response_ideas:   
+#         if response_idea.initial_cluster == sampled_cluster:
+#             cluster_segments.append(response_idea.idea)
+# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+# for segment_desc in sampled_segments:
+#     print(f"-    {segment_desc}")
     
     
 # #debug - print all clusters
@@ -467,11 +461,11 @@ for segment_desc in sampled_segments:
         
 
 # === STEP 7 ========================================================================================================
-"""Code Generation"""
+"""Generate codes"""
 from utils import speculativeStarterCodes
 from utils import codebookGenerator as codebookGenerator
 
-FORCE = True
+FORCE = False
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -696,10 +690,10 @@ else:
 
 
 # === STEP 8 ========================================================================================================
-"""Theme Identification"""
+"""Identify themes"""
 from utils.themeIdentifier import ThemeIdentifier
 
-FORCE = True
+FORCE = False
 
 step_name = "theme_identification"
 if  FORCE:
@@ -835,8 +829,20 @@ else:
 if enriched_codebook:
     codebook = enriched_codebook
 
+
+idx = 1
+for entry in codebook:
+    print(idx)
+    print(entry.code)
+    print(entry.definition)
+    print(entry.theme)
+    print("\n")
+    idx += 1
+
+
+
 # === STEP 9 ========================================================================================================
-"""Code Assignment"""
+"""Assign codes (and themes)"""
 from utils import codeAssigner
 
 FORCE = False
@@ -864,7 +870,6 @@ else:
     verbose_reporter.section_header("CODE ASSIGNMENT PHASE")
     start_time = time.time()
     
-    # Check inputs from both Step 6 (clusters) and Step 8 (enriched codebook)
     if not theme_enriched_codebook or not theme_enriched_codebook.codes:
         print("Error: No enriched codebook available for code assignment.")
         code_assigned_results = []
@@ -873,24 +878,17 @@ else:
         code_assigned_results = []
     else:
         print(f"\nAssigning codes and themes from {len(theme_enriched_codebook.codes)} enriched codes to {sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)} ideas")
-        
-        # Create CodeAssigner instance - use embedded_text from Step 5 which has embeddings
+  
         code_assigner_instance = codeAssigner.CodeAssigner(
             ideas_extracted_models=embedded_text,  # Use embeddings from Step 5
             codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
                      for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
             var_lab=var_lab,
             verbose=VERBOSE,
-            prompt_printer=prompt_printer
-        )
-        
-        # Pass theme mapping to the assigner for theme assignment
-        code_assigner_instance.code_to_theme_mapping = theme_enriched_codebook.code_to_theme_mapping
-        
-        # Assignment results are already CodeAssignedModel objects
+            prompt_printer=prompt_printer)
+        me_mapping = theme_enriched_codebook.code_to_theme_mapping
         code_assigned_results = code_assigner_instance.assign()
-        
-        # Add assignment metadata to each result
+     
         for result in code_assigned_results:
             if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
                 result.assignment_metadata = {}
@@ -903,11 +901,30 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Cache the results
     cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
     print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
-# Print final summary
+#debug
+import random
+sampled_result = random.choice(code_assigned_results)
+print(f"Respondent ID: {sampled_result.respondent_id}")
+print(f"Response: {sampled_result.response}")
+print(f"Idea count: {sampled_result.idea_count}")
+#print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+print("---- Assigned Codes ----")
+for idea in sampled_result.response_ideas:
+    print(f"Idea ID: {idea.idea_id}")
+    print(f"Idea: {idea.idea}")
+    print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+    print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+    print(f"Assignment Confidence: {idea.assignment_confidence}")
+    print(f"Rationale: {idea.assignment_rationale}")
+    print("-" * 40)
+
+
+
+# === SUMMARY  ========================================================================================================
+
 print("\n" + "=" * 80)
 print("GATOS PIPELINE COMPLETED")
 print("=" * 80)
@@ -972,7 +989,7 @@ if 'code_assigned_results' in locals() and code_assigned_results:
     # Show top 10 most frequent codes
     if code_frequency:
         sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
-        print(f"   🏷️  Top 10 most assigned codes:")
+        print("   🏷️  Top 10 most assigned codes:")
         for i, (code, count) in enumerate(sorted_codes[:10]):
             print(f"      {i+1:2d}. {code}: {count} times")
         if len(sorted_codes) > 10:
@@ -981,38 +998,15 @@ if 'code_assigned_results' in locals() and code_assigned_results:
     # Show theme frequency
     if theme_frequency:
         sorted_themes = sorted(theme_frequency.items(), key=lambda x: x[1], reverse=True)
-        print(f"   🎯 Theme assignment frequency:")
+        print("   🎯 Theme assignment frequency:")
         for i, (theme, count) in enumerate(sorted_themes):
             print(f"      {i+1:2d}. {theme}: {count} assignments")
 
-# Cluster distribution analysis (if cluster data is available)
-if 'initial_cluster_results' in locals() and initial_cluster_results:
-    print("\n📊 Cluster Distribution:")
-    cluster_counts = {}
-    for resp in initial_cluster_results:
-        if resp.response_ideas:
-            for idea in resp.response_ideas:
-                if hasattr(idea, 'initial_cluster') and idea.initial_cluster is not None:
-                    cluster_id = idea.initial_cluster
-                    cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
-    
-    if cluster_counts:
-        sorted_clusters = sorted(cluster_counts.items(), key=lambda x: x[1], reverse=True)
-        print(f"   • Total clusters: {len(sorted_clusters)}")
-        print(f"   • Largest cluster: {sorted_clusters[0][1]} ideas (Cluster {sorted_clusters[0][0]})")
-        print(f"   • Smallest cluster: {sorted_clusters[-1][1]} ideas (Cluster {sorted_clusters[-1][0]})")
-        
-        # Show cluster size distribution
-        cluster_sizes = [count for _, count in sorted_clusters]
-        avg_cluster_size = sum(cluster_sizes) / len(cluster_sizes)
-        print(f"   • Average cluster size: {avg_cluster_size:.1f} ideas")
-        
-        # Show top 5 clusters
-        print("   🔢 Top 5 largest clusters:")
-        for i, (cluster_id, count) in enumerate(sorted_clusters[:5]):
-            print(f"      {i+1}. Cluster {cluster_id}: {count} ideas")
-
 print("=" * 80)
+
+
+# === step 10 : export  ========================================================================================================
+
 # """export results"""
 # from utils.resultsExporter import ResultsExporter
 
