@@ -132,29 +132,56 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # =============================================================================
 
 IDEA_EXTRACTION_PROMPT = """
-You are an {language} language expert in analyzing written responses to open-ended question collected in surveys. 
-Your task is to extract ALL ideas expressed in answering the following question: 
-    
+You are a {language} language expert in analyzing written responses to open-ended questions collected in surveys. 
+Your task is to extract ALL distinct ideas expressed in response to the following survey question: 
+        
 <survey_question>
 {var_lab}
 </survey_question>
 
 Here is the respondent information and their response:
-
 <respondent_info>
 Respondent ID: {respondent_id}
 Written response: {response}
 </respondent_info>
 
 Please follow these instructions carefully:
-1. Read and analyze the provided text thoroughly.
-2. Identify ALL ideas expressed in answering the question.
-3. For each idea, provide a short descriptive phrase that captures the essence of the idea expressed in light of the survey question.
-4. For deidentification purposes:
-   - Remove all names of individuals mentioned in the text.
-   - Use gender-neutral pronouns (they/them/their) when referring to any individuals.
 
-Return the descriptive phrease the extracted ideas as a JSON array. Each item should include:
+1. **Thorough Analysis**: Read the response multiple times to ensure no ideas are missed.
+
+2. **Idea Identification**: Extract ALL distinct ideas that directly answer or relate to the survey question. An "idea" is:
+   - A single, complete thought or opinion
+   - A specific action, behavior, or experience mentioned
+   - A reason, cause, or explanation given
+   - An emotion, attitude, or evaluation expressed
+
+3. **Extraction Guidelines**:
+   - Keep each idea atomic (one concept per idea)
+   - Preserve the respondent's intended meaning
+   - Use the respondent's own words where possible, but clarify if ambiguous
+   - Include both explicit statements and clearly implied ideas
+   - If the response contains "and" or "but", check if these connect separate ideas
+
+4. **Descriptive Phrases**: For each idea, create a short phrase that:
+   - Captures the essence in context of the survey question
+   - Is self-contained and understandable without the full response
+   - Maintains the sentiment/tone of the original (positive, negative, neutral)
+   - Uses {language} language
+
+5. **Deidentification Requirements**:
+   - Replace all personal names with [PERSON]
+   - Replace organization/company names with [ORGANIZATION] 
+   - Replace specific locations with [LOCATION] if identifying
+   - Use gender-neutral pronouns (they/them/their) for all individuals
+   - Preserve role descriptors (manager, colleague, teacher) as they may be analytically relevant
+
+6. **Edge Cases**:
+   - If response is empty, irrelevant, or "N/A": return empty array []
+   - If response doesn't answer the question: extract ideas anyway but note they may be off-topic
+   - If response contains only one idea: still return as array with one item
+
+
+Return the extracted ideas ideas as a JSON array. Each item should include:
 - `"respondent_id"`: exactly as provided
 - `"idea_id"`: a string number ("1", "2", etc.)
 - `"idea"`: the descriptive phrase capturing the essence of the idea in {language}
@@ -162,27 +189,37 @@ Return the descriptive phrease the extracted ideas as a JSON array. Each item sh
 Here's an example of the input and desired output format:
     
 <example>
-Example input: 
+Survey question: "What aspects of your supervisor's performance stood out to you?"
 Respondent ID: 123456789
-Response: "Jared did a great job responding quickly to emails and turning in good work."
+Response: "Jared did a great job responding quickly to emails and turning in good work. However, he sometimes seemed overwhelmed when multiple projects came up at once."
 
 Example output:
 [
   {{
     "respondent_id": "123456789",
     "idea_id": "1", 
-    "idea": "Responded quickly to emails"
+    "idea": "[PERSON] responded quickly to emails""
   }},
   {{
     "respondent_id": "123456789",
     "idea_id": "2",
-    "idea": "Turned in good work"
+    "idea": "[PERSON] turned in good work"
+  }},
+  {{
+    "respondent_id": "123456789",
+    "idea_id": "2",
+    "idea": "[PERSON] seemed overwhelmed with multiple simultaneous projects"
   }}
 ]
 </example>
 
-Notice how the main ideas are summarized without including names or gendered pronouns.
-You may include as many items in your list as necessary to capture all the ideas present in the write response.
+Notice how:
+- Names are replaced with [PERSON]
+- Each idea is separate and atomic
+- The contrasting sentiment ("However") creates a new idea
+- Ideas preserve the original meaning and context
+
+Begin your analysis now and return ONLY the JSON array in {language}.
 """
 
 # =============================================================================
@@ -233,13 +270,14 @@ Given these codes from the codebook:
 </existing_codebook>
 
 Analyze these codes to help future matching decisions:
-1. What specific aspects of the survey question do these codes address?
-2. What potential gaps exist - what types of responses might NOT fit these codes?
+1. What specific aspects or dimensions of the survey question do these codes address?
+2. What potential gaps exist - what types of responses or themes might NOT fit these codes?
+3. Are there any conceptual overlaps or boundary issues between codes?    
 
 Output a concise analysis in {language} following this structure:
 "Coverage: These codes collectively address [aspects of the survey question].
-
-Gaps: Responses about [gap 1], [gap 2], and [gap 3] might not fit existing codes."
+Gaps: Responses about [gap 1], [gap 2], and [gap 3] might not fit existing codes.
+Boundaries: [Note any overlap or ambiguity between existing codes, if relevant]."
 
 IMPORTANT: Return ONLY the analysis text following this exact format, no JSON or additional explanation.
 """
@@ -254,19 +292,21 @@ Analyze this cluster of semantically related ideas expressed in response to this
 </clustered_ideas>
 
 Extract the cluster's pattern to enable code matching:
-1. **Core theme**: What is the central concept? Be specific.
-2. **Abstraction level**: Is this cluster about a specific instance or a general pattern?
-3. **Key components**: What are the 2-3 essential elements that define this cluster?
-4. **Distinguishing features**: What makes this cluster different from other possible themes?
+1. **Core theme**: What is the central concept unifying these responses? Be specific and use the language of the respondents where appropriate.
+2. **Abstraction level**: Is this cluster about specific instances, general patterns, or abstract concepts?
+3. **Key components**: What are the 2-3 essential elements that ALL responses in this cluster share?
+4. **Distinguishing features**: What makes this cluster semantically distinct from other possible themes?
+
 
 Output a concise analysis in {language} following this structure:
-"[cluster description] at a [specific/general] level. The key components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect]."
+"This cluster represents [core theme description using respondent language] at a [specific/general/abstract] level. The essential shared components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect that separates it from other themes]."
 
 IMPORTANT: Return ONLY the analysis text, no JSON formatting or additional explanation.
 """
 
 MATCH_AND_RECOMMEND_PROMPT = """
 {system_message}
+
 This time we will focus on written responses to the following survey question: "{survey_question}".
 You are making a codebook recommendation for a cluster of semantically similar survey responses.
 Specifically, you need to recommend whether or not a new code needs to be created.
@@ -274,27 +314,28 @@ Specifically, you need to recommend whether or not a new code needs to be create
 INPUT DATA:
 <existing_codes>
 {existing_codes}
-Notes: {codebook_analysis}
+Analysis notes: {codebook_analysis}
 </existing_codes>
 Note: These are the 5 codes nearest to this cluster's centroid embedding.
 
 <clustered_ideas>
 {clustered_ideas}
-Notes: {summaries}
+Cluster analysis: {summaries}
 </clustered_ideas>
 Note: These responses were grouped by HDBSCAN based on semantic similarity.
 
 EVALUATION PROCESS:
 1. Compare the cluster's core theme against each existing code
-2. Assess coverage of themes in the clustered ideas by the existing codes
-3. Decide that creating a new code is appropriate when current codes don't cover the clustered ideas enough
-4. Always favor parsimony: use existing when in doubt 
+2. Assess thematic coverage: what percentage of the cluster's meaning is captured by existing codes?
+3. Consider modification potential: could a slight broadening of an existing code cover this cluster?
+4. Decide on new code creation only when coverage is insufficient (<70%) and modification isn't viable
+5. Always favor parsimony: when coverage is borderline (70-85%), prefer using existing codes
 
 CREATION CRITERIA:   
-1. **Conceptual unity**: Does the new code represent ONE clear concept?
-2. **Mutual exclusivity**: Would a coder be confused about when to use this vs other codes?
-3. **Appropriate scope**: Is this trying to cover too much ground?
-4. **Abstraction consistency**: Same level as existing codes?
+1. **Conceptual unity**: Does the new code represent ONE clear, cohesive concept?
+2. **Mutual exclusivity**: Is there clear differentiation from existing codes (no overlap >30%)?
+3. **Appropriate scope**: Not too narrow (applies to <3 responses) or too broad (could split into subconcepts)?
+4. **Abstraction consistency**: Matches the abstraction level of existing codes?
 
 Output ONE recommendation as valid JSON:
 {{
@@ -302,36 +343,38 @@ Output ONE recommendation as valid JSON:
   "best_matching_codes": ["code1", "code2"],
   "coverage_assessment": {{
     "percentage": 0-100,
-    "rationale": "explain what aspects are/aren't covered"
+    "rationale": "explain specifically what aspects are/aren't covered"
   }},
   "decision": "use_existing|modify_existing|create_new",
   "action_details": {{
     "codes_to_use": ["list if use_existing"] or null,
     "code_to_modify": "name if modify_existing" or null,
-    "modification_suggestion": "how to broaden if modify_existing" or null,
+    "modification_suggestion": "specific wording to broaden if modify_existing" or null,
     "new_code_name": "name if create_new" or null,
     "new_code_definition": "definition if create_new" or null
   }},
-  "justification": "explain why this is the most parsimonious choice"
+  "justification": "explain why this is the most parsimonious choice given the coverage assessment"
 }}
 
 IMPORTANT:
 - Return ONLY the JSON object in {language}
 - Fill only relevant fields in action_details based on your decision
+- Coverage percentage should reflect how well existing codes capture the cluster's meaning
 - One cluster = one recommendation
 """
 
 VALIDATION_PROMPT = """
 {system_message}
-This time we will focus on written responses to the following survey question: "{survey_question}".
 
+This time we will focus on written responses to the following survey question: "{survey_question}".
 You are reviewing a code recommendation for clustered ideas extracted from survey responses.
+Your job is to APPROVE, REVISE or REJECT the recommendation, and to provide a final validated code name and definition.
 
 This is the extracted ideas: 
 <clustered_ideas>
 {clustered_ideas}
 </clustered_ideas>
-Note: These are the original survey responses that prompted this recommendation.
+Note: These are ideas extracted from the original survey responses that prompted this recommendation.
 
 This is the recommendation:
 <recommendation>
@@ -346,19 +389,26 @@ These are existing codes in the code book:
 Note: These are the 5 codes most similar to the recommended definition by semantic similarity.
 
 EVALUATION CRITERIA:
-1. **Parsimony**: Were existing code options properly exhausted?
-2. **Non-redundancy**: No overlap with existing codes?
-3. **Justification alignment**: Does the recommendation match its reasoning?
+1. **Parsimony**: Were existing code options properly exhausted? Would using/modifying existing codes sacrifice important nuance?
+2. **Non-redundancy**: Is there <30% conceptual overlap with any existing code?
+3. **Clarity**: Is the code name intuitive and the definition unambiguous?
+4. **Scope appropriateness**: Does the code capture a single concept without being too narrow or broad?
+5. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
+
+DECISION GUIDELINES:
+- APPROVE: All criteria met, code is well-formed and necessary
+- REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
+- REJECT: Fails parsimony (existing codes suffice), high redundancy (>50% overlap), or covers multiple unrelated concepts
 
 Output a validation assessment in {language}:
 {{
   "evaluation": {{
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
-    "redundancy_reasoning": "assessment of overlap with existing codes",
-    "justification_reasoning": "assessment of decision alignment with reasoning"
+    "redundancy_reasoning": "assessment of conceptual overlap with existing codes (specify % if relevant)",
+    "justification_reasoning": "assessment of logic consistency in the recommendation"
   }},
   "decision": "APPROVE/REVISE/REJECT",
-  "decision_rationale": "explanation for the overall decision",
+  "decision_rationale": "synthesize the evaluation into a clear decision explanation",
   "validated_code": {{
     "code": "final code name (approved/revised) or null if rejected",
     "definition": "final definition (approved/revised) or null if rejected"
@@ -367,11 +417,10 @@ Output a validation assessment in {language}:
 
 IMPORTANT: 
 - Return ONLY the JSON object in {language}
-- APPROVE only if recommendation represents ONE clear, focused concept
-- REVISE if concept needs refinement to improve focus or clarity (provide revised code in validated_code)
-- REJECT if recommendation covers multiple unrelated concepts or creates confusion
-- Always populate validated_code for APPROVE/REVISE decisions
-- Ensure codes represent single, mutually exclusive themes
+- For REVISE decisions, provide an improved version in validated_code
+- Ensure code names are concise (2-5 words) and definitions are complete sentences
+- Validated definitions should clearly delineate what is included/excluded
+- Prioritize codes that coders can apply consistently
 """
 
 # =============================================================================
