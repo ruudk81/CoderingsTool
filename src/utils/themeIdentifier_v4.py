@@ -39,7 +39,7 @@ class CodeEmbedding(BaseModel):
     code_name: str = Field(description="Original code name")
     definition: str = Field(description="Code definition")
     embedding_text: str = Field(description="Text used for embedding")
-    embedding: Optional[np.ndarray] = Field(description="Embedding vector", exclude=True)
+    embedding: Optional[np.ndarray] = Field(description="Embedding vector", exclude=True, default=None)
     cluster_id: Optional[int] = Field(description="Assigned cluster ID", default=None)
     
     class Config:
