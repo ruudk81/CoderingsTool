@@ -280,8 +280,11 @@ class ThemeIdentifier:
         """Create prompt for naming a cluster theme"""
         
         # Format cluster codes
+        # codes_text = "\n".join([
+        #     f"{code.code_number}. Code: {code.code_name}. Definition: {code.definition}"
         codes_text = "\n".join([
-            f"{code.code_number}. Code: {code.code_name}. Definition: {code.definition}"
+            f"{code.code_number}. {code.code_name}"
+
             for code in cluster_codes
         ])
         

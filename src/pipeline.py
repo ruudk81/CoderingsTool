@@ -422,22 +422,22 @@ else:
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
 # #debug - print random clusters  
-# import random
-# cluster_ids = list(set([
-#     response_idea.initial_cluster 
-#     for result in initial_cluster_results 
-#     for response_idea in result.response_ideas   
-#     if response_idea.initial_cluster is not None]))
-# sampled_cluster = random.sample(cluster_ids, 1)[0]
-# print(f"\nCluster {sampled_cluster}:\n")
-# cluster_segments = []
-# for result in initial_cluster_results:
-#     for response_idea in result.response_ideas:   
-#         if response_idea.initial_cluster == sampled_cluster:
-#             cluster_segments.append(response_idea.idea)
-# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-# for segment_desc in sampled_segments:
-#     print(f"-    {segment_desc}")
+import random
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas   
+    if response_idea.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for result in initial_cluster_results:
+    for response_idea in result.response_ideas:   
+        if response_idea.initial_cluster == sampled_cluster:
+            cluster_segments.append(response_idea.idea)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
     
     
 # #debug - print all clusters
@@ -594,14 +594,14 @@ else:
 
 # rec = step3[sampled_id]
 # print(f"ID: {sampled_id}")
-# print(f"Cluster Theme: {rec.cluster_core_theme}")
-# print(f"Best Matching Codes: {rec.best_matching_codes}")
-# print(f"Coverage %: {rec.coverage_assessment.percentage}")
-# print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
-# print(f"Decision (Step 3): {rec.decision}")
+# #print(f"Cluster Theme: {rec.cluster_core_theme}")
+# #print(f"Best Matching Codes: {rec.best_matching_codes}")
+# #print(f"Coverage %: {rec.coverage_assessment.percentage}")
+# #print(f"Coverage Rationale: {rec.coverage_assessment.rationale}")
+# print(f"Decision: {rec.decision}")
 # print(f"New Code Name: {rec.action_details.new_code_name}")
-# print(f"New Code Definition: {rec.action_details.new_code_definition}")
-# print(f"Justification: {rec.justification}")   
+# #print(f"New Code Definition: {rec.action_details.new_code_definition}")
+# #print(f"Justification: {rec.justification}")   
 # print("\n") 
   
 # val = validation.get(sampled_id)
@@ -693,7 +693,7 @@ else:
 """Identify themes"""
 from utils.themeIdentifier import ThemeIdentifier
 
-FORCE = False
+FORCE = True
 
 step_name = "theme_identification"
 if  FORCE:
@@ -830,22 +830,22 @@ if enriched_codebook:
     codebook = enriched_codebook
 
 
-idx = 1
-for entry in codebook:
-    print(idx)
-    print(entry.code)
-    print(entry.definition)
-    print(entry.theme)
-    print("\n")
-    idx += 1
-
+#debug 
+# idx = 1
+# for entry in codebook:
+#     print(idx)
+#     print(entry.code)
+#     print(entry.definition)
+#     print(entry.theme)
+#     print("\n")
+#     idx += 1
 
 
 # === STEP 9 ========================================================================================================
 """Assign codes (and themes)"""
 from utils import codeAssigner
 
-FORCE = False
+FORCE = True
 
 step_name = "code_assignment"
 if  FORCE:
@@ -909,10 +909,11 @@ import random
 sampled_result = random.choice(code_assigned_results)
 print(f"Respondent ID: {sampled_result.respondent_id}")
 print(f"Response: {sampled_result.response}")
-print(f"Idea count: {sampled_result.idea_count}")
+#print(f"Idea count: {sampled_result.idea_count}")
 #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-print("---- Assigned Codes ----")
+#print("---- Assigned Codes ----")
 for idea in sampled_result.response_ideas:
+    print("-" * 40)
     print(f"Idea ID: {idea.idea_id}")
     print(f"Idea: {idea.idea}")
     print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
