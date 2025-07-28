@@ -31,7 +31,7 @@ var_name = "q19"
 # var_name = "Q20"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = None  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -521,7 +521,8 @@ else:
     for key, value in results.items():
         if key == 'codebook':
             for item in value:
-                print(f"{idx}: {item['code']}")
+                #print(f"{idx}: {item['code']}")
+                print(f"{idx}. {item['code']} : {item['definition']}\n")
                 codebook_entry = models.Codebook(
                     code = item['code'],
                     definition = item['definition'],
@@ -536,7 +537,7 @@ else:
     
     # Cache the results
     cache_manager.save_to_cache(codebook, filename, step_name, elapsed_time)
-    print(f"\n'GATOS codebook generation' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug - decisions
 # import random
@@ -700,9 +701,9 @@ else:
             for code in theme['codes']:
                 print(f"     - Code {code['code_number']}: {code['code_name']}")
                 
-        # for i, item in enumerate(codebook, 1):
-        #      print(f"{i}. {item.code}")
-        #      print(f"   → {item.definition}\n")
+        for i, item in enumerate(codebook, 1):
+             print(f"{i}. {item.code}")
+             print(f"   → {item.definition}\n")
                 
       
     end_time = time.time()

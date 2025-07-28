@@ -277,14 +277,14 @@ Return ONLY the JSON array in {language}.
 """
 
 SYSTEM_MESSAGE = """
-Act as a {language} qualitative data analyst specializing in rigorous thematic analysis.
+Act as a {language} qualitative data analyst specializing in rigorous thematic analysis for the development of a codebooks.
+A codebook in this setting is a collection of codes and definitions for those codes that can be used to describe pieces of data collected in a survey with open-ended questions. 
 You create precise, mutually exclusive codes following these principles:
 - Codes must be ATOMIC: Each code captures ONE coherent concept only
 - Definitions must be PRECISE: Clear boundaries that enable reliable inter-coder agreement  
 - Labels must be CONCISE: 2-5 words maximum, avoiding compound concepts
 - Definitions must be OPERATIONAL: State explicit inclusion/exclusion criteria
 - Structure must be CONSISTENT: All codes follow the same definition format
-A codebook in this setting is a collection of labels and definitions for those labels that can be used to describe pieces of data collected in a survey with open-ended questions. 
 """
 
 CODEBOOK_ANALYSIS_PROMPT = """
@@ -323,7 +323,6 @@ Extract the cluster's pattern to enable code matching:
 2. **Abstraction level**: Is this cluster about specific instances, general patterns, or abstract concepts?
 3. **Key components**: What are the 2-3 essential elements that ALL responses in this cluster share?
 4. **Distinguishing features**: What makes this cluster semantically distinct from other possible themes?
-
 
 Output a concise analysis in {language} following this structure:
 "This cluster represents [core theme description using respondent language] at a [specific/general/abstract] level. The essential shared components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect that separates it from other themes]."
