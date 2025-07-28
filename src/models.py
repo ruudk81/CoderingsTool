@@ -43,17 +43,51 @@ class ClusterSubmodel(EmbeddingsSubmodel):
 class ClusterModel(IdeasExtractedModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
-# === CODE ASSIGNMENT MODELS ========================================================================================================
+# === CODEBOOK SIDESTEP MODELS ========================================================================================================
 
-class AssignedCodeSubmodel(IdeasExtractedSubmodel):
+class CodebookEntry(BaseModel):
+    """Individual code from generated codebook"""
+    code: str
+    definition: str
+    source_clusters: Optional[List[int]] = None  # Which clusters influenced this code
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodebookModel(BaseModel):
+    """Generated codebook from cluster analysis (Step 7)"""
+    codes: List[CodebookEntry]
+    generation_metadata: Optional[Dict[str, Any]] = None
+    source_variable: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ThemeEnrichedCodebookEntry(CodebookEntry):
+    """Code enriched with theme information"""
+    theme: Optional[str] = None
+    theme_description: Optional[str] = None
+    theme_cluster_id: Optional[int] = None
+    is_miscellaneous: Optional[bool] = False
+
+class ThemeEnrichedCodebookModel(CodebookModel):
+    """Codebook enriched with themes (Step 8)"""
+    codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
+    themes_summary: Optional[List[Dict[str, Any]]] = None
+    code_to_theme_mapping: Optional[Dict[str, str]] = None
+    theme_methodology: Optional[str] = None
+
+# === CODE ASSIGNMENT MODELS (Main Response Flow) ========================================================================================================
+
+class AssignedIdeaSubmodel(ClusterSubmodel):
+    """Idea with cluster info + assigned codes and themes"""
     assigned_codes: Optional[List[str]] = None
+    assigned_themes: Optional[List[str]] = None
     assignment_confidence: Optional[float] = None
     assignment_rationale: Optional[str] = None
 
-class CodeAssignedModel(IdeasExtractedModel):
-    response_ideas: Optional[List[AssignedCodeSubmodel]] = None
+class CodeAssignedModel(ClusterModel):
+    """ClusterModel + Code/Theme Assignments (Step 9)"""
+    response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
+    assignment_metadata: Optional[Dict[str, Any]] = None
 
-# === CODEBOOK MODELS ========================================================================================================
+# === LEGACY CODEBOOK MODELS (for backward compatibility) ========================================================================================================
 
 class CodeDefinition(BaseModel):
     code: str
