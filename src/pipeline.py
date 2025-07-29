@@ -879,7 +879,7 @@ else:
         print(f"\nAssigning codes and themes from {len(theme_enriched_codebook.codes)} enriched codes to {sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)} ideas")
   
         code_assigner_instance = codeAssigner.CodeAssigner(
-            ideas_extracted_models=embedded_text,  # Use embeddings from Step 5
+            cluster_models=initial_cluster_results,  # Use cluster results from Step 6 (includes embeddings)
             codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
                      for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
             var_lab=var_lab,
