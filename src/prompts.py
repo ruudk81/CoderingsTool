@@ -475,56 +475,68 @@ Provide your validation output in {language} as a valid JSON object in this form
 # =============================================================================
 
 THEME_IDENTIFICATION_PROMPT = """
-You are {language} language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
-You have been given a cluster of semantically related codes that were grouped using HDBSCAN clustering based on their embedding similarity.
+You are a {language} language expert and qualitative researcher specializing in thematic analysis using the Braun & Clarke (2006) methodology.
+Your task is to analyze a cluster of codes and recommend whether to use existing themes, modify them, or create new ones.
 
-SURVEY QUESTION:
+---
+
+First, review the survey question that generated the codes:
+<survey_question>
 {survey_question}
+</survey_question>
 
-CLUSTER CODES ({codes_count} codes):
-{codes_text}
-
-EXISTING THEMES:
+Next, examine the themes that currently exist in the codebook:
+<existing_themes>
 {existing_themes_text}
+</existing_themes>
 
-YOUR TASK:
-Analyze this cluster of codes and decide whether to:
-1. CREATE A NEW THEME that captures the shared conceptual pattern of these codes, OR
-2. USE AN EXISTING THEME if one of the existing themes above adequately represents this cluster
+Now, analyze the following cluster of {codes_count} codes that may require a new or revised theme:
+<clustered_codes>
+{codes_text}
+</clustered_codes>
 
-DECISION CRITERIA:
-- For CREATE NEW: The codes share a coherent conceptual pattern that is distinct from existing themes
-- For USE EXISTING: An existing theme adequately captures the essence of these codes  
-- Focus on conceptual meaning rather than surface-level keyword matching
-- Consider the survey question context
+---
 
-BRAUN & CLARKE PRINCIPLES:
-- Themes should capture coherent patterns of meaning
-- Focus on conceptual importance, not just frequency
-- Each theme should tell a meaningful story about the data
-- Themes should be distinct yet coherent
+Follow this evaluation process:
+1. Compare the conceptual focus of the clustered codes to each existing theme.
+2. Assess thematic coverage: To what extent do existing themes capture the unifying idea(s) in the cluster?
+3. Determine fit: Can one or more existing themes (as-is or with revision) adequately represent this cluster?
+4. Assess sentiment alignment: Do the codes consistently express a similar sentiment (e.g., all positive, all negative)? Or do they differ in evaluative tone?
 
-When creating themes, adhere to these principles for high-quality validated themes:
-- **ATOMIC**: One concept per theme - no compound ideas with "and", "including", "with"
-- **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
-- **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
+Decision guidelines:
+4. **Create a new theme** only if no existing theme meaningfully captures the cluster's unifying concept.
+5. If the codes reflect both positive and negative sentiment—and this is clearly signaled in their names and definitions—consider creating **both a positive and a negative variant** of the theme.
+6. **Reuse or revise existing themes** when feasible. Favor parsimony and conceptual clarity.
 
-OUTPUT FORMAT (JSON):
+When creating or revising a theme, ensure it meets these standards:
+- **Coherent pattern**: The theme must capture a consistent pattern of meaning across the cluster.
+- **Conceptual importance > frequency**: Prioritize what the theme tells us, not how often it appears.
+- **Narrative value**: The theme should help tell a meaningful story about the data.
+- **ATOMIC**: One clear idea per theme. Avoid compound constructions like "and", "including", or "with".
+- **CONCISE LABEL**: Theme name should be 2–5 words, capturing its essence without vagueness.
+- **MUTUALLY EXCLUSIVE**: Themes should have minimal overlap in scope to avoid ambiguity.
+
+---
+
+Return your assessment as a valid JSON object in this format:
 {{
-  "decision": "create_new|use_existing",
+  "decision": "create_new | use_existing",
   "theme_name": "[Theme name in {language}]",
-  "theme_description": "[Brief description of what unites these codes conceptually]",
-  "existing_theme_used": "[Name of existing theme if used, or null]",
-  "confidence": "high|medium|low",
-  "rationale": "[Detailed explanation of your decision]"
+  "theme_description": "[Brief description of what conceptually unites the codes]",
+  "existing_theme_used": "[Exact theme name from the list above, or null]",
+  "confidence": "high | medium | low",
+  "rationale": "[Detailed explanation of your decision based on fit, clarity, and distinctiveness]"
 }}
 
-IMPORTANT:
-- Theme names and descriptions must be in {language}
-- If using existing theme, use the EXACT theme name from the list above
-- Base your decision on conceptual fit, not just similarity scores
+---
 
-Return ONLY the JSON object."""
+**IMPORTANT:**
+- Theme names and descriptions must be written in {language}.
+- If using an existing theme, use the **EXACT** theme name provided above.
+- Focus on **conceptual fit**, not surface similarity or keyword overlap.
+- Return **ONLY** the JSON object.
+"""
+
 
 ASSIGN_MISCELLANEOUS_PROMPT = """
 You are {language} language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.
