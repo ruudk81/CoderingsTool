@@ -367,8 +367,9 @@ Output ONE recommendation as valid JSON:
   "decision": "use_existing | modify_existing | create_new",
   "action_details": {{
     "codes_to_use": ["list of code names"] or null,
-    "modified_code_name": "name if modify_existing" or null,
-    "modified_code_definition": "definition if modify_existing" or null,
+    "codes_to_modify": "code name to modify" or null,
+    "modified_code_name": "re-name if modify_existing" or null,
+    "modified_code_definition": "re-define if modify_existing" or null,
     "new_code_name": "name if create_new" or null,
     "new_code_definition": "definition if create_new" or null
   }},
