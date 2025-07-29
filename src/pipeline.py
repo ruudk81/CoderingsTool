@@ -21,20 +21,24 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-filename = "M250285 input voor coderen - met Q18Q19.sav"
-id_column = "respondentid"
-var_name = "q19"
+# filename = "M250285 input voor coderen - met Q18Q19.sav"
+# id_column = "respondentid"
+# var_name = "q19"
 # #var_name = "Q18Q19"
 
 # filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 # id_column = "DLNMID"
 # var_name = "Q20"
 
+filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
@@ -422,22 +426,22 @@ else:
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
 # #debug - print random clusters  
-import random
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas   
-    if response_idea.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for result in initial_cluster_results:
-    for response_idea in result.response_ideas:   
-        if response_idea.initial_cluster == sampled_cluster:
-            cluster_segments.append(response_idea.idea)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
+# import random
+# cluster_ids = list(set([
+#     response_idea.initial_cluster 
+#     for result in initial_cluster_results 
+#     for response_idea in result.response_ideas   
+#     if response_idea.initial_cluster is not None]))
+# sampled_cluster = random.sample(cluster_ids, 1)[0]
+# print(f"\nCluster {sampled_cluster}:\n")
+# cluster_segments = []
+# for result in initial_cluster_results:
+#     for response_idea in result.response_ideas:   
+#         if response_idea.initial_cluster == sampled_cluster:
+#             cluster_segments.append(response_idea.idea)
+# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+# for segment_desc in sampled_segments:
+#     print(f"-    {segment_desc}")
     
     
 # #debug - print all clusters
@@ -583,6 +587,15 @@ else:
     # Cache the structured codebook model (wrap in list as cache manager expects List[T])
     cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
+
+#debug 
+# idx = 1
+# for entry in codebook:
+#     print(idx)
+#     print(entry.code)
+#     print(entry.definition)
+#     print("\n")
+#     idx += 1
 
 #debug - decisions
 # import random
@@ -829,15 +842,18 @@ if enriched_codebook:
     codebook = enriched_codebook
 
 
-#debug 
-# idx = 1
-# for entry in codebook:
-#     print(idx)
-#     print(entry.code)
-#     print(entry.definition)
-#     print(entry.theme)
+# idx  = 1
+# themes = set([entry.theme for entry in enriched_codebook])
+# for theme in themes :
+#     print(idx) 
+#     print(theme)
+#     for entry in enriched_codebook:
+#         if theme == entry.theme:
+#            print(f"-{entry.code}")
 #     print("\n")
 #     idx += 1
+
+
 
 
 # === STEP 9 ========================================================================================================
@@ -903,6 +919,15 @@ else:
     cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
     print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
+
+from utils.pipelineSummarizer import PipelineSummarizer
+summarizer = PipelineSummarizer(verbose=True)
+summarizer.generate_summary(
+    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
+    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None
+)
+
 #debug
 import random
 sampled_result = random.choice(code_assigned_results)
@@ -922,147 +947,4 @@ for idea in sampled_result.response_ideas:
     print("-" * 40)
 
 
-
-# === SUMMARY  ========================================================================================================
-
-print("\n" + "=" * 80)
-print("GATOS PIPELINE COMPLETED")
-print("=" * 80)
-print("📊 Final Results:")
-if 'enriched_codebook' in locals() and enriched_codebook:
-    print(f"   • Generated codes: {len(enriched_codebook)}")
-    codes_with_domains = len([c for c in enriched_codebook if c.topic])
-    codes_with_themes = len([c for c in enriched_codebook if c.theme])
-    print(f"   • Codes with domains: {codes_with_domains}")
-    print(f"   • Codes with themes: {codes_with_themes}")
-    
-    # Show unique themes and domains
-    unique_themes = set(c.theme for c in enriched_codebook if c.theme)
-    unique_domains = set(c.topic for c in enriched_codebook if c.topic)
-    
-    print(f"   • Total themes: {len(unique_themes)}")
-    print(f"   • Total domains: {len(unique_domains)}")
-    
-    if unique_themes:
-        print("📋 Themes identified:")
-        for i, theme in enumerate(sorted(unique_themes)[:5]):  # Show first 5 themes
-            theme_codes = [c for c in enriched_codebook if c.theme == theme]
-            print(f"   {i+1}. {theme} ({len(theme_codes)} codes)")
-        if len(unique_themes) > 5:
-            print(f"   ... and {len(unique_themes) - 5} more themes")
-else:
-    print("   • No hierarchical results available")
-
-if 'code_assigned_results' in locals() and code_assigned_results:
-    total_responses = len(code_assigned_results)
-    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
-    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
-    print(f"   • Code assignments: {total_assignments} assignments for {total_ideas} ideas across {total_responses} responses")
-    
-    # Show average confidence
-    all_confidences = []
-    for resp in code_assigned_results:
-        if resp.response_ideas:
-            for idea in resp.response_ideas:
-                if idea and idea.assignment_confidence is not None:
-                    all_confidences.append(idea.assignment_confidence)
-    
-    if all_confidences:
-        avg_confidence = sum(all_confidences) / len(all_confidences)
-        print(f"   • Average assignment confidence: {avg_confidence:.2f}")
-    
-    # Code frequency analysis
-    print("\n📈 Code Assignment Statistics:")
-    code_frequency = {}
-    theme_frequency = {}
-    
-    for resp in code_assigned_results:
-        if resp.response_ideas:
-            for idea in resp.response_ideas:
-                if idea and idea.assigned_codes:
-                    for code in idea.assigned_codes:
-                        code_frequency[code] = code_frequency.get(code, 0) + 1
-                if idea and idea.assigned_themes:
-                    for theme in idea.assigned_themes:
-                        theme_frequency[theme] = theme_frequency.get(theme, 0) + 1
-    
-    # Show top 10 most frequent codes
-    if code_frequency:
-        sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
-        print("   🏷️  Top 10 most assigned codes:")
-        for i, (code, count) in enumerate(sorted_codes[:10]):
-            print(f"      {i+1:2d}. {code}: {count} times")
-        if len(sorted_codes) > 10:
-            print(f"      ... and {len(sorted_codes) - 10} more codes")
-    
-    # Show theme frequency
-    if theme_frequency:
-        sorted_themes = sorted(theme_frequency.items(), key=lambda x: x[1], reverse=True)
-        print("   🎯 Theme assignment frequency:")
-        for i, (theme, count) in enumerate(sorted_themes):
-            print(f"      {i+1:2d}. {theme}: {count} assignments")
-
-print("=" * 80)
-
-# === ENHANCED SUMMARY ANALYSIS ========================================================================================================
-from utils.pipelineSummarizer import PipelineSummarizer
-
-# Create summarizer instance and generate detailed analysis
-summarizer = PipelineSummarizer(verbose=True)
-
-# Generate comprehensive summary
-# Pass the variables that exist in the pipeline
-summarizer.generate_summary(
-    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
-    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None
-)
-
-
-# === step 10 : export  ========================================================================================================
-
-# """export results"""
-# from utils.resultsExporter import ResultsExporter
-
-# step_name = "results"
-# verbose_reporter = VerboseReporter(VERBOSE)
-# force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-# if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-#     export_results = cache_manager.load_from_cache(filename, step_name, dict)
-#     verbose_reporter.summary("EXPORT RESULTS FROM CACHE", {
-#         "SPSS file": export_results.get('spss_file', 'Not found'),
-#         "Excel file": export_results.get('excel_file', 'Not found')
-#     })
-# else:
-#     verbose_reporter.section_header("RESULTS EXPORT PHASE")
-#     start_time = time.time()
-    
-#     # Initialize results exporter
-#     results_exporter = ResultsExporter(verbose=VERBOSE)
-    
-#     # Export results to SPSS and Excel
-#     export_results = results_exporter.export_results(
-#         labeled_results=labeled_results,
-#         filename=filename,
-#         id_column=id_column,
-#         var_name=var_name
-#     )
-    
-#     end_time = time.time()
-#     elapsed_time = end_time - start_time
-    
-#     # Cache the export results (file paths)
-#     cache_manager.save_to_cache(export_results, filename, step_name, elapsed_time)
-    
-#     verbose_reporter.stat_line(f"'Results export' completed in {elapsed_time:.2f} seconds.")
-
-# print("\n" + "=" * 80)
-# print("PIPELINE COMPLETED SUCCESSFULLY")
-# print("=" * 80)
-# print("📊 Final output files:")
-# print(f"   • SPSS: {export_results.get('spss_file', 'Not generated')}")
-# print(f"   • Excel: {export_results.get('excel_file', 'Not generated')}")
-# print(f"📁 Export directory: {export_results.get('export_directory', 'Unknown')}")
-# print("=" * 80)
 
