@@ -498,13 +498,15 @@ Now, analyze the following cluster of {codes_count} codes that may require a new
 
 ---
 
-Before continuing, check whether the codes in this cluster express a **single shared, semantically coherent concept**.
+Before continuing, check whether the codes in this cluster express a **single shared, semantically coherent concept** AND **consistent sentiment**.
 
 Ask yourself:
 - Do all the codes **clearly relate to one unifying idea**?
-- Can they all complete the sentence: **“This is about…”** with the same concept?
-- If not, **do not force a theme**, because atomic and conceptual Ccherence is required.
-- So, never combine unrelated subthemes** (e.g. “Concerns about price and product design”) into one theme. 
+- Do all the codes express **similar sentiment** (all positive, all negative, or all neutral)?
+- Can they all complete the sentence: **"This is about…"** with the same concept AND sentiment?
+- If either conceptual unity OR sentiment consistency is missing, **consider splitting**.
+- Never combine unrelated subthemes (e.g. "Concerns about price and product design") into one theme.
+- Never combine different sentiments about the same concept (e.g. "positive communication experiences" + "negative communication problems") into one theme. 
 
 
 ---
@@ -512,25 +514,36 @@ Ask yourself:
 **Evaluation Process**:
 1. **Compare conceptual focus**: How do the clustered codes relate to each existing theme?
 2. **Assess thematic coverage**: Do existing themes already capture the conceptual meaning of this cluster?
-3. **Assess sentiment**: Do the codes express the same evaluative tone (e.g. all positive or all negative)?
-4. **Determine fit**: Can one or more existing themes — as-is or with revision — represent the cluster **as one unified idea**?
+3. **Assess sentiment consistency**: Do the codes express the same evaluative tone (e.g., all positive, all negative, or all neutral)?
+4. **Identify sentiment patterns**: If sentiment differs, are there clear positive vs negative groupings about the same concept?
+5. **Determine fit**: Can one or more existing themes — as-is or with revision — represent the cluster **as one unified idea with consistent sentiment**?
 
 ---
 
 **Decision Guidelines**:
-- **Create single theme** if the cluster is conceptually coherent **and** no existing theme fits.
-- **Use existing theme** if the cluster fits well with an existing theme.
-- **Split into multiple themes** if the cluster contains 2-3 distinct conceptual groups that should be separate atomic themes.
-- **Reject mixed cluster** if codes are too incoherent or unrelated to form any meaningful themes.
+- **Create single theme** if the cluster is conceptually coherent AND sentiment-consistent, with no existing theme fit.
+- **Use existing theme** if the cluster fits well with an existing theme (concept + sentiment).
+- **Split into multiple themes** if the cluster contains:
+  * 2-3 distinct conceptual groups that should be separate atomic themes, OR
+  * **Same concept but clearly different sentiments** (e.g., positive vs negative evaluation), OR
+  * Both conceptual AND sentiment mixing
+- **Reject mixed cluster** if codes are too incoherent to form any meaningful themes.
 - **Favor revision or reuse** of existing themes whenever possible.
 
 ---
 
 **When Splitting Clusters**:
 1. **Identify distinct conceptual groups** within the cluster (2-3 groups maximum)
-2. **Assign each code** to its most appropriate conceptual group by code number
-3. **Create separate themes** for each group, ensuring each is atomic
-4. **Verify each group** can complete "This is about..." with the same concept
+2. **Identify sentiment groups** - codes expressing different evaluative tones about the same concept
+3. **Prioritize conceptual splits first**, then sentiment splits within concepts if needed
+4. **Assign each code** to its most appropriate group by code number (concept + sentiment)
+5. **Create separate themes** for each group, ensuring each is atomic
+6. **Verify each group** has consistent concept AND sentiment
+
+**Examples of Sentiment-Based Splitting**:
+- Cluster about "communication": Split into "positive communication experiences" vs "negative communication problems"
+- Cluster about "workload": Split into "manageable workload satisfaction" vs "overwhelming workload stress"
+- Same conceptual area but different evaluative tone = separate themes
 
 ---
 
