@@ -67,7 +67,7 @@ class CodeAssigner:
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
 
 
-    def _get_code_embeddings(self):
+    async def _get_code_embeddings(self):
         """Generate embeddings for all codes in the codebook for similarity matching"""
         if self._code_embeddings is None:
             code_texts = [f"{code.code}: {code.definition}" for code in self.codebook]
@@ -86,8 +86,8 @@ class CodeAssigner:
                 )
                 temp_models.append(temp_model)
             
-            # Generate embeddings (synchronous method that uses asyncio internally)
-            embedded_codes = self.embedder.get_embeddings_with_tracking(temp_models, "Code embeddings")
+            # Generate embeddings using async method directly
+            embedded_codes = await self.embedder._process_embeddings_with_id_tracking(temp_models)
             
             # Extract embeddings array
             embeddings = []
@@ -222,7 +222,13 @@ class CodeAssigner:
                     await asyncio.sleep(self.config.retry_delay)
                     continue
                 else:
-                    self.verbose_reporter.stat_line(f"Failed to process idea {idea_id} after {self.config.retries} attempts: {e}")
+                    error_msg = f"Failed to process idea {idea_id} after {self.config.retries} attempts: {type(e).__name__}: {str(e)}"
+                    self.verbose_reporter.stat_line(error_msg)
+                    # Log more details for debugging
+                    if hasattr(e, '__traceback__'):
+                        import traceback
+                        self.verbose_reporter.stat_line(f"Traceback: {traceback.format_exc()}")
+                    
                     # Return fallback response
                     fallback_code = similar_codes[0].code if similar_codes else "Unknown"
                     fallback_themes = self._assign_themes_to_codes([fallback_code]) if fallback_code != "Unknown" else []
@@ -232,11 +238,15 @@ class CodeAssigner:
                         assigned_codes=[fallback_code],
                         assigned_themes=fallback_themes,
                         assignment_confidence=0.1,
-                        assignment_rationale="Failed to process - assigned most similar code as fallback"
+                        assignment_rationale=f"Failed to process - {type(e).__name__}: {str(e)[:100]}"
                     )
 
     async def _process_batch(self, batch: List[tuple], batch_index: int = 0) -> List[CodeAssignmentResponse]:
         """Process a batch of ideas concurrently (following qualityFilter/ideaExtractor pattern)"""
+        # Add a small delay between batches to avoid rate limiting (0.1s per batch)
+        if batch_index > 0:
+            await asyncio.sleep(0.1)
+            
         # Create tasks for all ideas in this batch - no semaphore limits like other processors
         tasks = [self._process_idea_assignment(idea_data) for idea_data in batch]
         
@@ -323,7 +333,7 @@ class CodeAssigner:
         
         # Initialize code embeddings
         self.verbose_reporter.stat_line("Generating code embeddings for similarity matching...")
-        self._get_code_embeddings()
+        await self._get_code_embeddings()
         
         # Extract all ideas
         all_ideas = self._extract_all_ideas()
@@ -350,7 +360,10 @@ class CodeAssigner:
         total_failures = 0
         for i, batch_result in enumerate(batch_results):
             if isinstance(batch_result, Exception):
-                self.verbose_reporter.stat_line(f"Batch {i+1} processing failed: {str(batch_result)}")
+                self.verbose_reporter.stat_line(f"Batch {i+1}/{total_batches} processing failed: {type(batch_result).__name__}: {str(batch_result)}")
+                # Log the batch size that failed
+                if i < len(batches):
+                    self.verbose_reporter.stat_line(f"Failed batch contained {len(batches[i])} ideas")
                 total_failures += 1
                 continue
             
