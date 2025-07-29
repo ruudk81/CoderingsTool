@@ -29,14 +29,14 @@ class CodeAssignmentResponse(BaseModel):
 class CodeAssigner:
     def __init__(
         self,
-        ideas_extracted_models: List[models.IdeasExtractedModel],
+        cluster_models: List[models.ClusterModel],
         codebook: List[models.Codebook],
         var_lab: str,
         config: Optional[CodeAssignmentConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
         
-        self.ideas_extracted_models = ideas_extracted_models
+        self.cluster_models = cluster_models
         self.codebook = codebook
         self.var_lab = var_lab
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
@@ -77,7 +77,7 @@ class CodeAssigner:
                 temp_model = models.EmbeddingsModel(
                     respondent_id=f"code_{i}",
                     response=code_text,
-                    response_ideas=[models.IdeasExtractedSubmodel(
+                    response_ideas=[models.EmbeddingsSubmodel(
                         idea_id=f"code_{i}_1",
                         idea=code_text
                     )],
@@ -91,9 +91,9 @@ class CodeAssigner:
             # Extract embeddings array
             embeddings = []
             for model in embedded_codes:
-                if hasattr(model, 'idea_embeddings') and model.idea_embeddings and len(model.idea_embeddings) > 0:
-                    # Use the new structure with idea_embeddings
-                    embedding = model.idea_embeddings[0].idea_embedding
+                if hasattr(model, 'response_ideas') and model.response_ideas and len(model.response_ideas) > 0:
+                    # Use the EmbeddingsSubmodel structure
+                    embedding = model.response_ideas[0].idea_embedding
                     if embedding is not None:
                         embeddings.append(embedding)
                     else:
@@ -133,24 +133,10 @@ class CodeAssigner:
         """Extract all individual ideas with their embeddings for processing"""
         all_ideas = []
         
-        for model in self.ideas_extracted_models:
-            # Check if model has idea_embeddings (EmbeddingsModel structure)
-            if hasattr(model, 'idea_embeddings') and model.idea_embeddings:
-                for idea_submodel in model.idea_embeddings:
-                    if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
-                        all_ideas.append((
-                            model.respondent_id,
-                            idea_submodel.idea_id,
-                            idea_submodel.idea,
-                            idea_submodel.idea_embedding
-                        ))
-                    else:
-                        # If no embedding, skip this idea (shouldn't happen in normal flow)
-                        self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
-            # Fallback to response_ideas if idea_embeddings not available
-            elif hasattr(model, 'response_ideas') and model.response_ideas:
+        for model in self.cluster_models:
+            # ClusterModel has response_ideas with ClusterSubmodel objects that include embeddings
+            if hasattr(model, 'response_ideas') and model.response_ideas:
                 for idea_submodel in model.response_ideas:
-                    # Check if this is an EmbeddingsSubmodel with embedding
                     if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
                         all_ideas.append((
                             model.respondent_id,
@@ -161,6 +147,8 @@ class CodeAssigner:
                     else:
                         # If no embedding, skip this idea (shouldn't happen in normal flow)
                         self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
+            else:
+                self.verbose_reporter.stat_line(f"Warning: No response_ideas found for respondent {model.respondent_id}")
         
         return all_ideas
 
@@ -289,7 +277,7 @@ class CodeAssigner:
         
         coded_models = []
         
-        for original_model in self.ideas_extracted_models:
+        for original_model in self.cluster_models:
             # Convert to CodeAssignedModel
             coded_model = original_model.to_model(models.CodeAssignedModel)
             
