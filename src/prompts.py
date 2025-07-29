@@ -470,68 +470,6 @@ Provide your validation output in {language} as a valid JSON object in this form
 - The ultimate goal is to ensure the codebook is parsimonious, non-redundant, and clear.
 """
 
-
-# =============================================================================
-# STEP 9: CODE ASSIGNMENT
-# =============================================================================
-
-CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis specializing in applying codebooks to survey responses.
-Your task is to assign the most appropriate code(s) from a set of candidate codes to a single extracted idea.
-
-SURVEY QUESTION:
-<survey_question>
-{var_lab}
-</survey_question>
-
-IDEA TO CODE:
-<idea_to_analyze>
-Idea ID: {idea_id}
-Idea Text: {idea_text}
-</idea_to_analyze>
-
-CANDIDATE CODES (5 most semantically similar):
-<candidate_codes>
-{candidate_codes}
-</candidate_codes>
-Note: These are the 5 codes from the codebook that are most semantically similar to this idea based on embedding similarity.
-
-CODING INSTRUCTIONS:
-1. **Analyze the idea** carefully in the context of the survey question
-2. **Review the 5 candidate codes** and their definitions
-3. **Select the best fitting code(s)**:
-   - Prioritize exact conceptual matches
-   - An idea can receive multiple codes if it clearly expresses multiple concepts
-   - You must assign at least one code - select the best available option
-   - Focus on the semantic meaning, not just keyword matching
-
-4. **Assignment criteria**:
-   - **Excellent fit (0.9-1.0)**: Idea directly expresses what the code definition describes
-   - **Good fit (0.7-0.8)**: Idea relates closely to code definition with reasonable interpretation
-   - **Moderate fit (0.5-0.6)**: Best available option but requires some interpretation
-   - **Poor fit (0.3-0.4)**: Significant stretching of code definition required
-   - **Very poor fit (0.0-0.2)**: Forced assignment due to lack of better options
-
-IMPORTANT: You are working with a focused set of 5 pre-selected codes that are most likely to fit this idea. This reduces cognitive load and improves assignment accuracy.
-
-Return your analysis as a JSON object with this exact structure:
-{{
-  "idea_id": "{idea_id}",
-  "idea": "{idea_text}",
-  "assigned_codes": ["code_name1", "code_name2"],
-  "assignment_confidence": 0.85,
-  "assignment_rationale": "Brief explanation of why these codes were chosen and how they relate to the idea's meaning"
-}}
-
-CRITICAL REQUIREMENTS:
-- Must assign at least one code from the candidate list
-- Use exact code names as provided
-- Confidence score must reflect the actual conceptual fit
-- Rationale must explain the semantic connection
-- Return ONLY the JSON object in {language}
-
-Begin the code assignment now."""
-
 # =============================================================================
 # STEP 8: THEME IDENTIFICATION  
 # =============================================================================
@@ -625,6 +563,67 @@ OUTPUT FORMAT (JSON):
 CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
 
 Return ONLY the JSON object with all content in {language}."""
+
+# =============================================================================
+# STEP 9: CODE ASSIGNMENT
+# =============================================================================
+
+CODE_ASSIGNMENT_PROMPT = """
+You are a {language} language expert in qualitative data analysis specializing in applying codebooks to survey responses.
+Your task is to assign the most appropriate code(s) from a set of candidate codes to a single extracted idea.
+
+SURVEY QUESTION:
+<survey_question>
+{var_lab}
+</survey_question>
+
+IDEA TO CODE:
+<idea_to_analyze>
+Idea ID: {idea_id}
+Idea Text: {idea_text}
+</idea_to_analyze>
+
+CANDIDATE CODES (5 most semantically similar):
+<candidate_codes>
+{candidate_codes}
+</candidate_codes>
+Note: These are the 5 codes from the codebook that are most semantically similar to this idea based on embedding similarity.
+
+CODING INSTRUCTIONS:
+1. **Analyze the idea** carefully in the context of the survey question
+2. **Review the 5 candidate codes** and their definitions
+3. **Select the best fitting code(s)**:
+   - Prioritize exact conceptual matches
+   - An idea can receive multiple codes if it clearly expresses multiple concepts
+   - You must assign at least one code - select the best available option
+   - Focus on the semantic meaning, not just keyword matching
+
+4. **Assignment criteria**:
+   - **Excellent fit (0.9-1.0)**: Idea directly expresses what the code definition describes
+   - **Good fit (0.7-0.8)**: Idea relates closely to code definition with reasonable interpretation
+   - **Moderate fit (0.5-0.6)**: Best available option but requires some interpretation
+   - **Poor fit (0.3-0.4)**: Significant stretching of code definition required
+   - **Very poor fit (0.0-0.2)**: Forced assignment due to lack of better options
+
+IMPORTANT: You are working with a focused set of 5 pre-selected codes that are most likely to fit this idea. This reduces cognitive load and improves assignment accuracy.
+
+Return your analysis as a JSON object with this exact structure:
+{{
+  "idea_id": "{idea_id}",
+  "idea": "{idea_text}",
+  "assigned_codes": ["code_name1", "code_name2"],
+  "assignment_confidence": 0.85,
+  "assignment_rationale": "Brief explanation of why these codes were chosen and how they relate to the idea's meaning"
+}}
+
+CRITICAL REQUIREMENTS:
+- Must assign at least one code from the candidate list
+- Use exact code names as provided
+- Confidence score must reflect the actual conceptual fit
+- Rationale must explain the semantic connection
+- Return ONLY the JSON object in {language}
+
+Begin the code assignment now."""
 
 
 # HIERARCHY_MAP_PROMPT = """
