@@ -883,9 +883,9 @@ else:
             codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
                      for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
             var_lab=var_lab,
+            code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,  # Pass theme mapping for assignment
             verbose=VERBOSE,
             prompt_printer=prompt_printer)
-        me_mapping = theme_enriched_codebook.code_to_theme_mapping
         code_assigned_results = code_assigner_instance.assign()
      
         for result in code_assigned_results:

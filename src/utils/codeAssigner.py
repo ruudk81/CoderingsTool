@@ -32,6 +32,7 @@ class CodeAssigner:
         cluster_models: List[models.ClusterModel],
         codebook: List[models.Codebook],
         var_lab: str,
+        code_to_theme_mapping: Optional[Dict[str, str]] = None,
         config: Optional[CodeAssignmentConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
@@ -55,8 +56,8 @@ class CodeAssigner:
         # Cache for code embeddings
         self._code_embeddings = None
         
-        # Theme mapping (will be set by pipeline if available)
-        self.code_to_theme_mapping = {}
+        # Theme mapping for code-to-theme assignments
+        self.code_to_theme_mapping = code_to_theme_mapping or {}
         
         # Initialize tokenizer
         try:
