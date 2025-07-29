@@ -475,8 +475,9 @@ Provide your validation output in {language} as a valid JSON object in this form
 # =============================================================================
 
 THEME_IDENTIFICATION_PROMPT = """
-You are a {language} language expert and qualitative researcher specializing in thematic analysis using the Braun & Clarke (2006) methodology.
-Your task is to analyze a cluster of codes and recommend whether to use existing themes, modify them, or create new ones.
+You are a {language} language expert and qualitative researcher specializing in thematic analysis using Braun & Clarke (2006) methodology.
+
+Your task is to analyze a cluster of codes and recommend whether to use an existing theme, revise one, or create a new theme — but only if the codes clearly belong together conceptually.
 
 ---
 
@@ -485,7 +486,7 @@ First, review the survey question that generated the codes:
 {survey_question}
 </survey_question>
 
-Next, examine the themes that currently exist in the codebook:
+Next, examine the existing themes in the codebook:
 <existing_themes>
 {existing_themes_text}
 </existing_themes>
@@ -497,44 +498,59 @@ Now, analyze the following cluster of {codes_count} codes that may require a new
 
 ---
 
-Follow this evaluation process:
-1. Compare the conceptual focus of the clustered codes to each existing theme.
-2. Assess thematic coverage: To what extent do existing themes capture the unifying idea(s) in the cluster?
-3. Determine fit: Can one or more existing themes (as-is or with revision) adequately represent this cluster?
-4. Assess sentiment alignment: Do the codes consistently express a similar sentiment (e.g., all positive, all negative)? Or do they differ in evaluative tone?
+Before continuing, check whether the codes in this cluster express a **single shared, semantically coherent concept**.
 
-Decision guidelines:
-4. **Create a new theme** only if no existing theme meaningfully captures the cluster's unifying concept.
-5. If the codes reflect both positive and negative sentiment—and this is clearly signaled in their names and definitions—consider creating **both a positive and a negative variant** of the theme.
-6. **Reuse or revise existing themes** when feasible. Favor parsimony and conceptual clarity.
+Ask yourself:
+- Do all the codes **clearly relate to one unifying idea**?
+- Can they all complete the sentence: **“This is about…”** with the same concept?
+- If not, **do not force a theme**, because atomic and conceptual Ccherence is required.
+- So, never combine unrelated subthemes** (e.g. “Concerns about price and product design”) into one theme. 
 
-When creating or revising a theme, ensure it meets these standards:
-- **Coherent pattern**: The theme must capture a consistent pattern of meaning across the cluster.
-- **Conceptual importance > frequency**: Prioritize what the theme tells us, not how often it appears.
-- **Narrative value**: The theme should help tell a meaningful story about the data.
-- **ATOMIC**: One clear idea per theme. Avoid compound constructions like "and", "including", or "with".
-- **CONCISE LABEL**: Theme name should be 2–5 words, capturing its essence without vagueness.
-- **MUTUALLY EXCLUSIVE**: Themes should have minimal overlap in scope to avoid ambiguity.
 
 ---
 
-Return your assessment as a valid JSON object in this format:
+**Evaluation Process**:
+1. **Compare conceptual focus**: How do the clustered codes relate to each existing theme?
+2. **Assess thematic coverage**: Do existing themes already capture the conceptual meaning of this cluster?
+3. **Assess sentiment**: Do the codes express the same evaluative tone (e.g. all positive or all negative)?
+4. **Determine fit**: Can one or more existing themes — as-is or with revision — represent the cluster **as one unified idea**?
+
+---
+
+**Decision Guidelines**:
+- **Create a new theme** only if the cluster is conceptually coherent **and** no existing theme fits.
+- **Split into more themes** if ...  
+- **Split into positive and negative variants** only if the **sentiment difference is clearly expressed in the code names and definitions**.
+- **Favor revision or reuse** of existing themes whenever possible.
+
+---
+
+**High-Quality Themes Must Be**:
+- **ATOMIC**: One idea only — no compound concepts with “and”, “with”, or “including”
+- **CONCISE**: Theme labels must be 2–5 words
+- **NARRATIVE**: Each theme should tell a meaningful story about the data
+- **DISTINCT**: No major conceptual overlap between themes (mutual exclusivity)
+
+---
+
+**Output Format (JSON):**
 {{
-  "decision": "create_new | use_existing",
-  "theme_name": "[Theme name in {language}]",
-  "theme_description": "[Brief description of what conceptually unites the codes]",
-  "existing_theme_used": "[Exact theme name from the list above, or null]",
+  "decision": "create_new | use_existing | cannot_theme_mixed_cluster",
+  "theme_name": "[Theme name in {language}] or null",
+  "theme_description": "[Brief conceptual description in {language}] or null",
+  "existing_theme_used": "[Exact name from above, or null]",
   "confidence": "high | medium | low",
-  "rationale": "[Detailed explanation of your decision based on fit, clarity, and distinctiveness]"
+  "rationale": "[Detailed explanation of your decision, including any issues with atomicity or semantic overlap]"
 }}
 
 ---
 
-**IMPORTANT:**
-- Theme names and descriptions must be written in {language}.
-- If using an existing theme, use the **EXACT** theme name provided above.
+**Important**:
+- Theme **name and description must be in {language}**
+- If using an existing theme, copy the **exact name** from the list above
 - Focus on **conceptual fit**, not surface similarity or keyword overlap.
-- Return **ONLY** the JSON object.
+- Return **ONLY the JSON object**
+
 """
 
 
