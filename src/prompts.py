@@ -625,61 +625,71 @@ Return ONLY the JSON object with all content in {language}."""
 # =============================================================================
 
 CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis specializing in applying codebooks to survey responses.
-Your task is to assign the most appropriate code(s) from a set of candidate codes to a single extracted idea.
+You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses.
 
-SURVEY QUESTION:
+Your task is to assign the **single most appropriate code** from a focused list of 5 candidate codes to a specific response segment.
+
+---
+
+You are working with a **pre-selected set of 5 candidate codes** that are most likely to fit this response. This reduces ambiguity and improves accuracy. **You must assign exactly ONE code**, even if fit is low — choose the best available option based on semantic meaning.
+
+---
+
+Step 1: Review the original survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-IDEA TO CODE:
+Step 2: Examine the response segment:
 <idea_to_analyze>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-CANDIDATE CODES (5 most semantically similar):
+Step 3: Review the 5 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
 </candidate_codes>
-Note: These are the 5 codes from the codebook that are most semantically similar to this idea based on embedding similarity.
 
-CODING INSTRUCTIONS:
-1. **Analyze the idea** carefully in the context of the survey question
-2. **Review the 5 candidate codes** and their definitions
-3. **Select the best fitting code(s)**:
-   - Prioritize exact conceptual matches
-   - An idea can receive multiple codes if it clearly expresses multiple concepts
-   - You must assign at least one code - select the best available option
-   - Focus on the semantic meaning, not just keyword matching
+---
 
-4. **Assignment criteria**:
-   - **Excellent fit (0.9-1.0)**: Idea directly expresses what the code definition describes
-   - **Good fit (0.7-0.8)**: Idea relates closely to code definition with reasonable interpretation
-   - **Moderate fit (0.5-0.6)**: Best available option but requires some interpretation
-   - **Poor fit (0.3-0.4)**: Significant stretching of code definition required
-   - **Very poor fit (0.0-0.2)**: Forced assignment due to lack of better options
+**Assignment Instructions**:
 
-IMPORTANT: You are working with a focused set of 5 pre-selected codes that are most likely to fit this idea. This reduces cognitive load and improves assignment accuracy.
+1. **Select the best fitting code**:
+   - Prioritize **exact conceptual matches** based on meaning.
+   - Do **not** rely on surface keywords — base your choice on **semantic alignment** with the code's definition.
 
-Return your analysis as a JSON object with this exact structure:
+2. **Rate the strength of the fit** using this scale:
+   - **Excellent (0.9–1.0)** – The idea directly expresses the code definition.
+   - **Good (0.7–0.8)** – Strong match, minor interpretation needed.
+   - **Moderate (0.5–0.6)** – Somewhat related, but requires reasonable interpretation.
+   - **Poor (0.3–0.4)** – Weak fit, conceptually strained but closest available.
+   - **Very Poor (0.0–0.2)** – Barely applicable, forced fit due to lack of better options.
+
+---
+
+**Return your response in the following JSON format:**
+<output_format>
 {{
   "idea_id": "{idea_id}",
   "idea": "{idea_text}",
-  "assigned_codes": ["code_name1", "code_name2"],
-  "assignment_confidence": 0.85,
-  "assignment_rationale": "Brief explanation of why these codes were chosen and how they relate to the idea's meaning"
+  "assigned_codes": ["SINGLE_CODE_NAME"],
+  "assignment_confidence": CONFIDENCE_SCORE,
+  "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
 }}
+</output_format>
 
-CRITICAL REQUIREMENTS:
-- Must assign at least one code from the candidate list
-- Use exact code names as provided
-- Confidence score must reflect the actual conceptual fit
-- Rationale must explain the semantic connection
-- Return ONLY the JSON object in {language}
+---
 
-Begin the code assignment now."""
+**Critical Requirements**:
+- Use **exact code names** as provided
+- Assign **one and only one** code per response
+- The **confidence score must reflect conceptual fit**, not how likely the model feels
+- The **rationale must explain the semantic connection** to the code definition
+- Return **ONLY the JSON object** in {language}
+
+Begin the code assignment now.
+"""
 
 
 # HIERARCHY_MAP_PROMPT = """
