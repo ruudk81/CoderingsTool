@@ -49,6 +49,7 @@ logging.getLogger("tenacity").setLevel(logging.WARNING)
 class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
+    code_to_modify: Optional[str] = Field(default=None, description="code name if modify_existing")
     modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
     modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
@@ -441,25 +442,19 @@ class LangChainBatchProcessor:
             
         formatted = f"""
 Cluster Theme: {recommendation.cluster_core_theme}
-Coverage Assessment: {recommendation.coverage_assessment.rationale}
-Decision: {recommendation.decision.replace('_', ' ').title()}
-#Action Details:
+Recommendation: 
+- {recommendation.decision.replace('_', ' ').title()}
 """
-# Cluster Theme: {recommendation.cluster_core_theme}
-# Coverage Assessment: {recommendation.coverage_assessment.rationale}
-# Best Matching Codes: {', '.join(recommendation.best_matching_codes)}
-#Action Details:
-
-        
         if recommendation.action_details.codes_to_use:
-            formatted += f"- Codes to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
+            formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
         if recommendation.action_details.code_to_modify:
             formatted += f"- Code to modify: {recommendation.action_details.code_to_modify}\n"
-            formatted += f"- Modification: {recommendation.action_details.modification_suggestion}\n"
+            formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
+            formatted += f"- Modiefied definition: {recommendation.action_details.modified_code_definition}\n"
         if recommendation.action_details.new_code_name:
             formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
             formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
-            
+
         formatted += f"\nJustification: {recommendation.justification}"
         
         return formatted.strip()
@@ -712,15 +707,16 @@ Decision: {recommendation.decision.replace('_', ' ').title()}
                             # Trigger Step 4 for modification validation
                             if hasattr(recommendations, 'action_details'):
                                 original_code = recommendations.action_details.code_to_modify
-                                modification = recommendations.action_details.modification_suggestion
+                                modified_code = recommendations.action_details.modified_code_name
+                                modified_definition = recommendations.action_details.modified_code_definition
                                 
                                 # Only proceed if we have modification details
-                                if original_code and modification and original_code.strip() and modification.strip():
+                                if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
                                     new_codes_needed = True
                                     proposed_codes.append({
                                         'original_code': original_code.strip(),
-                                        'modification_type': 'modify_existing',
-                                        'modification_suggestion': modification.strip()
+                                        'modified_code': modified_code.strip(),
+                                        'modified_definition': modified_definition.strip()
                                     })
                         
                         # Store the full recommendation for potential Step 4 use
@@ -746,15 +742,16 @@ Decision: {recommendation.decision.replace('_', ' ').title()}
                             # Trigger Step 4 for modification validation
                             action_details = recommendations.get('action_details', {})
                             original_code = action_details.get('code_to_modify')
-                            modification = action_details.get('modification_suggestion')
+                            modified_code = action_details.get('modified_code')
+                            modified_definition = action_details.get('modified_definition')
                             
                             # Only proceed if we have modification details
-                            if original_code and modification and original_code.strip() and modification.strip():
+                            if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
                                     'original_code': original_code.strip(),
-                                    'modification_type': 'modify_existing',
-                                    'modification_suggestion': modification.strip()
+                                    'modified_code': modified_code.strip(),
+                                    'modified_definition': modified_definition.strip()
                                 })
                 except Exception as e:
                     logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
@@ -1005,19 +1002,21 @@ Decision: {recommendation.decision.replace('_', ' ').title()}
         # Handle modify_existing case - construct definition from original + modification
         for pc in proposed_codes:
             if pc.get('modification_type') == 'modify_existing':
-                original_code = pc.get('original_code')
-                modification = pc.get('modification_suggestion')
+                original_code = pc.get('code_to_modify')
+                modified_code = pc.get('modified_code')
+                modified_definition = pc.get('modified_definition')
                 
-                if original_code and modification:
+                
+                if original_code and modified_code and modified_definition:
                     # Get the original definition from shared codebook (async)
                     original_definition = await self.shared_codebook.get_code_definition(original_code)
                     
                     if original_definition:
                         # Combine original definition with modification suggestion
-                        return f"{original_definition}. Modified to include: {modification}"
+                        return f"{original_definition}. Modified to include: {modified_code- modified_definition }"
                     else:
                         # Fallback to just the modification suggestion
-                        return modification
+                        return modified_code
         
         return None
 
