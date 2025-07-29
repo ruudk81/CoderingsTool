@@ -465,7 +465,7 @@ for segment_desc in sampled_segments:
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
-FORCE = False
+FORCE = True
 
 step_name = "codebook_generation"
 if  FORCE:

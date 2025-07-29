@@ -46,24 +46,17 @@ logging.getLogger("tenacity").setLevel(logging.WARNING)
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
 
-class CoverageAssessment(BaseModel):
-    """Coverage assessment details"""
-    percentage: int = Field(description="Coverage percentage (0-100)", ge=0, le=100)
-    rationale: str = Field(description="Explanation of what aspects are/aren't covered")
-
 class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
-    code_to_modify: Optional[str] = Field(default=None, description="Code name if modify_existing")
-    modification_suggestion: Optional[str] = Field(default=None, description="How to broaden if modify_existing")
+    modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
+    modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
     new_code_definition: Optional[str] = Field(default=None, description="New code definition if create_new")
 
 class MatchRecommendation(BaseModel):
     """Output for match and recommend step (Step 3) - single recommendation per cluster"""
     cluster_core_theme: str = Field(description="The core theme identified from cluster analysis")
-    best_matching_codes: List[str] = Field(description="Best matching existing codes")
-    coverage_assessment: CoverageAssessment = Field(description="Coverage percentage and rationale")
     decision: str = Field(description="Decision: use_existing|modify_existing|create_new")
     action_details: ActionDetails = Field(description="Action details based on decision")
     justification: str = Field(description="Explanation of why this is the most parsimonious choice")
@@ -275,8 +268,8 @@ class OptimizedEmbeddingManager:
             return [], []
         
         # Generate embeddings fresh each time (like v2)
-        #code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
-        code_texts = [f"{code['code']}" for code in codes]
+        code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
+        #code_texts = [f"{code['code']}" for code in codes]
         embeddings = await self._embed_texts_with_retry(code_texts)
         
         return codes, embeddings
@@ -344,11 +337,11 @@ class LangChainBatchProcessor:
             'new_codes_added': 0,
             'no_new_codes_needed': 0,
             'errors': 0,
-            'retries': 0,  # V3 feature
-            'partial_failures': 0,  # V3 feature
-            'successful_recoveries': 0,  # V3 feature
+            'retries': 0,  
+            'partial_failures': 0,   
+            'successful_recoveries': 0,   
             'llm_time': 0.0,
-            'embedding_time': 0.0  # V3 feature (activated)
+            'embedding_time': 0.0   
         }
     
     def _init_langchain_chain(self):
@@ -447,7 +440,10 @@ class LangChainBatchProcessor:
             return "No recommendation available"
             
         formatted = f"""
+Cluster Theme: {recommendation.cluster_core_theme}
+Coverage Assessment: {recommendation.coverage_assessment.rationale}
 Decision: {recommendation.decision.replace('_', ' ').title()}
+#Action Details:
 """
 # Cluster Theme: {recommendation.cluster_core_theme}
 # Coverage Assessment: {recommendation.coverage_assessment.rationale}
@@ -462,9 +458,9 @@ Decision: {recommendation.decision.replace('_', ' ').title()}
             formatted += f"- Modification: {recommendation.action_details.modification_suggestion}\n"
         if recommendation.action_details.new_code_name:
             formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
-            #formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
+            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
             
-        #formatted += f"\nJustification: {recommendation.justification}"
+        formatted += f"\nJustification: {recommendation.justification}"
         
         return formatted.strip()
 

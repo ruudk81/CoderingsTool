@@ -256,7 +256,8 @@ Think about different code types:
 - **State codes**: Conditions, situations, or circumstances
 - **Evaluative codes**: Assessments, judgments, or opinions expressed
 
-Please provide your response as a JSON array of objects, where each object has "code" and "definition" fields.  
+Please provide your response in {language} as a JSON array of objects, where each object has "code" and "definition" fields.  
+
 Here's an example of the STRUCTURE to follow (using generic placeholders):
 <example>
 [
@@ -267,12 +268,6 @@ Here's an example of the STRUCTURE to follow (using generic placeholders):
 ]
 </example>
 
-BAD examples to AVOID:
-- Too compound: "Aspect A and Aspect B" (combines two concepts)
-- Too vague: "Various things" (no clear boundaries)  
-- Too interpretive: "Underlying patterns" (not directly observable)
-
-Ensure each code is atomic, has clear boundaries, and follows the exact definition format.
 Return ONLY the JSON array in {language}.
 """
 
@@ -293,7 +288,7 @@ Given these codes from the codebook:
 Analyze what specific aspects or dimensions of the survey question do these codes address?
 
 Output a concise summary in {language} following this structure:
-"Coverage: These codes address [aspects of the survey question]"
+"Coverage: These codes address [short description of aspects and dimensions covered]"
 
 IMPORTANT: Return ONLY the analysis text following this exact format, no JSON or additional explanation.
 """
@@ -309,90 +304,103 @@ Analyze this cluster of semantically related ideas expressed in response to this
 
 Extract the cluster's pattern to enable code matching:
 1. **Core theme**: What is the central concept unifying these responses? Be specific and use the language of the respondents where appropriate.
-2. **Abstraction level**: Is this cluster about specific instances, general patterns, or abstract concepts?
-3. **Key components**: What are the 2-3 essential elements that ALL responses in this cluster share?
-4. **Distinguishing features**: What makes this cluster semantically distinct from other possible themes?
+2. **Key components**: What are the 2-3 essential elements that ALL responses in this cluster share?
 
 Output a concise analysis in {language} following this structure:
-"This cluster represents [core theme description using respondent language] at a [specific/general/abstract] level. The essential shared components are [element 1], [element 2], and [element 3]. What distinguishes this cluster is [unique aspect that separates it from other themes]."
+"This cluster's core theme is: [core theme description]. The essential shared components are [element 1], [element 2], and [element 3]."
 
 IMPORTANT: Return ONLY the analysis text, no JSON formatting or additional explanation.
 """
 
 MATCH_AND_RECOMMEND_PROMPT = """
-You are a  (language) language expert and qualitative researcher tasked with deciding if a new code should be added to a codebook. 
-Your goal is to ensure the codebook is parsimonious, non-redundant, and clear. Follow these instructions carefully to complete your task.
+You are a {language} qualitative data analyst specializing in codebook development for survey responses.
+Your task is to analyze clustered ideas from open-ended survey responses and recommend whether to use existing codes, modify them, or create new ones.
+
+Your goal is to maintain a codebook that is:
+- ***Parsimonious***: Use the fewest number of codes necessary to capture essential meanings. Avoid overcoding or overly specific codes.
+- ***Non-redundant***: Ensure each code represents a distinct, non-overlapping concept.
+- ***Clear***: Each code should have a precise, easy-to-understand definition, ideally with examples, so it can be applied consistently.
+
+---
 
 First, review the survey question that generated the responses:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Next, examine the existing codes and analysis notes:
+Next, examine the existing codes in the codebook:
 <existing_codes>
 {existing_codes}
 
-Analysis notes: {codebook_analysis}
+{codebook_analysis}
 </existing_codes>
 
-Now, review the clustered ideas that may require a new code:
-<clustered_ideas>
+Now, review a cluster of survey responses that may require a new code:
+<clustered_survey_responses>
 {clustered_ideas}
+</clustered_survey_responses>
 
-Cluster analysis: {summaries}
-</clustered_ideas>
+Also take note of this summary about the cluster's core theme:
+<summary>
+{summaries}
+</summary>    
 
-Follow this evaluation process:
-1. Compare the cluster's core theme against each existing code
-2. Assess thematic coverage: how well do existing codes capture the cluster's essential meaning?
-3. CRITICAL: Always favor parsimony: use existing codes when they adequately represent the cluster
-4. Create new codes only when existing codes fundamentally cannot capture the cluster's core concept
+---
 
-Adhere to these code creation criteria:   
-1. Conceptual unity (ATOMIC): Does the new code represent ONE clear concept only? No compound ideas joined by "and", "including", or "with"
-2. Operational clarity: Can coders reliably identify when this code applies vs. when it doesn't?
-3. Parsimony: Is this the simplest way to capture this concept without losing essential meaning?
+**Follow this evaluation process:**
+1. Compare the cluster’s core theme to each existing code.
+2. Assess thematic coverage: How well do existing codes capture the cluster’s meaning?
+3. Determine fit: Can one or more existing codes (with or without revision) represent the cluster adequately?
+4. Only create a new code if no existing code meaningfully captures the cluster’s concept.
+5. Always favor parsimony. Reuse or revise existing codes when possible; treat new codes as a last resort.
 
-Examples of good definition structures:
-- "References to [specific limitation/constraint] affecting [process/outcome]."
-- "Mentions of [positive/negative] changes in [behavior/practice]."
-- "Expressions of [emotion/attitude] regarding [situation/process]."
+If you need to create or revise codes, ensure they meet these criteria:
+1. **Conceptual unity (ATOMIC)**: The code should represent ONE clear concept only—avoid compound ideas joined by "and", "including", or "with".
+2. **Operational clarity**: Coders must be able to reliably identify when the code applies vs. not.
+3. **Parsimony**: Use the simplest expression possible without losing essential meaning.
 
-Avoid these poor definition structures:
-- Too compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
-- Too vague: "Mentions of various [things] related to [topic]"
-- Too interpretive: "Underlying [abstract concept] manifesting in different ways"
-
+---
 
 Output ONE recommendation as valid JSON:
 {{
-  "cluster_core_theme": "identify from cluster analysis notes",
-  "best_matching_codes": ["code1", "code2"],
-  "coverage_assessment": {{
-    "percentage": 80,
-    "rationale": "explain specifically what aspects are/aren't covered by existing codes"
-  }},
-  "decision": "use_existing|modify_existing|create_new",
+  "cluster_core_theme": "description of the core theme here",
+  "decision": "use_existing | modify_existing | create_new",
   "action_details": {{
-    "codes_to_use": ["list if use_existing"] or null,
-    "code_to_modify": "name if modify_existing" or null,
-    "modification_suggestion": "specific wording to broaden if modify_existing" or null,
+    "codes_to_use": ["list of code names"] or null,
+    "modified_code_name": "name if modify_existing" or null,
+    "modified_code_definition": "definition if modify_existing" or null,
     "new_code_name": "name if create_new" or null,
     "new_code_definition": "definition if create_new" or null
   }},
   "justification": "explain why this decision best balances parsimony with conceptual accuracy"
 }}
 
-Return ONLY the JSON object in {language}
-Fill only relevant fields in action_details based on your decision
-Remember that your goals is to help develop a codebook that is parsimonious, non-redundant, and clear.
+---
+
+Examples of well-structured code definitions:
+- "References to [specific limitation or constraint] affecting [process or outcome]."
+- "Mentions of [positive or negative] changes in [behavior or practice]."
+- "Expressions of [emotion or attitude] regarding [situation or process]."
+
+Avoid these weak definitions:
+- ❌ Compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
+- ❌ Vague: "Mentions of various [things] related to [topic]"
+- ❌ Interpretive: "Underlying [abstract concept] manifesting in different ways"
+
+---
+
+Return ONLY the JSON object in {language}.
+Fill only relevant fields in `action_details` based on your decision.
 """
 
-VALIDATION_PROMPT = """
-You are a (language) language expert and qualitative researcher tasked with validating recommendations for adding new codes to a codebook used for analyzing survey responses. 
-Your goal is to ensure the codebook will be parsimonious, non-redundant, and clear. 
 
-You will be evaluating a recommendation to add a new code to a codebook created to help analyze responses to this survey question:
+VALIDATION_PROMPT = """
+You are a {language} language expert and qualitative researcher tasked with validating recommendations for adding new codes to a codebook used for analyzing survey responses. 
+Your goal is to ensure that the codebook remains **parsimonious**, **non-redundant**, and **clear**.
+
+---
+
+You will be evaluating a recommendation to add a new code to a codebook created to analyze responses to this survey question:
 <survey_question>
 {survey_question}
 </survey_question>
@@ -400,44 +408,51 @@ You will be evaluating a recommendation to add a new code to a codebook created 
 Next, examine the existing codes and analysis notes:
 <existing_codes>
 {existing_codes}
+</existing_codes>
 
-Npw, examine the extracted ideas from survey responses:
-<extracted ideas>
+Now, examine the extracted ideas from survey responses:
+<extracted_ideas>
 {clustered_ideas}
-</extracted ideas s>
+</extracted_ideas>
 
 Now, consider the recommendation for adding a new code:
 <recommendation>
 {step3_recommendation}
 </recommendation>
 
-Your task is to APPROVE, REVISE, or REJECT this recommendation based on the following evaluation criteria:
-    
-1. **Parsimony**: Were existing code options properly exhausted? Would using/modifying existing codes sacrifice important nuance?
-2. **Non-redundancy**: Is there minimal conceptual overlap with any existing code?
-3. **Justification alignment**: Does the recommendation's reasoning support its conclusion?
+---
+
+Your task is to **APPROVE**, **REVISE**, or **REJECT** the recommendation based on the following evaluation criteria:
+
+1. **Parsimony**: Were existing code options properly exhausted? Would using or modifying an existing code result in a meaningful loss of nuance?
+2. **Non-redundancy**: Does the proposed code avoid conceptual overlap with existing codes?
+3. **Justification alignment**: Is the reasoning provided consistent and logically supportive of the proposed action?
+
+---
 
 Use these decision guidelines:
-- APPROVE: All criteria met, code is well-formed and truly necessary
-- REVISE: Core concept is valid but needs refinement (unclear name, imprecise definition, minor scope issues)
-- REJECT: Fails parsimony (existing codes suffice), significant redundancy, or covers multiple unrelated concepts
+- **APPROVE**: All criteria are met. The code is necessary, atomic, well-formed, and clear.
+- **REVISE**: The core concept is valid, but the label or definition needs refinement (e.g., too vague, compound, or imprecise).
+- **REJECT**: The recommendation fails parsimony (existing codes suffice), shows substantial overlap with existing codes, or includes multiple unrelated concepts.
 
-When creating or revising codes, adhere to these principles for high-quality validated codes:
-- **ATOMIC**: One concept per code - no compound ideas with "and", "including", "with"
-- **CONCISE LABELS**: 2-5 words maximum, capturing the essence without being vague
-- **MUTUALLY EXCLUSIVE**: Minimal overlap between codes to avoid coding ambiguity
+When approving or revising a code, ensure that it adheres to these principles:
+- **ATOMIC**: One idea per code — no compound concepts using "and", "with", or "including".
+- **CONCISE LABELS**: 2–5 words capturing the essence of the code without being vague.
+- **MUTUALLY EXCLUSIVE**: Avoid overlap that would cause ambiguity when coding.
 
-Use this required definition structure:
-"References to [specific concept/aspect]."
+Use this definition structure:
+**"References to [specific concept/aspect]."**
 
-Provide your validation assessment in {language} using this JSON format:
+---
+
+Provide your validation output in {language} as a valid JSON object in this format:
 {{
   "evaluation": {{
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
     "redundancy_reasoning": "assessment of conceptual overlap with existing codes",
     "justification_reasoning": "assessment of logic consistency in the recommendation"
   }},
-  "decision": "APPROVE/REVISE/REJECT",
+  "decision": "APPROVE | REVISE | REJECT",
   "decision_rationale": "synthesize the evaluation into a clear decision explanation",
   "validated_code": {{
     "code": "final code name (approved/revised) or null if rejected",
@@ -445,11 +460,15 @@ Provide your validation assessment in {language} using this JSON format:
   }}
 }}
 
-Important:
-- Return ONLY the JSON object in {language}
-- Focus on observable content, not interpretations
-- Ensure that the codebook will be parsimonious, non-redundant, and clear.
+---
+
+**Important:**
+- Return **ONLY** the JSON object in {language}
+- Base your assessment strictly on observable content
+- Do not speculate or overinterpret
+- The ultimate goal is to ensure the codebook is parsimonious, non-redundant, and clear.
 """
+
 
 # =============================================================================
 # STEP 9: CODE ASSIGNMENT
