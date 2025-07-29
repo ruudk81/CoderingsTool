@@ -196,10 +196,11 @@ class ThemeIdentifier:
         # self.verbose_reporter.stat_line(f"[PCA] Reduced {embeddings.shape[1]} → {optimal_dims} dims ({total_variance * 100:.2f}% variance retained)")
         
         # === Step 2: UMAP ===
+        n_codes = len(code_embeddings)
         umap = UMAP(
-            n_neighbors=5,
-            n_components=self.umap_n_components,
-            min_dist=0.0,
+            n_neighbors=min(15, len(code_embeddings) // 3),  # Adaptive based on dataset size,
+            n_components=min(8, max(5, n_codes // 8)),
+            min_dist=0.1,  # A small positive value allows for more natural separation.
             metric="cosine",
             random_state=42,
             n_jobs=1,
@@ -212,8 +213,9 @@ class ThemeIdentifier:
           
         # === Step 3: HDBSCAN ===
         hdb = hdbscan.HDBSCAN(
-            min_cluster_size=self.min_cluster_size,
-            min_samples=None,
+            min_cluster_size=2,
+            min_samples=1,
+            cluster_selection_epsilon = 0.1,  # Prevents over-fragmentation
             metric="euclidean",
             cluster_selection_method="eom",
             prediction_data=True,
