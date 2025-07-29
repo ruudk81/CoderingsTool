@@ -1004,6 +1004,20 @@ if 'code_assigned_results' in locals() and code_assigned_results:
 
 print("=" * 80)
 
+# === ENHANCED SUMMARY ANALYSIS ========================================================================================================
+from utils.pipelineSummarizer import PipelineSummarizer
+
+# Create summarizer instance and generate detailed analysis
+summarizer = PipelineSummarizer(verbose=True)
+
+# Generate comprehensive summary
+# Pass the variables that exist in the pipeline
+summarizer.generate_summary(
+    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
+    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None
+)
+
 
 # === step 10 : export  ========================================================================================================
 
