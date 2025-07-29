@@ -64,9 +64,9 @@ class ModelConfig:
     validation_model: str = DEFAULT_MODEL      
     
     # Step 8: Hierarchical organisation of codebook
-    hierarchical_organisation_model: str = "gpt-4o"
-    domain_clustering_model: str = "gpt-4o-mini"
-    theme_synthesis_model: str = "gpt-4o"
+    hierarchical_organisation_model: str = DEFAULT_MODEL
+    domain_clustering_model: str = DEFAULT_MODEL
+    theme_synthesis_model: str = DEFAULT_MODEL
     
     # Step 9: Code assignment
     code_assignment_model: str = DEFAULT_MODEL
