@@ -518,15 +518,24 @@ Ask yourself:
 ---
 
 **Decision Guidelines**:
-- **Create a new theme** only if the cluster is conceptually coherent **and** no existing theme fits.
-- **Split into more themes** if ...  
-- **Split into positive and negative variants** only if the **sentiment difference is clearly expressed in the code names and definitions**.
+- **Create single theme** if the cluster is conceptually coherent **and** no existing theme fits.
+- **Use existing theme** if the cluster fits well with an existing theme.
+- **Split into multiple themes** if the cluster contains 2-3 distinct conceptual groups that should be separate atomic themes.
+- **Reject mixed cluster** if codes are too incoherent or unrelated to form any meaningful themes.
 - **Favor revision or reuse** of existing themes whenever possible.
 
 ---
 
+**When Splitting Clusters**:
+1. **Identify distinct conceptual groups** within the cluster (2-3 groups maximum)
+2. **Assign each code** to its most appropriate conceptual group by code number
+3. **Create separate themes** for each group, ensuring each is atomic
+4. **Verify each group** can complete "This is about..." with the same concept
+
+---
+
 **High-Quality Themes Must Be**:
-- **ATOMIC**: One idea only — no compound concepts with “and”, “with”, or “including”
+- **ATOMIC**: One idea only — no compound concepts with "and", "with", or "including"
 - **CONCISE**: Theme labels must be 2–5 words
 - **NARRATIVE**: Each theme should tell a meaningful story about the data
 - **DISTINCT**: No major conceptual overlap between themes (mutual exclusivity)
@@ -535,12 +544,18 @@ Ask yourself:
 
 **Output Format (JSON):**
 {{
-  "decision": "create_new | use_existing | cannot_theme_mixed_cluster",
-  "theme_name": "[Theme name in {language}] or null",
-  "theme_description": "[Brief conceptual description in {language}] or null",
+  "decision": "create_single_theme | use_existing_theme | split_into_multiple_themes | reject_mixed_cluster",
+  "themes": [
+    {{
+      "theme_name": "[Theme name in {language}]",
+      "theme_description": "[Brief conceptual description in {language}]",
+      "assigned_codes": [1, 3, 5],
+      "confidence": "high | medium | low",
+      "is_existing": false
+    }}
+  ],
   "existing_theme_used": "[Exact name from above, or null]",
-  "confidence": "high | medium | low",
-  "rationale": "[Detailed explanation of your decision, including any issues with atomicity or semantic overlap]"
+  "rationale": "[Detailed explanation of decision, including conceptual grouping logic if splitting]"
 }}
 
 ---

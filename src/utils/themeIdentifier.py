@@ -58,21 +58,40 @@ class ExistingThemeOption(BaseModel):
     theme_description: str = Field(description="Description of existing theme")
     similarity_score: float = Field(description="Similarity to current cluster")
 
-class ClusterThemeDecision(BaseModel):
-    """Decision about theme assignment for a cluster"""
-    decision: str = Field(description="create_new or use_existing")
-    theme_name: str = Field(description="Theme name (new or existing)")
-    theme_description: str = Field(description="Theme description")
-    existing_theme_used: Optional[str] = Field(description="Name of existing theme if used", default=None)
+class ThemeDecision(BaseModel):
+    """Individual theme decision within a cluster"""
+    theme_name: str = Field(description="Theme name")
+    theme_description: str = Field(description="Brief theme description")
+    assigned_codes: List[int] = Field(description="Code numbers assigned to this theme")
     confidence: str = Field(description="Confidence level: high, medium, or low")
-    rationale: str = Field(description="Explanation of the decision")
+    is_existing: bool = Field(description="Whether this uses an existing theme", default=False)
+
+class ClusterThemeDecision(BaseModel):
+    """Decision about theme assignment for a cluster (supports multiple themes)"""
+    decision: str = Field(description="create_single_theme | use_existing_theme | split_into_multiple_themes | reject_mixed_cluster")
+    themes: List[ThemeDecision] = Field(description="Theme decisions (1+ themes)")
+    existing_theme_used: Optional[str] = Field(description="Name of existing theme if used", default=None)
+    rationale: str = Field(description="Explanation of the decision including grouping logic")
     
     @model_validator(mode='after')
     def validate_decision_consistency(self):
         """Ensure decision data is consistent"""
-        if self.decision == "use_existing":
+        if self.decision == "use_existing_theme":
             if not self.existing_theme_used:
                 raise ValueError("existing_theme_used required when using existing theme")
+            if len(self.themes) != 1:
+                raise ValueError("use_existing_theme should have exactly 1 theme")
+        elif self.decision == "split_into_multiple_themes":
+            if len(self.themes) < 2:
+                raise ValueError("split_into_multiple_themes requires 2+ themes")
+            if len(self.themes) > 3:
+                raise ValueError("split_into_multiple_themes limited to 3 themes maximum")
+        elif self.decision == "create_single_theme":
+            if len(self.themes) != 1:
+                raise ValueError("create_single_theme should have exactly 1 theme")
+        elif self.decision == "reject_mixed_cluster":
+            if len(self.themes) != 0:
+                raise ValueError("reject_mixed_cluster should have no themes")
         return self
 
 class IndividualCodeAssignment(BaseModel):
@@ -564,37 +583,33 @@ class ThemeIdentifier:
                 )
                 first_cluster = False
             
-            if theme_decision.decision == "use_existing":
-                # Find existing theme and add codes to it
-                target_theme = None
-                for theme in identified_themes:
-                    if theme.theme_name == theme_decision.existing_theme_used:
-                        target_theme = theme
-                        break
-                
-                if target_theme:
-                    # Add codes to existing theme
-                    new_codes = [
-                        CodeReference(
-                            code_number=code.code_number,
-                            code_name=code.code_name,
-                            definition=code.definition
-                        )
-                        for code in cluster_codes
-                    ]
-                    target_theme.codes.extend(new_codes)
-                    
-                    self.verbose_reporter.stat_line(
-                        f"✅ Cluster {cluster_id} → Existing theme '{theme_decision.existing_theme_used}' ({theme_decision.confidence} confidence)"
-                    )
-                else:
-                    # Fallback: create new theme if existing not found
-                    self.verbose_reporter.stat_line(f"⚠️ Existing theme '{theme_decision.existing_theme_used}' not found, creating new theme")
-                    theme_decision.decision = "create_new"
+            # Process the multi-theme decision
+            await self._process_multi_theme_decision(
+                theme_decision, cluster_codes, cluster_id, identified_themes
+            )
+        
+        return await self._finalize_theme_identification(identified_themes, clusters, total_codes, start_time)
+    
+    async def _process_multi_theme_decision(
+        self, 
+        theme_decision: ClusterThemeDecision, 
+        cluster_codes: List[CodeEmbedding], 
+        cluster_id: int, 
+        identified_themes: List[ThemeStructure]
+    ):
+        """Process a multi-theme decision for a cluster"""
+        
+        if theme_decision.decision == "use_existing_theme":
+            # Find existing theme and add codes to it
+            target_theme = None
+            for theme in identified_themes:
+                if theme.theme_name == theme_decision.existing_theme_used:
+                    target_theme = theme
+                    break
             
-            if theme_decision.decision == "create_new":
-                # Create new theme
-                theme_codes = [
+            if target_theme and len(theme_decision.themes) == 1:
+                # Add codes to existing theme
+                new_codes = [
                     CodeReference(
                         code_number=code.code_number,
                         code_name=code.code_name,
@@ -602,19 +617,100 @@ class ThemeIdentifier:
                     )
                     for code in cluster_codes
                 ]
-                
-                new_theme = ThemeStructure(
-                    theme_name=theme_decision.theme_name,
-                    theme_description=theme_decision.theme_description,
-                    codes=theme_codes,
-                    cluster_id=cluster_id,
-                    is_miscellaneous=False
-                )
-                identified_themes.append(new_theme)
+                target_theme.codes.extend(new_codes)
                 
                 self.verbose_reporter.stat_line(
-                    f"✅ Cluster {cluster_id} → New theme '{theme_decision.theme_name}' ({theme_decision.confidence} confidence)"
+                    f"✅ Cluster {cluster_id} → Existing theme '{theme_decision.existing_theme_used}' ({theme_decision.themes[0].confidence} confidence)"
                 )
+            else:
+                # Fallback: create new theme if existing not found
+                self.verbose_reporter.stat_line(f"⚠️ Existing theme '{theme_decision.existing_theme_used}' not found, creating new theme")
+                # Convert to single theme creation
+                if len(theme_decision.themes) == 1:
+                    self._create_single_theme_from_decision(
+                        theme_decision.themes[0], cluster_codes, cluster_id, identified_themes
+                    )
+        
+        elif theme_decision.decision == "create_single_theme":
+            if len(theme_decision.themes) == 1:
+                self._create_single_theme_from_decision(
+                    theme_decision.themes[0], cluster_codes, cluster_id, identified_themes
+                )
+            else:
+                self.verbose_reporter.stat_line(f"⚠️ Single theme decision has {len(theme_decision.themes)} themes, using first one")
+                self._create_single_theme_from_decision(
+                    theme_decision.themes[0], cluster_codes, cluster_id, identified_themes
+                )
+        
+        elif theme_decision.decision == "split_into_multiple_themes":
+            self.verbose_reporter.stat_line(f"🔀 Cluster {cluster_id} → Split into {len(theme_decision.themes)} themes")
+            
+            # Create a lookup of cluster codes by code number
+            code_lookup = {code.code_number: code for code in cluster_codes}
+            
+            for i, theme_info in enumerate(theme_decision.themes):
+                # Get codes assigned to this theme
+                theme_cluster_codes = []
+                for code_num in theme_info.assigned_codes:
+                    if code_num in code_lookup:
+                        theme_cluster_codes.append(code_lookup[code_num])
+                    else:
+                        self.verbose_reporter.stat_line(f"⚠️ Code {code_num} not found in cluster")
+                
+                if theme_cluster_codes:
+                    self._create_single_theme_from_decision(
+                        theme_info, theme_cluster_codes, f"{cluster_id}_{i+1}", identified_themes, is_split=True
+                    )
+                else:
+                    self.verbose_reporter.stat_line(f"⚠️ No valid codes for theme '{theme_info.theme_name}'")
+        
+        elif theme_decision.decision == "reject_mixed_cluster":
+            self.verbose_reporter.stat_line(f"❌ Cluster {cluster_id} → Rejected as too mixed/incoherent")
+            # These codes will be handled as noise in the noise processing section
+        
+        else:
+            self.verbose_reporter.stat_line(f"⚠️ Unknown decision '{theme_decision.decision}' for cluster {cluster_id}")
+    
+    def _create_single_theme_from_decision(
+        self, 
+        theme_info: ThemeDecision, 
+        cluster_codes: List[CodeEmbedding], 
+        cluster_id: str, 
+        identified_themes: List[ThemeStructure],
+        is_split: bool = False
+    ):
+        """Create a single theme from a theme decision"""
+        theme_codes = [
+            CodeReference(
+                code_number=code.code_number,
+                code_name=code.code_name,
+                definition=code.definition
+            )
+            for code in cluster_codes
+        ]
+        
+        new_theme = ThemeStructure(
+            theme_name=theme_info.theme_name,
+            theme_description=theme_info.theme_description,
+            codes=theme_codes,
+            cluster_id=cluster_id,
+            is_miscellaneous=False
+        )
+        identified_themes.append(new_theme)
+        
+        split_indicator = " (split)" if is_split else ""
+        self.verbose_reporter.stat_line(
+            f"✅ Cluster {cluster_id} → New theme '{theme_info.theme_name}' ({theme_info.confidence} confidence){split_indicator}"
+        )
+    
+    async def _finalize_theme_identification(
+        self, 
+        identified_themes: List[ThemeStructure], 
+        clusters: Dict[int, List[CodeEmbedding]], 
+        total_codes: int, 
+        start_time: float
+    ) -> Dict[str, Any]:
+        """Finalize the theme identification process"""
         
         # Build final structure
         final_structure = self._build_final_codebook_structure(identified_themes)
@@ -629,6 +725,8 @@ class ThemeIdentifier:
             "Methodology": "Clustering-based Braun & Clarke (2006)",
             "Time elapsed": f"{elapsed_time:.2f}s"
         })
+        
+        return final_structure
         
         # Print detailed results if verbose
         # if self.verbose and identified_themes:
