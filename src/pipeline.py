@@ -692,7 +692,7 @@ else:
 """Identify themes"""
 from utils.themeIdentifier import ThemeIdentifier
 
-FORCE = True
+FORCE = False
 
 step_name = "theme_identification"
 if  FORCE:
