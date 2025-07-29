@@ -243,9 +243,9 @@ class CodeAssigner:
 
     async def _process_batch(self, batch: List[tuple], batch_index: int = 0) -> List[CodeAssignmentResponse]:
         """Process a batch of ideas concurrently (following qualityFilter/ideaExtractor pattern)"""
-        # Add a small delay between batches to avoid rate limiting (0.1s per batch)
+        # Add delay between batches to avoid rate limiting (1s per batch)  
         if batch_index > 0:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(1.0)
             
         # Create tasks for all ideas in this batch - no semaphore limits like other processors
         tasks = [self._process_idea_assignment(idea_data) for idea_data in batch]
