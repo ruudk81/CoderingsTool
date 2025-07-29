@@ -133,8 +133,8 @@ class ThemeIdentifier:
         """Prepare codes for embedding using Code: [name]. Definition: [definition] format"""
         code_embeddings = []
         for i, code in enumerate(self.codebook, 1):
-            #embedding_text = f"Code: {code.code}. Definition: {code.definition}"
-            embedding_text = f"{code.code}"
+            embedding_text = f"Code: {code.code}. Definition: {code.definition}"
+            #embedding_text = f"{code.code}"
             code_embedding = CodeEmbedding(
                 code_number=i,
                 code_name=code.code,
@@ -280,10 +280,10 @@ class ThemeIdentifier:
         """Create prompt for naming a cluster theme"""
         
         # Format cluster codes
-        # codes_text = "\n".join([
-        #     f"{code.code_number}. Code: {code.code_name}. Definition: {code.definition}"
         codes_text = "\n".join([
-            f"{code.code_number}. {code.code_name}"
+            f"{code.code_number}. Code: {code.code_name}. Definition: {code.definition}"
+        #codes_text = "\n".join([
+        #     f"{code.code_number}. {code.code_name}"
 
             for code in cluster_codes
         ])
