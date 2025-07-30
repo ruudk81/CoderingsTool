@@ -135,23 +135,6 @@ class SpellChecker:
             return False
     
     @staticmethod
-    def extract_json_from_response(response_content: str) -> str:
-        """Extract JSON from markdown code blocks or return as-is"""
-        content = response_content.strip()
-        
-        # Check if response is wrapped in markdown code blocks
-        if content.startswith('```'):
-            # Use regex to extract content between code blocks
-            import re
-            # Pattern to match ```json\n{...}\n``` or ```\n{...}\n```
-            pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
-            match = re.search(pattern, content, re.DOTALL)
-            if match:
-                return match.group(1).strip()
-        
-        return content
-
-    @staticmethod
     @lru_cache(maxsize=10000)
     def cached_levenshtein_distance(word1: str, word2: str) -> int:
         if word1 == word2:
@@ -463,15 +446,14 @@ class SpellChecker:
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=completion_reserve,
                     temperature=self.config.temperature,
-                    seed=self.config.seed
+                    seed=self.config.seed,
+                    response_format={"type": "json_object"}  # Guarantee JSON output
                 )
                 
                 response_content = response.choices[0].message.content
                 
                 try:
-                    # Extract JSON from markdown code blocks if present
-                    json_content = self.extract_json_from_response(response_content)
-                    parsed_response = json.loads(json_content)
+                    parsed_response = json.loads(response_content)
                     corrections = parsed_response.get('corrections', [])
                 except json.JSONDecodeError:
                     logger.error(f"Failed to parse LLM response as JSON: {response_content}")
