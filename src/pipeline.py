@@ -842,7 +842,6 @@ else:
 if enriched_codebook:
     codebook = enriched_codebook
 
-
 # idx  = 1
 # themes = set([entry.theme for entry in enriched_codebook])
 # for theme in themes :
