@@ -12,12 +12,11 @@ import spacy
 import subprocess
 from collections import defaultdict
 import logging
-import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -61,10 +60,10 @@ class CorrectionConfidence:
     total_score: float
 
 # ============================================================================
-# HUNSPELL CONNECTION POOL V2 - MAJOR IMPROVEMENT
+# HUNSPELL CONNECTION POOL 
 # ============================================================================
 
-class HunspellSessionV2:
+class HunspellSession:
     """Improved Hunspell session with better error handling and resource management"""
     
     def __init__(self, hunspell_path: str, dict_path: str):
@@ -154,14 +153,14 @@ class HunspellSessionV2:
                 finally:
                     self._is_closed = True
 
-class HunspellPoolV2:
-    """Connection pool for Hunspell sessions - MAJOR V2 IMPROVEMENT"""
+class HunspellPool:
+    """Connection pool for Hunspell sessions"""
     
     def __init__(self, hunspell_path: str, dict_path: str, pool_size: int = 3):
         self.hunspell_path = hunspell_path
         self.dict_path = dict_path
         self.pool_size = pool_size
-        self._pool: List[HunspellSessionV2] = []
+        self._pool: List[HunspellSession] = []
         self._available = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._initialized = False
@@ -174,7 +173,7 @@ class HunspellPoolV2:
             
             for _ in range(self.pool_size):
                 try:
-                    session = HunspellSessionV2(self.hunspell_path, self.dict_path)
+                    session = HunspellSession(self.hunspell_path, self.dict_path)
                     self._pool.append(session)
                     await self._available.put(session)
                 except Exception as e:
@@ -184,7 +183,7 @@ class HunspellPoolV2:
             logger.info(f"Hunspell pool initialized with {len(self._pool)} sessions")
     
     @asynccontextmanager
-    async def get_session(self) -> AsyncContextManager[HunspellSessionV2]:
+    async def get_session(self) -> AsyncContextManager[HunspellSession]:
         """Get a session from the pool"""
         if not self._initialized:
             await self.initialize()
@@ -207,11 +206,11 @@ class HunspellPoolV2:
             self._initialized = False
 
 # ============================================================================
-# SPELL CHECKER V2 - MAIN CLASS
+# SPELL CHECKER  - MAIN CLASS
 # ============================================================================
 
-class SpellCheckerV2:
-    """V2 SpellChecker with async optimization, connection pooling, and improved accuracy"""
+class SpellChecker:
+    """SpellChecker with async optimization, connection pooling, and improved accuracy"""
     
     def __init__(self, config: SpellCheckConfig = None, openai_api_key: Optional[str] = None, 
                  openai_model: str = None, verbose: bool = False, prompt_printer = None):
@@ -219,24 +218,21 @@ class SpellCheckerV2:
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.openai_model = openai_model or DEFAULT_MODEL
         
-        # V2 IMPROVEMENT: Native async OpenAI client instead of instructor
         self.client = AsyncOpenAI(api_key=self.openai_api_key)
         
-        # PRESERVED: All Hunspell paths exactly as in v1
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH  # V2 FIX: Uses language-aware path
         
         self.prompt_printer = prompt_printer 
         self.verbose_reporter = VerboseReporter(verbose)
         
-        # V2 IMPROVEMENT: Connection pooling
-        self.hunspell_pool = HunspellPoolV2(self.hunspell_path, self.dict_path, pool_size=3)
+        self.hunspell_pool = HunspellPool(self.hunspell_path, self.dict_path, pool_size=3)
         
         # Check installation
         if not self.check_hunspell_installation():
             logger.warning("Hunspell is not properly installed or configured.")
         
-        # V2 IMPROVEMENT: Enhanced stats tracking
+        # Stats tracking
         self.stats = {
             'words_checked': 0,
             'oov_words_found': 0,
@@ -616,7 +612,7 @@ class SpellCheckerV2:
             if self.prompt_printer and batch_index == 0:
                 self.prompt_printer.capture_prompt(
                     step_name="preprocessing_v2",
-                    utility_name="SpellCheckerV2",
+                    utility_name="SpellChecker",
                     prompt_content=prompt,
                     prompt_type="correction",
                     metadata={
