@@ -468,8 +468,8 @@ class SpellChecker:
     
     def create_correction_batches_v2(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
         """V2 IMPROVED: Better token calculation and larger batch sizes"""
-        # V2 FIX: Use spell_check_model for token counting
-        tiktoken_model = self.config.spell_check_model if hasattr(self.config, 'spell_check_model') else self.openai_model
+        # V2 FIX: Use centralized model configuration
+        tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
         try:
             encoding = tiktoken.encoding_for_model(tiktoken_model)
         except KeyError:
