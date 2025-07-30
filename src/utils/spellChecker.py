@@ -23,6 +23,9 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Suppress httpx INFO logs (OpenAI request logs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Nederlands or Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
 
