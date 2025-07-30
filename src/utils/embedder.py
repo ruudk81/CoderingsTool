@@ -39,7 +39,7 @@ class Embedder:
         self.verbose_reporter = VerboseReporter(verbose)
         self.stats = ProcessingStats()
         
-        self.verbose_reporter.stat_line("Initialized Enhanced Embedder with explicit ID tracking")
+        self.verbose_reporter.stat_line("Initialized Embedder")
     
     def _get_ResponseData(self, data: List[models.IdeasExtractedModel]) -> List[ResponseData]:
         """Create segment identifiers for tracking"""

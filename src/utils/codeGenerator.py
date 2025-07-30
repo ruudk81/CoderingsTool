@@ -129,18 +129,18 @@ def classify_error(error: Exception) -> ErrorType:
     else:
         return ErrorType.UNKNOWN_ERROR
 
-# Retry configurations for different error types
-API_RETRY_CONFIG = {
+# Fast retry configurations 
+FAST_API_RETRY_CONFIG = {
     "stop": stop_after_attempt(5),
-    "wait": wait_exponential(multiplier=2, min=1, max=30),
+    "wait": wait_exponential(multiplier=1, min=0.5, max=30),  # Start with 0.5s instead of 1s
     "retry": retry_if_exception_type((APIError, asyncio.TimeoutError, ConnectionError)),
     "before_sleep": before_sleep_log(logger, logging.WARNING),
     "reraise": True
 }
 
-EMBEDDING_RETRY_CONFIG = {
+FAST_EMBEDDING_RETRY_CONFIG = {
     "stop": stop_after_attempt(3),
-    "wait": wait_exponential(multiplier=1, min=2, max=10),
+    "wait": wait_exponential(multiplier=0.5, min=0.5, max=10),  # Faster initial retry
     "retry": retry_if_exception_type((APIError, asyncio.TimeoutError, ConnectionError)),
     "before_sleep": before_sleep_log(logger, logging.WARNING),
     "reraise": True
@@ -264,18 +264,17 @@ class OptimizedEmbeddingManager:
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
     async def get_snapshot_embeddings(self, codes: List[Dict[str, str]], version: int) -> Tuple[List[Dict[str, str]], List[np.ndarray]]:
-        """Get embeddings for a codebook snapshot like v2 - always fresh, no version caching"""
+        """Get embeddings for a codebook snapshot - always fresh, no version caching"""
         if not codes:
             return [], []
         
-        # Generate embeddings fresh each time (like v2)
+        # Generate embeddings fresh each time 
         code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
-        #code_texts = [f"{code['code']}" for code in codes]
         embeddings = await self._embed_texts_with_retry(code_texts)
         
         return codes, embeddings
     
-    @retry(**EMBEDDING_RETRY_CONFIG)
+    @retry(**FAST_EMBEDDING_RETRY_CONFIG)
     async def _embed_texts_with_retry(self, texts: List[str]) -> List[np.ndarray]:
         """Embed texts with retry logic for API failures"""
         try:
@@ -302,11 +301,11 @@ class OptimizedEmbeddingManager:
                 raise ProcessingError(f"Embedding processing error: {str(e)}", error_type)
   
 # ============================================================================
-# LANGCHAIN BATCH PROCESSOR
+# LANGCHAIN BATCH PROCESSOR - HIERARCHICAL CONCURRENCY
 # ============================================================================
 
 class LangChainBatchProcessor:
-    """Processes clusters using V2 multi-step prompts"""
+    """Processes clusters using hierarchical concurrency and parallel step execution"""
     
     def __init__(self, 
                  embedding_manager: OptimizedEmbeddingManager,
@@ -314,7 +313,10 @@ class LangChainBatchProcessor:
                  model_config: ModelConfig,
                  var_lab: str,
                  k: int = 5,
-                 batch_size: int = 5,
+                 batch_size: int = 10,
+                 sub_batch_size: int = 5,
+                 enable_step_parallelization: bool = True,
+                 max_concurrent_steps: int = 2,
                  max_concurrent_requests: int = 10,
                  verbose: bool = False,
                  prompt_printer = None):
@@ -325,6 +327,9 @@ class LangChainBatchProcessor:
         self.var_lab = var_lab
         self.k = k
         self.batch_size = batch_size
+        self.sub_batch_size = sub_batch_size
+        self.enable_step_parallelization = enable_step_parallelization
+        self.max_concurrent_steps = max_concurrent_steps
         self.max_concurrent_requests = max_concurrent_requests
         self.verbose = verbose
         self.prompt_printer = prompt_printer
@@ -332,7 +337,7 @@ class LangChainBatchProcessor:
         # Initialize LangChain components
         self._init_langchain_chain()
         
-        # Stats tracking (V3 enhanced)
+        # Stats tracking  
         self.stats = {
             'clusters_processed': 0,
             'new_codes_added': 0,
@@ -342,11 +347,20 @@ class LangChainBatchProcessor:
             'partial_failures': 0,   
             'successful_recoveries': 0,   
             'llm_time': 0.0,
-            'embedding_time': 0.0   
+            'embedding_time': 0.0,
+            'parallel_steps_executed': 0,
+            'sub_batches_processed': 0,
+            'concurrent_batches': 0
         }
+        
+        if self.verbose:
+            logger.info("🚀 Initialized CodeGenerator with hierarchical concurrency:")
+            logger.info(f"  - Batch size: {batch_size}, Sub-batch size: {sub_batch_size}")
+            logger.info(f"  - Step parallelization: {enable_step_parallelization}")
+            logger.info(f"  - Max concurrent steps: {max_concurrent_steps}")
     
     def _init_langchain_chain(self):
-        """Initialize chains"""
+        """Initialize chains with optimized configurations"""
         
         self.step1_llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
@@ -372,9 +386,7 @@ class LangChainBatchProcessor:
             temperature=0.0
         )
         
-        #self.llm = self.step2_llm
-        
-        # Step 1: Codebook Analysis Chain (uses step1_llm with Pydantic validation)
+        # Step 1: Codebook Analysis Chain
         codebook_prompt = PromptTemplate(
             template=CODEBOOK_ANALYSIS_PROMPT,
             input_variables=["system_message", "language", "survey_question", "code_text"]
@@ -386,7 +398,7 @@ class LangChainBatchProcessor:
             | StrOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 2: Response Summary Chain (uses step2_llm)
+        # Step 2: Response Summary Chain
         summary_prompt = PromptTemplate(
             template=RESPONSE_SUMMARY_PROMPT,
             input_variables=["system_message", "language", "survey_question", "cluster_text"]
@@ -398,7 +410,7 @@ class LangChainBatchProcessor:
             | StrOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 3: Match and Recommend Chain (uses step3_llm)
+        # Step 3: Match and Recommend Chain
         match_prompt = PromptTemplate(
             template=MATCH_AND_RECOMMEND_PROMPT,
             input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "codebook_analysis", "summaries"]
@@ -410,7 +422,7 @@ class LangChainBatchProcessor:
             | PydanticOutputParser(pydantic_object=MatchRecommendation)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 4: Validation Chain (uses step4_llm)
+        # Step 4: Validation Chain
         validation_prompt = PromptTemplate(
             template=VALIDATION_PROMPT,
             input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "step3_recommendation"]
@@ -434,7 +446,15 @@ class LangChainBatchProcessor:
         self._captured_steps = set()
         self._all_steps = {'codebook', 'summary', 'match', 'validation'}
         self._diversity_complete = False
-    
+
+    def _split_into_sub_batches(self, batch_clusters: List[Tuple[int, Dict]]) -> List[List[Tuple[int, Dict]]]:
+        """Split batch into sub-batches for hierarchical processing"""
+        sub_batches = []
+        for i in range(0, len(batch_clusters), self.sub_batch_size):
+            sub_batch = batch_clusters[i:i + self.sub_batch_size]
+            sub_batches.append(sub_batch)
+        return sub_batches
+
     def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
         """Format prompt 3 for Step 4"""
         if not recommendation:
@@ -450,7 +470,7 @@ Recommendation:
         if recommendation.action_details.code_to_modify:
             formatted += f"- Code to modify: {recommendation.action_details.code_to_modify}\n"
             formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
-            formatted += f"- Modiefied definition: {recommendation.action_details.modified_code_definition}\n"
+            formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
         if recommendation.action_details.new_code_name:
             formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
             formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
@@ -482,8 +502,8 @@ Recommendation:
                 logger.info(f"🎯 Prompt capture progress: {len(self._captured_steps)}/4 - captured {step_type}, still need: {', '.join(sorted(missing_steps))}")
             else:
                 logger.info("✅ All 4 prompts captured! Pipeline structure complete.")
-    
-    @retry(**API_RETRY_CONFIG)
+
+    @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step1_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 1 (Codebook Analysis) with retry logic"""
         try:
@@ -497,7 +517,7 @@ Recommendation:
             else:
                 raise ProcessingError(f"Step 1 processing error: {str(e)}", error_type)
     
-    @retry(**API_RETRY_CONFIG)
+    @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step2_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 2 (Response Summary) with retry logic"""
         try:
@@ -511,7 +531,7 @@ Recommendation:
             else:
                 raise ProcessingError(f"Step 2 processing error: {str(e)}", error_type)
     
-    @retry(**API_RETRY_CONFIG)
+    @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 3 (Match & Recommend) with retry logic"""
         try:
@@ -525,7 +545,7 @@ Recommendation:
             else:
                 raise ProcessingError(f"Step 3 processing error: {str(e)}", error_type)
     
-    @retry(**API_RETRY_CONFIG)
+    @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step4_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 4 (Validation) with retry logic"""
         try:
@@ -538,198 +558,200 @@ Recommendation:
                 raise APIError(f"Step 4 processing error: {str(e)}", error_type)
             else:
                 raise ProcessingError(f"Step 4 processing error: {str(e)}", error_type)
-    
-    async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]]) -> List[Dict[str, Any]]:
-        """Process a batch using V2 multi-step approach with V3 nearest codes logic"""
-        batch_results = []
+
+    async def _process_parallel_steps(self, cluster_id: int, cluster_data: Dict, code_text: str, cluster_text: str) -> Tuple[Any, Any]:
+        """Process Steps 1 and 2 in parallel (independent steps)"""
+        if not self.enable_step_parallelization:
+            # Fallback to sequential processing
+            codebook_input = {
+                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                "language": DEFAULT_LANGUAGE,
+                "survey_question": self.var_lab,
+                "code_text": code_text
+            }
+            codebook_analysis = await self._process_step1_with_retry(codebook_input)
+            
+            summary_input = {
+                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                "language": DEFAULT_LANGUAGE,
+                "survey_question": self.var_lab,
+                "cluster_text": cluster_text
+            }
+            summaries = await self._process_step2_with_retry(summary_input)
+            
+            return codebook_analysis, summaries
         
-        for cluster_id, cluster_data in batch_clusters:
-            try:
-                start_time = time.time()
-                llm_start = time.time()  # Track LLM time separately
-                
-                embed_start = time.time()
-                cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
-                nearest_codes = await self._find_nearest_codes(cluster_embedding)
-                self.stats['embedding_time'] += time.time() - embed_start
-                
-                # Get current version for logging
-                _, version = await self.shared_codebook.get_current_snapshot()
-                
-                # Build targeted code_text using nearest codes  
-                if nearest_codes:
-                    code_text = "\n".join([
-                        f"- {code['code']}: {code['definition']}" 
-                        for code in nearest_codes
-                    ])
-                else:
-                    code_text = "No existing codes in codebook"
-                
-                # Step 1: Analyze nearest codes (not full codebook)
+        # Parallel execution of Steps 1 & 2
+        codebook_input = {
+            "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+            "language": DEFAULT_LANGUAGE,
+            "survey_question": self.var_lab,
+            "code_text": code_text
+        }
+        
+        summary_input = {
+            "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+            "language": DEFAULT_LANGUAGE,
+            "survey_question": self.var_lab,
+            "cluster_text": cluster_text
+        }
+        
+        # Execute Steps 1 & 2 concurrently
+        step1_task = self._process_step1_with_retry(codebook_input)
+        step2_task = self._process_step2_with_retry(summary_input)
+        
+        try:
+            codebook_analysis, summaries = await asyncio.gather(
+                step1_task, step2_task, return_exceptions=True
+            )
+            
+            # Handle individual step failures
+            if isinstance(codebook_analysis, Exception):
+                logger.error(f"Step 1 failed for cluster {cluster_id}: {str(codebook_analysis)}")
+                codebook_analysis = "Analysis failed - could not analyze thematic areas"
+            
+            if isinstance(summaries, Exception):
+                logger.error(f"Step 2 failed for cluster {cluster_id}: {str(summaries)}")
+                summaries = "Analysis failed due to API error after retries."
+            
+            self.stats['parallel_steps_executed'] += 1
+            return codebook_analysis, summaries
+            
+        except Exception as e:
+            logger.error(f"Parallel steps processing error for cluster {cluster_id}: {e}")
+            # Fallback results
+            return ("Analysis failed - parallel processing error", 
+                   "Analysis failed - parallel processing error")
+
+    async def _process_cluster_optimized(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
+        """Process a single cluster with optimized parallel step execution"""
+        try:
+            start_time = time.time()
+            llm_start = time.time()
+            
+            embed_start = time.time()
+            cluster_embedding = np.mean(cluster_data['embeddings'], axis=0)
+            nearest_codes = await self._find_nearest_codes(cluster_embedding)
+            self.stats['embedding_time'] += time.time() - embed_start
+            
+            # Get current version for logging
+            _, version = await self.shared_codebook.get_current_snapshot()
+            
+            # Build targeted code_text using nearest codes  
+            if nearest_codes:
+                code_text = "\n".join([
+                    f"- {code['code']}: {code['definition']}" 
+                    for code in nearest_codes
+                ])
+            else:
+                code_text = "No existing codes in codebook"
+            
+            # Prepare cluster text
+            cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
+            
+            # Execute Steps 1 & 2 in parallel  
+            codebook_analysis, summaries = await self._process_parallel_steps(
+                cluster_id, cluster_data, code_text, cluster_text
+            )
+            
+            # Capture prompts if needed (diversity-first logic)
+            if self._should_capture_prompt('codebook'):
                 codebook_input = {
                     "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
                     "code_text": code_text
                 }
-                
-                # Capture Step 1 prompt with diversity-first logic
-                if self._should_capture_prompt('codebook'):
-                    self.prompt_printer.capture_prompt(
-                        step_name="codebook_generation_v4",
-                        utility_name="LangChainBatchProcessor",
-                        prompt_content=CODEBOOK_ANALYSIS_PROMPT.format(**codebook_input),
-                        prompt_type="step1_codebook_analysis",
-                        metadata={
-                            "model": self.step1_llm.model_name,
-                            "var_lab": self.var_lab,
-                            "stage": "1/4 - Codebook Analysis",
-                            "nearest_codes_count": len(nearest_codes),
-                            "codebook_version": version
-                        }
-                    )
-                    self._record_capture('codebook')
-                
-                # Execute Step 1: Codebook Analysis with retry
-                try:
-                    codebook_analysis = await self._process_step1_with_retry(codebook_input)
-                except (APIError, ProcessingError) as e:
-                    logger.error(f"Step 1 failed for cluster {cluster_id} after retries: {str(e)}")
-                    # Fallback analysis
-                    codebook_analysis = {
-                        "thematic_coverage": "Analysis failed - could not analyze thematic areas",
-                        "code_relationships": "Analysis failed - could not determine code relationships"
+                self.prompt_printer.capture_prompt(
+                    step_name="codebook_generation",
+                    utility_name="LangChainBatchProcessor",
+                    prompt_content=CODEBOOK_ANALYSIS_PROMPT.format(**codebook_input),
+                    prompt_type="step1_codebook_analysis",
+                    metadata={
+                        "model": self.step1_llm.model_name,
+                        "var_lab": self.var_lab,
+                        "stage": "1/4 - Codebook Analysis (Parallel)",
+                        "nearest_codes_count": len(nearest_codes),
+                        "codebook_version": version,
+                        "parallel_execution": self.enable_step_parallelization
                     }
-                except Exception as e:
-                    logger.error(f"Step 1 unexpected error for cluster {cluster_id}: {str(e)}")
-                    codebook_analysis = {
-                        "thematic_coverage": "Analysis failed - unexpected error analyzing thematic areas",
-                        "code_relationships": "Analysis failed - unexpected error determining code relationships"
-                    }
-                
-                # Prepare cluster text for subsequent steps
-                cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-                
-                # Step 2: Summarize responses
+                )
+                self._record_capture('codebook')
+            
+            if self._should_capture_prompt('summary'):
                 summary_input = {
                     "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
                     "cluster_text": cluster_text
                 }
-                
-                # Capture Step 2 prompt with diversity-first logic
-                if self._should_capture_prompt('summary'):
-                    self.prompt_printer.capture_prompt(
-                        step_name="codebook_generation_v4",
-                        utility_name="LangChainBatchProcessor",
-                        prompt_content=RESPONSE_SUMMARY_PROMPT.format(**summary_input),
-                        prompt_type="step2_response_summary",
-                        metadata={
-                            "model": self.step2_llm.model_name,
-                            "var_lab": self.var_lab,
-                            "stage": "2/4 - Response Summary",
-                            "cluster_id": cluster_id,
-                            "cluster_size": len(cluster_data['ideas'])
-                        }
-                    )
-                    self._record_capture('summary')
-                
-                try:
-                    summaries = await self._process_step2_with_retry(summary_input)
-                except (APIError, ProcessingError) as e:
-                    logger.error(f"Step 2 failed for cluster {cluster_id} after retries: {str(e)}")
-                    summaries = "Analysis failed due to API error after retries."
-                except Exception as e:
-                    logger.error(f"Step 2 unexpected error for cluster {cluster_id}: {str(e)}")
-                    summaries = "Analysis failed due to processing error."
-                
-                # Step 3: Match and recommend
-                match_input = {
-                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
-                    "language": DEFAULT_LANGUAGE,
-                    "survey_question": self.var_lab,
-                    "existing_codes": code_text,
-                    "clustered_ideas": cluster_text,
-                    "codebook_analysis": codebook_analysis if isinstance(codebook_analysis, str) else str(codebook_analysis),
-                    "summaries": summaries if isinstance(summaries, str) else str(summaries)
-                }
-                
-                # Capture Step 3 prompt with diversity-first logic
-                if self._should_capture_prompt('match'):
-                    self.prompt_printer.capture_prompt(
-                        step_name="codebook_generation_v4",
-                        utility_name="LangChainBatchProcessor",
-                        prompt_content=MATCH_AND_RECOMMEND_PROMPT.format(**match_input),
-                        prompt_type="step3_match_recommend",
-                        metadata={
-                            "model": self.step3_llm.model_name,
-                            "var_lab": self.var_lab,
-                            "stage": "3/4 - Match & Recommend",
-                            "cluster_id": cluster_id,
-                            "codebook_analysis_present": bool(codebook_analysis),
-                            "summaries_present": bool(summaries)
-                        }
-                    )
-                    self._record_capture('match')
-                
-                try:
-                    recommendations = await self._process_step3_with_retry(match_input)
-                except (APIError, ProcessingError) as e:
-                    logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
-                    recommendations = []
-                except Exception as e:
-                    logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
-                    recommendations = []
-                
-                # Extract new code recommendations from single MatchRecommendation object
-                new_codes_needed = False
-                proposed_codes = []
-                
-                try:
-                    if hasattr(recommendations, 'decision'):
-                        decision = recommendations.decision.lower()
-                        
-                        if 'create_new' in decision:
-                            # Access new code details from action_details
-                            if hasattr(recommendations, 'action_details'):
-                                new_code = recommendations.action_details.new_code_name
-                                new_definition = recommendations.action_details.new_code_definition
-                                
-                                # Only add if we have actual code and definition (not null/empty)
-                                if new_code and new_definition and new_code.strip() and new_definition.strip():
-                                    new_codes_needed = True
-                                    proposed_codes.append({
-                                        'code': new_code.strip(),
-                                        'definition': new_definition.strip()
-                                    })
-                        elif 'modify_existing' in decision:
-                            # Trigger Step 4 for modification validation
-                            if hasattr(recommendations, 'action_details'):
-                                original_code = recommendations.action_details.code_to_modify
-                                modified_code = recommendations.action_details.modified_code_name
-                                modified_definition = recommendations.action_details.modified_code_definition
-                                
-                                # Only proceed if we have modification details
-                                if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
-                                    new_codes_needed = True
-                                    proposed_codes.append({
-                                        'original_code': original_code.strip(),
-                                        'modified_code': modified_code.strip(),
-                                        'modified_definition': modified_definition.strip()
-                                    })
-                        
-                        # Store the full recommendation for potential Step 4 use
-                        cluster_recommendation = recommendations
-                        
-                    # Fallback for dict format (backwards compatibility)
-                    elif isinstance(recommendations, dict) and 'decision' in recommendations:
-                        decision = recommendations.get('decision', '').lower()
-                        
-                        if 'create_new' in decision:
-                            action_details = recommendations.get('action_details', {})
-                            new_code = action_details.get('new_code_name')
-                            new_definition = action_details.get('new_code_definition')
+                self.prompt_printer.capture_prompt(
+                    step_name="codebook_generation",
+                    utility_name="LangChainBatchProcessor",
+                    prompt_content=RESPONSE_SUMMARY_PROMPT.format(**summary_input),
+                    prompt_type="step2_response_summary",
+                    metadata={
+                        "model": self.step2_llm.model_name,
+                        "var_lab": self.var_lab,
+                        "stage": "2/4 - Response Summary (Parallel)",
+                        "cluster_id": cluster_id,
+                        "cluster_size": len(cluster_data['ideas']),
+                        "parallel_execution": self.enable_step_parallelization
+                    }
+                )
+                self._record_capture('summary')
+            
+            # Step 3: Match and recommend (depends on Steps 1 & 2 results)
+            match_input = {
+                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                "language": DEFAULT_LANGUAGE,
+                "survey_question": self.var_lab,
+                "existing_codes": code_text,
+                "clustered_ideas": cluster_text,
+                "codebook_analysis": codebook_analysis if isinstance(codebook_analysis, str) else str(codebook_analysis),
+                "summaries": summaries if isinstance(summaries, str) else str(summaries)
+            }
+            
+            # Capture Step 3 prompt
+            if self._should_capture_prompt('match'):
+                self.prompt_printer.capture_prompt(
+                    step_name="codebook_generation",
+                    utility_name="LangChainBatchProcessor",
+                    prompt_content=MATCH_AND_RECOMMEND_PROMPT.format(**match_input),
+                    prompt_type="step3_match_recommend",
+                    metadata={
+                        "model": self.step3_llm.model_name,
+                        "var_lab": self.var_lab,
+                        "stage": "3/4 - Match & Recommend",
+                        "cluster_id": cluster_id,
+                        "codebook_analysis_present": bool(codebook_analysis),
+                        "summaries_present": bool(summaries)
+                    }
+                )
+                self._record_capture('match')
+            
+            try:
+                recommendations = await self._process_step3_with_retry(match_input)
+            except (APIError, ProcessingError) as e:
+                logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
+                recommendations = []
+            except Exception as e:
+                logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
+                recommendations = []
+            
+            # Extract new code recommendations from single MatchRecommendation object
+            new_codes_needed = False
+            proposed_codes = []
+            
+            try:
+                if hasattr(recommendations, 'decision'):
+                    decision = recommendations.decision.lower()
+                    
+                    if 'create_new' in decision:
+                        # Access new code details from action_details
+                        if hasattr(recommendations, 'action_details'):
+                            new_code = recommendations.action_details.new_code_name
+                            new_definition = recommendations.action_details.new_code_definition
                             
                             # Only add if we have actual code and definition (not null/empty)
                             if new_code and new_definition and new_code.strip() and new_definition.strip():
@@ -738,12 +760,12 @@ Recommendation:
                                     'code': new_code.strip(),
                                     'definition': new_definition.strip()
                                 })
-                        elif 'modify_existing' in decision:
-                            # Trigger Step 4 for modification validation
-                            action_details = recommendations.get('action_details', {})
-                            original_code = action_details.get('code_to_modify')
-                            modified_code = action_details.get('modified_code')
-                            modified_definition = action_details.get('modified_definition')
+                    elif 'modify_existing' in decision:
+                        # Trigger Step 4 for modification validation
+                        if hasattr(recommendations, 'action_details'):
+                            original_code = recommendations.action_details.code_to_modify
+                            modified_code = recommendations.action_details.modified_code_name
+                            modified_definition = recommendations.action_details.modified_code_definition
                             
                             # Only proceed if we have modification details
                             if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
@@ -753,242 +775,334 @@ Recommendation:
                                     'modified_code': modified_code.strip(),
                                     'modified_definition': modified_definition.strip()
                                 })
-                except Exception as e:
-                    logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
-                    logger.error(f"Recommendations content: {recommendations}")
-                
-                if not new_codes_needed:
-                    self.stats['no_new_codes_needed'] += 1
-                    batch_results.append({
-                        'cluster_id': cluster_id,
-                        'status': 'no_new_code_needed',
-                        'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                        'step4_validated_code': None,  # No Step 4 for use_existing
-                        'processing_time': time.time() - start_time
-                    })
-                    self.stats['clusters_processed'] += 1
-                    continue
-                
-                # Step 4: Validate if new codes are proposed
-                if proposed_codes:
-                    # Format Step 3 recommendation for readable context
-                    formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
                     
-                    # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
-                    is_create_new = any(pc.get('definition') for pc in proposed_codes)
+                    # Store the full recommendation for potential Step 4 use
+                    cluster_recommendation = recommendations
                     
-                    if is_create_new:
-                        # Use definition-based nearest codes for new code redundancy detection
-                        definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
-                        if definition_text:
-                            definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
-                            if definition_nearest_codes:
-                                definition_code_text = "\n".join([
-                                    f"- {code['code']}: {code['definition']}" 
-                                    for code in definition_nearest_codes
-                                ])
-                            else:
-                                # Fallback to cluster-based codes if definition embedding fails
-                                definition_code_text = code_text
+            except Exception as e:
+                logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
+                logger.error(f"Recommendations content: {recommendations}")
+            
+            if not new_codes_needed:
+                self.stats['no_new_codes_needed'] += 1
+                return {
+                    'cluster_id': cluster_id,
+                    'status': 'no_new_code_needed',
+                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                    'step4_validated_code': None,
+                    'processing_time': time.time() - start_time
+                }
+            
+            # Step 4: Validate if new codes are proposed
+            if proposed_codes:
+                # Format Step 3 recommendation for readable context
+                formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
+                
+                # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
+                is_create_new = any(pc.get('definition') for pc in proposed_codes)
+                
+                if is_create_new:
+                    # Use definition-based nearest codes for new code redundancy detection
+                    definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
+                    if definition_text:
+                        definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
+                        if definition_nearest_codes:
+                            definition_code_text = "\n".join([
+                                f"- {code['code']}: {code['definition']}" 
+                                for code in definition_nearest_codes
+                            ])
                         else:
-                            # Fallback to cluster-based codes if no definition extracted
+                            # Fallback to cluster-based codes if definition embedding fails
                             definition_code_text = code_text
                     else:
-                        # For modify_existing: keep using cluster-based codes
+                        # Fallback to cluster-based codes if no definition extracted
                         definition_code_text = code_text
-                    
-                    validation_input = {
-                        "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
-                        "language": DEFAULT_LANGUAGE,
-                        "survey_question": self.var_lab,
-                        "existing_codes": definition_code_text,  # Now using definition-based codes
-                        "clustered_ideas": cluster_text,
-                        "step3_recommendation": formatted_recommendation
-                    }
-                    
-                    # Capture Step 4 prompt with diversity-first logic
-                    if self._should_capture_prompt('validation'):
-                        self.prompt_printer.capture_prompt(
-                            step_name="codebook_generation_v4",
-                            utility_name="LangChainBatchProcessor",
-                            prompt_content=VALIDATION_PROMPT.format(**validation_input),
-                            prompt_type="step4_validation",
-                            metadata={
-                                "model": self.step4_llm.model_name,
-                                "var_lab": self.var_lab,
-                                "stage": "4/4 - Validation",
-                                "cluster_id": cluster_id,
-                                "proposed_codes_count": len(proposed_codes),
-                                "proposed_codes": [c['code'] for c in proposed_codes]
+                else:
+                    # For modify_existing: keep using cluster-based codes
+                    definition_code_text = code_text
+                
+                validation_input = {
+                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
+                    "language": DEFAULT_LANGUAGE,
+                    "survey_question": self.var_lab,
+                    "existing_codes": definition_code_text,
+                    "clustered_ideas": cluster_text,
+                    "step3_recommendation": formatted_recommendation
+                }
+                
+                # Capture Step 4 prompt
+                if self._should_capture_prompt('validation'):
+                    self.prompt_printer.capture_prompt(
+                        step_name="codebook_generation",
+                        utility_name="LangChainBatchProcessor",
+                        prompt_content=VALIDATION_PROMPT.format(**validation_input),
+                        prompt_type="step4_validation",
+                        metadata={
+                            "model": self.step4_llm.model_name,
+                            "var_lab": self.var_lab,
+                            "stage": "4/4 - Validation",
+                            "cluster_id": cluster_id,
+                            "proposed_codes_count": len(proposed_codes),
+                            "proposed_codes": [c.get('code', c.get('modified_code', '')) for c in proposed_codes]
+                        }
+                    )
+                    self._record_capture('validation')
+                
+                try:
+                    validation_results = await self._process_step4_with_retry(validation_input)
+                except (APIError, ProcessingError) as e:
+                    logger.error(f"Step 4 failed for cluster {cluster_id} after retries: {str(e)}")
+                    validation_results = None
+                except Exception as e:
+                    logger.error(f"Step 4 unexpected error for cluster {cluster_id}: {str(e)}")
+                    validation_results = None
+                
+                # Process validated codes from ValidationResponse format
+                validated_code = None
+                validation_details = None
+                
+                try:
+                    if validation_results and hasattr(validation_results, 'decision'):
+                        # ValidationResponse object - store detailed validation info
+                        validation_details = {
+                            'decision': validation_results.decision,
+                            'decision_rationale': validation_results.decision_rationale,
+                            'reasoning': {
+                                'parsimony': validation_results.evaluation.parsimony_reasoning,
+                                'redundancy': validation_results.evaluation.redundancy_reasoning,
+                                'justification': validation_results.evaluation.justification_reasoning
                             }
-                        )
-                        self._record_capture('validation')
-                    
-                    try:
-                        validation_results = await self._process_step4_with_retry(validation_input)
-                    except (APIError, ProcessingError) as e:
-                        logger.error(f"Step 4 failed for cluster {cluster_id} after retries: {str(e)}")
-                        validation_results = None
-                    except Exception as e:
-                        logger.error(f"Step 4 unexpected error for cluster {cluster_id}: {str(e)}")
-                        validation_results = None
-                    
-                    # Process validated codes from ValidationResponse format
-                    validated_code = None
-                    validation_details = None
-                    
-                    try:
-                        if validation_results and hasattr(validation_results, 'decision'):
-                            # ValidationResponse object - store detailed validation info
-                            validation_details = {
-                                'decision': validation_results.decision,
-                                'decision_rationale': validation_results.decision_rationale,
-                                'reasoning': {
-                                    'parsimony': validation_results.evaluation.parsimony_reasoning,
-                                    'redundancy': validation_results.evaluation.redundancy_reasoning,
-                                    'justification': validation_results.evaluation.justification_reasoning
-                                }
-                            }
-                            
-                            if validation_results.decision in ['APPROVE', 'REVISE'] and validation_results.validated_code.code:
-                                validated_code = {
-                                    'code': validation_results.validated_code.code,
-                                    'definition': validation_results.validated_code.definition
-                                }
-                        elif isinstance(validation_results, dict):
-                            # Fallback for old format
-                            validated_codes = validation_results.get('validated_codes', [])
-                            if validated_codes:
-                                validated_code = validated_codes[0]
-                        else:
-                            logger.error(f"Unexpected validation result format for cluster {cluster_id}: {validation_results}")
-                    except Exception as e:
-                        logger.error(f"Error parsing validation results for cluster {cluster_id}: {e}")
-                        logger.error(f"Validation results content: {validation_results}")
-                    
-                    if validated_code:
-                        # Check if this is a modification or new code
-                        is_modification = any(pc.get('modification_type') == 'modify_existing' for pc in proposed_codes)
+                        }
                         
-                        if is_modification:
-                            # Get original code name from proposed_codes
-                            original_code_name = next(
-                                (pc.get('original_code') for pc in proposed_codes if pc.get('modification_type') == 'modify_existing'),
-                                None
-                            )
+                        if validation_results.decision in ['APPROVE', 'REVISE'] and validation_results.validated_code.code:
+                            validated_code = {
+                                'code': validation_results.validated_code.code,
+                                'definition': validation_results.validated_code.definition
+                            }
+                except Exception as e:
+                    logger.error(f"Error parsing validation results for cluster {cluster_id}: {e}")
+                    logger.error(f"Validation results content: {validation_results}")
+                
+                if validated_code:
+                    # Check if this is a modification or new code
+                    is_modification = any(pc.get('original_code') for pc in proposed_codes)
+                    
+                    if is_modification:
+                        # Get original code name from proposed_codes
+                        original_code_name = next(
+                            (pc.get('original_code') for pc in proposed_codes if pc.get('original_code')),
+                            None
+                        )
+                        
+                        if original_code_name:
+                            # Get original definition before modification
+                            original_definition = await self.shared_codebook.get_code_definition(original_code_name)
                             
-                            if original_code_name:
-                                # Get original definition before modification
-                                original_definition = await self.shared_codebook.get_code_definition(original_code_name)
-                                
-                                # Replace existing code with modified version
-                                replaced, new_version = await self.shared_codebook.replace_code(
-                                    original_code_name,
-                                    validated_code.get('code', ''),
-                                    validated_code.get('definition', '')
-                                )
-                                
-                                if replaced:
-                                    self.stats['new_codes_added'] += 1  # Count as modification
-                                    if self.verbose:
-                                        # Smart change detection logging
-                                        new_code_name = validated_code.get('code', '')
-                                        new_definition = validated_code.get('definition', '')
-                                        
-                                        name_changed = original_code_name != new_code_name
-                                        definition_changed = original_definition != new_definition if original_definition else True
-                                        
-                                        if name_changed and definition_changed:
-                                            logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{new_code_name}' + definition updated (v{new_version})")
-                                        elif name_changed:
-                                            logger.info(f"Cluster {cluster_id}: Renamed code '{original_code_name}' -> '{new_code_name}' (v{new_version})")
-                                        elif definition_changed:
-                                            logger.info(f"Cluster {cluster_id}: Updated definition for '{original_code_name}' (v{new_version})")
-                                            logger.info(f"  Old: {original_definition[:100] if original_definition else 'N/A'}...")
-                                            logger.info(f"  New: {new_definition[:100]}...")
-                                        else:
-                                            logger.info(f"Cluster {cluster_id}: Code '{original_code_name}' processed (no changes detected) (v{new_version})")
-                                
-                                batch_results.append({
-                                    'cluster_id': cluster_id,
-                                    'status': 'code_modified',
-                                    'original_code': original_code_name,
-                                    'code': validated_code.get('code', ''),
-                                    'definition': validated_code.get('definition', ''),
-                                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                                    'step4_validated_code': validated_code,
-                                    'validation_details': validation_details,
-                                    'processing_time': time.time() - start_time
-                                })
-                            else:
-                                # Fallback to add as new if original not found
-                                added, new_version = await self.shared_codebook.add_code_if_new(
-                                    validated_code.get('code', ''),
-                                    validated_code.get('definition', '')
-                                )
-                                
-                                batch_results.append({
-                                    'cluster_id': cluster_id,
-                                    'status': 'modification_fallback_to_new',
-                                    'code': validated_code.get('code', ''),
-                                    'definition': validated_code.get('definition', ''),
-                                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                                    'step4_validated_code': validated_code,
-                                    'validation_details': validation_details,
-                                    'processing_time': time.time() - start_time
-                                })
-                        else:
-                            # Standard new code addition
-                            added, new_version = await self.shared_codebook.add_code_if_new(
+                            # Replace existing code with modified version
+                            replaced, new_version = await self.shared_codebook.replace_code(
+                                original_code_name,
                                 validated_code.get('code', ''),
                                 validated_code.get('definition', '')
                             )
                             
-                            if added:
+                            if replaced:
                                 self.stats['new_codes_added'] += 1
                                 if self.verbose:
-                                    logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                                    new_code_name = validated_code.get('code', '')
+                                    new_definition = validated_code.get('definition', '')
+                                    
+                                    name_changed = original_code_name != new_code_name
+                                    definition_changed = original_definition != new_definition if original_definition else True
+                                    
+                                    if name_changed and definition_changed:
+                                        logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{new_code_name}' + definition updated (v{new_version})")
+                                    elif name_changed:
+                                        logger.info(f"Cluster {cluster_id}: Renamed code '{original_code_name}' -> '{new_code_name}' (v{new_version})")
+                                    elif definition_changed:
+                                        logger.info(f"Cluster {cluster_id}: Updated definition for '{original_code_name}' (v{new_version})")
                             
-                            batch_results.append({
+                            return {
                                 'cluster_id': cluster_id,
-                                'status': 'new_code_added' if added else 'code_already_exists',
+                                'status': 'code_modified',
+                                'original_code': original_code_name,
                                 'code': validated_code.get('code', ''),
                                 'definition': validated_code.get('definition', ''),
                                 'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                                 'step4_validated_code': validated_code,
                                 'validation_details': validation_details,
                                 'processing_time': time.time() - start_time
-                            })
+                            }
                     else:
-                        batch_results.append({
+                        # Standard new code addition (CRITICAL: Real-time update to shared memory)
+                        added, new_version = await self.shared_codebook.add_code_if_new(
+                            validated_code.get('code', ''),
+                            validated_code.get('definition', '')
+                        )
+                        
+                        if added:
+                            self.stats['new_codes_added'] += 1
+                            if self.verbose:
+                                logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                        
+                        return {
                             'cluster_id': cluster_id,
-                            'status': 'no_codes_passed_validation',
+                            'status': 'new_code_added' if added else 'code_already_exists',
+                            'code': validated_code.get('code', ''),
+                            'definition': validated_code.get('definition', ''),
                             'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                            'step4_validated_code': None,  # No validated code if none passed validation
+                            'step4_validated_code': validated_code,
                             'validation_details': validation_details,
                             'processing_time': time.time() - start_time
-                        })
-                
-                self.stats['clusters_processed'] += 1
-                
-                # Track total LLM time for this cluster
-                self.stats['llm_time'] += time.time() - llm_start
-                
+                        }
+                else:
+                    return {
+                        'cluster_id': cluster_id,
+                        'status': 'no_codes_passed_validation',
+                        'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                        'step4_validated_code': None,
+                        'validation_details': validation_details,
+                        'processing_time': time.time() - start_time
+                    }
+
+            self.stats['clusters_processed'] += 1
+            self.stats['llm_time'] += time.time() - llm_start
+            
+            return {
+                'cluster_id': cluster_id,
+                'status': 'processed_no_validation_needed',
+                'processing_time': time.time() - start_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Processing error for cluster {cluster_id}: {e}")
+            return {
+                'cluster_id': cluster_id,
+                'status': 'Processing_error',
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'processing_time': time.time() - start_time if 'start_time' in locals() else 0
+            }
+
+    async def _process_sub_batch_langchain(self, sub_batch: List[Tuple[int, Dict]], sub_batch_idx: int) -> List[Dict[str, Any]]:
+        """Process a sub-batch of clusters sequentially to preserve shared memory order"""
+        sub_batch_results = []
+        
+        if self.verbose:
+            logger.info(f"  Sub-batch {sub_batch_idx + 1}: Processing {len(sub_batch)} clusters sequentially")
+        
+        # Process clusters sequentially within sub-batch to preserve shared memory updates
+        for cluster_id, cluster_data in sub_batch:
+            try:
+                result = await self._process_cluster_optimized(cluster_id, cluster_data)
+                sub_batch_results.append(result)
             except Exception as e:
-                logger.error(f"V4 processing error for cluster {cluster_id}: {e}")
-                batch_results.append({
+                logger.error(f"Sub-batch {sub_batch_idx + 1} cluster {cluster_id} error: {e}")
+                sub_batch_results.append({
                     'cluster_id': cluster_id,
-                    'status': 'v4_processing_error',
+                    'status': 'sub_batch_processing_error',
                     'error': str(e),
                     'error_type': type(e).__name__,
-                    'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                    'step4_validated_code': None,  # No validated code if error occurred
-                    'processing_time': time.time() - start_time if 'start_time' in locals() else 0
+                    'processing_time': 0
                 })
-                self.stats['errors'] += 1
+        
+        self.stats['sub_batches_processed'] += 1
+        return sub_batch_results
+
+    async def process_batch_langchain(self, batch_clusters: List[Tuple[int, Dict]], batch_idx: int = 0) -> List[Dict[str, Any]]:
+        """Process a batch using hierarchical concurrency approach"""
+        
+        # Split batch into sub-batches
+        sub_batches = self._split_into_sub_batches(batch_clusters)
+        
+        if self.verbose:
+            logger.info(f"Batch {batch_idx + 1}: Split {len(batch_clusters)} clusters into {len(sub_batches)} sub-batches")
+        
+        # Process all sub-batches concurrently (Level 1 concurrency)
+        sub_batch_tasks = [
+            self._process_sub_batch_langchain(sub_batch, i) 
+            for i, sub_batch in enumerate(sub_batches)
+        ]
+        
+        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
+        
+        # Collect results from all sub-batches
+        batch_results = []
+        for i, sub_result in enumerate(sub_batch_results):
+            if isinstance(sub_result, Exception):
+                logger.error(f"Sub-batch {i+1} processing failed: {type(sub_result).__name__}: {str(sub_result)}")
+                # Add error results for failed sub-batch
+                if i < len(sub_batches):
+                    for cluster_id, cluster_data in sub_batches[i]:
+                        batch_results.append({
+                            'cluster_id': cluster_id,
+                            'status': 'sub_batch_failed',
+                            'error': str(sub_result),
+                            'processing_time': 0
+                        })
+            else:
+                batch_results.extend(sub_result)
         
         return batch_results
-    
+
+    async def process_all_clusters_concurrent(self, clusters: Dict[int, Dict]) -> List[Dict[str, Any]]:
+        """Process all clusters with hierarchical concurrent processing"""
+        cluster_items = list(clusters.items())
+        total_clusters = len(cluster_items)
+        total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
+        
+        verbose_reporter = VerboseReporter(self.verbose)
+        
+        # Create ALL batch tasks upfront (Level 0 concurrency)
+        batch_tasks = []
+        
+        for i in range(0, total_clusters, self.batch_size):
+            batch_num = i // self.batch_size + 1
+            batch_clusters = cluster_items[i:i + self.batch_size]
+            
+            # Create async task for each batch using hierarchical processing
+            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters):
+                """Process a single batch with hierarchical concurrency"""
+                if self.verbose:
+                    logger.info(f"Batch {batch_num}/{total_batches} started (hierarchical)")
+                
+                results = await self.process_batch_langchain(batch_clusters, batch_num - 1)
+                
+                if self.verbose:
+                    new_codes = sum(1 for r in results if r['status'] == 'new_code_added')
+                    logger.info(f"Batch {batch_num}/{total_batches} complete: {new_codes} new codes")
+                
+                return batch_num, results
+            
+            batch_tasks.append(process_batch())
+        
+        # Process ALL batches concurrently (Level 0 concurrency)
+        if self.verbose:
+            verbose_reporter.step_start(
+                f"Processing {total_clusters} clusters in {total_batches} concurrent batches (HIERARCHICAL)"
+            )
+        
+        all_batch_start = time.time()
+        self.stats['concurrent_batches'] = total_batches
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        all_batch_time = time.time() - all_batch_start
+        
+        # Collect all results
+        all_results = []
+        for result in batch_results:
+            if isinstance(result, Exception):
+                logger.error(f"Batch error: {result}")
+            elif isinstance(result, tuple):
+                batch_num, batch_cluster_results = result
+                all_results.extend(batch_cluster_results)
+        
+        if self.verbose:
+            verbose_reporter.step_complete(
+                f"All {total_batches} batches completed in {all_batch_time:.1f}s "
+                f"(Hierarchical: {self.stats['parallel_steps_executed']} parallel step executions)"
+            )
+        
+        return all_results
+
     async def _extract_definition_for_embedding(self, proposed_codes: List[Dict], recommendations) -> Optional[str]:
         """Extract definition text for embedding from Step 3 recommendation"""
         if not proposed_codes:
@@ -1001,11 +1115,10 @@ Recommendation:
         
         # Handle modify_existing case - construct definition from original + modification
         for pc in proposed_codes:
-            if pc.get('modification_type') == 'modify_existing':
-                original_code = pc.get('code_to_modify')
+            if pc.get('original_code'):
+                original_code = pc.get('original_code')
                 modified_code = pc.get('modified_code')
                 modified_definition = pc.get('modified_definition')
-                
                 
                 if original_code and modified_code and modified_definition:
                     # Get the original definition from shared codebook (async)
@@ -1013,22 +1126,22 @@ Recommendation:
                     
                     if original_definition:
                         # Combine original definition with modification suggestion
-                        return f"{original_definition}. Modified to include: {modified_code- modified_definition }"
+                        return f"{original_definition}. Modified to include: {modified_code} - {modified_definition}"
                     else:
                         # Fallback to just the modification suggestion
-                        return modified_code
+                        return modified_definition
         
         return None
 
     async def _find_nearest_codes(self, cluster_embedding: np.ndarray) -> List[Dict[str, str]]:
-        """Find k nearest codes using the current shared codebook (v2 logic)"""
-        # Get CURRENT codebook state (like v2)
+        """Find k nearest codes using the current shared codebook"""
+        # Get CURRENT codebook state 
         current_codes, version = await self.shared_codebook.get_current_snapshot()
         
         if not current_codes:
             return []
         
-        # Get fresh embeddings for current state (like v2)  
+        # Get fresh embeddings for current state 
         codes, embeddings = await self.embedding_manager.get_snapshot_embeddings(
             current_codes, version
         )
@@ -1111,66 +1224,6 @@ Recommendation:
                         break
         
         return nearest_codes
-    
-    
-    
-    async def process_all_clusters_concurrent(self, clusters: Dict[int, Dict]) -> List[Dict[str, Any]]:
-        """Process all clusters with true concurrent batch processing"""
-        cluster_items = list(clusters.items())
-        total_clusters = len(cluster_items)
-        total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
-        
-        verbose_reporter = VerboseReporter(self.verbose)
-        
-        # Create ALL batch tasks upfront
-        batch_tasks = []
-        
-        for i in range(0, total_clusters, self.batch_size):
-            batch_num = i // self.batch_size + 1
-            batch_clusters = cluster_items[i:i + self.batch_size]
-            
-            # Create async task for each batch - use concurrent processing
-            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters):
-                """Process a single batch with LangChain"""
-                if self.verbose:
-                    logger.info(f"Batch {batch_num}/{total_batches} started")
-                
-                results = await self.process_batch_langchain(batch_clusters)
-                
-                if self.verbose:
-                    new_codes = sum(1 for r in results if r['status'] == 'new_code_added')
-                    logger.info(f"Batch {batch_num}/{total_batches} complete: {new_codes} new codes")
-                
-                return batch_num, results
-            
-            batch_tasks.append(process_batch())
-        
-        # Process ALL batches concurrently
-        if self.verbose:
-            verbose_reporter.step_start(
-                f"Processing {total_clusters} clusters in {total_batches} concurrent batches"
-            )
-        
-        all_batch_start = time.time()
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-        all_batch_time = time.time() - all_batch_start
-        
-        # Collect all results
-        all_results = []
-        for result in batch_results:
-            if isinstance(result, Exception):
-                logger.error(f"Batch error: {result}")
-            elif isinstance(result, tuple):
-                batch_num, batch_cluster_results = result
-                all_results.extend(batch_cluster_results)
-        
-        if self.verbose:
-            verbose_reporter.step_complete(
-                f"All {total_batches} batches completed in {all_batch_time:.1f}s "
-                f"(true concurrent processing)"
-            )
-        
-        return all_results
 
 # ============================================================================
 # DATA PROCESSOR
@@ -1216,7 +1269,7 @@ class CodebookDataProcessor:
 # ============================================================================
 
 class InductiveCodeGenerator:
-    """V4 Generator using LangChain optimization and shared memory pattern"""
+    """Generator using hierarchical concurrency and parallel step execution"""
     
     def __init__(
         self,
@@ -1227,11 +1280,14 @@ class InductiveCodeGenerator:
         verbose: bool = False, 
         prompt_printer = None,
         batch_size: int = 10,
-        max_concurrent_requests: int = 5,
+        sub_batch_size: int = 5,
+        enable_step_parallelization: bool = True,
+        max_concurrent_steps: int = 2,
+        max_concurrent_requests: int = 10,
         config = None,  # For compatibility
         embedded_text: List[models.EmbeddingsModel] = None  # Deprecated - for backward compatibility
     ):
-        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR V4 (Clean model inheritance)")
+        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR (Hierarchical concurrency + parallel steps)")
         self.cluster_results = cluster_results
         # Note: embedded_text is no longer needed since ClusterModel contains embeddings
         if embedded_text is not None:
@@ -1242,6 +1298,9 @@ class InductiveCodeGenerator:
         self.verbose = verbose
         self.prompt_printer = prompt_printer
         self.batch_size = batch_size
+        self.sub_batch_size = sub_batch_size
+        self.enable_step_parallelization = enable_step_parallelization
+        self.max_concurrent_steps = max_concurrent_steps
         self.max_concurrent_requests = max_concurrent_requests
         
         # Initialize components
@@ -1251,13 +1310,20 @@ class InductiveCodeGenerator:
             k=k
         )
         self.verbose_reporter = VerboseReporter(verbose)
+        
+        if self.verbose:
+            logger.info("🔧 Configuration:")
+            logger.info(f"  - Batch size: {batch_size} (Level 0 concurrency)")
+            logger.info(f"  - Sub-batch size: {sub_batch_size} (Level 1 concurrency)")
+            logger.info(f"  - Step parallelization: {enable_step_parallelization} (Level 2 concurrency)")
+            logger.info(f"  - Max concurrent steps: {max_concurrent_steps}")
     
     async def generate_async(self) -> Dict[str, Any]:
-        """Generate codebook with LangChain optimization"""
+        """Generate codebook with hierarchical concurrency"""
         start_time = time.time()
         
-        logger.info("🚀 STARTING V4 CODEBOOK GENERATION (Multi-step prompts)")
-        self.verbose_reporter.section_header("CODEBOOK GENERATION - MULTI-STEP PROMPTS", emoji="🔥")
+        logger.info("🚀 STARTING CODEBOOK GENERATION (Hierarchical concurrency + parallel steps)")
+        self.verbose_reporter.section_header("CODEBOOK GENERATION - HIERARCHICAL CONCURRENCY", emoji="⚡")
         
         # Initialize shared codebook
         shared_codebook = SharedCodebook(self.starter_codes)
@@ -1275,10 +1341,10 @@ class InductiveCodeGenerator:
             }
         
         self.verbose_reporter.step_start(
-            f"Processing {len(clusters)} clusters with LangChain batch optimization"
+            f"Processing {len(clusters)} clusters with hierarchical concurrency"
         )
         
-        # Initialize batch processor
+        # Initialize  batch processor
         batch_processor = LangChainBatchProcessor(
             embedding_manager=embedding_manager,
             shared_codebook=shared_codebook,
@@ -1286,12 +1352,15 @@ class InductiveCodeGenerator:
             var_lab=self.var_lab,
             k=self.k,
             batch_size=self.batch_size,
+            sub_batch_size=self.sub_batch_size,
+            enable_step_parallelization=self.enable_step_parallelization,
+            max_concurrent_steps=self.max_concurrent_steps,
             max_concurrent_requests=self.max_concurrent_requests,
             verbose=self.verbose,
             prompt_printer=self.prompt_printer
         )
         
-        # Process all clusters
+        # Process all clusters with hierarchical concurrency
         results = await batch_processor.process_all_clusters_concurrent(clusters)
         
         # Build cluster assignments and detailed results
@@ -1332,10 +1401,10 @@ class InductiveCodeGenerator:
             'initial_codes': len(self.starter_codes),
             'final_codes': len(final_codes),
             'new_codes': len(final_codes) - len(self.starter_codes),
-            'avg_time_per_cluster': processing_time / len(clusters) if len(clusters) > 0 else 0
+            'avg_time_per_cluster': processing_time / len(clusters) if len(clusters) > 0 else 0,
+            'performance_improvement_estimate': f"{((batch_processor.stats['parallel_steps_executed'] * 0.5) / processing_time * 100):.1f}% time saved from parallelization"
         }
         
-        # Report results with comprehensive error statistics
         error_summary = {}
         if batch_processor.stats['errors'] > 0:
             error_summary["Errors"] = batch_processor.stats['errors']
@@ -1355,17 +1424,20 @@ class InductiveCodeGenerator:
             "Avg per cluster": f"{final_stats['avg_time_per_cluster']:.2f}s",
             "LLM time": f"{batch_processor.stats['llm_time']:.2f}s",
             "Embedding time": f"{batch_processor.stats['embedding_time']:.2f}s",
-            "Method": "LangChain batch optimization with retry logic"
+            "Parallel steps executed": batch_processor.stats['parallel_steps_executed'],
+            "Sub-batches processed": batch_processor.stats['sub_batches_processed'],
+            "Concurrent batches": batch_processor.stats['concurrent_batches'],
+            "Method": "Hierarchical concurrency with parallel step execution"
         }
         
         # Add error summary if there were any issues
         if error_summary:
             summary_data.update(error_summary)
             
-        self.verbose_reporter.summary("V3 GENERATION COMPLETE", summary_data)
+        self.verbose_reporter.summary("GENERATION COMPLETE", summary_data)
         
-        # Log final results to confirm enhanced V4 was used
-        logger.info(f"✅ V4 ENHANCED GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
+        logger.info(f"✅ HIERARCHICAL GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
+        logger.info(f"🔥 Performance: {batch_processor.stats['parallel_steps_executed']} parallel step executions, {batch_processor.stats['sub_batches_processed']} sub-batches")
         
         return {
             'codebook': final_codes,
@@ -1374,10 +1446,9 @@ class InductiveCodeGenerator:
             'step3_recommendations': step3_recommendations,
             'step4_validated_codes': step4_validated_codes,
             'stats': final_stats,
-            'generator_version': 'V4_MULTISTEP_PROMPTS_WITH_V3_FEATURES'  # Clear identifier
+            'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS'
         }
     
     def generate(self) -> Dict[str, Any]:
         """Synchronous wrapper for async generation"""
         return asyncio.run(self.generate_async())
-   
