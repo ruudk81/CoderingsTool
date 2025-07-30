@@ -43,7 +43,8 @@ class ModelConfig:
     
     # Step 2: Text preprocessing models
     spell_check_model: str = DEFAULT_MODEL
-    token_model: str = "gpt-4o-mini"      
+    token_model: str = "gpt-4o-mini"
+    tiktoken_spellChecker: str = "gpt-4o-mini"  # For token counting in spell checker      
     
     # Step 3: Quality filtering and segmentation models  
     quality_filter_model: str = DEFAULT_MODEL      
@@ -101,6 +102,7 @@ class ModelConfig:
             'embedding': self.embedding_model,
             'speculative_codes': self.speculative_codes_model,
             'tiktoken': self.token_codebook_generation_model,
+            'tiktoken_spellChecker': self.tiktoken_spellChecker,
             'codes_analysis': self.codebook_analysis_model,
             'cluster_analysis': self.response_summary_model,
             'recommend': self.match_and_recommend_model,
