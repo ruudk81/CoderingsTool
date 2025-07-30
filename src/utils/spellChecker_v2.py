@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
 import models
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -221,7 +221,7 @@ class SpellChecker:
         self.client = AsyncOpenAI(api_key=self.openai_api_key)
         
         self.hunspell_path = HUNSPELL_PATH
-        self.dict_path = DICT_PATH  # V2 FIX: Uses language-aware path
+        self.dict_path = DICT_PATH  
         
         self.prompt_printer = prompt_printer 
         self.verbose_reporter = VerboseReporter(verbose)
@@ -300,7 +300,7 @@ class SpellChecker:
         return dp[m][n]
     
     async def check_word_with_pool(self, word: str) -> List[str]:
-        """V2 IMPROVEMENT: Use connection pool for word checking"""
+        """Use connection pool for word checking"""
         async with self.hunspell_pool.get_session() as session:
             self.stats['hunspell_pool_hits'] += 1
             output = await session.check_word(word)
@@ -320,14 +320,14 @@ class SpellChecker:
             return []
     
     async def verify_correction_with_dictionary(self, word: str) -> bool:
-        """V2 IMPROVEMENT: Verify LLM corrections against dictionary"""
+        """Verify LLM corrections against dictionary"""
         result = await self.check_word_with_pool(word)
         self.stats['dictionary_verifications'] += 1
         return bool(result and result[0] == word)
     
     def calculate_correction_confidence(self, original: str, correction: str, 
                                       is_hunspell_suggestion: bool, dictionary_verified: bool) -> CorrectionConfidence:
-        """V2 IMPROVEMENT: Confidence scoring for corrections"""
+        """Confidence scoring for corrections"""
         levenshtein_dist = self.cached_levenshtein_distance(original, correction)
         
         # Simple context score based on length and character similarity
@@ -351,8 +351,8 @@ class SpellChecker:
             total_score=min(total_score, 1.0)
         )
     
-    async def find_best_split_for_spellcheck_v2(self, oov_word: str) -> Tuple[str, str]:
-        """V2 IMPROVED: Better compound word splitting with pool usage"""
+    async def find_best_split_for_spellcheck(self, oov_word: str) -> Tuple[str, str]:
+        """Better compound word splitting with pool usage"""
         excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
 
         left_split_attempts = [(oov_word[:i], "left") for i in range(4, len(oov_word) + 1)]
@@ -384,7 +384,7 @@ class SpellChecker:
         else:
             batch_candidates.append(oov_word)
 
-        # V2 IMPROVEMENT: Use connection pool instead of creating new processes
+        # Use connection pool 
         hunspell_tasks = [self.check_word_with_pool(candidate) for candidate in batch_candidates]
         hunspell_results = await asyncio.gather(*hunspell_tasks)
 
@@ -427,16 +427,16 @@ class SpellChecker:
 
         return left_part, right_part
     
-    async def find_best_suggestions_batch_async_v2(self, oov_words: List[str]) -> Dict[str, List[Any]]:
-        """V2 IMPROVED: Parallel processing with better error handling"""
+    async def find_best_suggestions_batch_async(self, oov_words: List[str]) -> Dict[str, List[Any]]:
+        """Parallel processing with better error handling"""
         # Sort oov_words to ensure consistent processing order for more stable LLM outcomes 
         sorted_oov_words = sorted(oov_words)
 
         async def process_word(word):
             try:
-                # V2 IMPROVEMENT: Use connection pool
+                # Use connection pool
                 unsplit_suggestions = await self.check_word_with_pool(word)
-                left_part, right_part = await self.find_best_split_for_spellcheck_v2(word)
+                left_part, right_part = await self.find_best_split_for_spellcheck(word)
                 split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
                 unsplit_suggestion = (
                     min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
@@ -447,7 +447,7 @@ class SpellChecker:
                 logger.error(f"Error processing word '{word}': {e}")
                 return word, None, None
        
-        # V2 IMPROVEMENT: Concurrent processing with semaphore for rate limiting
+        # Concurrent processing with semaphore for rate limiting
         semaphore = asyncio.Semaphore(10)  # Limit concurrent operations
         
         async def process_with_semaphore(word):
@@ -466,14 +466,12 @@ class SpellChecker:
 
         return best_suggestions
     
-    def create_correction_batches_v2(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
-        """V2 IMPROVED: Better token calculation and larger batch sizes"""
-        # V2 FIX: Use centralized model configuration
+    def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
+        """Better token calculation and larger batch sizes"""
         tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
         try:
             encoding = tiktoken.encoding_for_model(tiktoken_model)
         except KeyError:
-            # Fallback to cl100k_base if model not found
             encoding = tiktoken.get_encoding("cl100k_base")
             logger.warning(f"Using cl100k_base encoding as fallback for {tiktoken_model}")
         
@@ -483,7 +481,6 @@ class SpellChecker:
         current_batch_tasks = []
         current_batch_tokens = 0
         
-        # V2 IMPROVEMENT: Increase max batch size for better efficiency
         max_batch_size = min(self.config.max_batch_size * 2, 10)  # Double the batch size but cap at 10
         
         for task in tasks:
@@ -520,8 +517,8 @@ class SpellChecker:
         
         return batches
     
-    async def get_best_corrections_with_ai_v2(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
-        """V2 MAJOR IMPROVEMENT: Native async OpenAI client with validation loop"""
+    async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
+        """Native async OpenAI client with validation loop"""
         oov_words = list(best_suggestions_dict.keys())
         
         max_tokens = self.config.max_tokens  
@@ -537,7 +534,7 @@ class SpellChecker:
         
         responses_with_ids = [{'respondent_id': response.respondent_id, 'response': response.original_response} for response in responses]
     
-        # Create tasks for sentences with OOV words (PRESERVED logic from v1)
+        # Create tasks for sentences with OOV words 
         for item in responses_with_ids:
             response = item['response']
             response_oov_words = []
@@ -574,8 +571,7 @@ class SpellChecker:
                     "oov_words": ", ".join(response_oov_words),
                     "suggestions": " | ".join(all_suggestions)
                 })
-         
-        # PRESERVED: Same filtering logic as v1
+     
         repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')
         single_word_pattern = re.compile(r'^[A-Za-z]+$')
         filtered_tasks = [
@@ -587,11 +583,10 @@ class SpellChecker:
             )
         ]
         
-        # V2 IMPROVEMENT: Better batching
-        batches = self.create_correction_batches_v2(filtered_tasks, prompt_header, max_tokens, completion_reserve)
+        batches = self.create_correction_batches(filtered_tasks, prompt_header, max_tokens, completion_reserve)
         
-        async def process_batch_v2(batch: SpellCorrectionBatch, var_lab: str, batch_index: int) -> Dict[str, str]:
-            """V2 MAJOR IMPROVEMENT: Native async client with validation"""
+        async def process_batch(batch: SpellCorrectionBatch, var_lab: str, batch_index: int) -> Dict[str, str]:
+            """Native async client with validation"""
             tasks_string = ""
             for i, task in enumerate(batch.tasks):
                 tasks_string += (
@@ -611,7 +606,7 @@ class SpellChecker:
             # Capture prompt only for the first batch
             if self.prompt_printer and batch_index == 0:
                 self.prompt_printer.capture_prompt(
-                    step_name="preprocessing_v2",
+                    step_name="preprocessing",
                     utility_name="SpellChecker",
                     prompt_content=prompt,
                     prompt_type="correction",
@@ -622,11 +617,10 @@ class SpellChecker:
                         "batch_size": len(batch.tasks),
                         "total_batches": len(batches),
                         "batch_number": batch_index + 1,
-                        "version": "v2_native_async"
+                        "version": "native_async"
                     }
                 )
             
-            # V2 MAJOR IMPROVEMENT: Native async OpenAI client
             try:
                 self.stats['llm_calls_made'] += 1
                 response = await self.client.chat.completions.create(
@@ -637,7 +631,6 @@ class SpellChecker:
                     seed=self.config.seed
                 )
                 
-                # Parse the JSON response manually (since we're not using instructor)
                 response_content = response.choices[0].message.content
                 
                 try:
@@ -651,7 +644,7 @@ class SpellChecker:
                 logger.error(f"LLM call failed for batch {batch_index}: {e}")
                 corrections = []
             
-            # V2 IMPROVEMENT: Validation loop for corrections
+            # Validation loop for corrections
             validated_corrections = {}
             for task in batch.tasks:
                 # Find corresponding correction
@@ -661,7 +654,7 @@ class SpellChecker:
                     if str(corr.get('respondent_id', '')) == str(task.respondent_id):
                         candidate_correction = corr.get('corrected_response', task.original_response)
                         
-                        # V2 IMPROVEMENT: Validate correction quality
+                        # Validate correction quality
                         words_to_validate = task.oov_words.split(', ')
                         validation_passed = True
                         
@@ -684,15 +677,15 @@ class SpellChecker:
             
             return validated_corrections
         
-        # Sort batches to ensure consistent processing order (PRESERVED from v1)
+        # Sort batches to ensure consistent processing order
         sorted_batches = sorted(batches, key=lambda b: str(b.tasks[0].respondent_id) if b.tasks else "")
 
-        # V2 IMPROVEMENT: Process batches with controlled concurrency
+        # Process batches with controlled concurrency
         semaphore = asyncio.Semaphore(3)  # Limit concurrent batch processing
         
         async def process_batch_with_semaphore(batch, var_lab, i):
             async with semaphore:
-                return await process_batch_v2(batch, var_lab, i)
+                return await process_batch(batch, var_lab, i)
         
         batch_results = await asyncio.gather(*[
             process_batch_with_semaphore(batch, var_lab, i) 
@@ -705,21 +698,20 @@ class SpellChecker:
         
         return corrected_sentences_dict
     
-    async def spell_check_async_v2(self, responses: List[SpellCheckModel], var_lab: str) -> List[SpellCheckModel]:
-        """V2 MAIN METHOD: Enhanced spell checking with improved performance and accuracy"""
+    async def spell_check_async(self, responses: List[SpellCheckModel], var_lab: str) -> List[SpellCheckModel]:
+        """Spell checking with improved performance and accuracy"""
         stats = ProcessingStats()
         stats.start_timing()
         stats.input_count = len(responses)
         
-        self.verbose_reporter.step_start("Spell Checking V2 (Async + Connection Pool)")
+        self.verbose_reporter.step_start("Spell Checking (Async + Connection Pool)")
         sentences_list = [response.original_response for response in responses]
     
         # Step 1: Identify OOV words with connection pool
-        self.verbose_reporter.stat_line(f"Analyzing {len(responses)} responses for misspellings (V2)...")
+        self.verbose_reporter.stat_line(f"Analyzing {len(responses)} responses for misspellings...")
         oov_words = []
         docs_with_oov = 0
         
-        # V2 IMPROVEMENT: Use connection pool instead of single session
         await self.hunspell_pool.initialize()
         
         try:
@@ -741,7 +733,7 @@ class SpellChecker:
                     
                     for word, result in zip(doc_words, word_results):
                         self.stats['words_checked'] += 1
-                        # Check if word is OOV (same logic as v1)
+                        # Check if word is OOV  
                         if result and not (result and result[0] == word):
                             # Check the raw output format
                             if isinstance(result, list) and len(result) > 0:
@@ -761,15 +753,15 @@ class SpellChecker:
         self.verbose_reporter.stat_line(f"OOV words identified: {unique_oov_words} unique terms")
         self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
     
-        # Step 2: Correct OOV words with V2 improvements
+        # Step 2: Correct OOV words 
         if oov_words:
-            best_suggestions_dict = await self.find_best_suggestions_batch_async_v2(oov_words)
-            corrected_sentences_dict = await self.get_best_corrections_with_ai_v2(responses, best_suggestions_dict, var_lab)
+            best_suggestions_dict = await self.find_best_suggestions_batch_async(oov_words)
+            corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
         else:
             corrected_sentences_dict = {}
         
-        # Step 3: Update sentences with tracked respondent IDs (PRESERVED logic from v1)
+        # Step 3: Update sentences with tracked respondent IDs
         corrections_made = 0
         correction_examples = []
         updated_responses = []
@@ -783,7 +775,7 @@ class SpellChecker:
             )
             updated_responses.append(updated_response)
            
-            # Track corrections for verbose output (PRESERVED from v1)
+            # Track corrections for verbose output  
             if response.original_response != corrected_response:
                 original_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in response.original_response.split()])
                 corrected_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in corrected_response.split()])
@@ -802,7 +794,6 @@ class SpellChecker:
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.processing_time
         
-        # V2 IMPROVEMENT: Enhanced reporting
         self.verbose_reporter.stat_line(f"Corrections applied: {corrections_made} changes")
         self.verbose_reporter.stat_line(f"Dictionary verifications: {self.stats['dictionary_verifications']}")
         self.verbose_reporter.stat_line(f"Hunspell pool hits: {self.stats['hunspell_pool_hits']}")
@@ -812,14 +803,14 @@ class SpellChecker:
         if correction_examples:
             self.verbose_reporter.correction_samples(correction_examples)
         
-        self.verbose_reporter.step_complete("Spell checking V2 completed")
+        self.verbose_reporter.step_complete("Spell checking completed")
 
         processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
         return processed_responses
     
     def spell_check(self, preprocess_responses: List[Dict], var_lab: str):
-        """V2 IMPROVEMENT: Enhanced synchronous wrapper with better error handling"""
+        """Enhanced synchronous wrapper with better error handling"""
         async def main():
             spellcheck_responses = [SpellCheckModel(
                 respondent_id=item.respondent_id, 
@@ -827,9 +818,9 @@ class SpellChecker:
             ) for item in preprocess_responses]
             
             try:
-                return await self.spell_check_async_v2(spellcheck_responses, var_lab)
+                return await self.spell_check_async(spellcheck_responses, var_lab)
             except Exception as e:
-                logger.error(f"SpellChecker V2 processing failed: {e}")
+                logger.error(f"SpellChecker processing failed: {e}")
                 # Fallback: return original responses
                 return [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.response) 
                        for item in preprocess_responses]
