@@ -707,53 +707,54 @@ class SpellChecker:
         self.verbose_reporter.step_start("Spell Checking (Async + Connection Pool)")
         sentences_list = [response.original_response for response in responses]
     
-        # Step 1: Identify OOV words with connection pool
+        # Step 1: Identify OOV words with single synchronous session (like v1)
         self.verbose_reporter.stat_line(f"Analyzing {len(responses)} responses for misspellings...")
         oov_words = []
         docs_with_oov = 0
         
-        await self.hunspell_pool.initialize()
+        # Single hunspell session for fast OOV identification (like v1)
+        oov_identification_session = HunspellSession(self.hunspell_path, self.dict_path)
         
         try:
             for doc in self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size):
                 doc_flagged = False
-                word_tasks = []
-                doc_words = []
-                
-                # Collect words for batch processing
                 for token in doc:
                     if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
                         word = token.text
-                        doc_words.append(word)
-                        word_tasks.append(self.check_word_with_pool(word))
-                
-                # Process all words in this document concurrently
-                if word_tasks:
-                    word_results = await asyncio.gather(*word_tasks)
-                    
-                    for word, result in zip(doc_words, word_results):
                         self.stats['words_checked'] += 1
-                        # Check if word is OOV: either no results or first result is not the original word
-                        if not result or (len(result) > 0 and result[0] != word):
-                            oov_words.append(word)
-                            doc_flagged = True
-                            self.stats['oov_words_found'] += 1
+                        output = await oov_identification_session.check_word(word)
+                        
+                        # Parse Hunspell output to check for OOV
+                        if output:
+                            lines = [line for line in output.splitlines() if line and not line.startswith("@")]
+                            if lines and lines[0].startswith(('&', '#')):
+                                oov_words.append(word)
+                                doc_flagged = True
+                                self.stats['oov_words_found'] += 1
              
                 if doc_flagged:
                     docs_with_oov += 1
                     
         except Exception as e:
             logger.error(f"Error during OOV identification: {e}")
+        finally:
+            await oov_identification_session.close()
         
         unique_oov_words = len(set(oov_words))
         self.verbose_reporter.stat_line(f"OOV words identified: {unique_oov_words} unique terms")
         self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
     
-        # Step 2: Correct OOV words 
+        # Step 2: Correct OOV words using connection pool for suggestions
         if oov_words:
-            best_suggestions_dict = await self.find_best_suggestions_batch_async(oov_words)
-            corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
-            corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
+            # Initialize connection pool only for suggestion finding
+            await self.hunspell_pool.initialize()
+            try:
+                best_suggestions_dict = await self.find_best_suggestions_batch_async(oov_words)
+                corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
+                corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
+            finally:
+                # Clean up connection pool
+                await self.hunspell_pool.close_all()
         else:
             corrected_sentences_dict = {}
         
@@ -783,9 +784,6 @@ class SpellChecker:
                     if len(correction_examples) < self.config.max_correction_examples:
                         correction_examples.append((response.original_response, corrected_response))
 
-        # Clean up connection pool
-        await self.hunspell_pool.close_all()
-        
         stats.end_timing()
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration()
