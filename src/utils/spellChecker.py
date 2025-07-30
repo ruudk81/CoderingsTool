@@ -733,15 +733,11 @@ class SpellChecker:
                     
                     for word, result in zip(doc_words, word_results):
                         self.stats['words_checked'] += 1
-                        # Check if word is OOV  
-                        if result and not (result and result[0] == word):
-                            # Check the raw output format
-                            if isinstance(result, list) and len(result) > 0:
-                                first_result = str(result[0]) if result[0] else ""
-                                if first_result.startswith(('&', '#')) or not result:
-                                    oov_words.append(word)
-                                    doc_flagged = True
-                                    self.stats['oov_words_found'] += 1
+                        # Check if word is OOV: either no results or first result is not the original word
+                        if not result or (len(result) > 0 and result[0] != word):
+                            oov_words.append(word)
+                            doc_flagged = True
+                            self.stats['oov_words_found'] += 1
              
                 if doc_flagged:
                     docs_with_oov += 1
