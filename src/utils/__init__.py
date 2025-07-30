@@ -3,3 +3,4 @@ from .codeAssigner_v3 import CodeAssignerV3
 from .themeIdentifier import ThemeIdentifier
 from .themeIdentifier_v2 import ThemeIdentifierV2
 from .codeGenerator_v2 import InductiveCodeGeneratorV2
+from .spellChecker_v2 import SpellCheckerV2
