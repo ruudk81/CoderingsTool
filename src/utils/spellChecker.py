@@ -7,12 +7,12 @@ from functools import lru_cache
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional, Tuple
 from openai import AsyncOpenAI
+import instructor
 import tiktoken
 import spacy
 import subprocess
 from collections import defaultdict
 import logging
-import json
 
 from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
@@ -85,8 +85,8 @@ class SpellChecker:
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.openai_model = openai_model or DEFAULT_MODEL
         
-        # Native async OpenAI client
-        self.client = AsyncOpenAI(api_key=self.openai_api_key)
+        # Instructor-patched async OpenAI client for structured output
+        self.client = instructor.patch(AsyncOpenAI(api_key=self.openai_api_key))
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
@@ -435,7 +435,7 @@ class SpellChecker:
                         "batch_size": len(batch.tasks),
                         "total_batches": len(batches),
                         "batch_number": batch_index + 1,
-                        "client_type": "native_async"
+                        "client_type": "instructor_async"
                     }
                 )
             
@@ -443,21 +443,15 @@ class SpellChecker:
                 self.stats['llm_calls_made'] += 1
                 response = await self.client.chat.completions.create(
                     model=self.openai_model,
+                    response_model=LLMCorrectionResponse,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=completion_reserve,
                     temperature=self.config.temperature,
                     seed=self.config.seed,
-                    response_format={"type": "json_object"}  # Guarantee JSON output
+                    max_retries=self.config.retries
                 )
                 
-                response_content = response.choices[0].message.content
-                
-                try:
-                    parsed_response = json.loads(response_content)
-                    corrections = parsed_response.get('corrections', [])
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse LLM response as JSON: {response_content}")
-                    corrections = []
+                corrections = response.corrections
                 
             except Exception as e:
                 logger.error(f"LLM call failed for batch {batch_index}: {e}")
@@ -470,8 +464,8 @@ class SpellChecker:
                 correction_text = task.original_response  # Default fallback
                 
                 for corr in corrections:
-                    if str(corr.get('respondent_id', '')) == str(task.respondent_id):
-                        candidate_correction = corr.get('corrected_response', task.original_response)
+                    if str(corr.respondent_id) == str(task.respondent_id):
+                        candidate_correction = corr.corrected_response
                         
                         # Validate correction quality
                         words_to_validate = task.oov_words.split(', ')
