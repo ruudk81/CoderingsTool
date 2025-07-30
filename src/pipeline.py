@@ -35,7 +35,7 @@ id_column = "DLNMID"
 var_name = "Qd1_combined"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -780,6 +780,7 @@ else:
             is_misc = theme.get('is_miscellaneous', False)
             
             print(f"\n🟣 Theme: {theme_name}")
+            print(f"  definition {theme_desc}")
             print(f"   Cluster ID: {cluster_id}")
             print("   Codes:")
             
@@ -854,13 +855,12 @@ if enriched_codebook:
 #     idx += 1
 
 
-
-
 # === STEP 9 ========================================================================================================
 """Assign codes (and themes)"""
 from utils import codeAssigner
 
-FORCE = True
+FORCE_RECALCULATE_ALL = False
+FORCE = False
 
 step_name = "code_assignment"
 if  FORCE:
