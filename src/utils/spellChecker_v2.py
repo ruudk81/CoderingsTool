@@ -804,7 +804,7 @@ class SpellCheckerV2:
         
         stats.end_timing()
         stats.output_count = len(updated_responses)
-        self.stats['processing_time'] = stats.processing_time
+        self.stats['processing_time'] = stats.get_duration()
         
         # V2 IMPROVEMENT: Enhanced reporting
         self.verbose_reporter.stat_line(f"Corrections applied: {corrections_made} changes")
