@@ -24,11 +24,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy third-party library logs
-logging.getLogger("httpx").setLevel(logging.WARNING)          # OpenAI HTTP requests
-logging.getLogger("openai").setLevel(logging.WARNING)         # OpenAI client logs
-logging.getLogger("instructor").setLevel(logging.WARNING)     # Instructor logs
-logging.getLogger("httpcore").setLevel(logging.WARNING)       # HTTP core logs
-logging.getLogger("urllib3").setLevel(logging.WARNING)        # urllib3 connection logs
+logging.getLogger("httpx").setLevel(logging.WARNING)           
+logging.getLogger("utils.cacheManager").setLevel(logging.WARNING)
 
 # Nederlands or Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -582,8 +579,8 @@ class SpellChecker:
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
         self.stats['unique_oov_words'] = len(unique_oov_words)
-        self.verbose_reporter.stat_line(f"OOV words identified: {len(unique_oov_words)} unique terms")
-        self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
+        #self.verbose_reporter.stat_line(f"OOV words identified: {len(unique_oov_words)} unique terms")
+        #self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
     
         # Step 2: Get suggestions for unique OOV words only
         if unique_oov_words:
@@ -621,22 +618,7 @@ class SpellChecker:
         stats.end_timing()
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration()
-        
-        # Report comprehensive diagnostic statistics
-        self.verbose_reporter.stat_line(f"Corrections applied: {corrections_made} changes")
-        self.verbose_reporter.stat_line(f"Dictionary verifications: {self.stats['dictionary_verifications']}")
-        self.verbose_reporter.stat_line(f"LLM calls made: {self.stats['llm_calls_made']}")
-        
-        # Detailed diagnostic breakdown
-        self.verbose_reporter.stat_line("--- OOV Processing Diagnostic ---")
-        self.verbose_reporter.stat_line(f"OOV words found: {self.stats['oov_words_found']} total")
-        self.verbose_reporter.stat_line(f"Unique OOV words: {self.stats['unique_oov_words']}")
-        self.verbose_reporter.stat_line(f"OOV words in tasks: {self.stats['oov_words_in_tasks']}")
-        self.verbose_reporter.stat_line(f"Missing from tasks: {self.stats['unique_oov_words'] - self.stats['oov_words_in_tasks']}")
-        self.verbose_reporter.stat_line(f"Responses with tasks: {self.stats['responses_with_tasks']}")
-        self.verbose_reporter.stat_line(f"Tasks filtered out: {self.stats['tasks_filtered_out']}")
-        self.verbose_reporter.stat_line(f"LLM calls successful: {self.stats['llm_calls_successful']}")
-        self.verbose_reporter.stat_line(f"LLM calls failed: {self.stats['llm_calls_failed']}")
+
         self.verbose_reporter.stat_line(f"Corrections attempted: {self.stats['corrections_attempted']}")
         self.verbose_reporter.stat_line(f"Corrections applied: {self.stats['corrections_applied']}")
         self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
