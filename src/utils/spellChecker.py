@@ -103,9 +103,18 @@ class SpellChecker:
         self.stats = {
             'words_checked': 0,
             'oov_words_found': 0,
-            'corrections_applied': 0,
-            'dictionary_verifications': 0,
+            'unique_oov_words': 0,
+            'oov_words_in_tasks': 0,
+            'responses_with_tasks': 0,
+            'tasks_filtered_out': 0,
             'llm_calls_made': 0,
+            'llm_calls_successful': 0,
+            'llm_calls_failed': 0,
+            'corrections_attempted': 0,
+            'corrections_applied': 0,
+            'corrections_rejected_validation': 0,
+            'corrections_no_response': 0,
+            'dictionary_verifications': 0,
             'processing_time': 0.0
         }
     
@@ -406,6 +415,17 @@ class SpellChecker:
                 repeated_char_pattern.match(task['oov_words']) or
                 (single_word_pattern.fullmatch(task['response']) and 'OOV' in task['suggestions'])) ]
         
+        # Track task creation and filtering stats
+        self.stats['responses_with_tasks'] = len(tasks)
+        self.stats['tasks_filtered_out'] = len(tasks) - len(filtered_tasks)
+        
+        # Count unique OOV words that made it into tasks
+        oov_words_in_tasks = set()
+        for task in filtered_tasks:
+            task_oov_words = [word.strip() for word in task['oov_words'].split(',')]
+            oov_words_in_tasks.update(task_oov_words)
+        self.stats['oov_words_in_tasks'] = len(oov_words_in_tasks)
+        
         batches = self.create_correction_batches(filtered_tasks, prompt_header, max_tokens, completion_reserve)
         
         async def process_batch(batch: SpellCorrectionBatch, var_lab: str, batch_index: int) -> Dict[str, str]:
@@ -455,20 +475,30 @@ class SpellChecker:
                 )
                 
                 corrections = response.corrections
+                self.stats['llm_calls_successful'] += 1
                 
             except Exception as e:
                 logger.error(f"LLM call failed for batch {batch_index}: {e}")
                 corrections = []
+                self.stats['llm_calls_failed'] += 1
             
             # Validation loop for corrections
             validated_corrections = {}
             for task in batch.tasks:
                 # Find corresponding correction
                 correction_text = task.original_response  # Default fallback
+                correction_found = False
                 
                 for corr in corrections:
                     if str(corr.respondent_id) == str(task.respondent_id):
                         candidate_correction = corr.corrected_response
+                        correction_found = True
+                        self.stats['corrections_attempted'] += 1
+                        
+                        # Check for "[NO RESPONSE]" cases
+                        if candidate_correction == "[NO RESPONSE]":
+                            self.stats['corrections_no_response'] += 1
+                            break
                         
                         # Validate correction quality
                         words_to_validate = task.oov_words.split(', ')
@@ -487,7 +517,13 @@ class SpellChecker:
                         if validation_passed:
                             correction_text = candidate_correction
                             self.stats['corrections_applied'] += 1
+                        else:
+                            self.stats['corrections_rejected_validation'] += 1
                         break
+                
+                # Track cases where LLM didn't return a correction for this task
+                if not correction_found:
+                    self.stats['corrections_attempted'] += 1
                 
                 validated_corrections[task.original_response] = correction_text
             
@@ -541,6 +577,7 @@ class SpellChecker:
             
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
+        self.stats['unique_oov_words'] = len(unique_oov_words)
         self.verbose_reporter.stat_line(f"OOV words identified: {len(unique_oov_words)} unique terms")
         self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
     
@@ -581,10 +618,25 @@ class SpellChecker:
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration()
         
-        # Report final statistics
+        # Report comprehensive diagnostic statistics
         self.verbose_reporter.stat_line(f"Corrections applied: {corrections_made} changes")
         self.verbose_reporter.stat_line(f"Dictionary verifications: {self.stats['dictionary_verifications']}")
         self.verbose_reporter.stat_line(f"LLM calls made: {self.stats['llm_calls_made']}")
+        
+        # Detailed diagnostic breakdown
+        self.verbose_reporter.stat_line("--- OOV Processing Diagnostic ---")
+        self.verbose_reporter.stat_line(f"OOV words found: {self.stats['oov_words_found']} total")
+        self.verbose_reporter.stat_line(f"Unique OOV words: {self.stats['unique_oov_words']}")
+        self.verbose_reporter.stat_line(f"OOV words in tasks: {self.stats['oov_words_in_tasks']}")
+        self.verbose_reporter.stat_line(f"Missing from tasks: {self.stats['unique_oov_words'] - self.stats['oov_words_in_tasks']}")
+        self.verbose_reporter.stat_line(f"Responses with tasks: {self.stats['responses_with_tasks']}")
+        self.verbose_reporter.stat_line(f"Tasks filtered out: {self.stats['tasks_filtered_out']}")
+        self.verbose_reporter.stat_line(f"LLM calls successful: {self.stats['llm_calls_successful']}")
+        self.verbose_reporter.stat_line(f"LLM calls failed: {self.stats['llm_calls_failed']}")
+        self.verbose_reporter.stat_line(f"Corrections attempted: {self.stats['corrections_attempted']}")
+        self.verbose_reporter.stat_line(f"Corrections applied: {self.stats['corrections_applied']}")
+        self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
+        self.verbose_reporter.stat_line(f"Corrections '[NO RESPONSE]': {self.stats['corrections_no_response']}")
         
         # Show correction examples in verbose mode
         if correction_examples:
