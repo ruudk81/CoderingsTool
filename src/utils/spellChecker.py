@@ -481,7 +481,7 @@ class SpellChecker:
                                 # Check if the replacement word is valid
                                 replaced_words = [w for w in candidate_correction.split() if w not in task.original_response.split()]
                                 for replaced_word in replaced_words:
-                                    is_valid = await self.verify_correction_with_dictionary(replaced_word.strip('.,!?;:"\\'()[]{}'))
+                                    is_valid = await self.verify_correction_with_dictionary(replaced_word.strip('.,!?;:"\'()[]{}'))
                                     if not is_valid:
                                         validation_passed = False
                                         break
@@ -569,8 +569,8 @@ class SpellChecker:
            
             # Track corrections for verbose output
             if response.original_response != corrected_response:
-                original_normalized = ' '.join([word.lower().strip('.,!?;:"\\'()[]{}') for word in response.original_response.split()])
-                corrected_normalized = ' '.join([word.lower().strip('.,!?;:"\\'()[]{}') for word in corrected_response.split()])
+                original_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in response.original_response.split()])
+                corrected_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in corrected_response.split()])
                 
                 if original_normalized != corrected_normalized:
                     corrections_made += 1
