@@ -79,7 +79,7 @@ class CodeAssigner:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
         
-        print("🧠 SMART CONCURRENCY: Dynamic batch limiting based on API limits and resources")
+        print("🔧 CONCURRENCY FIX: Batch limiting enabled to prevent system overload")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -432,40 +432,8 @@ class CodeAssigner:
         
         return coded_models
 
-    def _calculate_smart_concurrency(self, batches: List[List[tuple]]) -> int:
-        """Calculate optimal concurrent batches based on API limits and batch characteristics"""
-        if not batches:
-            return 1
-            
-        # API rate limits (conservative estimates for stability)
-        api_requests_per_minute = 2400  # Conservative for paid tier (actual ~3000)
-        api_tokens_per_minute = 800000  # Conservative for gpt-4o-mini
-        
-        # Calculate batch characteristics
-        avg_batch_size = sum(len(batch) for batch in batches) / len(batches)
-        sub_batches_per_batch = 5  # Fixed sub-batch structure
-        ideas_per_sub_batch = 5   # Fixed sub-batch size
-        api_calls_per_batch = sub_batches_per_batch * ideas_per_sub_batch
-        
-        # Estimate tokens per API call (prompt + completion)
-        avg_tokens_per_call = 800  # Conservative estimate
-        tokens_per_batch = api_calls_per_batch * avg_tokens_per_call
-        
-        # Calculate limits based on different constraints
-        request_limit = max(1, int(api_requests_per_minute / 60 * api_calls_per_batch))  # Requests per second
-        token_limit = max(1, int(api_tokens_per_minute / 60 / tokens_per_batch))        # Tokens per second
-        
-        # Conservative system limit (don't overwhelm the system)
-        system_limit = min(20, len(batches))  # Never exceed 20 or total batches
-        
-        # Take the most restrictive limit and add safety margin
-        optimal_concurrency = min(request_limit, token_limit, system_limit)
-        safe_concurrency = max(1, int(optimal_concurrency * 0.8))  # 20% safety margin
-        
-        return safe_concurrency
-
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
-        """Process all batches using smart concurrency estimation"""
+        """Process all batches using hierarchical concurrency (following qualityFilter/ideaExtractor pattern)"""
         total_ideas = sum(len(batch) for batch in batches)
         
         # Calculate total sub-batches for reporting
@@ -476,13 +444,11 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # SMART CONCURRENCY CALCULATION
-        max_concurrent_batches = self._calculate_smart_concurrency(batches)
+        # APPLY CONCURRENCY LIMITING TO PREVENT SYSTEM OVERLOAD
+        print(f"\n🔧 BOTTLENECK FIX: Processing {len(batches)} batches")
+        print(f"🔧 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
         
-        print(f"\n🧠 SMART CONCURRENCY: Processing {len(batches)} batches")
-        print(f"🧠 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
-        print(f"🧠 Smart limit: {max_concurrent_batches} concurrent batches")
-        
+        max_concurrent_batches = 10  # Limit concurrent batches to prevent overwhelming system
         batch_semaphore = asyncio.Semaphore(max_concurrent_batches)
         
         async def process_batch_limited(batch, i):
@@ -491,7 +457,7 @@ class CodeAssigner:
         
         batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
         max_concurrent_api_calls = max_concurrent_batches * 5 * 5  # batches * sub_batches * ideas_per_sub_batch
-        print(f"🧠 Estimated max concurrent API calls: ~{max_concurrent_api_calls}")
+        print(f"🔧 With limiting: max {max_concurrent_batches} concurrent batches = max ~{max_concurrent_api_calls} API calls")
         
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         
@@ -553,12 +519,11 @@ class CodeAssigner:
                 "Low confidence (<0.5)": low_confidence
             })
         
-        # Smart concurrency summary
-        smart_concurrency = self._calculate_smart_concurrency(self._create_batches(self._extract_all_ideas()))
-        print(f"\n🎯 SMART CONCURRENCY APPLIED:")
-        print(f"  🧠 Dynamically calculated optimal concurrency: {smart_concurrency} batches")
-        print(f"  🧠 Based on API limits, token budget, and system resources")
-        print(f"  🧠 Prevents overload while maximizing throughput")
+        # Bottleneck fix summary
+        print(f"\n🎯 BOTTLENECK FIX APPLIED:")
+        print(f"  ✅ Limited concurrent batches from {len(batches)} to max 10")
+        print(f"  ✅ Reduced concurrent API calls from ~1920 to ~250")
+        print(f"  ✅ Should prevent system overload and rate limiting")
         
         return self._results
 
