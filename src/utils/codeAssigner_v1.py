@@ -2,7 +2,6 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 import asyncio
 import nest_asyncio
-import time
 from typing import Dict, List, Optional
 import instructor
 from openai import AsyncOpenAI
@@ -29,8 +28,7 @@ class CodeAssignmentResponse(BaseModel):
 
 class CodeAssigner:
     """
-    High-performance code assigner with precomputed code embeddings:
-    - Precomputes code embeddings once during initialization
+    High-performance code assigner following qualityFilter/ideaExtractor patterns:
     - Hierarchical concurrency with unlimited batch-level parallelism
     - Sub-batch processing for improved throughput
     - No artificial delays between batches
@@ -61,11 +59,9 @@ class CodeAssigner:
         
         # Initialize embedder for similarity calculations
         embedding_config = EmbeddingConfig()
-        # Use larger batch size for one-time code embedding generation
-        embedding_config.batch_size = 100  # Increase for efficient one-time processing
         self.embedder = Embedder(config=embedding_config, verbose=False)
         
-        # Cache for code embeddings - will be precomputed
+        # Cache for code embeddings
         self._code_embeddings = None
         
         # Theme mapping for code-to-theme assignments
@@ -78,17 +74,6 @@ class CodeAssigner:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
 
-    async def initialize_code_embeddings(self):
-        """Initialize code embeddings once during setup - call this before processing"""
-        if self._code_embeddings is None:
-            self.verbose_reporter.stat_line(f"Precomputing embeddings for {len(self.codebook)} codes...")
-            start_time = time.time()
-            
-            # Use the existing method to generate embeddings
-            await self._get_code_embeddings()
-            
-            elapsed = time.time() - start_time
-            self.verbose_reporter.stat_line(f"Code embeddings computed in {elapsed:.2f}s")
 
     async def _get_code_embeddings(self):
         """Generate embeddings for all codes in the codebook for similarity matching"""
@@ -198,7 +183,7 @@ class CodeAssigner:
         if self.prompt_printer and not self._captured_prompt:
             self.prompt_printer.capture_prompt(
                 step_name="code_assignment",
-                utility_name="CodeAssigner",
+                utility_name="CodeAssignerV3",
                 prompt_content=prompt,
                 prompt_type="code_assignment",
                 metadata={
@@ -465,11 +450,11 @@ class CodeAssigner:
 
     async def assign_codes(self) -> List[models.CodeAssignedModel]:
         """Main method to assign codes to all ideas with high-performance processing"""
-        self.verbose_reporter.section_header("CODE ASSIGNMENT PROCESSING")
+        self.verbose_reporter.section_header("CODE ASSIGNMENT PROCESSING (V3 - Optimized)")
         
-        # Ensure code embeddings are initialized ONCE before any processing
-        if self._code_embeddings is None:
-            await self.initialize_code_embeddings()
+        # Initialize code embeddings
+        self.verbose_reporter.stat_line("Generating code embeddings for similarity matching...")
+        await self._get_code_embeddings()
         
         # Extract all ideas
         all_ideas = self._extract_all_ideas()
