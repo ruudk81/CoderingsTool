@@ -769,12 +769,18 @@ class CodeAssigner:
         estimated_tokens_per_call = 800
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
         
+        # LAUNCH RATE THROTTLING: Prevent overwhelming system with rapid launches
+        MIN_LAUNCH_INTERVAL = 0.5  # seconds between batch launches
+        last_launch_time = 0
+        
         # Track active batch tasks
         active_batch_tasks = {}  # batch_idx -> (task, start_time, requests, tokens)
         completed_batches = 0
         
         processing_start_time = asyncio.get_event_loop().time()
         last_status_time = processing_start_time
+        
+        print(f"🚦 LAUNCH THROTTLING: Minimum {MIN_LAUNCH_INTERVAL}s interval between batch launches")
         
         while batch_queue or active_batch_tasks:
             current_time = asyncio.get_event_loop().time()
@@ -805,12 +811,21 @@ class CodeAssigner:
             # Try to launch more batches while we have capacity
             batches_launched_this_cycle = 0
             while batch_queue:
+                # Check launch interval throttling first
+                time_since_last_launch = current_time - last_launch_time
+                if time_since_last_launch < MIN_LAUNCH_INTERVAL:
+                    # Too soon to launch next batch
+                    break
+                
                 # Check if we can launch the next batch
                 can_launch, status = self.rate_limiter.can_launch_batch(api_calls_per_batch, tokens_per_batch)
                 
                 if can_launch:
                     # Get next batch from queue
                     batch_idx, batch_data = batch_queue.popleft()
+                    
+                    # Record launch time for throttling
+                    last_launch_time = current_time
                     
                     # Record in rate limiter
                     self.rate_limiter.record_batch(api_calls_per_batch, tokens_per_batch)
@@ -827,6 +842,10 @@ class CodeAssigner:
                         print(f"🔄 Launched batch {batch_idx + 1}/{total_batches}")
                         print(f"   📊 Utilization: {capacity['requests_utilization']:.1f}% RPM, {capacity['tokens_utilization']:.1f}% TPM")
                         print(f"   📊 Active batches: {len(active_batch_tasks)}, Queue: {len(batch_queue)}")
+                        print(f"   🚦 Launch interval: {time_since_last_launch:.1f}s")
+                    
+                    # Only launch one batch per cycle to maintain interval
+                    break
                 else:
                     # No capacity for more batches right now
                     if batches_launched_this_cycle == 0 and current_time - last_status_time > 2.0:
@@ -849,6 +868,7 @@ class CodeAssigner:
         print(f"   ✅ Total batches processed: {completed_batches}/{total_batches}")
         print(f"   ⏱️  Total execution time: {total_time:.1f}s")
         print(f"   📊 Average throughput: {completed_batches/total_time:.1f} batches/second")
+        print(f"   🚦 Launch throttling: {MIN_LAUNCH_INTERVAL}s intervals prevented system overload")
         
         # Record aggregate performance for profiler
         if completed_batches > 0:
@@ -1037,10 +1057,11 @@ class CodeAssigner:
         print(f"  • Estimated batch duration: {estimated_batch_duration:.1f} seconds")
         print(f"  • Execution plan:")
         print(f"    - Continuous batch-by-batch processing")
-        print(f"    - Launch immediately when sliding window permits")
+        print(f"    - Launch throttling: minimum 0.5s intervals to prevent overload")
+        print(f"    - Sliding window rate limiting for API compliance")
         print(f"    - Maintain up to {max_concurrent} concurrent batches")
-        print(f"    - Predicted throughput: {effective_throughput:.1f} batches/second")
-        print(f"    - Predicted total time: {estimated_total_time:.1f} seconds")
+        print(f"    - Predicted throughput: {min(effective_throughput, 2.0):.1f} batches/second (throttled)")
+        print(f"    - Predicted total time: {max(estimated_total_time, total_batches * 0.5):.1f} seconds")
         
         return {
             "max_concurrent": max_concurrent,
