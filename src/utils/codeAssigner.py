@@ -609,23 +609,7 @@ class CodeAssigner:
         print(f"🚦 Mathematically determined: {wave_size} batches per wave, {stagger_delay}s stagger delay")
         
         # Always use staggered processing - this IS the optimal strategy
-        batch_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
-        
-        # Collect results from all batches
-        all_results = []
-        total_failures = 0
-        
-        for i, batch_result in enumerate(batch_results):
-            if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed completely: {str(batch_result)}")
-                total_failures += 1
-                continue
-            
-            # Add all results from this batch
-            all_results.extend(batch_result)
-        
-        if total_failures > 0:
-            print(f"{total_failures} out of {len(batches)} batches failed completely")
+        all_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
         
         return all_results
 
