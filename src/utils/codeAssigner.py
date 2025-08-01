@@ -17,13 +17,6 @@ import models
 from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
-# TEMPORARY: Import debugging tools
-try:
-    from .concurrency_debugger import ConcurrencyDebugger
-    DEBUGGING_ENABLED = True
-except ImportError:
-    DEBUGGING_ENABLED = False
-    print("Warning: Concurrency debugging not available")
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
@@ -86,14 +79,6 @@ class CodeAssigner:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
         
-        # TEMPORARY: Initialize debugger for bottleneck analysis
-        # Disabled temporarily due to async context manager issue
-        # if DEBUGGING_ENABLED:
-        #     self.debugger = ConcurrencyDebugger("codeAssigner")
-        #     print("🔍 DEBUGGING MODE: Concurrency tracking enabled")
-        # else:
-        #     self.debugger = None
-        self.debugger = None
         print("🔧 CONCURRENCY FIX: Batch limiting enabled to prevent system overload")
 
     async def initialize_code_embeddings(self):
@@ -237,29 +222,16 @@ class CodeAssigner:
                 assignment_confidence: float
                 assignment_rationale: str
             
-            # Track API call if debugging enabled
-            if self.debugger:
-                async with self.debugger.track_api_call(f"assign_{idea_id}", "llm_assignment"):
-                    llm_response = await self.client.chat.completions.create(
-                        model=self.config.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed,
-                        response_model=LLMCodeAssignmentResponse,
-                        max_retries=self.config.retries
-                    )
-            else:
-                # Use instructor's built-in retries
-                llm_response = await self.client.chat.completions.create(
-                    model=self.config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    seed=self.model_config.seed,
-                    response_model=LLMCodeAssignmentResponse,
-                    max_retries=self.config.retries
-                )
+            # Use instructor's built-in retries
+            llm_response = await self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                seed=self.model_config.seed,
+                response_model=LLMCodeAssignmentResponse,
+                max_retries=self.config.retries
+            )
             
             # Add theme assignments based on assigned codes
             assigned_themes = self._assign_themes_to_codes(llm_response.assigned_codes)
@@ -304,21 +276,11 @@ class CodeAssigner:
 
     async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int) -> List[CodeAssignmentResponse]:
         """Process a single sub-batch of ideas"""
-        sub_batch_id = f"batch_{batch_index}_sub_{sub_batch_index}"
+        # Create tasks for all ideas in this sub-batch
+        tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
         
-        if self.debugger:
-            async with self.debugger.track_sub_batch(sub_batch_id, len(sub_batch)):
-                # Create tasks for all ideas in this sub-batch
-                tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
-                
-                # Process all ideas in sub-batch concurrently
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-        else:
-            # Create tasks for all ideas in this sub-batch
-            tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
-            
-            # Process all ideas in sub-batch concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Process all ideas in sub-batch concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Handle results and exceptions
         sub_batch_results = []
@@ -340,36 +302,19 @@ class CodeAssigner:
         return sub_batch_results
 
     async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[CodeAssignmentResponse]:
-        """Process a single batch with hierarchical concurrency (following qualityFilter pattern)"""
-        batch_id = f"batch_{batch_index}"
+        """Process a single batch with hierarchical concurrency"""
+        # Split batch into sub-batches of 5 for better concurrency management
+        sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
         
-        if self.debugger:
-            async with self.debugger.track_batch(batch_id, len(batch)):
-                # Split batch into sub-batches of 5 for better concurrency management
-                sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
-                
-                if not sub_batches:
-                    return []
-                
-                # Level 2: Process all sub-batches within this batch concurrently
-                sub_batch_tasks = [
-                    self._process_sub_batch(sub_batch, batch_index, i) 
-                    for i, sub_batch in enumerate(sub_batches)
-                ]
-                sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
-        else:
-            # Split batch into sub-batches of 5 for better concurrency management
-            sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
-            
-            if not sub_batches:
-                return []
-            
-            # Level 2: Process all sub-batches within this batch concurrently
-            sub_batch_tasks = [
-                self._process_sub_batch(sub_batch, batch_index, i) 
-                for i, sub_batch in enumerate(sub_batches)
-            ]
-            sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
+        if not sub_batches:
+            return []
+        
+        # Level 2: Process all sub-batches within this batch concurrently
+        sub_batch_tasks = [
+            self._process_sub_batch(sub_batch, batch_index, i) 
+            for i, sub_batch in enumerate(sub_batches)
+        ]
+        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
         
         # Collect results from all sub-batches
         batch_results = []
