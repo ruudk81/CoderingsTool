@@ -757,8 +757,8 @@ class CodeAssigner:
         
         return coded_models
 
-    async def _process_batches_sliding_window(self, batches: List[List[tuple]], wave_size: int) -> List:
-        """Process batches using true sliding window rate limiting"""
+    async def _process_batches_concurrent_sliding_window(self, batches: List[List[tuple]], wave_size: int) -> List:
+        """Process batches using true concurrent sliding window rate limiting with overlapping waves"""
         all_results = []
         
         # Split batches into waves
@@ -767,79 +767,138 @@ class CodeAssigner:
             wave = batches[i:i + wave_size]
             waves.append(wave)
         
-        print(f"🔄 SLIDING WINDOW PROCESSING: {len(waves)} waves of up to {wave_size} batches each")
+        print(f"🔄 CONCURRENT SLIDING WINDOW: {len(waves)} waves with overlapping execution")
         
         # Calculate wave characteristics for rate limiting
         api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
         estimated_tokens_per_call = 800
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
         
-        # Process waves with sliding window compliance
-        for wave_idx, wave in enumerate(waves):
-            wave_requests = len(wave) * api_calls_per_batch
-            wave_tokens = len(wave) * tokens_per_batch
+        # Track active waves and results
+        active_wave_tasks = {}  # wave_id -> task
+        wave_results = {}  # wave_id -> results
+        wave_info = {}  # wave_id -> (wave_data, requests, tokens, start_time)
+        completed_waves = set()
+        
+        # Process waves with true concurrent overlapping
+        wave_queue = list(enumerate(waves))  # (wave_id, wave_data)
+        next_wave_idx = 0
+        
+        processing_start_time = asyncio.get_event_loop().time()
+        
+        while wave_queue or active_wave_tasks:
+            current_time = asyncio.get_event_loop().time()
             
-            # Check if we can launch immediately
-            can_launch, status = self.rate_limiter.can_launch_wave(wave_requests, wave_tokens)
-            
-            if can_launch:
-                print(f"🔄 Wave {wave_idx + 1}/{len(waves)} launching immediately")
-                print(f"   📊 Capacity: {status['requests_utilization']:.1f}% RPM, {status['tokens_utilization']:.1f}% TPM")
-            else:
-                # Calculate how long to wait
-                wait_time = self.rate_limiter.calculate_wait_time(wave_requests, wave_tokens)
-                if wait_time > 0:
-                    print(f"🔄 Wave {wave_idx + 1}/{len(waves)} waiting {wait_time:.1f}s for capacity")
-                    print(f"   📊 Current: {status['current_requests']} RPM, {status['current_tokens']} TPM")
-                    print(f"   📊 Would be: {status['requests_after_wave']} RPM, {status['tokens_after_wave']} TPM")
-                    await asyncio.sleep(wait_time)
+            # Try to launch new waves if capacity allows
+            while next_wave_idx < len(waves):
+                wave_idx = next_wave_idx
+                wave = waves[wave_idx]
+                wave_requests = len(wave) * api_calls_per_batch
+                wave_tokens = len(wave) * tokens_per_batch
+                
+                # Check if we can launch this wave now
+                can_launch, status = self.rate_limiter.can_launch_wave(wave_requests, wave_tokens)
+                
+                if can_launch:
+                    # Record the wave launch in rate limiter
+                    self.rate_limiter.record_wave(wave_requests, wave_tokens)
                     
-                    # Re-check after waiting
-                    can_launch, status = self.rate_limiter.can_launch_wave(wave_requests, wave_tokens)
-                    if not can_launch:
-                        print(f"⚠️  Wave {wave_idx + 1} still cannot launch after waiting - proceeding anyway")
+                    # Launch the wave task
+                    wave_start_time = asyncio.get_event_loop().time()
+                    print(f"🔄 Wave {wave_idx + 1}/{len(waves)} launching (concurrent)")
+                    print(f"   📊 Capacity: {status['requests_utilization']:.1f}% RPM, {status['tokens_utilization']:.1f}% TPM")
+                    print(f"   📊 Active waves: {len(active_wave_tasks)} running")
+                    
+                    # Create async task for this wave
+                    wave_task = asyncio.create_task(self._execute_single_wave(wave, wave_idx))
+                    active_wave_tasks[wave_idx] = wave_task
+                    wave_info[wave_idx] = (wave, wave_requests, wave_tokens, wave_start_time)
+                    
+                    next_wave_idx += 1
+                else:
+                    # Cannot launch more waves right now, break and wait for completions
+                    break
             
-            # Record the wave launch in rate limiter
-            self.rate_limiter.record_wave(wave_requests, wave_tokens)
+            # Wait for at least one wave to complete if we have active tasks
+            if active_wave_tasks:
+                # Wait for any wave to complete
+                done_tasks, pending_tasks = await asyncio.wait(
+                    active_wave_tasks.values(), 
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=0.1  # Short timeout to periodically check for new launches
+                )
+                
+                # Process completed waves
+                for completed_task in done_tasks:
+                    # Find which wave this task belongs to
+                    completed_wave_idx = None
+                    for wave_idx, task in active_wave_tasks.items():
+                        if task == completed_task:
+                            completed_wave_idx = wave_idx
+                            break
+                    
+                    if completed_wave_idx is not None:
+                        wave, wave_requests, wave_tokens, wave_start_time = wave_info[completed_wave_idx]
+                        wave_duration = asyncio.get_event_loop().time() - wave_start_time
+                        
+                        try:
+                            # Get the wave results
+                            wave_result = await completed_task
+                            all_results.extend(wave_result)
+                            
+                            print(f"🔄 Wave {completed_wave_idx + 1} completed in {wave_duration:.1f}s")
+                            
+                            # Record wave performance for future optimization
+                            actual_batch_count = len(wave)
+                            total_requests = sum(len(batch) for batch in wave) * 5  # 5 API calls per idea on average
+                            self.wave_profiler.record_wave(
+                                wave_size=len(wave),
+                                batch_count=actual_batch_count,
+                                duration=wave_duration,
+                                request_count=total_requests
+                            )
+                            
+                        except Exception as e:
+                            print(f"🔄 Wave {completed_wave_idx + 1} failed: {str(e)}")
+                        
+                        # Clean up completed wave
+                        del active_wave_tasks[completed_wave_idx]
+                        del wave_info[completed_wave_idx]
+                        completed_waves.add(completed_wave_idx)
+                        
+                        # Show current status after wave completion
+                        capacity_status = self.rate_limiter.get_capacity_status()
+                        print(f"🔄 Capacity freed: {capacity_status['requests_utilization']:.1f}% RPM, {capacity_status['tokens_utilization']:.1f}% TPM")
+                        print(f"🔄 Progress: {len(completed_waves)}/{len(waves)} waves completed, {len(active_wave_tasks)} active")
             
-            # Execute the wave
-            wave_start_time = asyncio.get_event_loop().time()
-            print(f"🔄 Executing wave {wave_idx + 1}/{len(waves)} ({len(wave)} batches)...")
-            
-            # Process all batches in this wave concurrently
-            wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
-            wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
-            
-            # Handle results and exceptions for this wave
-            wave_failures = 0
-            for i, result in enumerate(wave_results):
-                if isinstance(result, Exception):
-                    print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
-                    wave_failures += 1
-                    continue
-                all_results.extend(result)
-            
-            if wave_failures > 0:
-                print(f"🔄 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
-            
-            wave_duration = asyncio.get_event_loop().time() - wave_start_time
-            print(f"🔄 Wave {wave_idx+1} completed in {wave_duration:.1f}s")
-            
-            # Record wave performance for future optimization
-            actual_batch_count = len(wave)
-            total_requests = sum(len(batch) for batch in wave) * 5  # 5 API calls per idea on average
-            self.wave_profiler.record_wave(
-                wave_size=len(wave),
-                batch_count=actual_batch_count,
-                duration=wave_duration,
-                request_count=total_requests
-            )
-            
-            # Show current rate limiter status
-            capacity_status = self.rate_limiter.get_capacity_status()
-            print(f"🔄 Current utilization: {capacity_status['requests_utilization']:.1f}% RPM, {capacity_status['tokens_utilization']:.1f}% TPM")
+            # Brief pause to prevent tight loop
+            await asyncio.sleep(0.01)
+        
+        total_time = asyncio.get_event_loop().time() - processing_start_time
+        print(f"🔄 All waves completed in {total_time:.1f}s with concurrent overlapping execution")
         
         return all_results
+    
+    async def _execute_single_wave(self, wave: List[List[tuple]], wave_idx: int) -> List:
+        """Execute a single wave of batches"""
+        # Process all batches in this wave concurrently
+        wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
+        wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
+        
+        # Handle results and exceptions for this wave
+        wave_failures = 0
+        results = []
+        for i, result in enumerate(wave_results):
+            if isinstance(result, Exception):
+                print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
+                wave_failures += 1
+                continue
+            results.extend(result)
+        
+        if wave_failures > 0:
+            print(f"🔄 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
+        
+        return results
 
     async def _process_batches_staggered(self, batches: List[List[tuple]], wave_size: int, stagger_delay: int) -> List:
         """Process batches in staggered waves to respect rolling window rate limits"""
@@ -946,9 +1005,20 @@ class CodeAssigner:
         wave_requests = optimal_wave_size * api_calls_per_batch
         wave_tokens = optimal_wave_size * tokens_per_batch
         
-        # Estimate total time using empirical data
+        # Estimate total time using empirical data with concurrent overlapping
         estimated_wave_duration = self.wave_profiler.get_duration_estimate(optimal_wave_size)
-        estimated_total_time = num_waves * estimated_wave_duration  # No fixed delays!
+        
+        # For concurrent execution, total time is closer to the longest wave duration
+        # rather than sum of all wave durations (since they can overlap)
+        # Conservative estimate: assume some overlap but not complete parallelism
+        if num_waves <= 2:
+            # Few waves - limited overlap benefit
+            estimated_total_time = num_waves * estimated_wave_duration * 0.8
+        else:
+            # More waves - significant overlap potential
+            # Estimate: longest wave + 30% buffer for partial overlaps and capacity waits
+            estimated_total_time = estimated_wave_duration * 1.3
+        
         estimated_throughput = total_batches / estimated_total_time * 60 if estimated_total_time > 0 else 0
         
         # Display optimization results
@@ -963,9 +1033,10 @@ class CodeAssigner:
         print(f"  • Expected capacity usage: {(wave_requests/safe_requests_per_minute)*100:.1f}% RPM, {(wave_tokens/safe_tokens_per_minute)*100:.1f}% TPM")
         print(f"  • Execution plan:")
         print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
-        print(f"    - No fixed delays - launch when capacity allows")
+        print(f"    - Concurrent overlapping execution when capacity allows")
+        print(f"    - Launch waves as soon as sliding window permits")
         print(f"    - Predicted wave duration: {estimated_wave_duration:.1f} seconds")
-        print(f"    - Predicted total time: {estimated_total_time:.1f} seconds")
+        print(f"    - Predicted total time (with overlaps): {estimated_total_time:.1f} seconds")
         print(f"    - Predicted throughput: {estimated_throughput:.1f} batches/minute")
         
         return optimal_wave_size
@@ -988,8 +1059,8 @@ class CodeAssigner:
         print(f"\n🔄 EXECUTING SLIDING WINDOW STRATEGY: {len(batches)} batches")
         print(f"🔄 Optimal wave size: {wave_size} batches, dynamic timing based on capacity")
         
-        # Use sliding window processing for maximum throughput
-        all_results = await self._process_batches_sliding_window(batches, wave_size)
+        # Use concurrent sliding window processing for maximum throughput
+        all_results = await self._process_batches_concurrent_sliding_window(batches, wave_size)
         
         return all_results
 
