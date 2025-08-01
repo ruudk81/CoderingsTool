@@ -691,10 +691,16 @@ class CodeAssigner:
                 request_count=total_requests
             )
             
-            # Apply stagger delay before next wave (except for last wave)
+            # Apply execution-aware stagger delay before next wave (except for last wave)
             if wave_idx < len(waves) - 1:
-                print(f"🚦 Waiting {stagger_delay}s before next wave...")
-                await asyncio.sleep(stagger_delay)
+                # Only wait if execution time was less than required stagger interval
+                remaining_delay = max(0, stagger_delay - wave_duration)
+                if remaining_delay > 0:
+                    print(f"🚦 Waiting {remaining_delay:.1f}s to maintain {stagger_delay}s intervals...")
+                    await asyncio.sleep(remaining_delay)
+                else:
+                    print(f"🚦 No wait needed - wave duration ({wave_duration:.1f}s) ≥ interval ({stagger_delay}s)")
+                    print(f"🚦 Next wave can start immediately")
         
         return all_results
 
@@ -780,7 +786,16 @@ class CodeAssigner:
                     # Use EMPIRICAL execution time estimates
                     wave_execution_time = estimate_wave_duration(wave_size)
                     num_waves = (total_batches + wave_size - 1) // wave_size  # Ceiling division
-                    total_processing_time = (num_waves - 1) * min_delay + wave_execution_time
+                    
+                    # Calculate total time with execution-aware stagger delays
+                    # Only wait for remainder if wave execution < stagger delay
+                    total_stagger_time = 0
+                    for i in range(num_waves - 1):  # All waves except last
+                        wait_time = max(0, min_delay - wave_execution_time)
+                        total_stagger_time += wait_time
+                    
+                    # Total time = all wave executions + actual stagger waits
+                    total_processing_time = num_waves * wave_execution_time + total_stagger_time
                     
                     if total_processing_time < best_total_time:
                         best_total_time = total_processing_time
@@ -826,7 +841,8 @@ class CodeAssigner:
         print(f"    - Rolling window: {peak_rpm_usage} RPM ({peak_rpm_usage/safe_requests_per_minute*100:.1f}%), {peak_tpm_usage} TPM ({peak_tpm_usage/safe_tokens_per_minute*100:.1f}%) ✅")
         print(f"  • Execution plan:")
         print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
-        print(f"    - {optimal_stagger_delay}s interval between wave starts")
+        print(f"    - {optimal_stagger_delay}s minimum interval between wave starts")
+        print(f"    - Execution-aware delays: only wait if wave < {optimal_stagger_delay}s")
         print(f"    - Predicted total time: {optimal_total_time:.1f} seconds")
         print(f"    - Predicted throughput: {actual_batches_per_minute:.1f} batches/minute")
         
