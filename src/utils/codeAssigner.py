@@ -494,37 +494,49 @@ class CodeAssigner:
         safe_requests_per_minute = int(rate_limits.requests_per_minute * 0.8)
         safe_tokens_per_minute = int(rate_limits.tokens_per_minute * 0.8)
         
-        # STEP 1: Calculate maximum safe wave size based on 6-second burst windows
-        # Using 60/10 = 6-second intervals as sliding window granularity
-        burst_window_seconds = 6
-        requests_per_burst_window = safe_requests_per_minute * (burst_window_seconds / 60)
-        tokens_per_burst_window = safe_tokens_per_minute * (burst_window_seconds / 60)
+        # STEP 1: Find optimal wave size and stagger delay combination
+        # We need to solve: ⌊60/D⌋ × R ≤ RPM AND ⌊60/D⌋ × T ≤ TPM
+        # Where R = requests per wave, T = tokens per wave, D = stagger delay
         
-        # Maximum batches we can process in one 6-second burst
-        max_wave_size_requests = int(requests_per_burst_window // api_calls_per_batch)
-        max_wave_size_tokens = int(tokens_per_burst_window // tokens_per_batch)
-        optimal_wave_size = min(max_wave_size_requests, max_wave_size_tokens, total_batches)
-        optimal_wave_size = max(1, optimal_wave_size)  # Ensure at least 1
-        
-        # STEP 2: Calculate minimum stagger delay for 60-second rolling window compliance
-        # Using formula: R × floor(60/D) ≤ T
-        wave_requests = optimal_wave_size * api_calls_per_batch
-        wave_tokens = optimal_wave_size * tokens_per_batch
-        
-        def find_min_stagger_delay(requests_per_wave, tokens_per_wave, rpm_limit, tpm_limit):
-            """Find minimum delay D such that both request and token limits are respected"""
-            for delay in range(6, 61):  # Start from 6 seconds minimum
-                waves_in_60s = 60 // delay
-                total_requests_in_60s = requests_per_wave * waves_in_60s
-                total_tokens_in_60s = tokens_per_wave * waves_in_60s
+        def find_optimal_strategy(rpm_limit, tpm_limit, requests_per_batch, tokens_per_batch, max_batches):
+            """Find optimal wave size and stagger delay that maximizes throughput"""
+            best_throughput = 0
+            best_wave_size = 1
+            best_delay = 60
+            
+            # Try different wave sizes from 1 to max possible
+            max_possible_wave_size = min(max_batches, rpm_limit // requests_per_batch, tpm_limit // tokens_per_batch)
+            
+            for wave_size in range(1, max_possible_wave_size + 1):
+                wave_requests = wave_size * requests_per_batch
+                wave_tokens = wave_size * tokens_per_batch
                 
-                if total_requests_in_60s <= rpm_limit and total_tokens_in_60s <= tpm_limit:
-                    return delay
-            return 60  # Fallback: maximum possible delay
+                # Find minimum delay for this wave size using rolling window constraint
+                min_delay = None
+                for delay in range(1, 61):  # Try delays from 1 to 60 seconds
+                    waves_in_60s = 60 // delay
+                    total_requests_in_60s = wave_requests * waves_in_60s
+                    total_tokens_in_60s = wave_tokens * waves_in_60s
+                    
+                    if total_requests_in_60s <= rpm_limit and total_tokens_in_60s <= tpm_limit:
+                        min_delay = delay
+                        break
+                
+                if min_delay is not None:
+                    # Calculate throughput: batches per minute
+                    waves_per_minute = 60 / min_delay
+                    batches_per_minute = wave_size * waves_per_minute
+                    
+                    if batches_per_minute > best_throughput:
+                        best_throughput = batches_per_minute
+                        best_wave_size = wave_size
+                        best_delay = min_delay
+                        
+            return best_wave_size, best_delay, best_throughput
         
-        optimal_stagger_delay = find_min_stagger_delay(
-            wave_requests, wave_tokens, 
-            safe_requests_per_minute, safe_tokens_per_minute
+        optimal_wave_size, optimal_stagger_delay, max_throughput = find_optimal_strategy(
+            safe_requests_per_minute, safe_tokens_per_minute, 
+            api_calls_per_batch, tokens_per_batch, total_batches
         )
         
         # STEP 3: Calculate processing metrics
@@ -532,22 +544,29 @@ class CodeAssigner:
         wave_processing_time = 6  # Time for each wave to complete
         total_processing_time = (num_waves - 1) * optimal_stagger_delay + wave_processing_time
         
-        # Debug information - pure mathematical analysis
+        # Calculate wave metrics for display
+        wave_requests = optimal_wave_size * api_calls_per_batch
+        wave_tokens = optimal_wave_size * tokens_per_batch
+        waves_in_60s = 60 // optimal_stagger_delay
+        peak_rpm_usage = wave_requests * waves_in_60s
+        peak_tpm_usage = wave_tokens * waves_in_60s
+        
+        # Debug information - technically precise analysis
         print(f"🚦 Mathematical optimization for {self.config.model}:")
-        print(f"  • Model limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
-        print(f"  • Safety margins: {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM (80%)")
+        print(f"  • OpenAI rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
+        print(f"  • Safety margins (80%): {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM")
         print(f"  • Data to process: {total_batches} batches ({total_batches * api_calls_per_batch} total requests)")
-        print(f"  • Burst window analysis (6-second windows):")
-        print(f"    - Safe requests per 6s: {requests_per_burst_window:.0f}")
-        print(f"    - Safe tokens per 6s: {tokens_per_burst_window:.0f}")
-        print(f"    - Max batches per wave: {optimal_wave_size} ({wave_requests} requests, {wave_tokens} tokens)")
-        print(f"  • Rolling window analysis (60-second compliance):")
-        print(f"    - Minimum stagger delay: {optimal_stagger_delay} seconds")
-        print(f"    - Waves in 60s window: {60 // optimal_stagger_delay}")
-        print(f"    - Peak usage: {wave_requests * (60 // optimal_stagger_delay)} RPM, {wave_tokens * (60 // optimal_stagger_delay)} TPM")
+        print(f"  • Optimization constraint: ⌊60/D⌋ × R ≤ RPM AND ⌊60/D⌋ × T ≤ TPM")
+        print(f"  • Optimal solution:")
+        print(f"    - Wave size: {optimal_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
+        print(f"    - Stagger delay: {optimal_stagger_delay} seconds")
+        print(f"    - Max throughput: {max_throughput:.1f} batches/minute")
+        print(f"  • Rolling window compliance verification:")
+        print(f"    - Waves in 60s: ⌊60/{optimal_stagger_delay}⌋ = {waves_in_60s}")
+        print(f"    - Peak usage: {peak_rpm_usage} RPM ({peak_rpm_usage/safe_requests_per_minute*100:.1f}%), {peak_tpm_usage} TPM ({peak_tpm_usage/safe_tokens_per_minute*100:.1f}%)")
         print(f"  • Execution plan:")
         print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
-        print(f"    - {optimal_stagger_delay}s delay between waves")
+        print(f"    - {optimal_stagger_delay}s interval between wave starts")
         print(f"    - Total processing time: {total_processing_time:.1f} seconds")
         
         return optimal_wave_size, optimal_stagger_delay
