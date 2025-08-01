@@ -444,9 +444,6 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # APPLY CONCURRENCY LIMITING TO PREVENT SYSTEM OVERLOAD
-        print(f"\n🔧 BOTTLENECK FIX: Processing {len(batches)} batches")
-        print(f"🔧 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
         
         max_concurrent_batches = 10  # Limit concurrent batches to prevent overwhelming system
         batch_semaphore = asyncio.Semaphore(max_concurrent_batches)
@@ -457,7 +454,7 @@ class CodeAssigner:
         
         batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
         max_concurrent_api_calls = max_concurrent_batches * 5 * 5  # batches * sub_batches * ideas_per_sub_batch
-        print(f"🔧 With limiting: max {max_concurrent_batches} concurrent batches = max ~{max_concurrent_api_calls} API calls")
+        print(f"max {max_concurrent_batches} concurrent batches = max ~{max_concurrent_api_calls} API calls")
         
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         
@@ -518,12 +515,6 @@ class CodeAssigner:
                 "High confidence (≥0.7)": high_confidence,
                 "Low confidence (<0.5)": low_confidence
             })
-        
-        # Bottleneck fix summary
-        print(f"\n🎯 BOTTLENECK FIX APPLIED:")
-        print(f"  ✅ Limited concurrent batches from {len(batches)} to max 10")
-        print(f"  ✅ Reduced concurrent API calls from ~1920 to ~250")
-        print(f"  ✅ Should prevent system overload and rate limiting")
         
         return self._results
 
