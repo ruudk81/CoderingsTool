@@ -3,13 +3,16 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import asyncio
 import nest_asyncio
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import instructor
 from openai import AsyncOpenAI
 import tiktoken
 from pydantic import BaseModel
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from dataclasses import dataclass, field
+from pathlib import Path
+import json
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
@@ -19,6 +22,202 @@ from utils.embedder import Embedder
 
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+
+@dataclass
+class WavePerformanceRecord:
+    """Record of a wave execution for performance profiling"""
+    wave_size: int
+    batch_count: int
+    duration: float
+    timestamp: float
+    token_count: Optional[int] = None
+    request_count: Optional[int] = None
+
+@dataclass
+class WaveProfiler:
+    """Empirical wave performance measurement and prediction system"""
+    measurements: List[WavePerformanceRecord] = field(default_factory=list)
+    cache_file: Optional[Path] = None
+    ema_alpha: float = 0.3  # Exponential moving average smoothing factor
+    
+    def __post_init__(self):
+        """Load historical measurements if cache file exists"""
+        if self.cache_file and self.cache_file.exists():
+            self.load_measurements()
+    
+    def record_wave(self, wave_size: int, batch_count: int, duration: float, 
+                   token_count: Optional[int] = None, request_count: Optional[int] = None):
+        """Record a wave execution for future prediction"""
+        record = WavePerformanceRecord(
+            wave_size=wave_size,
+            batch_count=batch_count,
+            duration=duration,
+            timestamp=time.time(),
+            token_count=token_count,
+            request_count=request_count
+        )
+        self.measurements.append(record)
+        
+        # Log for analysis
+        print(f"WAVE_PROFILE: size={wave_size}, batches={batch_count}, "
+              f"duration={duration:.2f}s, throughput={batch_count/duration:.1f} batches/s")
+        
+        # Persist if cache file configured
+        if self.cache_file:
+            self.save_measurements()
+    
+    def get_duration_estimate(self, wave_size: int) -> float:
+        """Get empirical duration estimate for a wave size"""
+        if not self.measurements:
+            # Fallback to original linear model if no data
+            return 4.0 + wave_size * 0.25
+        
+        # Find measurements for similar wave sizes (±20% tolerance)
+        tolerance = max(1, int(wave_size * 0.2))
+        similar_measurements = [
+            m for m in self.measurements 
+            if abs(m.wave_size - wave_size) <= tolerance
+        ]
+        
+        if similar_measurements:
+            # Use recent measurements with exponential moving average
+            recent_measurements = sorted(similar_measurements, key=lambda x: x.timestamp)[-5:]
+            if len(recent_measurements) == 1:
+                return recent_measurements[0].duration
+            
+            # Apply EMA to recent measurements
+            ema_duration = recent_measurements[0].duration
+            for measurement in recent_measurements[1:]:
+                ema_duration = self.ema_alpha * measurement.duration + (1 - self.ema_alpha) * ema_duration
+            return ema_duration
+        
+        # Interpolate/extrapolate from existing data
+        return self._interpolate_duration(wave_size)
+    
+    def _interpolate_duration(self, wave_size: int) -> float:
+        """Interpolate duration estimate from existing measurements"""
+        if len(self.measurements) < 2:
+            return 4.0 + wave_size * 0.25  # Fallback
+        
+        # Simple linear interpolation between closest measurements
+        sorted_measurements = sorted(self.measurements, key=lambda x: x.wave_size)
+        
+        # Find bounding measurements
+        smaller = [m for m in sorted_measurements if m.wave_size <= wave_size]
+        larger = [m for m in sorted_measurements if m.wave_size > wave_size]
+        
+        if smaller and larger:
+            # Interpolate between bounds
+            lower = smaller[-1]  # Largest smaller measurement
+            upper = larger[0]   # Smallest larger measurement
+            
+            if lower.wave_size == upper.wave_size:
+                return lower.duration
+            
+            # Linear interpolation
+            ratio = (wave_size - lower.wave_size) / (upper.wave_size - lower.wave_size)
+            return lower.duration + ratio * (upper.duration - lower.duration)
+        
+        elif smaller:
+            # Extrapolate from trend of recent measurements
+            recent = sorted_measurements[-3:]  # Use last 3 measurements
+            if len(recent) >= 2:
+                # Calculate trend
+                size_diff = recent[-1].wave_size - recent[0].wave_size
+                duration_diff = recent[-1].duration - recent[0].duration
+                if size_diff > 0:
+                    trend = duration_diff / size_diff
+                    return recent[-1].duration + trend * (wave_size - recent[-1].wave_size)
+            
+            # Fallback: use most recent similar measurement
+            return smaller[-1].duration
+        
+        else:
+            # All measurements are larger, use smallest
+            return larger[0].duration
+    
+    def get_optimal_wave_size(self, time_budget: float, max_wave_size: int) -> int:
+        """Find optimal wave size within time budget based on empirical data"""
+        best_size = 1
+        best_efficiency = 0.0
+        
+        for size in range(1, min(max_wave_size + 1, 51)):  # Test up to reasonable limit
+            estimated_duration = self.get_duration_estimate(size)
+            if estimated_duration <= time_budget:
+                efficiency = size / estimated_duration  # batches per second
+                if efficiency > best_efficiency:
+                    best_efficiency = efficiency
+                    best_size = size
+            else:
+                break  # Larger sizes will exceed budget
+        
+        return best_size
+    
+    def get_performance_summary(self) -> Dict:
+        """Get summary statistics of wave performance"""
+        if not self.measurements:
+            return {"total_measurements": 0}
+        
+        durations = [m.duration for m in self.measurements]
+        wave_sizes = [m.wave_size for m in self.measurements]
+        
+        return {
+            "total_measurements": len(self.measurements),
+            "wave_size_range": f"{min(wave_sizes)}-{max(wave_sizes)}",
+            "duration_range": f"{min(durations):.1f}-{max(durations):.1f}s",
+            "avg_duration": f"{np.mean(durations):.1f}s",
+            "avg_throughput": f"{np.mean([m.batch_count/m.duration for m in self.measurements]):.1f} batches/s"
+        }
+    
+    def save_measurements(self):
+        """Save measurements to cache file"""
+        if not self.cache_file:
+            return
+        
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "measurements": [
+                {
+                    "wave_size": m.wave_size,
+                    "batch_count": m.batch_count,
+                    "duration": m.duration,
+                    "timestamp": m.timestamp,
+                    "token_count": m.token_count,
+                    "request_count": m.request_count
+                }
+                for m in self.measurements
+            ]
+        }
+        
+        with open(self.cache_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    
+    def load_measurements(self):
+        """Load measurements from cache file"""
+        if not self.cache_file or not self.cache_file.exists():
+            return
+        
+        try:
+            with open(self.cache_file, 'r') as f:
+                data = json.load(f)
+            
+            self.measurements = [
+                WavePerformanceRecord(
+                    wave_size=m["wave_size"],
+                    batch_count=m["batch_count"],
+                    duration=m["duration"],
+                    timestamp=m["timestamp"],
+                    token_count=m.get("token_count"),
+                    request_count=m.get("request_count")
+                )
+                for m in data.get("measurements", [])
+            ]
+            
+            print(f"📊 Loaded {len(self.measurements)} wave performance measurements from cache")
+            
+        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+            print(f"Warning: Could not load wave performance cache: {e}")
+            self.measurements = []
 
 class CodeAssignmentResponse(BaseModel):
     idea_id: str
@@ -79,7 +278,20 @@ class CodeAssigner:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
         
-        print("🚦 WAVE OPTIMIZATION: OpenAI rolling window-aware staggered processing enabled")
+        # Initialize wave performance profiler with cache persistence
+        cache_dir = Path.home() / ".cache" / "coderingsTool" / "wave_performance"
+        cache_file = cache_dir / f"wave_perf_{self.config.model.replace('/', '_')}.json"
+        self.wave_profiler = WaveProfiler(cache_file=cache_file)
+        
+        # Show profiler status
+        perf_summary = self.wave_profiler.get_performance_summary()
+        if perf_summary["total_measurements"] > 0:
+            print(f"📊 EMPIRICAL OPTIMIZATION: Loaded {perf_summary['total_measurements']} wave measurements")
+            print(f"📊 Performance history: {perf_summary['wave_size_range']} waves, {perf_summary['duration_range']}")
+        else:
+            print("📊 EMPIRICAL OPTIMIZATION: No historical data - will learn from this run")
+        
+        print("🚦 DATA-DRIVEN OPTIMIZATION: Wave sizing based on measured performance enabled")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -469,6 +681,16 @@ class CodeAssigner:
             wave_duration = asyncio.get_event_loop().time() - wave_start_time
             print(f"🚦 Wave {wave_idx+1} completed in {wave_duration:.1f}s")
             
+            # Record wave performance for future optimization
+            actual_batch_count = len(wave)
+            total_requests = sum(len(batch) for batch in wave) * 5  # 5 API calls per idea on average
+            self.wave_profiler.record_wave(
+                wave_size=len(wave),
+                batch_count=actual_batch_count,
+                duration=wave_duration,
+                request_count=total_requests
+            )
+            
             # Apply stagger delay before next wave (except for last wave)
             if wave_idx < len(waves) - 1:
                 print(f"🚦 Waiting {stagger_delay}s before next wave...")
@@ -477,7 +699,7 @@ class CodeAssigner:
         return all_results
 
     def _calculate_optimal_processing_strategy(self, batches: List[List[tuple]]) -> tuple:
-        """Calculate mathematically optimal processing strategy based purely on data and model limits"""
+        """Calculate empirically-driven processing strategy based on measured performance and rate limits"""
         if not batches:
             return 1, 6  # Minimum case
             
@@ -494,37 +716,58 @@ class CodeAssigner:
         safe_requests_per_minute = int(rate_limits.requests_per_minute * 0.8)
         safe_tokens_per_minute = int(rate_limits.tokens_per_minute * 0.8)
         
+        # Get profiler performance summary
+        perf_summary = self.wave_profiler.get_performance_summary()
+        
+        print(f"📊 EMPIRICAL OPTIMIZATION: Using {perf_summary.get('total_measurements', 0)} historical measurements")
+        
         # STEP 1: Find optimal wave size and stagger delay combination
         # We need to solve: ⌊60/D⌋ × R ≤ RPM AND ⌊60/D⌋ × T ≤ TPM
         # Where R = requests per wave, T = tokens per wave, D = stagger delay
         
         def estimate_wave_duration(wave_size):
-            """Estimate actual processing time for a wave based on empirical data"""
-            # Base latency + scaling factor for concurrent load
-            # Based on observation: small waves ~6s, larger waves scale with system bottlenecks
-            base_time = 4  # Minimum processing time
-            scaling_factor = 0.25  # Additional time per batch in wave
-            return base_time + wave_size * scaling_factor
+            """Estimate actual processing time using empirical data from profiler"""
+            return self.wave_profiler.get_duration_estimate(wave_size)
         
         def find_optimal_strategy(rpm_limit, tpm_limit, requests_per_batch, tokens_per_batch, total_batches):
-            """Find optimal wave size and stagger delay that minimizes total processing time"""
+            """Find optimal wave size and stagger delay using empirical data and burst window compliance"""
             best_total_time = float('inf')
             best_wave_size = 1
             best_delay = 60
             best_execution_time = 6
             
-            # Try different wave sizes from 1 to max possible
-            max_possible_wave_size = min(total_batches, rpm_limit // requests_per_batch, tpm_limit // tokens_per_batch)
-            # Cap at reasonable limit to avoid system overload
-            max_possible_wave_size = min(max_possible_wave_size, 50)
+            # BURST WINDOW COMPLIANCE: Calculate max wave size for 6-second bursts
+            # Conservative: assume 6-second burst window allows ~10% of minute capacity
+            burst_request_capacity = int(rpm_limit * 0.1)  # 10% of minute capacity in 6s
+            max_burst_wave_size = max(1, burst_request_capacity // requests_per_batch)
+            
+            # Rolling window capacity (existing logic)
+            max_rolling_wave_size = min(total_batches, rpm_limit // requests_per_batch, tpm_limit // tokens_per_batch)
+            
+            # Conservative approach: use smaller of burst and rolling limits
+            max_possible_wave_size = min(max_burst_wave_size, max_rolling_wave_size)
+            
+            # Additional safety cap based on historical performance
+            if perf_summary.get('total_measurements', 0) > 0:
+                # If we have data, be more conservative to avoid superlinear slowdown
+                max_possible_wave_size = min(max_possible_wave_size, 20)
+            else:
+                # If no data, start very conservatively
+                max_possible_wave_size = min(max_possible_wave_size, 8)
+            
+            print(f"📊 Wave size constraints: burst_limit={max_burst_wave_size}, rolling_limit={max_rolling_wave_size}, final_max={max_possible_wave_size}")
             
             for wave_size in range(1, max_possible_wave_size + 1):
                 wave_requests = wave_size * requests_per_batch
                 wave_tokens = wave_size * tokens_per_batch
                 
+                # Burst window compliance check (6-second windows)
+                if wave_requests > burst_request_capacity:
+                    continue  # Skip this wave size - exceeds burst capacity
+                
                 # Find minimum delay for this wave size using rolling window constraint
                 min_delay = None
-                for delay in range(1, 61):  # Try delays from 1 to 60 seconds
+                for delay in range(6, 61):  # Start at 6s minimum for burst window compliance
                     waves_in_60s = 60 // delay
                     total_requests_in_60s = wave_requests * waves_in_60s
                     total_tokens_in_60s = wave_tokens * waves_in_60s
@@ -534,7 +777,7 @@ class CodeAssigner:
                         break
                 
                 if min_delay is not None:
-                    # Calculate ACTUAL total processing time (not theoretical throughput)
+                    # Use EMPIRICAL execution time estimates
                     wave_execution_time = estimate_wave_duration(wave_size)
                     num_waves = (total_batches + wave_size - 1) // wave_size  # Ceiling division
                     total_processing_time = (num_waves - 1) * min_delay + wave_execution_time
@@ -566,27 +809,26 @@ class CodeAssigner:
         theoretical_batches_per_minute = optimal_wave_size * (60 / optimal_stagger_delay)
         actual_batches_per_minute = total_batches / optimal_total_time * 60
         
-        # Debug information - execution-time-aware analysis
-        print(f"🚦 Execution-time-aware optimization for {self.config.model}:")
+        # Debug information - empirical optimization analysis
+        data_source = "EMPIRICAL" if perf_summary.get('total_measurements', 0) > 0 else "FALLBACK LINEAR"
+        print(f"📊 Data-driven optimization for {self.config.model}:")
         print(f"  • OpenAI rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
         print(f"  • Safety margins (80%): {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM")
         print(f"  • Data to process: {total_batches} batches ({total_batches * api_calls_per_batch} total requests)")
-        print(f"  • Optimization objective: Minimize total processing time (not just rate limit compliance)")
-        print(f"  • Wave execution time model: {optimal_execution_time:.1f}s = 4 + {optimal_wave_size} × 0.25")
+        print(f"  • Wave execution model: {data_source} (from {perf_summary.get('total_measurements', 0)} measurements)")
+        print(f"  • Burst window compliance: 6-second windows, max {int(safe_requests_per_minute * 0.1)} requests per burst")
         print(f"  • Optimal solution:")
         print(f"    - Wave size: {optimal_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
         print(f"    - Stagger delay: {optimal_stagger_delay} seconds")
-        print(f"    - Wave execution time: {optimal_execution_time:.1f} seconds")
-        print(f"  • Rolling window compliance verification:")
-        print(f"    - Waves in 60s: ⌊60/{optimal_stagger_delay}⌋ = {waves_in_60s}")
-        print(f"    - Peak usage: {peak_rpm_usage} RPM ({peak_rpm_usage/safe_requests_per_minute*100:.1f}%), {peak_tpm_usage} TPM ({peak_tpm_usage/safe_tokens_per_minute*100:.1f}%)")
-        print(f"  • Performance comparison:")
-        print(f"    - Theoretical throughput: {theoretical_batches_per_minute:.1f} batches/minute (ignoring execution time)")
-        print(f"    - Actual throughput: {actual_batches_per_minute:.1f} batches/minute (including execution time)")
+        print(f"    - Predicted wave execution time: {optimal_execution_time:.1f} seconds")
+        print(f"  • Compliance verification:")
+        print(f"    - Burst compliance: {wave_requests} ≤ {int(safe_requests_per_minute * 0.1)} requests per 6s ✅")
+        print(f"    - Rolling window: {peak_rpm_usage} RPM ({peak_rpm_usage/safe_requests_per_minute*100:.1f}%), {peak_tpm_usage} TPM ({peak_tpm_usage/safe_tokens_per_minute*100:.1f}%) ✅")
         print(f"  • Execution plan:")
         print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
         print(f"    - {optimal_stagger_delay}s interval between wave starts")
-        print(f"    - Total processing time: {optimal_total_time:.1f} seconds")
+        print(f"    - Predicted total time: {optimal_total_time:.1f} seconds")
+        print(f"    - Predicted throughput: {actual_batches_per_minute:.1f} batches/minute")
         
         return optimal_wave_size, optimal_stagger_delay
 
@@ -653,13 +895,15 @@ class CodeAssigner:
                 "Low confidence (<0.5)": low_confidence
             })
         
-        # Mathematical optimization summary
-        batches = self._create_batches(self._extract_all_ideas())
-        wave_size, stagger_delay = self._calculate_optimal_processing_strategy(batches)
-        print(f"\n🎯 MATHEMATICAL OPTIMIZATION COMPLETED:")
-        print(f"  🚦 Optimal strategy: {wave_size} batches per wave, {stagger_delay}s stagger delays")
-        print(f"  🚦 Based purely on data volume and {self.config.model} rate limits")
-        print(f"  🚦 Guaranteed OpenAI rolling window compliance")
+        # Data-driven optimization summary
+        perf_summary = self.wave_profiler.get_performance_summary()
+        print(f"\n🎯 DATA-DRIVEN OPTIMIZATION COMPLETED:")
+        print(f"  📊 Performance measurements: {perf_summary.get('total_measurements', 0)} wave records")
+        if perf_summary.get('total_measurements', 0) > 0:
+            print(f"  📊 Historical performance: {perf_summary.get('avg_throughput', 'N/A')} avg throughput")
+            print(f"  📊 Wave size experience: {perf_summary.get('wave_size_range', 'N/A')} batches")
+        print(f"  🚦 Burst + rolling window compliance guaranteed")
+        print(f"  🚦 Future runs will benefit from accumulated performance data")
         
         return self._results
 
