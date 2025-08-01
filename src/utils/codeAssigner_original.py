@@ -17,14 +17,6 @@ import models
 from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
-# TEMPORARY: Import debugging tools
-try:
-    from .concurrency_debugger import ConcurrencyDebugger
-    DEBUGGING_ENABLED = True
-except ImportError:
-    DEBUGGING_ENABLED = False
-    print("Warning: Concurrency debugging not available")
-
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
 class CodeAssignmentResponse(BaseModel):
@@ -85,13 +77,6 @@ class CodeAssigner:
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
-        
-        # TEMPORARY: Initialize debugger for bottleneck analysis
-        if DEBUGGING_ENABLED:
-            self.debugger = ConcurrencyDebugger("codeAssigner")
-            print("🔍 DEBUGGING MODE: Concurrency tracking enabled")
-        else:
-            self.debugger = None
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -234,29 +219,16 @@ class CodeAssigner:
                 assignment_confidence: float
                 assignment_rationale: str
             
-            # Track API call if debugging enabled
-            if self.debugger:
-                async with self.debugger.track_api_call(f"assign_{idea_id}", "llm_assignment"):
-                    llm_response = await self.client.chat.completions.create(
-                        model=self.config.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed,
-                        response_model=LLMCodeAssignmentResponse,
-                        max_retries=self.config.retries
-                    )
-            else:
-                # Use instructor's built-in retries
-                llm_response = await self.client.chat.completions.create(
-                    model=self.config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    seed=self.model_config.seed,
-                    response_model=LLMCodeAssignmentResponse,
-                    max_retries=self.config.retries
-                )
+            # Use instructor's built-in retries
+            llm_response = await self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                seed=self.model_config.seed,
+                response_model=LLMCodeAssignmentResponse,
+                max_retries=self.config.retries
+            )
             
             # Add theme assignments based on assigned codes
             assigned_themes = self._assign_themes_to_codes(llm_response.assigned_codes)
@@ -301,21 +273,11 @@ class CodeAssigner:
 
     async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int) -> List[CodeAssignmentResponse]:
         """Process a single sub-batch of ideas"""
-        sub_batch_id = f"batch_{batch_index}_sub_{sub_batch_index}"
+        # Create tasks for all ideas in this sub-batch
+        tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
         
-        if self.debugger:
-            async with self.debugger.track_sub_batch(sub_batch_id, len(sub_batch)):
-                # Create tasks for all ideas in this sub-batch
-                tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
-                
-                # Process all ideas in sub-batch concurrently
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-        else:
-            # Create tasks for all ideas in this sub-batch
-            tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
-            
-            # Process all ideas in sub-batch concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Process all ideas in sub-batch concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Handle results and exceptions
         sub_batch_results = []
@@ -338,35 +300,18 @@ class CodeAssigner:
 
     async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[CodeAssignmentResponse]:
         """Process a single batch with hierarchical concurrency (following qualityFilter pattern)"""
-        batch_id = f"batch_{batch_index}"
+        # Split batch into sub-batches of 5 for better concurrency management
+        sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
         
-        if self.debugger:
-            async with self.debugger.track_batch(batch_id, len(batch)):
-                # Split batch into sub-batches of 5 for better concurrency management
-                sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
-                
-                if not sub_batches:
-                    return []
-                
-                # Level 2: Process all sub-batches within this batch concurrently
-                sub_batch_tasks = [
-                    self._process_sub_batch(sub_batch, batch_index, i) 
-                    for i, sub_batch in enumerate(sub_batches)
-                ]
-                sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
-        else:
-            # Split batch into sub-batches of 5 for better concurrency management
-            sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
-            
-            if not sub_batches:
-                return []
-            
-            # Level 2: Process all sub-batches within this batch concurrently
-            sub_batch_tasks = [
-                self._process_sub_batch(sub_batch, batch_index, i) 
-                for i, sub_batch in enumerate(sub_batches)
-            ]
-            sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
+        if not sub_batches:
+            return []
+        
+        # Level 2: Process all sub-batches within this batch concurrently
+        sub_batch_tasks = [
+            self._process_sub_batch(sub_batch, batch_index, i) 
+            for i, sub_batch in enumerate(sub_batches)
+        ]
+        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
         
         # Collect results from all sub-batches
         batch_results = []
@@ -496,26 +441,8 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # Add debugging information and optional concurrency limiting
-        if self.debugger:
-            print(f"\n🔍 DEBUG: About to process ALL {len(batches)} batches concurrently")
-            print(f"🔍 DEBUG: This means up to {total_sub_batches} sub-batches could run simultaneously")
-            print(f"🔍 DEBUG: With 5 API calls per sub-batch, that's up to {total_sub_batches * 5} concurrent API calls!")
-            
-            # OPTION TO TEST LIMITED CONCURRENCY: Uncomment next 4 lines to test batch limiting
-            # max_concurrent_batches = 10  # Test with limited concurrency
-            # batch_semaphore = asyncio.Semaphore(max_concurrent_batches)
-            # async def process_batch_limited(batch, i):
-            #     async with batch_semaphore:
-            #         return await self._process_batch(batch, i)
-            # batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
-            
-            # Default: unlimited concurrency
-            batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
-        else:
-            # Level 1: Process ALL batches concurrently (NO LIMITS, NO DELAYS)
-            batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
-        
+        # Level 1: Process ALL batches concurrently (NO LIMITS, NO DELAYS)
+        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         
         # Collect results from all batches
@@ -575,59 +502,6 @@ class CodeAssigner:
                 "High confidence (≥0.7)": high_confidence,
                 "Low confidence (<0.5)": low_confidence
             })
-        
-        # Generate debugging report if debugging enabled
-        if self.debugger:
-            print("\n" + "="*80)
-            print("🔍 CONCURRENCY DEBUGGING REPORT")
-            print("="*80)
-            
-            report = self.debugger.generate_report()
-            
-            print(f"\nModule: {report['module']}")
-            print(f"Total Duration: {report['total_duration_seconds']:.2f} seconds")
-            
-            print("\n📊 Concurrency Metrics:")
-            for key, value in report['concurrency_metrics'].items():
-                print(f"  - {key}: {value}")
-            
-            print("\n⏱️ Performance Metrics:")
-            for key, value in report['performance_metrics'].items():
-                if 'duration' in key:
-                    print(f"  - {key}: {value:.3f} seconds")
-                else:
-                    print(f"  - {key}: {value}")
-            
-            print("\n💾 Resource Usage:")
-            for key, value in report['resource_usage'].items():
-                print(f"  - {key}: {value}")
-            
-            if report['potential_bottlenecks']:
-                print(f"\n⚠️  POTENTIAL BOTTLENECKS DETECTED: {len(report['potential_bottlenecks'])}")
-                for bottleneck in report['potential_bottlenecks']:
-                    print(f"  - Type: {bottleneck['type']}")
-                    print(f"    Time: {bottleneck['timestamp']:.2f}s")
-                    print(f"    Details: {bottleneck['details']}")
-            else:
-                print(f"\n✅ No obvious bottlenecks detected")
-            
-            # Save detailed timeline
-            timeline_path = f"/workspaces/CoderingsTool/codeAssigner_debug_timeline_{int(time.time())}.json"
-            self.debugger.save_detailed_timeline(timeline_path)
-            print(f"\n📁 Detailed timeline saved to: {timeline_path}")
-            
-            print(f"\n🎯 KEY INSIGHTS:")
-            print(f"  - Max concurrent batches: {report['concurrency_metrics']['max_concurrent_batches']}")
-            print(f"  - Max concurrent API calls: {report['concurrency_metrics']['max_concurrent_api_calls']}")
-            print(f"  - Peak memory usage: {report['resource_usage']['peak_memory_mb']:.1f} MB")
-            
-            if report['concurrency_metrics']['max_concurrent_api_calls'] > 100:
-                print(f"  ⚠️  Very high API concurrency detected - possible bottleneck source!")
-            
-            if report['resource_usage']['peak_memory_mb'] > 1000:
-                print(f"  ⚠️  High memory usage detected - possible resource exhaustion!")
-            
-            print("="*80)
         
         return self._results
 
