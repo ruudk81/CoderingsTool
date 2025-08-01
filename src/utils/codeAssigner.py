@@ -79,7 +79,7 @@ class CodeAssigner:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             print(f"Using cl100k_base encoding as fallback for {self.config.model}")
         
-        print("🧠 SMART CONCURRENCY: OpenAI rate limit-based dynamic batch limiting enabled")
+        print("🚦 WAVE OPTIMIZATION: OpenAI rolling window-aware staggered processing enabled")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -432,10 +432,54 @@ class CodeAssigner:
         
         return coded_models
 
-    def _calculate_smart_concurrency(self, batches: List[List[tuple]]) -> int:
-        """Calculate optimal concurrent batches based on OpenAI rate limits and sustained throughput"""
+    async def _process_batches_staggered(self, batches: List[List[tuple]], wave_size: int, stagger_delay: int) -> List:
+        """Process batches in staggered waves to respect rolling window rate limits"""
+        all_results = []
+        
+        # Split batches into waves
+        waves = []
+        for i in range(0, len(batches), wave_size):
+            wave = batches[i:i + wave_size]
+            waves.append(wave)
+        
+        print(f"🚦 Processing {len(waves)} waves of {wave_size} batches each")
+        
+        # Process waves with staggered timing
+        for wave_idx, wave in enumerate(waves):
+            wave_start_time = asyncio.get_event_loop().time()
+            
+            print(f"🚦 Starting wave {wave_idx + 1}/{len(waves)} ({len(wave)} batches)...")
+            
+            # Process all batches in this wave concurrently
+            wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
+            wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
+            
+            # Handle results and exceptions for this wave
+            wave_failures = 0
+            for i, result in enumerate(wave_results):
+                if isinstance(result, Exception):
+                    print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
+                    wave_failures += 1
+                    continue
+                all_results.extend(result)
+            
+            if wave_failures > 0:
+                print(f"🚦 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
+            
+            wave_duration = asyncio.get_event_loop().time() - wave_start_time
+            print(f"🚦 Wave {wave_idx+1} completed in {wave_duration:.1f}s")
+            
+            # Apply stagger delay before next wave (except for last wave)
+            if wave_idx < len(waves) - 1:
+                print(f"🚦 Waiting {stagger_delay}s before next wave...")
+                await asyncio.sleep(stagger_delay)
+        
+        return all_results
+
+    def _calculate_optimal_wave_strategy(self, batches: List[List[tuple]]) -> tuple:
+        """Calculate optimal wave size and stagger delay based on OpenAI rolling window limits"""
         if not batches:
-            return 1
+            return 1, 0
             
         # Get OpenAI rate limits for the current model
         rate_limits = get_openai_rate_limits(self.config.model)
@@ -444,52 +488,73 @@ class CodeAssigner:
         api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
         estimated_tokens_per_call = 800  # Conservative estimate (prompt + completion)
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
+        wave_processing_time = 6  # Time for a wave to complete processing
         
-        # CRITICAL: Estimate batch processing time (concurrent calls take time to complete)
-        # Based on: network latency + API response time + processing
-        estimated_batch_duration_seconds = 6  # Conservative estimate from working 10-batch solution
-        
-        # Conservative safety margins (80% of limits to avoid rate limiting)
+        # Safety margins (80% of limits to avoid rate limiting)
         safe_requests_per_minute = int(rate_limits.requests_per_minute * 0.8)
         safe_tokens_per_minute = int(rate_limits.tokens_per_minute * 0.8)
         
-        # Calculate sustained throughput limits (not instantaneous limits!)
-        # Key insight: concurrent batches spread their API calls over batch_duration_seconds
+        # STEP 1: Calculate maximum safe wave size (burst constraint)
+        # Limit based on what we can safely burst without immediate throttling
+        burst_request_limit = safe_requests_per_minute // 6  # Conservative 10-second burst window
+        burst_token_limit = safe_tokens_per_minute // 6
         
-        # Request-based limit: How many batches can we sustain per minute?
-        # Each batch makes api_calls_per_batch requests over batch_duration_seconds
-        sustainable_requests_per_minute_per_batch = api_calls_per_batch * (60 / estimated_batch_duration_seconds)
-        request_limited_concurrent_batches = int(safe_requests_per_minute / sustainable_requests_per_minute_per_batch)
+        max_wave_size_requests = burst_request_limit // api_calls_per_batch
+        max_wave_size_tokens = burst_token_limit // tokens_per_batch
+        max_safe_wave_size = min(max_wave_size_requests, max_wave_size_tokens, len(batches))
+        max_safe_wave_size = max(1, min(max_safe_wave_size, 25))  # Cap at reasonable limit
         
-        # Token-based limit: How many batches can we sustain per minute?
-        sustainable_tokens_per_minute_per_batch = tokens_per_batch * (60 / estimated_batch_duration_seconds)
-        token_limited_concurrent_batches = int(safe_tokens_per_minute / sustainable_tokens_per_minute_per_batch)
+        # STEP 2: Calculate minimum delay between waves (rolling window constraint)
+        # Using the mathematical model: R × floor(60/D) ≤ T
+        def calculate_min_delay(requests_per_wave, limit_per_minute):
+            """Find minimum delay D such that requests_per_wave × floor(60/D) ≤ limit_per_minute"""
+            for delay in range(1, 61):  # Try delays from 1 to 60 seconds
+                waves_in_window = 60 // delay
+                total_in_window = requests_per_wave * waves_in_window
+                if total_in_window <= limit_per_minute:
+                    return delay
+            return 60  # Fallback: one wave per minute
         
-        # System constraints
-        system_limit = min(25, len(batches))  # Never exceed 25 or total batches
+        wave_requests = max_safe_wave_size * api_calls_per_batch
+        wave_tokens = max_safe_wave_size * tokens_per_batch
         
-        # Take the most restrictive limit
-        optimal_batches = min(request_limited_concurrent_batches, token_limited_concurrent_batches, system_limit)
+        min_delay_requests = calculate_min_delay(wave_requests, safe_requests_per_minute)
+        min_delay_tokens = calculate_min_delay(wave_tokens, safe_tokens_per_minute)
+        optimal_delay = max(min_delay_requests, min_delay_tokens)
         
-        # Ensure reasonable bounds (minimum 1, but if we calculate very high, cap at working baseline)
-        smart_concurrency = max(1, min(optimal_batches, 15))  # Cap at 15 to be conservative
+        # STEP 3: Optimization check - is staggering beneficial?
+        # Compare staggered vs simple concurrent processing
+        total_batches = len(batches)
+        
+        # Staggered approach
+        num_waves = (total_batches + max_safe_wave_size - 1) // max_safe_wave_size  # Ceiling division
+        staggered_time = (num_waves - 1) * optimal_delay + wave_processing_time
+        
+        # Simple concurrent approach (for comparison)
+        simple_concurrent_batches = min(15, total_batches)  # Our previous working solution
+        simple_time = wave_processing_time  # All batches run in parallel
         
         # Debug information
-        print(f"🧠 Sustained throughput analysis for {self.config.model}:")
+        print(f"🧠 Wave optimization analysis for {self.config.model}:")
         print(f"  • Rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
         print(f"  • Safety margins: {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM (80%)")
-        print(f"  • Batch characteristics: {api_calls_per_batch} calls, {tokens_per_batch} tokens")
-        print(f"  • Estimated batch duration: {estimated_batch_duration_seconds} seconds")
-        print(f"  • Sustained rate per batch: {sustainable_requests_per_minute_per_batch:.0f} RPM, {sustainable_tokens_per_minute_per_batch:.0f} TPM")
-        print(f"  • Request-limited concurrent batches: {request_limited_concurrent_batches}")
-        print(f"  • Token-limited concurrent batches: {token_limited_concurrent_batches}")
-        print(f"  • System limit: {system_limit}")
-        print(f"  • Final smart limit: {smart_concurrency} concurrent batches")
+        print(f"  • Total batches to process: {total_batches}")
+        print(f"  • Wave constraints:")
+        print(f"    - Max safe wave size: {max_safe_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
+        print(f"    - Min delay between waves: {optimal_delay} seconds")
+        print(f"    - Number of waves needed: {num_waves}")
+        print(f"  • Time estimates:")
+        print(f"    - Staggered approach: {staggered_time:.1f} seconds")
+        print(f"    - Simple concurrent: {simple_time:.1f} seconds")
         
-        return smart_concurrency
+        # Return wave size and delay (0 delay means no staggering needed)
+        if staggered_time < simple_time * 1.2:  # If staggered is not significantly slower
+            return max_safe_wave_size, optimal_delay
+        else:
+            return simple_concurrent_batches, 0  # Fall back to simple concurrent
 
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
-        """Process all batches using hierarchical concurrency (following qualityFilter/ideaExtractor pattern)"""
+        """Process all batches using optimal wave-based staggering to respect OpenAI rolling window limits"""
         total_ideas = sum(len(batch) for batch in batches)
         
         # Calculate total sub-batches for reporting
@@ -500,23 +565,30 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # SMART CONCURRENCY CALCULATION BASED ON OPENAI LIMITS
-        max_concurrent_batches = self._calculate_smart_concurrency(batches)
+        # OPTIMAL WAVE STRATEGY CALCULATION
+        wave_size, stagger_delay = self._calculate_optimal_wave_strategy(batches)
         
-        print(f"\n🧠 SMART CONCURRENCY: Processing {len(batches)} batches")
-        print(f"🧠 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
-        print(f"🧠 OpenAI-based smart limit: {max_concurrent_batches} concurrent batches")
-        batch_semaphore = asyncio.Semaphore(max_concurrent_batches)
+        print(f"\n🚦 WAVE-BASED PROCESSING: {len(batches)} batches")
+        print(f"🚦 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
         
-        async def process_batch_limited(batch, i):
-            async with batch_semaphore:
-                return await self._process_batch(batch, i)
-        
-        batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
-        max_concurrent_api_calls = max_concurrent_batches * 5 * 5  # batches * sub_batches * ideas_per_sub_batch
-        print(f"🧠 Smart limiting: max {max_concurrent_batches} concurrent batches = max ~{max_concurrent_api_calls} API calls")
-        
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        if stagger_delay > 0:
+            # Use staggered wave processing
+            print(f"🚦 Optimal strategy: {wave_size} batches per wave, {stagger_delay}s delay between waves")
+            batch_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
+        else:
+            # Use simple concurrent processing
+            print(f"🚦 Simple concurrent: {wave_size} concurrent batches (staggering not beneficial)")
+            batch_semaphore = asyncio.Semaphore(wave_size)
+            
+            async def process_batch_limited(batch, i):
+                async with batch_semaphore:
+                    return await self._process_batch(batch, i)
+            
+            batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
+            max_concurrent_api_calls = wave_size * 5 * 5
+            print(f"🚦 Max concurrent API calls: ~{max_concurrent_api_calls}")
+            
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         
         # Collect results from all batches
         all_results = []
@@ -576,12 +648,16 @@ class CodeAssigner:
                 "Low confidence (<0.5)": low_confidence
             })
         
-        # Smart concurrency summary
-        actual_concurrency = self._calculate_smart_concurrency(self._create_batches(self._extract_all_ideas()))
-        print(f"\n🎯 SMART CONCURRENCY APPLIED:")
-        print(f"  🧠 OpenAI-based calculation: {actual_concurrency} concurrent batches")
-        print(f"  🧠 Respects official rate limits for {self.config.model}")
-        print(f"  🧠 Automatically adapts to different models and tiers")
+        # Wave optimization summary
+        batches = self._create_batches(self._extract_all_ideas())
+        wave_size, stagger_delay = self._calculate_optimal_wave_strategy(batches)
+        print(f"\n🎯 WAVE OPTIMIZATION APPLIED:")
+        if stagger_delay > 0:
+            print(f"  🚦 Staggered processing: {wave_size} batches per wave, {stagger_delay}s delays")
+            print(f"  🚦 Respects OpenAI rolling window limits for {self.config.model}")
+        else:
+            print(f"  🚦 Optimal concurrent processing: {wave_size} batches")
+        print(f"  🚦 Mathematically optimized for minimal processing time")
         
         return self._results
 
