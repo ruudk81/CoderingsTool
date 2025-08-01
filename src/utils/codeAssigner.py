@@ -13,6 +13,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+from collections import deque
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
@@ -219,6 +220,110 @@ class WaveProfiler:
             print(f"Warning: Could not load wave performance cache: {e}")
             self.measurements = []
 
+@dataclass
+class SlidingWindowRateLimiter:
+    """True sliding window rate limiter for OpenAI API compliance"""
+    rpm_limit: int
+    tpm_limit: int
+    window_seconds: int = 60
+    
+    def __post_init__(self):
+        # Track request timestamps and token counts
+        self.request_timestamps = deque()  # (timestamp, request_count, token_count)
+        self.total_requests = 0
+        self.total_tokens = 0
+    
+    def _cleanup_expired(self, current_time: float):
+        """Remove requests older than the window"""
+        cutoff_time = current_time - self.window_seconds
+        
+        while self.request_timestamps and self.request_timestamps[0][0] < cutoff_time:
+            timestamp, req_count, token_count = self.request_timestamps.popleft()
+            self.total_requests -= req_count
+            self.total_tokens -= token_count
+    
+    def can_launch_wave(self, wave_requests: int, wave_tokens: int) -> tuple[bool, dict]:
+        """Check if wave can be launched without exceeding rate limits"""
+        current_time = time.time()
+        self._cleanup_expired(current_time)
+        
+        # Check if adding this wave would exceed limits
+        new_total_requests = self.total_requests + wave_requests
+        new_total_tokens = self.total_tokens + wave_tokens
+        
+        can_launch_requests = new_total_requests <= self.rpm_limit
+        can_launch_tokens = new_total_tokens <= self.tpm_limit
+        can_launch = can_launch_requests and can_launch_tokens
+        
+        status = {
+            "can_launch": can_launch,
+            "current_requests": self.total_requests,
+            "current_tokens": self.total_tokens,
+            "requests_after_wave": new_total_requests,
+            "tokens_after_wave": new_total_tokens,
+            "requests_utilization": (new_total_requests / self.rpm_limit) * 100,
+            "tokens_utilization": (new_total_tokens / self.tpm_limit) * 100,
+            "requests_remaining": self.rpm_limit - new_total_requests,
+            "tokens_remaining": self.tpm_limit - new_total_tokens
+        }
+        
+        return can_launch, status
+    
+    def record_wave(self, wave_requests: int, wave_tokens: int):
+        """Record a wave launch in the sliding window"""
+        current_time = time.time()
+        self._cleanup_expired(current_time)
+        
+        # Add this wave to the history
+        self.request_timestamps.append((current_time, wave_requests, wave_tokens))
+        self.total_requests += wave_requests
+        self.total_tokens += wave_tokens
+    
+    def get_capacity_status(self) -> dict:
+        """Get current capacity utilization"""
+        current_time = time.time()
+        self._cleanup_expired(current_time)
+        
+        return {
+            "requests_used": self.total_requests,
+            "tokens_used": self.total_tokens,
+            "requests_capacity": self.rpm_limit,
+            "tokens_capacity": self.tpm_limit,
+            "requests_utilization": (self.total_requests / self.rpm_limit) * 100,
+            "tokens_utilization": (self.total_tokens / self.tpm_limit) * 100,
+            "window_entries": len(self.request_timestamps)
+        }
+    
+    def calculate_wait_time(self, wave_requests: int, wave_tokens: int) -> float:
+        """Calculate minimum wait time before wave can be launched"""
+        current_time = time.time()
+        self._cleanup_expired(current_time)
+        
+        if self.total_requests + wave_requests <= self.rpm_limit and self.total_tokens + wave_tokens <= self.tpm_limit:
+            return 0.0  # Can launch immediately
+        
+        # Find the earliest request that needs to expire to make room
+        min_wait_time = 0.0
+        temp_requests = self.total_requests
+        temp_tokens = self.total_tokens
+        
+        for timestamp, req_count, token_count in self.request_timestamps:
+            # Calculate when this entry will expire
+            expire_time = timestamp + self.window_seconds
+            wait_time = expire_time - current_time
+            
+            if wait_time > 0:
+                # Check if removing this entry would make room
+                temp_requests -= req_count
+                temp_tokens -= token_count
+                
+                if (temp_requests + wave_requests <= self.rpm_limit and 
+                    temp_tokens + wave_tokens <= self.tpm_limit):
+                    min_wait_time = wait_time
+                    break
+        
+        return max(0.0, min_wait_time)
+
 class CodeAssignmentResponse(BaseModel):
     idea_id: str
     idea: str
@@ -283,6 +388,13 @@ class CodeAssigner:
         cache_file = cache_dir / f"wave_perf_{self.config.model.replace('/', '_')}.json"
         self.wave_profiler = WaveProfiler(cache_file=cache_file)
         
+        # Initialize sliding window rate limiter
+        rate_limits = get_openai_rate_limits(self.config.model)
+        # Use 90% of limits for safety margin
+        safe_rpm = int(rate_limits.requests_per_minute * 0.9)
+        safe_tpm = int(rate_limits.tokens_per_minute * 0.9)
+        self.rate_limiter = SlidingWindowRateLimiter(rpm_limit=safe_rpm, tpm_limit=safe_tpm)
+        
         # Show profiler status
         perf_summary = self.wave_profiler.get_performance_summary()
         if perf_summary["total_measurements"] > 0:
@@ -291,6 +403,7 @@ class CodeAssigner:
         else:
             print("📊 EMPIRICAL OPTIMIZATION: No historical data - will learn from this run")
         
+        print(f"🔄 SLIDING WINDOW RATE LIMITER: {safe_rpm} RPM, {safe_tpm} TPM (90% of {rate_limits.requests_per_minute}/{rate_limits.tokens_per_minute})")
         print("🚦 DATA-DRIVEN OPTIMIZATION: Wave sizing based on measured performance enabled")
 
     async def initialize_code_embeddings(self):
@@ -644,6 +757,90 @@ class CodeAssigner:
         
         return coded_models
 
+    async def _process_batches_sliding_window(self, batches: List[List[tuple]], wave_size: int) -> List:
+        """Process batches using true sliding window rate limiting"""
+        all_results = []
+        
+        # Split batches into waves
+        waves = []
+        for i in range(0, len(batches), wave_size):
+            wave = batches[i:i + wave_size]
+            waves.append(wave)
+        
+        print(f"🔄 SLIDING WINDOW PROCESSING: {len(waves)} waves of up to {wave_size} batches each")
+        
+        # Calculate wave characteristics for rate limiting
+        api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
+        estimated_tokens_per_call = 800
+        tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
+        
+        # Process waves with sliding window compliance
+        for wave_idx, wave in enumerate(waves):
+            wave_requests = len(wave) * api_calls_per_batch
+            wave_tokens = len(wave) * tokens_per_batch
+            
+            # Check if we can launch immediately
+            can_launch, status = self.rate_limiter.can_launch_wave(wave_requests, wave_tokens)
+            
+            if can_launch:
+                print(f"🔄 Wave {wave_idx + 1}/{len(waves)} launching immediately")
+                print(f"   📊 Capacity: {status['requests_utilization']:.1f}% RPM, {status['tokens_utilization']:.1f}% TPM")
+            else:
+                # Calculate how long to wait
+                wait_time = self.rate_limiter.calculate_wait_time(wave_requests, wave_tokens)
+                if wait_time > 0:
+                    print(f"🔄 Wave {wave_idx + 1}/{len(waves)} waiting {wait_time:.1f}s for capacity")
+                    print(f"   📊 Current: {status['current_requests']} RPM, {status['current_tokens']} TPM")
+                    print(f"   📊 Would be: {status['requests_after_wave']} RPM, {status['tokens_after_wave']} TPM")
+                    await asyncio.sleep(wait_time)
+                    
+                    # Re-check after waiting
+                    can_launch, status = self.rate_limiter.can_launch_wave(wave_requests, wave_tokens)
+                    if not can_launch:
+                        print(f"⚠️  Wave {wave_idx + 1} still cannot launch after waiting - proceeding anyway")
+            
+            # Record the wave launch in rate limiter
+            self.rate_limiter.record_wave(wave_requests, wave_tokens)
+            
+            # Execute the wave
+            wave_start_time = asyncio.get_event_loop().time()
+            print(f"🔄 Executing wave {wave_idx + 1}/{len(waves)} ({len(wave)} batches)...")
+            
+            # Process all batches in this wave concurrently
+            wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
+            wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
+            
+            # Handle results and exceptions for this wave
+            wave_failures = 0
+            for i, result in enumerate(wave_results):
+                if isinstance(result, Exception):
+                    print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
+                    wave_failures += 1
+                    continue
+                all_results.extend(result)
+            
+            if wave_failures > 0:
+                print(f"🔄 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
+            
+            wave_duration = asyncio.get_event_loop().time() - wave_start_time
+            print(f"🔄 Wave {wave_idx+1} completed in {wave_duration:.1f}s")
+            
+            # Record wave performance for future optimization
+            actual_batch_count = len(wave)
+            total_requests = sum(len(batch) for batch in wave) * 5  # 5 API calls per idea on average
+            self.wave_profiler.record_wave(
+                wave_size=len(wave),
+                batch_count=actual_batch_count,
+                duration=wave_duration,
+                request_count=total_requests
+            )
+            
+            # Show current rate limiter status
+            capacity_status = self.rate_limiter.get_capacity_status()
+            print(f"🔄 Current utilization: {capacity_status['requests_utilization']:.1f}% RPM, {capacity_status['tokens_utilization']:.1f}% TPM")
+        
+        return all_results
+
     async def _process_batches_staggered(self, batches: List[List[tuple]], wave_size: int, stagger_delay: int) -> List:
         """Process batches in staggered waves to respect rolling window rate limits"""
         all_results = []
@@ -704,12 +901,12 @@ class CodeAssigner:
         
         return all_results
 
-    def _calculate_optimal_processing_strategy(self, batches: List[List[tuple]]) -> tuple:
-        """Calculate empirically-driven processing strategy based on measured performance and rate limits"""
+    def _calculate_sliding_window_strategy(self, batches: List[List[tuple]]) -> int:
+        """Calculate optimal wave size for sliding window rate limiting"""
         if not batches:
-            return 1, 6  # Minimum case
+            return 8  # Minimum safe size
             
-        # Get OpenAI rate limits for the current model
+        # Get rate limits
         rate_limits = get_openai_rate_limits(self.config.model)
         
         # Job characteristics
@@ -718,138 +915,63 @@ class CodeAssigner:
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
         total_batches = len(batches)
         
-        # Safety margins (80% of limits to avoid rate limiting)
-        safe_requests_per_minute = int(rate_limits.requests_per_minute * 0.8)
-        safe_tokens_per_minute = int(rate_limits.tokens_per_minute * 0.8)
+        # Use rate limiter's limits (already has 90% safety margin)
+        safe_requests_per_minute = self.rate_limiter.rpm_limit
+        safe_tokens_per_minute = self.rate_limiter.tpm_limit
         
         # Get profiler performance summary
         perf_summary = self.wave_profiler.get_performance_summary()
         
-        print(f"📊 EMPIRICAL OPTIMIZATION: Using {perf_summary.get('total_measurements', 0)} historical measurements")
+        print(f"🔄 SLIDING WINDOW OPTIMIZATION: Using {perf_summary.get('total_measurements', 0)} historical measurements")
         
-        # STEP 1: Find optimal wave size and stagger delay combination
-        # We need to solve: ⌊60/D⌋ × R ≤ RPM AND ⌊60/D⌋ × T ≤ TPM
-        # Where R = requests per wave, T = tokens per wave, D = stagger delay
+        # Calculate maximum safe wave size based on rate limits
+        # We want waves that can launch without waiting in most cases
+        max_request_wave_size = safe_requests_per_minute // api_calls_per_batch
+        max_token_wave_size = safe_tokens_per_minute // tokens_per_batch
+        max_theoretical_wave_size = min(max_request_wave_size, max_token_wave_size)
         
-        def estimate_wave_duration(wave_size):
-            """Estimate actual processing time using empirical data from profiler"""
-            return self.wave_profiler.get_duration_estimate(wave_size)
+        # Apply conservative limits based on empirical data
+        if perf_summary.get('total_measurements', 0) > 0:
+            # With empirical data, be more aggressive but still conservative
+            optimal_wave_size = min(max_theoretical_wave_size // 4, 25)  # Use 25% of theoretical max
+        else:
+            # Without data, start very conservatively
+            optimal_wave_size = min(max_theoretical_wave_size // 8, 12)  # Use 12.5% of theoretical max
         
-        def find_optimal_strategy(rpm_limit, tpm_limit, requests_per_batch, tokens_per_batch, total_batches):
-            """Find optimal wave size and stagger delay using empirical data and burst window compliance"""
-            best_total_time = float('inf')
-            best_wave_size = 1
-            best_delay = 60
-            best_execution_time = 6
-            
-            # BURST WINDOW COMPLIANCE: Calculate max wave size for 6-second bursts
-            # Conservative: assume 6-second burst window allows ~10% of minute capacity
-            burst_request_capacity = int(rpm_limit * 0.1)  # 10% of minute capacity in 6s
-            max_burst_wave_size = max(1, burst_request_capacity // requests_per_batch)
-            
-            # Rolling window capacity (existing logic)
-            max_rolling_wave_size = min(total_batches, rpm_limit // requests_per_batch, tpm_limit // tokens_per_batch)
-            
-            # Conservative approach: use smaller of burst and rolling limits
-            max_possible_wave_size = min(max_burst_wave_size, max_rolling_wave_size)
-            
-            # Additional safety cap based on historical performance
-            if perf_summary.get('total_measurements', 0) > 0:
-                # If we have data, be more conservative to avoid superlinear slowdown
-                max_possible_wave_size = min(max_possible_wave_size, 20)
-            else:
-                # If no data, start very conservatively
-                max_possible_wave_size = min(max_possible_wave_size, 8)
-            
-            print(f"📊 Wave size constraints: burst_limit={max_burst_wave_size}, rolling_limit={max_rolling_wave_size}, final_max={max_possible_wave_size}")
-            
-            for wave_size in range(1, max_possible_wave_size + 1):
-                wave_requests = wave_size * requests_per_batch
-                wave_tokens = wave_size * tokens_per_batch
-                
-                # Burst window compliance check (6-second windows)
-                if wave_requests > burst_request_capacity:
-                    continue  # Skip this wave size - exceeds burst capacity
-                
-                # Find minimum delay for this wave size using rolling window constraint
-                min_delay = None
-                for delay in range(6, 61):  # Start at 6s minimum for burst window compliance
-                    waves_in_60s = 60 // delay
-                    total_requests_in_60s = wave_requests * waves_in_60s
-                    total_tokens_in_60s = wave_tokens * waves_in_60s
-                    
-                    if total_requests_in_60s <= rpm_limit and total_tokens_in_60s <= tpm_limit:
-                        min_delay = delay
-                        break
-                
-                if min_delay is not None:
-                    # Use EMPIRICAL execution time estimates
-                    wave_execution_time = estimate_wave_duration(wave_size)
-                    num_waves = (total_batches + wave_size - 1) // wave_size  # Ceiling division
-                    
-                    # Calculate total time with execution-aware stagger delays
-                    # Only wait for remainder if wave execution < stagger delay
-                    total_stagger_time = 0
-                    for i in range(num_waves - 1):  # All waves except last
-                        wait_time = max(0, min_delay - wave_execution_time)
-                        total_stagger_time += wait_time
-                    
-                    # Total time = all wave executions + actual stagger waits
-                    total_processing_time = num_waves * wave_execution_time + total_stagger_time
-                    
-                    if total_processing_time < best_total_time:
-                        best_total_time = total_processing_time
-                        best_wave_size = wave_size
-                        best_delay = min_delay
-                        best_execution_time = wave_execution_time
-                        
-            return best_wave_size, best_delay, best_execution_time, best_total_time
+        # Ensure minimum size
+        optimal_wave_size = max(1, optimal_wave_size)
         
-        optimal_wave_size, optimal_stagger_delay, optimal_execution_time, optimal_total_time = find_optimal_strategy(
-            safe_requests_per_minute, safe_tokens_per_minute, 
-            api_calls_per_batch, tokens_per_batch, total_batches
-        )
-        
-        # Calculate metrics for display
+        # Calculate expected performance
         num_waves = (total_batches + optimal_wave_size - 1) // optimal_wave_size
-        
-        # Calculate wave metrics for display
         wave_requests = optimal_wave_size * api_calls_per_batch
         wave_tokens = optimal_wave_size * tokens_per_batch
-        waves_in_60s = 60 // optimal_stagger_delay
-        peak_rpm_usage = wave_requests * waves_in_60s
-        peak_tpm_usage = wave_tokens * waves_in_60s
         
-        # Calculate theoretical throughput for comparison
-        theoretical_batches_per_minute = optimal_wave_size * (60 / optimal_stagger_delay)
-        actual_batches_per_minute = total_batches / optimal_total_time * 60
+        # Estimate total time using empirical data
+        estimated_wave_duration = self.wave_profiler.get_duration_estimate(optimal_wave_size)
+        estimated_total_time = num_waves * estimated_wave_duration  # No fixed delays!
+        estimated_throughput = total_batches / estimated_total_time * 60 if estimated_total_time > 0 else 0
         
-        # Debug information - empirical optimization analysis
+        # Display optimization results
         data_source = "EMPIRICAL" if perf_summary.get('total_measurements', 0) > 0 else "FALLBACK LINEAR"
-        print(f"📊 Data-driven optimization for {self.config.model}:")
+        print(f"🔄 Sliding window optimization for {self.config.model}:")
         print(f"  • OpenAI rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
-        print(f"  • Safety margins (80%): {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM")
+        print(f"  • Safety margins (90%): {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM")
         print(f"  • Data to process: {total_batches} batches ({total_batches * api_calls_per_batch} total requests)")
         print(f"  • Wave execution model: {data_source} (from {perf_summary.get('total_measurements', 0)} measurements)")
-        print(f"  • Burst window compliance: 6-second windows, max {int(safe_requests_per_minute * 0.1)} requests per burst")
-        print(f"  • Optimal solution:")
-        print(f"    - Wave size: {optimal_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
-        print(f"    - Stagger delay: {optimal_stagger_delay} seconds")
-        print(f"    - Predicted wave execution time: {optimal_execution_time:.1f} seconds")
-        print(f"  • Compliance verification:")
-        print(f"    - Burst compliance: {wave_requests} ≤ {int(safe_requests_per_minute * 0.1)} requests per 6s ✅")
-        print(f"    - Rolling window: {peak_rpm_usage} RPM ({peak_rpm_usage/safe_requests_per_minute*100:.1f}%), {peak_tpm_usage} TPM ({peak_tpm_usage/safe_tokens_per_minute*100:.1f}%) ✅")
+        print(f"  • Theoretical max wave: {max_theoretical_wave_size} batches ({max_theoretical_wave_size * api_calls_per_batch} requests)")
+        print(f"  • Optimal wave size: {optimal_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
+        print(f"  • Expected capacity usage: {(wave_requests/safe_requests_per_minute)*100:.1f}% RPM, {(wave_tokens/safe_tokens_per_minute)*100:.1f}% TPM")
         print(f"  • Execution plan:")
         print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
-        print(f"    - {optimal_stagger_delay}s minimum interval between wave starts")
-        print(f"    - Execution-aware delays: only wait if wave < {optimal_stagger_delay}s")
-        print(f"    - Predicted total time: {optimal_total_time:.1f} seconds")
-        print(f"    - Predicted throughput: {actual_batches_per_minute:.1f} batches/minute")
+        print(f"    - No fixed delays - launch when capacity allows")
+        print(f"    - Predicted wave duration: {estimated_wave_duration:.1f} seconds")
+        print(f"    - Predicted total time: {estimated_total_time:.1f} seconds")
+        print(f"    - Predicted throughput: {estimated_throughput:.1f} batches/minute")
         
-        return optimal_wave_size, optimal_stagger_delay
+        return optimal_wave_size
 
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
-        """Process all batches using optimal wave-based staggering to respect OpenAI rolling window limits"""
+        """Process all batches using sliding window rate limiting for optimal throughput"""
         total_ideas = sum(len(batch) for batch in batches)
         
         # Calculate total sub-batches for reporting
@@ -860,14 +982,14 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # MATHEMATICAL OPTIMIZATION - NO COMPARISON, PURE CALCULATION
-        wave_size, stagger_delay = self._calculate_optimal_processing_strategy(batches)
+        # SLIDING WINDOW OPTIMIZATION - TRUE ROLLING WINDOW COMPLIANCE
+        wave_size = self._calculate_sliding_window_strategy(batches)
         
-        print(f"\n🚦 EXECUTING OPTIMAL STRATEGY: {len(batches)} batches")
-        print(f"🚦 Mathematically determined: {wave_size} batches per wave, {stagger_delay}s stagger delay")
+        print(f"\n🔄 EXECUTING SLIDING WINDOW STRATEGY: {len(batches)} batches")
+        print(f"🔄 Optimal wave size: {wave_size} batches, dynamic timing based on capacity")
         
-        # Always use staggered processing - this IS the optimal strategy
-        all_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
+        # Use sliding window processing for maximum throughput
+        all_results = await self._process_batches_sliding_window(batches, wave_size)
         
         return all_results
 
