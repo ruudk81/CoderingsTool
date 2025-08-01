@@ -58,7 +58,7 @@ class Clusterer:
                     processing_order += 1
 
     def run(self):
-        print(f"[INFO] Running clustering on {len(self.output_list)} items")
+        print(f"• Running clustering on {len(self.output_list)} items")
 
         embeddings = np.array([item.idea_embedding for item in self.output_list])
 
@@ -121,8 +121,8 @@ class Clusterer:
         num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
         noise_points = list(labels).count(-1)
 
-        print(f"[HDBSCAN] Found {num_clusters} clusters")
-        print(f"[HDBSCAN] Noise points: {noise_points} / {len(self.output_list)} ({noise_points / len(self.output_list) * 100:.1f}%)")
+        print(f"• Found {num_clusters} clusters")
+        print(f"• Noise points: {noise_points} / {len(self.output_list)} ({noise_points / len(self.output_list) * 100:.1f}%)")
 
     def to_cluster_model(self) -> List[ClusterModel]:
         respondent_groups = {}
