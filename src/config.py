@@ -33,6 +33,71 @@ DEFAULT_LANGUAGE = "Dutch"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEFAULT_MODEL = "gpt-4.1-mini"
 
+# =============================================================================
+# OPENAI RATE LIMITS (Official limits as of 2025)
+# =============================================================================
+
+@dataclass
+class OpenAIRateLimits:
+    """Official OpenAI API rate limits by model"""
+    tokens_per_minute: int
+    requests_per_minute: int
+    tokens_per_day: int
+
+# Rate limits for different models (Tier 4/5 paid accounts)
+OPENAI_RATE_LIMITS = {
+    "gpt-4.1": OpenAIRateLimits(
+        tokens_per_minute=800_000,
+        requests_per_minute=5_000,
+        tokens_per_day=100_000_000
+    ),
+    "gpt-4.1-mini": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
+    "gpt-4.1-nano": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
+    "o4-mini": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
+    "gpt-4o": OpenAIRateLimits(
+        tokens_per_minute=800_000,
+        requests_per_minute=5_000,
+        tokens_per_day=100_000_000
+    ),
+    "gpt-4o-mini": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
+    # Fallback for unknown models (conservative limits)
+    "default": OpenAIRateLimits(
+        tokens_per_minute=800_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    )
+}
+
+def get_openai_rate_limits(model: str) -> OpenAIRateLimits:
+    """Get rate limits for a specific OpenAI model"""
+    # Handle model variations (e.g., gpt-4o-mini-2024-07-18)
+    base_model = model.split('-')[0:2]  # Get base model name
+    base_model_str = '-'.join(base_model)
+    
+    # Try exact match first, then base model, then default
+    if model in OPENAI_RATE_LIMITS:
+        return OPENAI_RATE_LIMITS[model]
+    elif base_model_str in OPENAI_RATE_LIMITS:
+        return OPENAI_RATE_LIMITS[base_model_str]
+    else:
+        return OPENAI_RATE_LIMITS["default"]
+
 @dataclass
 class ModelConfig:
     """Centralized configuration for all models used throughout the pipeline"""
