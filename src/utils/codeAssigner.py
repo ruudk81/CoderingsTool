@@ -220,109 +220,106 @@ class WaveProfiler:
             print(f"Warning: Could not load wave performance cache: {e}")
             self.measurements = []
 
-@dataclass
 class SlidingWindowRateLimiter:
-    """True sliding window rate limiter for OpenAI API compliance"""
-    rpm_limit: int
-    tpm_limit: int
-    window_seconds: int = 60
+    """Simple and correct sliding window rate limiter for OpenAI API compliance"""
+    def __init__(self, rpm_limit: int, tpm_limit: int):
+        self.history = deque()  # (timestamp, requests, tokens)
+        self.rpm_limit = rpm_limit
+        self.tpm_limit = tpm_limit
+        self.window_seconds = 60
     
-    def __post_init__(self):
-        # Track request timestamps and token counts
-        self.request_timestamps = deque()  # (timestamp, request_count, token_count)
-        self.total_requests = 0
-        self.total_tokens = 0
+    def _prune_history(self):
+        """Remove entries older than 60 seconds"""
+        now = time.time()
+        cutoff = now - self.window_seconds
+        while self.history and self.history[0][0] < cutoff:
+            self.history.popleft()
     
-    def _cleanup_expired(self, current_time: float):
-        """Remove requests older than the window"""
-        cutoff_time = current_time - self.window_seconds
+    def can_launch_batch(self, new_requests: int, new_tokens: int) -> tuple[bool, dict]:
+        """Check if batch can be launched without exceeding rate limits"""
+        self._prune_history()
         
-        while self.request_timestamps and self.request_timestamps[0][0] < cutoff_time:
-            timestamp, req_count, token_count = self.request_timestamps.popleft()
-            self.total_requests -= req_count
-            self.total_tokens -= token_count
-    
-    def can_launch_wave(self, wave_requests: int, wave_tokens: int) -> tuple[bool, dict]:
-        """Check if wave can be launched without exceeding rate limits"""
-        current_time = time.time()
-        self._cleanup_expired(current_time)
+        # Calculate current usage from history
+        current_requests = sum(r for _, r, _ in self.history)
+        current_tokens = sum(t for _, _, t in self.history)
         
-        # Check if adding this wave would exceed limits
-        new_total_requests = self.total_requests + wave_requests
-        new_total_tokens = self.total_tokens + wave_tokens
+        # Check if adding this batch would exceed limits
+        would_be_requests = current_requests + new_requests
+        would_be_tokens = current_tokens + new_tokens
         
-        can_launch_requests = new_total_requests <= self.rpm_limit
-        can_launch_tokens = new_total_tokens <= self.tpm_limit
-        can_launch = can_launch_requests and can_launch_tokens
+        can_launch = (would_be_requests <= self.rpm_limit) and (would_be_tokens <= self.tpm_limit)
         
         status = {
             "can_launch": can_launch,
-            "current_requests": self.total_requests,
-            "current_tokens": self.total_tokens,
-            "requests_after_wave": new_total_requests,
-            "tokens_after_wave": new_total_tokens,
-            "requests_utilization": (new_total_requests / self.rpm_limit) * 100,
-            "tokens_utilization": (new_total_tokens / self.tpm_limit) * 100,
-            "requests_remaining": self.rpm_limit - new_total_requests,
-            "tokens_remaining": self.tpm_limit - new_total_tokens
+            "current_requests": current_requests,
+            "current_tokens": current_tokens,
+            "would_be_requests": would_be_requests,
+            "would_be_tokens": would_be_tokens,
+            "requests_utilization": (would_be_requests / self.rpm_limit) * 100,
+            "tokens_utilization": (would_be_tokens / self.tpm_limit) * 100,
+            "requests_remaining": self.rpm_limit - current_requests,
+            "tokens_remaining": self.tpm_limit - current_tokens
         }
         
         return can_launch, status
     
-    def record_wave(self, wave_requests: int, wave_tokens: int):
-        """Record a wave launch in the sliding window"""
-        current_time = time.time()
-        self._cleanup_expired(current_time)
-        
-        # Add this wave to the history
-        self.request_timestamps.append((current_time, wave_requests, wave_tokens))
-        self.total_requests += wave_requests
-        self.total_tokens += wave_tokens
+    def record_batch(self, new_requests: int, new_tokens: int):
+        """Record a batch launch in the sliding window"""
+        self.history.append((time.time(), new_requests, new_tokens))
     
     def get_capacity_status(self) -> dict:
         """Get current capacity utilization"""
-        current_time = time.time()
-        self._cleanup_expired(current_time)
+        self._prune_history()
+        
+        current_requests = sum(r for _, r, _ in self.history)
+        current_tokens = sum(t for _, _, t in self.history)
         
         return {
-            "requests_used": self.total_requests,
-            "tokens_used": self.total_tokens,
+            "requests_used": current_requests,
+            "tokens_used": current_tokens,
             "requests_capacity": self.rpm_limit,
             "tokens_capacity": self.tpm_limit,
-            "requests_utilization": (self.total_requests / self.rpm_limit) * 100,
-            "tokens_utilization": (self.total_tokens / self.tpm_limit) * 100,
-            "window_entries": len(self.request_timestamps)
+            "requests_utilization": (current_requests / self.rpm_limit) * 100,
+            "tokens_utilization": (current_tokens / self.tpm_limit) * 100,
+            "window_entries": len(self.history)
         }
     
-    def calculate_wait_time(self, wave_requests: int, wave_tokens: int) -> float:
-        """Calculate minimum wait time before wave can be launched"""
-        current_time = time.time()
-        self._cleanup_expired(current_time)
+    def calculate_wait_time(self, new_requests: int, new_tokens: int) -> float:
+        """Calculate minimum wait time before batch can be launched"""
+        self._prune_history()
         
-        if self.total_requests + wave_requests <= self.rpm_limit and self.total_tokens + wave_tokens <= self.tpm_limit:
-            return 0.0  # Can launch immediately
+        current_requests = sum(r for _, r, _ in self.history)
+        current_tokens = sum(t for _, _, t in self.history)
         
-        # Find the earliest request that needs to expire to make room
-        min_wait_time = 0.0
-        temp_requests = self.total_requests
-        temp_tokens = self.total_tokens
+        # If we can launch now, no wait needed
+        if (current_requests + new_requests <= self.rpm_limit and 
+            current_tokens + new_tokens <= self.tpm_limit):
+            return 0.0
         
-        for timestamp, req_count, token_count in self.request_timestamps:
-            # Calculate when this entry will expire
+        # Otherwise, find when enough capacity will be freed
+        # Look for the earliest entry that when expired, would free enough capacity
+        now = time.time()
+        
+        for timestamp, req_count, token_count in self.history:
+            # When will this entry expire?
             expire_time = timestamp + self.window_seconds
-            wait_time = expire_time - current_time
+            wait_time = expire_time - now
             
             if wait_time > 0:
-                # Check if removing this entry would make room
-                temp_requests -= req_count
-                temp_tokens -= token_count
+                # If this entry expires, would we have capacity?
+                future_requests = current_requests - req_count
+                future_tokens = current_tokens - token_count
                 
-                if (temp_requests + wave_requests <= self.rpm_limit and 
-                    temp_tokens + wave_tokens <= self.tpm_limit):
-                    min_wait_time = wait_time
-                    break
+                if (future_requests + new_requests <= self.rpm_limit and 
+                    future_tokens + new_tokens <= self.tpm_limit):
+                    return wait_time
         
-        return max(0.0, min_wait_time)
+        # Worst case: wait for entire window to clear
+        if self.history:
+            oldest_timestamp = self.history[0][0]
+            return max(0.0, (oldest_timestamp + self.window_seconds) - now)
+        
+        return 0.0
 
 class CodeAssignmentResponse(BaseModel):
     idea_id: str
@@ -393,7 +390,7 @@ class CodeAssigner:
         # Use 90% of limits for safety margin
         safe_rpm = int(rate_limits.requests_per_minute * 0.9)
         safe_tpm = int(rate_limits.tokens_per_minute * 0.9)
-        self.rate_limiter = SlidingWindowRateLimiter(rpm_limit=safe_rpm, tpm_limit=safe_tpm)
+        self.rate_limiter = SlidingWindowRateLimiter(safe_rpm, safe_tpm)
         
         # Show profiler status
         perf_summary = self.wave_profiler.get_performance_summary()
@@ -809,14 +806,14 @@ class CodeAssigner:
             batches_launched_this_cycle = 0
             while batch_queue:
                 # Check if we can launch the next batch
-                can_launch, status = self.rate_limiter.can_launch_wave(api_calls_per_batch, tokens_per_batch)
+                can_launch, status = self.rate_limiter.can_launch_batch(api_calls_per_batch, tokens_per_batch)
                 
                 if can_launch:
                     # Get next batch from queue
                     batch_idx, batch_data = batch_queue.popleft()
                     
                     # Record in rate limiter
-                    self.rate_limiter.record_wave(api_calls_per_batch, tokens_per_batch)
+                    self.rate_limiter.record_batch(api_calls_per_batch, tokens_per_batch)
                     
                     # Launch batch task
                     batch_start_time = current_time
@@ -838,6 +835,7 @@ class CodeAssigner:
                         capacity = self.rate_limiter.get_capacity_status()
                         print(f"🔄 Waiting for capacity... (need to wait ~{wait_time:.1f}s)")
                         print(f"   📊 Current: {capacity['requests_utilization']:.1f}% RPM, {capacity['tokens_utilization']:.1f}% TPM")
+                        print(f"   📊 Would exceed: {status['would_be_requests']} requests, {status['would_be_tokens']} tokens")
                         last_status_time = current_time
                     break
             
