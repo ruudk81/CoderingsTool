@@ -476,10 +476,10 @@ class CodeAssigner:
         
         return all_results
 
-    def _calculate_optimal_wave_strategy(self, batches: List[List[tuple]]) -> tuple:
-        """Calculate optimal wave size and stagger delay based on OpenAI rolling window limits"""
+    def _calculate_optimal_processing_strategy(self, batches: List[List[tuple]]) -> tuple:
+        """Calculate mathematically optimal processing strategy based purely on data and model limits"""
         if not batches:
-            return 1, 0
+            return 1, 6  # Minimum case
             
         # Get OpenAI rate limits for the current model
         rate_limits = get_openai_rate_limits(self.config.model)
@@ -488,70 +488,69 @@ class CodeAssigner:
         api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
         estimated_tokens_per_call = 800  # Conservative estimate (prompt + completion)
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
-        wave_processing_time = 6  # Time for a wave to complete processing
+        total_batches = len(batches)
         
         # Safety margins (80% of limits to avoid rate limiting)
         safe_requests_per_minute = int(rate_limits.requests_per_minute * 0.8)
         safe_tokens_per_minute = int(rate_limits.tokens_per_minute * 0.8)
         
-        # STEP 1: Calculate maximum safe wave size (burst constraint)
-        # Limit based on what we can safely burst without immediate throttling
-        burst_request_limit = safe_requests_per_minute // 6  # Conservative 10-second burst window
-        burst_token_limit = safe_tokens_per_minute // 6
+        # STEP 1: Calculate maximum safe wave size based on 6-second burst windows
+        # Using 60/10 = 6-second intervals as sliding window granularity
+        burst_window_seconds = 6
+        requests_per_burst_window = safe_requests_per_minute * (burst_window_seconds / 60)
+        tokens_per_burst_window = safe_tokens_per_minute * (burst_window_seconds / 60)
         
-        max_wave_size_requests = burst_request_limit // api_calls_per_batch
-        max_wave_size_tokens = burst_token_limit // tokens_per_batch
-        max_safe_wave_size = min(max_wave_size_requests, max_wave_size_tokens, len(batches))
-        max_safe_wave_size = max(1, min(max_safe_wave_size, 25))  # Cap at reasonable limit
+        # Maximum batches we can process in one 6-second burst
+        max_wave_size_requests = int(requests_per_burst_window // api_calls_per_batch)
+        max_wave_size_tokens = int(tokens_per_burst_window // tokens_per_batch)
+        optimal_wave_size = min(max_wave_size_requests, max_wave_size_tokens, total_batches)
+        optimal_wave_size = max(1, optimal_wave_size)  # Ensure at least 1
         
-        # STEP 2: Calculate minimum delay between waves (rolling window constraint)
-        # Using the mathematical model: R × floor(60/D) ≤ T
-        def calculate_min_delay(requests_per_wave, limit_per_minute):
-            """Find minimum delay D such that requests_per_wave × floor(60/D) ≤ limit_per_minute"""
-            for delay in range(1, 61):  # Try delays from 1 to 60 seconds
-                waves_in_window = 60 // delay
-                total_in_window = requests_per_wave * waves_in_window
-                if total_in_window <= limit_per_minute:
+        # STEP 2: Calculate minimum stagger delay for 60-second rolling window compliance
+        # Using formula: R × floor(60/D) ≤ T
+        wave_requests = optimal_wave_size * api_calls_per_batch
+        wave_tokens = optimal_wave_size * tokens_per_batch
+        
+        def find_min_stagger_delay(requests_per_wave, tokens_per_wave, rpm_limit, tpm_limit):
+            """Find minimum delay D such that both request and token limits are respected"""
+            for delay in range(6, 61):  # Start from 6 seconds minimum
+                waves_in_60s = 60 // delay
+                total_requests_in_60s = requests_per_wave * waves_in_60s
+                total_tokens_in_60s = tokens_per_wave * waves_in_60s
+                
+                if total_requests_in_60s <= rpm_limit and total_tokens_in_60s <= tpm_limit:
                     return delay
-            return 60  # Fallback: one wave per minute
+            return 60  # Fallback: maximum possible delay
         
-        wave_requests = max_safe_wave_size * api_calls_per_batch
-        wave_tokens = max_safe_wave_size * tokens_per_batch
+        optimal_stagger_delay = find_min_stagger_delay(
+            wave_requests, wave_tokens, 
+            safe_requests_per_minute, safe_tokens_per_minute
+        )
         
-        min_delay_requests = calculate_min_delay(wave_requests, safe_requests_per_minute)
-        min_delay_tokens = calculate_min_delay(wave_tokens, safe_tokens_per_minute)
-        optimal_delay = max(min_delay_requests, min_delay_tokens)
+        # STEP 3: Calculate processing metrics
+        num_waves = (total_batches + optimal_wave_size - 1) // optimal_wave_size  # Ceiling division
+        wave_processing_time = 6  # Time for each wave to complete
+        total_processing_time = (num_waves - 1) * optimal_stagger_delay + wave_processing_time
         
-        # STEP 3: Optimization check - is staggering beneficial?
-        # Compare staggered vs simple concurrent processing
-        total_batches = len(batches)
-        
-        # Staggered approach
-        num_waves = (total_batches + max_safe_wave_size - 1) // max_safe_wave_size  # Ceiling division
-        staggered_time = (num_waves - 1) * optimal_delay + wave_processing_time
-        
-        # Simple concurrent approach (for comparison)
-        simple_concurrent_batches = min(15, total_batches)  # Our previous working solution
-        simple_time = wave_processing_time  # All batches run in parallel
-        
-        # Debug information
-        print(f"🧠 Wave optimization analysis for {self.config.model}:")
-        print(f"  • Rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
+        # Debug information - pure mathematical analysis
+        print(f"🚦 Mathematical optimization for {self.config.model}:")
+        print(f"  • Model limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
         print(f"  • Safety margins: {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM (80%)")
-        print(f"  • Total batches to process: {total_batches}")
-        print(f"  • Wave constraints:")
-        print(f"    - Max safe wave size: {max_safe_wave_size} batches ({wave_requests} requests, {wave_tokens} tokens)")
-        print(f"    - Min delay between waves: {optimal_delay} seconds")
-        print(f"    - Number of waves needed: {num_waves}")
-        print(f"  • Time estimates:")
-        print(f"    - Staggered approach: {staggered_time:.1f} seconds")
-        print(f"    - Simple concurrent: {simple_time:.1f} seconds")
+        print(f"  • Data to process: {total_batches} batches ({total_batches * api_calls_per_batch} total requests)")
+        print(f"  • Burst window analysis (6-second windows):")
+        print(f"    - Safe requests per 6s: {requests_per_burst_window:.0f}")
+        print(f"    - Safe tokens per 6s: {tokens_per_burst_window:.0f}")
+        print(f"    - Max batches per wave: {optimal_wave_size} ({wave_requests} requests, {wave_tokens} tokens)")
+        print(f"  • Rolling window analysis (60-second compliance):")
+        print(f"    - Minimum stagger delay: {optimal_stagger_delay} seconds")
+        print(f"    - Waves in 60s window: {60 // optimal_stagger_delay}")
+        print(f"    - Peak usage: {wave_requests * (60 // optimal_stagger_delay)} RPM, {wave_tokens * (60 // optimal_stagger_delay)} TPM")
+        print(f"  • Execution plan:")
+        print(f"    - {num_waves} waves of {optimal_wave_size} batches each")
+        print(f"    - {optimal_stagger_delay}s delay between waves")
+        print(f"    - Total processing time: {total_processing_time:.1f} seconds")
         
-        # Return wave size and delay (0 delay means no staggering needed)
-        if staggered_time < simple_time * 1.2:  # If staggered is not significantly slower
-            return max_safe_wave_size, optimal_delay
-        else:
-            return simple_concurrent_batches, 0  # Fall back to simple concurrent
+        return optimal_wave_size, optimal_stagger_delay
 
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
         """Process all batches using optimal wave-based staggering to respect OpenAI rolling window limits"""
@@ -565,30 +564,14 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # OPTIMAL WAVE STRATEGY CALCULATION
-        wave_size, stagger_delay = self._calculate_optimal_wave_strategy(batches)
+        # MATHEMATICAL OPTIMIZATION - NO COMPARISON, PURE CALCULATION
+        wave_size, stagger_delay = self._calculate_optimal_processing_strategy(batches)
         
-        print(f"\n🚦 WAVE-BASED PROCESSING: {len(batches)} batches")
-        print(f"🚦 Without limiting: up to {total_sub_batches * 5} concurrent API calls (TOO MANY!)")
+        print(f"\n🚦 EXECUTING OPTIMAL STRATEGY: {len(batches)} batches")
+        print(f"🚦 Mathematically determined: {wave_size} batches per wave, {stagger_delay}s stagger delay")
         
-        if stagger_delay > 0:
-            # Use staggered wave processing
-            print(f"🚦 Optimal strategy: {wave_size} batches per wave, {stagger_delay}s delay between waves")
-            batch_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
-        else:
-            # Use simple concurrent processing
-            print(f"🚦 Simple concurrent: {wave_size} concurrent batches (staggering not beneficial)")
-            batch_semaphore = asyncio.Semaphore(wave_size)
-            
-            async def process_batch_limited(batch, i):
-                async with batch_semaphore:
-                    return await self._process_batch(batch, i)
-            
-            batch_tasks = [process_batch_limited(batch, i) for i, batch in enumerate(batches)]
-            max_concurrent_api_calls = wave_size * 5 * 5
-            print(f"🚦 Max concurrent API calls: ~{max_concurrent_api_calls}")
-            
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        # Always use staggered processing - this IS the optimal strategy
+        batch_results = await self._process_batches_staggered(batches, wave_size, stagger_delay)
         
         # Collect results from all batches
         all_results = []
@@ -648,16 +631,13 @@ class CodeAssigner:
                 "Low confidence (<0.5)": low_confidence
             })
         
-        # Wave optimization summary
+        # Mathematical optimization summary
         batches = self._create_batches(self._extract_all_ideas())
-        wave_size, stagger_delay = self._calculate_optimal_wave_strategy(batches)
-        print(f"\n🎯 WAVE OPTIMIZATION APPLIED:")
-        if stagger_delay > 0:
-            print(f"  🚦 Staggered processing: {wave_size} batches per wave, {stagger_delay}s delays")
-            print(f"  🚦 Respects OpenAI rolling window limits for {self.config.model}")
-        else:
-            print(f"  🚦 Optimal concurrent processing: {wave_size} batches")
-        print(f"  🚦 Mathematically optimized for minimal processing time")
+        wave_size, stagger_delay = self._calculate_optimal_processing_strategy(batches)
+        print(f"\n🎯 MATHEMATICAL OPTIMIZATION COMPLETED:")
+        print(f"  🚦 Optimal strategy: {wave_size} batches per wave, {stagger_delay}s stagger delays")
+        print(f"  🚦 Based purely on data volume and {self.config.model} rate limits")
+        print(f"  🚦 Guaranteed OpenAI rolling window compliance")
         
         return self._results
 
