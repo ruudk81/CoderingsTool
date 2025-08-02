@@ -926,6 +926,14 @@ summarizer.generate_summary(
     enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None
 )
 
+
+for result in code_assigned_results:
+    for idea in result.response_ideas:
+        print(idea.assigned_themes)
+    break
+    
+
+
 #debug
 import random
 sampled_result = random.choice(code_assigned_results)
