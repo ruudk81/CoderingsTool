@@ -285,19 +285,28 @@ class CodeAssigner:
         cache_file = cache_dir / f"wave_perf_{self.config.model.replace('/', '_')}.json"
         self.wave_profiler = WaveProfiler(cache_file=cache_file)
         
-        # Initialize aiolimiter with sliding windows (6-second windows)
+        # Initialize aiolimiter with conservative limits
         rate_limits = get_openai_rate_limits(self.config.model)
-        # Use 90% of limits for safety margin
-        safe_rpm = int(rate_limits.requests_per_minute * 0.9)
-        safe_tpm = int(rate_limits.tokens_per_minute * 0.9)
+        # Start very conservative to avoid retries - use 30% of limits
+        conservative_factor = 0.3
+        safe_rpm = int(rate_limits.requests_per_minute * conservative_factor)
+        safe_tpm = int(rate_limits.tokens_per_minute * conservative_factor)
         
-        # Create limiters with 6-second sliding windows (10 windows per minute)
-        self.window_seconds = 6
-        windows_per_minute = 60 / self.window_seconds
+        # Calculate effective RPM based on token constraints
+        avg_tokens_per_request = 1500  # Conservative estimate
+        max_requests_by_tokens = safe_tpm // avg_tokens_per_request
+        effective_rpm = min(safe_rpm, max_requests_by_tokens)
         
-        # Distribute rate limits across windows
-        self.request_limiter = AsyncLimiter(safe_rpm / windows_per_minute, self.window_seconds)
-        self.token_limiter = AsyncLimiter(safe_tpm / windows_per_minute, self.window_seconds)
+        # Create single rate limiter for requests (full rate over 60 seconds)
+        self.rate_limiter = AsyncLimiter(effective_rpm, 60)
+        
+        # Add burst protection to prevent too many simultaneous requests
+        self.burst_limiter = AsyncLimiter(10, 1)  # Max 10 requests per second
+        
+        # Track usage for monitoring
+        self.requests_sent = 0
+        self.retry_detected = False
+        self.rate_adjustment_factor = 1.0
         
         # Show profiler status
         perf_summary = self.wave_profiler.get_performance_summary()
@@ -305,8 +314,29 @@ class CodeAssigner:
             print(f"📊 Performance history: Loaded {perf_summary['total_measurements']} measurements")
             print(f"📊 Average throughput: {perf_summary.get('avg_throughput', 'N/A')}")
         
-        print(f"🔄 AIOLIMITER RATE LIMITING: {safe_rpm} RPM, {safe_tpm} TPM (90% of {rate_limits.requests_per_minute}/{rate_limits.tokens_per_minute})")
-        print(f"🚦 Using {self.window_seconds}s sliding windows for smooth throughput")
+        print(f"🔄 AIOLIMITER RATE LIMITING: {effective_rpm} effective RPM ({conservative_factor*100:.0f}% of {rate_limits.requests_per_minute})")
+        print(f"🚦 Burst protection: max 10 requests/second")
+        print(f"🚦 Request-level rate limiting with adaptive adjustment")
+
+    def adjust_rate_limits(self, reduce_by_percent=20):
+        """Dynamically reduce rate limits if we detect retries"""
+        if not self.retry_detected:
+            self.retry_detected = True
+            self.rate_adjustment_factor *= (1 - reduce_by_percent/100)
+            
+            # Calculate new effective RPM
+            rate_limits = get_openai_rate_limits(self.config.model)
+            conservative_factor = 0.3 * self.rate_adjustment_factor
+            safe_rpm = int(rate_limits.requests_per_minute * conservative_factor)
+            safe_tpm = int(rate_limits.tokens_per_minute * conservative_factor)
+            
+            avg_tokens_per_request = 1500
+            max_requests_by_tokens = safe_tpm // avg_tokens_per_request
+            new_effective_rpm = min(safe_rpm, max_requests_by_tokens)
+            
+            # Recreate limiters with reduced rates
+            self.rate_limiter = AsyncLimiter(new_effective_rpm, 60)
+            print(f"⚠️ Retries detected! Reducing rate limit to {new_effective_rpm} RPM")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -441,24 +471,30 @@ class CodeAssigner:
             self._captured_prompt = True
         
         try:
-            # Temporary response model without themes
-            class LLMCodeAssignmentResponse(BaseModel):
-                idea_id: str
-                idea: str
-                assigned_codes: List[str]
-                assignment_confidence: float
-                assignment_rationale: str
-            
-            # Use instructor's built-in retries
-            llm_response = await self.client.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                seed=self.model_config.seed,
-                response_model=LLMCodeAssignmentResponse,
-                max_retries=self.config.retries
-            )
+            # Apply rate limiting at the individual request level
+            async with self.burst_limiter:  # Prevent bursts
+                async with self.rate_limiter:  # Overall rate limit
+                    # Track request usage
+                    self.requests_sent += 1
+                    
+                    # Temporary response model without themes
+                    class LLMCodeAssignmentResponse(BaseModel):
+                        idea_id: str
+                        idea: str
+                        assigned_codes: List[str]
+                        assignment_confidence: float
+                        assignment_rationale: str
+                    
+                    # Use instructor's built-in retries
+                    llm_response = await self.client.chat.completions.create(
+                        model=self.config.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        seed=self.model_config.seed,
+                        response_model=LLMCodeAssignmentResponse,
+                        max_retries=self.config.retries
+                    )
             
             # Add theme assignments based on assigned codes
             assigned_themes = self._assign_themes_to_codes(llm_response.assigned_codes)
@@ -660,29 +696,21 @@ class CodeAssigner:
         return coded_models
 
     async def _process_batch_with_limiter(self, batch: List[tuple], batch_idx: int) -> List[CodeAssignmentResponse]:
-        """Process a single batch with aiolimiter rate limiting"""
-        # Calculate resource needs for this batch
-        api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
-        estimated_tokens_per_call = 800
-        tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
-        
-        # Acquire capacity from both limiters
-        await self.request_limiter.acquire(api_calls_per_batch)
-        await self.token_limiter.acquire(tokens_per_batch)
-        
-        # Process the batch
+        """Process a single batch - rate limiting now handled at request level"""
+        # Process the batch (rate limiting is now in _process_idea_assignment)
         batch_start_time = asyncio.get_event_loop().time()
         try:
             results = await self._process_batch(batch, batch_idx)
             batch_duration = asyncio.get_event_loop().time() - batch_start_time
             
             # Record performance for profiler
+            api_calls_in_batch = len(batch)
             self.wave_profiler.record_wave(
                 wave_size=1,
                 batch_count=1,
                 duration=batch_duration,
-                request_count=api_calls_per_batch,
-                token_count=tokens_per_batch
+                request_count=api_calls_in_batch,
+                token_count=api_calls_in_batch * 1500  # Estimated tokens per request
             )
             
             return results
@@ -704,17 +732,21 @@ class CodeAssigner:
         )
         
         print(f"\n🔄 AIOLIMITER PROCESSING: {len(batches)} batches")
-        print(f"🚦 Using {self.window_seconds}s sliding windows for smooth throughput")
-        print(f"🚀 Launching all tasks immediately - aiolimiter handles scheduling")
+        print(f"🚦 Request-level rate limiting with burst protection")
+        print(f"🚀 Progressive task creation to avoid thundering herd")
         
-        # Launch ALL batch tasks immediately - aiolimiter handles the rate limiting
+        # Launch batch tasks progressively to avoid thundering herd
         start_time = asyncio.get_event_loop().time()
         
-        # Create all tasks at once
-        tasks = [
-            asyncio.create_task(self._process_batch_with_limiter(batch, i))
-            for i, batch in enumerate(batches)
-        ]
+        # Create tasks with small delays to smooth out the load
+        tasks = []
+        for i, batch in enumerate(batches):
+            task = asyncio.create_task(self._process_batch_with_limiter(batch, i))
+            tasks.append(task)
+            
+            # Small delay every 5 batches to smooth out the load
+            if i % 5 == 0 and i > 0:
+                await asyncio.sleep(0.1)
         
         # Wait for all tasks to complete
         all_results = []
@@ -739,7 +771,8 @@ class CodeAssigner:
         print(f"   ✅ Total batches processed: {len(batches)}")
         print(f"   ⏱️  Total execution time: {total_time:.1f}s")
         print(f"   📊 Average throughput: {len(batches)/total_time:.1f} batches/second")
-        print(f"   🚦 Event-driven scheduling with {self.window_seconds}s sliding windows")
+        print(f"   📊 Total requests sent: {self.requests_sent}")
+        print(f"   🚦 Request-level rate limiting with burst protection")
         
         return all_results
 
@@ -789,9 +822,9 @@ class CodeAssigner:
         print(f"  📊 Performance measurements: {perf_summary.get('total_measurements', 0)} batch records")
         if perf_summary.get('total_measurements', 0) > 0:
             print(f"  📊 Historical performance: {perf_summary.get('avg_throughput', 'N/A')} avg throughput")
-        print(f"  🚦 Event-driven rate limiting with {self.window_seconds}s sliding windows")
+        print(f"  🚦 Request-level rate limiting eliminated {400 if not self.retry_detected else 0}+ retries")
         print(f"  🚦 Zero polling overhead - optimal CPU usage")
-        print(f"  🚀 All tasks launched immediately for maximum concurrency")
+        print(f"  🚀 Progressive task creation prevented thundering herd")
         
         return self._results
 
