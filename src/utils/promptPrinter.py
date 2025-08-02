@@ -1,35 +1,21 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-# Standard library imports
 import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
-# === MODELS ========================================================================================================
-# No models imports needed for this module
-
-# === CONFIG ========================================================================================================
-# No config imports needed for this module
-
 # === UTILS ========================================================================================================
-from verboseReporter import VerboseReporter
+from utils import verboseReporter
 
 
-class promptPrinter:
+class PromptPrinter:
     """Captures and prints LLM prompts with storage and flexible output options."""
     
     def __init__(self, enabled: bool = True, print_realtime: bool = True, verbose: bool = False):
-        """
-        Initialize promptPrinter.
-        
-        Args:
-            enabled: Whether prompt printing is enabled
-            print_realtime: Print prompts as they are captured (during pipeline)
-            verbose: Enable verbose output through VerboseReporter
-        """
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+  
+        self.verbose_reporter = verboseReporter.VerboseReporter(verbose, capture_logging=True)
         self.enabled = enabled
         self.print_realtime = print_realtime
         self.prompts = []
@@ -41,16 +27,7 @@ class promptPrinter:
                       prompt_content: str,
                       prompt_type: str = "main",
                       metadata: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Capture a prompt for storage and optional real-time printing.
-        
-        Args:
-            step_name: Pipeline step (e.g., "preprocessing", "segmentation")
-            utility_name: Utility class using the prompt (e.g., "SpellChecker")
-            prompt_content: The actual prompt text
-            prompt_type: Type of prompt (e.g., "main", "refinement", "validation")
-            metadata: Additional metadata (e.g., model, temperature, var_lab)
-        """
+       
         if not self.enabled:
             return
             
@@ -156,15 +133,8 @@ class promptPrinter:
                 print(f"  • {utility}: {count}")
     
     def save_prompts(self, filepath: Optional[str] = None) -> str:
-        """
-        Save all prompts to a JSON file.
-        
-        Args:
-            filepath: Optional custom filepath. 
-            
-        Returns:
-            Path where prompts were saved
-        """
+        """ Save all prompts to a JSON file. """
+   
         if not self.prompts:
             print("No prompts to save.")
             return ""

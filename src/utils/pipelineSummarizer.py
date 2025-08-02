@@ -1,24 +1,10 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-"""
-Pipeline Summary Analysis Module
-
-Provides simple count analysis for CoderingsTool pipeline results
-"""
-
 # === MODULES ========================================================================================================
-# Standard library imports
 from typing import List, Dict, Any, Optional
-
-# === MODELS ========================================================================================================
-# No models imports needed for this module
-
-# === CONFIG ========================================================================================================
-# No config imports needed for this module
 
 # === UTILS ========================================================================================================
 from verboseReporter import VerboseReporter
-
 
 class PipelineSummarizer:
     """Generates count summaries for themes and codes"""
@@ -31,14 +17,6 @@ class PipelineSummarizer:
                         code_assigned_results: List[Any],
                         theme_enriched_codebook: Optional[Any] = None,
                         enriched_codebook: Optional[Any] = None) -> None:
-        """
-        Generate simple count summary of themes and codes
-        
-        Args:
-            code_assigned_results: List of CodeAssignedModel objects
-            theme_enriched_codebook: ThemeEnrichedCodebookModel object (unused for now)
-            enriched_codebook: Legacy codebook format (unused for now)
-        """
         
         if not code_assigned_results:
             self.verbose_reporter.warning("No code assignment results available for count analysis.")

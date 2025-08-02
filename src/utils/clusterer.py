@@ -6,19 +6,13 @@ import numpy as np
 import numpy.typing as npt
 from umap import UMAP
 import hdbscan
-#from sklearn.decomposition import PCA
-#from sklearn.preprocessing import StandardScaler
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
 from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
 
-# === CONFIG ========================================================================================================
-# No config imports needed for this module
-
 # === UTILS ========================================================================================================
-from verboseReporter import VerboseReporter
-
+from utils import verboseReporter
 
 class ResultMapper(BaseModel):
     respondent_id: Any
@@ -42,7 +36,7 @@ class Clusterer:
                  hdbscan_min_cluster_size: int = 10,
                  verbose: bool = False):
 
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = verboseReporter.VerboseReporter(verbose, capture_logging=True)
         self.variance_threshold = variance_threshold
         self.umap_n_components = umap_n_components
         self.umap_n_neighbors = umap_n_neighbors
@@ -74,6 +68,9 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"Running clustering on {len(self.output_list)} items")
 
         embeddings = np.array([item.idea_embedding for item in self.output_list])
+        
+        #from sklearn.decomposition import PCA
+        #from sklearn.preprocessing import StandardScaler
 
         # # === Step 1: PCA ===
         # scaler = StandardScaler()
@@ -118,7 +115,7 @@ class Clusterer:
 
         # === Step 3: HDBSCAN ===
         hdb = hdbscan.HDBSCAN(
-            min_cluster_size= 2,  # Smaller clusters for better semantic coherence
+            min_cluster_size= 2,  # Smallest clusters for best semantic coherence; with min clusters = 1, no noise
             min_samples= None, # Lower threshold for more selective clustering
             metric= "euclidean",   
             cluster_selection_method = "eom",
