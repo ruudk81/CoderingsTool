@@ -84,11 +84,12 @@ class TextNormalizer:
         stats.start_timing()
         stats.input_count = len(data)
         
-        self.verbose_reporter.step_start("Text Normalization")
+        # Always show main progress
+        print(f"Processing {len(data)} responses for normalization...")
         
-        # Enhanced progress reporting
-        self.verbose_reporter.stat_line(f"Processing {len(data)} responses for normalization...")
-        self.verbose_reporter.stat_line(f"Configuration: min_length={self.config.min_length}, placeholder='{self.config.na_placeholder}'")
+        # Verbose configuration details
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Configuration: min_length={self.config.min_length}, placeholder='{self.config.na_placeholder}'")
         
         # Track changes and examples
         symbol_changes = 0
@@ -104,8 +105,8 @@ class TextNormalizer:
         
         results = []
         for i, item in enumerate(data):
-            # Progress indicators for large datasets
-            if len(data) > 1000 and i % 500 == 0 and i > 0:
+            # Verbose progress indicators for large datasets
+            if self.verbose_reporter.enabled and len(data) > 1000 and i % 500 == 0 and i > 0:
                 self.verbose_reporter.progress_line(i, len(data), "normalizing")
             
             original = item.response
@@ -148,36 +149,35 @@ class TextNormalizer:
         avg_time_per_response = total_time / len(data) if data else 0
         responses_per_second = len(data) / total_time if total_time > 0 else 0
         
-        # Enhanced reporting
-        self.verbose_reporter.stat_line(f"Processing completed: {stats.input_count} → {stats.output_count} responses")
+        # Always show main completion stats (as was before)
+        print(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
         
-        # Transformation statistics
-        if case_changes > 0:
-            self.verbose_reporter.stat_line(f"Case normalization: {case_changes} responses updated")
-        if whitespace_changes > 0:
-            self.verbose_reporter.stat_line(f"Whitespace cleanup: {whitespace_changes} responses updated")
-        if slash_changes > 0:
-            self.verbose_reporter.stat_line(f"Slash replacement: {slash_changes} responses updated")
-        if invalid_filtered > 0:
-            self.verbose_reporter.stat_line(f"Invalid responses filtered: {invalid_filtered} responses")
-        
-        # Quality metrics
-        self.verbose_reporter.stat_line(f"Quality metrics:")
-        self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
-        self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
-        self.verbose_reporter.stat_line(f"  • Data retention rate: {retention_rate:.1f}%")
-        
-        # Performance metrics
-        self.verbose_reporter.stat_line(f"Performance metrics:")
-        self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
-        self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
-        self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
-        
-        # Show transformation examples in verbose mode
-        if transformation_examples and self.verbose_reporter.enabled:
-            self.verbose_reporter.correction_samples(transformation_examples[:3])
-        
-        self.verbose_reporter.step_complete(f"Normalization completed with {stats.output_count} valid responses")
+        # Verbose detailed transformation statistics
+        if self.verbose_reporter.enabled:
+            if case_changes > 0:
+                self.verbose_reporter.stat_line(f"Case normalization: {case_changes} responses updated")
+            if whitespace_changes > 0:
+                self.verbose_reporter.stat_line(f"Whitespace cleanup: {whitespace_changes} responses updated")
+            if slash_changes > 0:
+                self.verbose_reporter.stat_line(f"Slash replacement: {slash_changes} responses updated")
+            if invalid_filtered > 0:
+                self.verbose_reporter.stat_line(f"Invalid responses filtered: {invalid_filtered} responses")
+            
+            # Quality metrics
+            self.verbose_reporter.stat_line(f"Quality metrics:")
+            self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
+            self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
+            self.verbose_reporter.stat_line(f"  • Data retention rate: {retention_rate:.1f}%")
+            
+            # Performance metrics
+            self.verbose_reporter.stat_line(f"Performance metrics:")
+            self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
+            self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
+            self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
+            
+            # Show transformation examples in verbose mode
+            if transformation_examples:
+                self.verbose_reporter.correction_samples(transformation_examples[:3])
         
         return results
     

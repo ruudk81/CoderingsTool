@@ -81,11 +81,12 @@ class TextFinalizer:
         stats.start_timing()
         stats.input_count = len(data)
         
-        self.verbose_reporter.step_start("Text Finalization")
+        # Always show main progress
+        print(f"Processing {len(data)} responses for finalization...")
         
-        # Enhanced progress reporting
-        self.verbose_reporter.stat_line(f"Processing {len(data)} responses for finalization...")
-        self.verbose_reporter.stat_line("Configuration: Capitalize first letter, ensure punctuation, cleanup format")
+        # Verbose configuration details
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Configuration: Capitalize first letter, ensure punctuation, cleanup format")
         
         # Track changes and examples
         capitalization_fixes = 0
@@ -100,8 +101,8 @@ class TextFinalizer:
         
         results = []
         for i, item in enumerate(data):
-            # Progress indicators for large datasets
-            if len(data) > 1000 and i % 500 == 0 and i > 0:
+            # Verbose progress indicators for large datasets
+            if self.verbose_reporter.enabled and len(data) > 1000 and i % 500 == 0 and i > 0:
                 self.verbose_reporter.progress_line(i, len(data), "finalizing")
             
             original = item.response
@@ -150,36 +151,35 @@ class TextFinalizer:
         avg_time_per_response = total_time / len(data) if data else 0
         responses_per_second = len(data) / total_time if total_time > 0 else 0
         
-        # Enhanced reporting
-        self.verbose_reporter.stat_line(f"Processing completed: {stats.input_count} → {stats.output_count} responses")
+        # Always show main completion stats (as was before)
+        print(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")
         
-        # Transformation statistics
-        if capitalization_fixes > 0:
-            self.verbose_reporter.stat_line(f"Capitalization fixes: {capitalization_fixes} responses")
-        if punctuation_additions > 0:
-            self.verbose_reporter.stat_line(f"Punctuation additions: {punctuation_additions} responses")
-        if format_cleanup > 0:
-            self.verbose_reporter.stat_line(f"Format cleanup: {format_cleanup} responses")
-        if spacing_fixes > 0:
-            self.verbose_reporter.stat_line(f"Spacing fixes: {spacing_fixes} responses")
-        
-        # Quality metrics
-        self.verbose_reporter.stat_line(f"Quality metrics:")
-        self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
-        self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
-        self.verbose_reporter.stat_line(f"  • Responses improved: {improvement_rate:.1f}%")
-        
-        # Performance metrics
-        self.verbose_reporter.stat_line(f"Performance metrics:")
-        self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
-        self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
-        self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
-        
-        # Show transformation examples in verbose mode
-        if transformation_examples and self.verbose_reporter.enabled:
-            self.verbose_reporter.correction_samples(transformation_examples[:3])
-        
-        self.verbose_reporter.step_complete(f"Finalization completed with {stats.output_count} responses")
+        # Verbose detailed transformation statistics
+        if self.verbose_reporter.enabled:
+            if capitalization_fixes > 0:
+                self.verbose_reporter.stat_line(f"Capitalization fixes: {capitalization_fixes} responses")
+            if punctuation_additions > 0:
+                self.verbose_reporter.stat_line(f"Punctuation additions: {punctuation_additions} responses")
+            if format_cleanup > 0:
+                self.verbose_reporter.stat_line(f"Format cleanup: {format_cleanup} responses")
+            if spacing_fixes > 0:
+                self.verbose_reporter.stat_line(f"Spacing fixes: {spacing_fixes} responses")
+            
+            # Quality metrics
+            self.verbose_reporter.stat_line(f"Quality metrics:")
+            self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
+            self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
+            self.verbose_reporter.stat_line(f"  • Responses improved: {improvement_rate:.1f}%")
+            
+            # Performance metrics
+            self.verbose_reporter.stat_line(f"Performance metrics:")
+            self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
+            self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
+            self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
+            
+            # Show transformation examples in verbose mode
+            if transformation_examples:
+                self.verbose_reporter.correction_samples(transformation_examples[:3])
         
         return results
 
