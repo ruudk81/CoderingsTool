@@ -66,7 +66,8 @@ class Codebook(BaseModel):
     code: str
     definition: str    
     topic: Optional[str] = None   
-    theme: Optional[str] = None   
+    theme: Optional[str] = None
+    theme_description: Optional[str] = None   
 
 class CodebookEntry(BaseModel):
     """Individual code from generated codebook"""
