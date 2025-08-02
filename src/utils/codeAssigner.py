@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import json
 from collections import deque
+from aiolimiter import AsyncLimiter
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
@@ -220,107 +221,6 @@ class WaveProfiler:
             print(f"Warning: Could not load wave performance cache: {e}")
             self.measurements = []
 
-class SlidingWindowRateLimiter:
-    """Simple and correct sliding window rate limiter for OpenAI API compliance"""
-    def __init__(self, rpm_limit: int, tpm_limit: int):
-        self.history = deque()  # (timestamp, requests, tokens)
-        self.rpm_limit = rpm_limit
-        self.tpm_limit = tpm_limit
-        self.window_seconds = 60
-    
-    def _prune_history(self):
-        """Remove entries older than 60 seconds"""
-        now = time.time()
-        cutoff = now - self.window_seconds
-        while self.history and self.history[0][0] < cutoff:
-            self.history.popleft()
-    
-    def can_launch_batch(self, new_requests: int, new_tokens: int) -> tuple[bool, dict]:
-        """Check if batch can be launched without exceeding rate limits"""
-        self._prune_history()
-        
-        # Calculate current usage from history
-        current_requests = sum(r for _, r, _ in self.history)
-        current_tokens = sum(t for _, _, t in self.history)
-        
-        # Check if adding this batch would exceed limits
-        would_be_requests = current_requests + new_requests
-        would_be_tokens = current_tokens + new_tokens
-        
-        can_launch = (would_be_requests <= self.rpm_limit) and (would_be_tokens <= self.tpm_limit)
-        
-        status = {
-            "can_launch": can_launch,
-            "current_requests": current_requests,
-            "current_tokens": current_tokens,
-            "would_be_requests": would_be_requests,
-            "would_be_tokens": would_be_tokens,
-            "requests_utilization": (would_be_requests / self.rpm_limit) * 100,
-            "tokens_utilization": (would_be_tokens / self.tpm_limit) * 100,
-            "requests_remaining": self.rpm_limit - current_requests,
-            "tokens_remaining": self.tpm_limit - current_tokens
-        }
-        
-        return can_launch, status
-    
-    def record_batch(self, new_requests: int, new_tokens: int):
-        """Record a batch launch in the sliding window"""
-        self.history.append((time.time(), new_requests, new_tokens))
-    
-    def get_capacity_status(self) -> dict:
-        """Get current capacity utilization"""
-        self._prune_history()
-        
-        current_requests = sum(r for _, r, _ in self.history)
-        current_tokens = sum(t for _, _, t in self.history)
-        
-        return {
-            "requests_used": current_requests,
-            "tokens_used": current_tokens,
-            "requests_capacity": self.rpm_limit,
-            "tokens_capacity": self.tpm_limit,
-            "requests_utilization": (current_requests / self.rpm_limit) * 100,
-            "tokens_utilization": (current_tokens / self.tpm_limit) * 100,
-            "window_entries": len(self.history)
-        }
-    
-    def calculate_wait_time(self, new_requests: int, new_tokens: int) -> float:
-        """Calculate minimum wait time before batch can be launched"""
-        self._prune_history()
-        
-        current_requests = sum(r for _, r, _ in self.history)
-        current_tokens = sum(t for _, _, t in self.history)
-        
-        # If we can launch now, no wait needed
-        if (current_requests + new_requests <= self.rpm_limit and 
-            current_tokens + new_tokens <= self.tpm_limit):
-            return 0.0
-        
-        # Otherwise, find when enough capacity will be freed
-        # Look for the earliest entry that when expired, would free enough capacity
-        now = time.time()
-        
-        for timestamp, req_count, token_count in self.history:
-            # When will this entry expire?
-            expire_time = timestamp + self.window_seconds
-            wait_time = expire_time - now
-            
-            if wait_time > 0:
-                # If this entry expires, would we have capacity?
-                future_requests = current_requests - req_count
-                future_tokens = current_tokens - token_count
-                
-                if (future_requests + new_requests <= self.rpm_limit and 
-                    future_tokens + new_tokens <= self.tpm_limit):
-                    return wait_time
-        
-        # Worst case: wait for entire window to clear
-        if self.history:
-            oldest_timestamp = self.history[0][0]
-            return max(0.0, (oldest_timestamp + self.window_seconds) - now)
-        
-        return 0.0
-
 class CodeAssignmentResponse(BaseModel):
     idea_id: str
     idea: str
@@ -385,23 +285,28 @@ class CodeAssigner:
         cache_file = cache_dir / f"wave_perf_{self.config.model.replace('/', '_')}.json"
         self.wave_profiler = WaveProfiler(cache_file=cache_file)
         
-        # Initialize sliding window rate limiter
+        # Initialize aiolimiter with sliding windows (6-second windows)
         rate_limits = get_openai_rate_limits(self.config.model)
         # Use 90% of limits for safety margin
         safe_rpm = int(rate_limits.requests_per_minute * 0.9)
         safe_tpm = int(rate_limits.tokens_per_minute * 0.9)
-        self.rate_limiter = SlidingWindowRateLimiter(safe_rpm, safe_tpm)
+        
+        # Create limiters with 6-second sliding windows (10 windows per minute)
+        self.window_seconds = 6
+        windows_per_minute = 60 / self.window_seconds
+        
+        # Distribute rate limits across windows
+        self.request_limiter = AsyncLimiter(safe_rpm / windows_per_minute, self.window_seconds)
+        self.token_limiter = AsyncLimiter(safe_tpm / windows_per_minute, self.window_seconds)
         
         # Show profiler status
         perf_summary = self.wave_profiler.get_performance_summary()
         if perf_summary["total_measurements"] > 0:
-            print(f"📊 EMPIRICAL OPTIMIZATION: Loaded {perf_summary['total_measurements']} wave measurements")
-            print(f"📊 Performance history: {perf_summary['wave_size_range']} waves, {perf_summary['duration_range']}")
-        else:
-            print("📊 EMPIRICAL OPTIMIZATION: No historical data - will learn from this run")
+            print(f"📊 Performance history: Loaded {perf_summary['total_measurements']} measurements")
+            print(f"📊 Average throughput: {perf_summary.get('avg_throughput', 'N/A')}")
         
-        print(f"🔄 SLIDING WINDOW RATE LIMITER: {safe_rpm} RPM, {safe_tpm} TPM (90% of {rate_limits.requests_per_minute}/{rate_limits.tokens_per_minute})")
-        print("🚦 DATA-DRIVEN OPTIMIZATION: Wave sizing based on measured performance enabled")
+        print(f"🔄 AIOLIMITER RATE LIMITING: {safe_rpm} RPM, {safe_tpm} TPM (90% of {rate_limits.requests_per_minute}/{rate_limits.tokens_per_minute})")
+        print(f"🚦 Using {self.window_seconds}s sliding windows for smooth throughput")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup - call this before processing"""
@@ -754,323 +659,39 @@ class CodeAssigner:
         
         return coded_models
 
-    async def _process_batches_continuous_flow(self, batches: List[List[tuple]]) -> List:
-        """Process batches using continuous flow rate limiting - launch individual batches as capacity allows"""
-        from collections import deque
-        
-        all_results = []
-        batch_queue = deque(enumerate(batches))  # (batch_idx, batch_data)
-        total_batches = len(batches)
-        
-        print(f"🔄 CONTINUOUS FLOW PROCESSING: {total_batches} batches with dynamic scheduling")
-        
-        # Calculate batch characteristics for rate limiting
+    async def _process_batch_with_limiter(self, batch: List[tuple], batch_idx: int) -> List[CodeAssignmentResponse]:
+        """Process a single batch with aiolimiter rate limiting"""
+        # Calculate resource needs for this batch
         api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
         estimated_tokens_per_call = 800
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
         
-        # LAUNCH RATE THROTTLING: Prevent overwhelming system with rapid launches
-        MIN_LAUNCH_INTERVAL = 0.5  # seconds between batch launches
-        last_launch_time = 0
-        
-        # Track active batch tasks
-        active_batch_tasks = {}  # batch_idx -> (task, start_time, requests, tokens)
-        completed_batches = 0
-        
-        processing_start_time = asyncio.get_event_loop().time()
-        last_status_time = processing_start_time
-        
-        print(f"🚦 LAUNCH THROTTLING: Minimum {MIN_LAUNCH_INTERVAL}s interval between batch launches")
-        
-        while batch_queue or active_batch_tasks:
-            current_time = asyncio.get_event_loop().time()
-            
-            # Clean up completed tasks and collect results
-            completed_tasks = []
-            for batch_idx, (task, start_time, requests, tokens) in list(active_batch_tasks.items()):
-                if task.done():
-                    try:
-                        batch_result = await task
-                        all_results.extend(batch_result)
-                        duration = current_time - start_time
-                        completed_batches += 1
-                        
-                        # Log completion only for significant events (every 10 batches)
-                        if completed_batches % 10 == 0:
-                            print(f"🔄 Progress: {completed_batches}/{total_batches} batches completed")
-                            
-                    except Exception as e:
-                        print(f"❌ Batch {batch_idx + 1} failed: {str(e)}")
+        # Acquire capacity from both limiters
+        async with self.request_limiter.acquire(api_calls_per_batch):
+            async with self.token_limiter.acquire(tokens_per_batch):
+                # Process the batch
+                batch_start_time = asyncio.get_event_loop().time()
+                try:
+                    results = await self._process_batch(batch, batch_idx)
+                    batch_duration = asyncio.get_event_loop().time() - batch_start_time
                     
-                    completed_tasks.append(batch_idx)
-            
-            # Remove completed tasks
-            for batch_idx in completed_tasks:
-                del active_batch_tasks[batch_idx]
-            
-            # Try to launch more batches while we have capacity
-            batches_launched_this_cycle = 0
-            while batch_queue:
-                # Check launch interval throttling first
-                time_since_last_launch = current_time - last_launch_time
-                if time_since_last_launch < MIN_LAUNCH_INTERVAL:
-                    # Too soon to launch next batch
-                    break
-                
-                # Check if we can launch the next batch
-                can_launch, status = self.rate_limiter.can_launch_batch(api_calls_per_batch, tokens_per_batch)
-                
-                if can_launch:
-                    # Get next batch from queue
-                    batch_idx, batch_data = batch_queue.popleft()
+                    # Record performance for profiler
+                    self.wave_profiler.record_wave(
+                        wave_size=1,
+                        batch_count=1,
+                        duration=batch_duration,
+                        request_count=api_calls_per_batch,
+                        token_count=tokens_per_batch
+                    )
                     
-                    # Record launch time for throttling
-                    last_launch_time = current_time
-                    
-                    # Record in rate limiter
-                    self.rate_limiter.record_batch(api_calls_per_batch, tokens_per_batch)
-                    
-                    # Launch batch task
-                    batch_start_time = current_time
-                    batch_task = asyncio.create_task(self._process_single_batch(batch_data, batch_idx))
-                    active_batch_tasks[batch_idx] = (batch_task, batch_start_time, api_calls_per_batch, tokens_per_batch)
-                    batches_launched_this_cycle += 1
-                    
-                    # Log launch status periodically (every 5 batches launched)
-                    if (total_batches - len(batch_queue)) % 5 == 0:
-                        capacity = self.rate_limiter.get_capacity_status()
-                        print(f"🔄 Launched batch {batch_idx + 1}/{total_batches}")
-                        print(f"   📊 Utilization: {capacity['requests_utilization']:.1f}% RPM, {capacity['tokens_utilization']:.1f}% TPM")
-                        print(f"   📊 Active batches: {len(active_batch_tasks)}, Queue: {len(batch_queue)}")
-                        print(f"   🚦 Launch interval: {time_since_last_launch:.1f}s")
-                    
-                    # Only launch one batch per cycle to maintain interval
-                    break
-                else:
-                    # No capacity for more batches right now
-                    if batches_launched_this_cycle == 0 and current_time - last_status_time > 2.0:
-                        # Show waiting status if we haven't launched anything in a while
-                        wait_time = self.rate_limiter.calculate_wait_time(api_calls_per_batch, tokens_per_batch)
-                        capacity = self.rate_limiter.get_capacity_status()
-                        print(f"🔄 Waiting for capacity... (need to wait ~{wait_time:.1f}s)")
-                        print(f"   📊 Current: {capacity['requests_utilization']:.1f}% RPM, {capacity['tokens_utilization']:.1f}% TPM")
-                        print(f"   📊 Would exceed: {status['would_be_requests']} requests, {status['would_be_tokens']} tokens")
-                        last_status_time = current_time
-                    break
-            
-            # Brief pause to prevent CPU spinning
-            await asyncio.sleep(0.05)  # 50ms check interval
-        
-        total_time = asyncio.get_event_loop().time() - processing_start_time
-        
-        # Final summary
-        print(f"\n🔄 CONTINUOUS FLOW COMPLETED")
-        print(f"   ✅ Total batches processed: {completed_batches}/{total_batches}")
-        print(f"   ⏱️  Total execution time: {total_time:.1f}s")
-        print(f"   📊 Average throughput: {completed_batches/total_time:.1f} batches/second")
-        print(f"   🚦 Launch throttling: {MIN_LAUNCH_INTERVAL}s intervals prevented system overload")
-        
-        # Record aggregate performance for profiler
-        if completed_batches > 0:
-            avg_batch_time = total_time / completed_batches
-            self.wave_profiler.record_wave(
-                wave_size=1,  # Single batch "waves" in continuous flow
-                batch_count=1,
-                duration=avg_batch_time,
-                request_count=api_calls_per_batch
-            )
-        
-        return all_results
-    
-    async def _process_single_batch(self, batch: List[tuple], batch_idx: int) -> List:
-        """Process a single batch of ideas"""
-        try:
-            batch_results = await self._process_batch(batch, batch_idx)
-            return batch_results
-        except Exception as e:
-            print(f"❌ Error processing batch {batch_idx + 1}: {str(e)}")
-            return []
-    
-    async def _execute_single_wave(self, wave: List[List[tuple]], wave_idx: int) -> List:
-        """Execute a single wave of batches"""
-        # Process all batches in this wave concurrently
-        wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
-        wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
-        
-        # Handle results and exceptions for this wave
-        wave_failures = 0
-        results = []
-        for i, result in enumerate(wave_results):
-            if isinstance(result, Exception):
-                print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
-                wave_failures += 1
-                continue
-            results.extend(result)
-        
-        if wave_failures > 0:
-            print(f"🔄 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
-        
-        return results
+                    return results
+                except Exception as e:
+                    print(f"❌ Batch {batch_idx + 1} failed: {str(e)}")
+                    return []
 
-    async def _process_batches_staggered(self, batches: List[List[tuple]], wave_size: int, stagger_delay: int) -> List:
-        """Process batches in staggered waves to respect rolling window rate limits"""
-        all_results = []
-        
-        # Split batches into waves
-        waves = []
-        for i in range(0, len(batches), wave_size):
-            wave = batches[i:i + wave_size]
-            waves.append(wave)
-        
-        print(f"🚦 Processing {len(waves)} waves of {wave_size} batches each")
-        
-        # Process waves with staggered timing
-        for wave_idx, wave in enumerate(waves):
-            wave_start_time = asyncio.get_event_loop().time()
-            
-            print(f"🚦 Starting wave {wave_idx + 1}/{len(waves)} ({len(wave)} batches)...")
-            
-            # Process all batches in this wave concurrently
-            wave_tasks = [self._process_batch(batch, i) for i, batch in enumerate(wave)]
-            wave_results = await asyncio.gather(*wave_tasks, return_exceptions=True)
-            
-            # Handle results and exceptions for this wave
-            wave_failures = 0
-            for i, result in enumerate(wave_results):
-                if isinstance(result, Exception):
-                    print(f"Batch {i+1} in wave {wave_idx+1} failed: {str(result)}")
-                    wave_failures += 1
-                    continue
-                all_results.extend(result)
-            
-            if wave_failures > 0:
-                print(f"🚦 Wave {wave_idx+1}: {wave_failures}/{len(wave)} batches failed")
-            
-            wave_duration = asyncio.get_event_loop().time() - wave_start_time
-            print(f"🚦 Wave {wave_idx+1} completed in {wave_duration:.1f}s")
-            
-            # Record wave performance for future optimization
-            actual_batch_count = len(wave)
-            total_requests = sum(len(batch) for batch in wave) * 5  # 5 API calls per idea on average
-            self.wave_profiler.record_wave(
-                wave_size=len(wave),
-                batch_count=actual_batch_count,
-                duration=wave_duration,
-                request_count=total_requests
-            )
-            
-            # Apply execution-aware stagger delay before next wave (except for last wave)
-            if wave_idx < len(waves) - 1:
-                # Only wait if execution time was less than required stagger interval
-                remaining_delay = max(0, stagger_delay - wave_duration)
-                if remaining_delay > 0:
-                    print(f"🚦 Waiting {remaining_delay:.1f}s to maintain {stagger_delay}s intervals...")
-                    await asyncio.sleep(remaining_delay)
-                else:
-                    print(f"🚦 No wait needed - wave duration ({wave_duration:.1f}s) ≥ interval ({stagger_delay}s)")
-                    print(f"🚦 Next wave can start immediately")
-        
-        return all_results
-
-    def _calculate_continuous_flow_strategy(self, batches: List[List[tuple]]) -> dict:
-        """Calculate optimal parameters for continuous flow batch processing"""
-        if not batches:
-            return {"max_concurrent": 20, "predicted_time": 0}
-            
-        # Get rate limits
-        rate_limits = get_openai_rate_limits(self.config.model)
-        
-        # Job characteristics
-        api_calls_per_batch = 25  # 5 sub-batches × 5 ideas per sub-batch
-        estimated_tokens_per_call = 800  # Conservative estimate (prompt + completion)
-        tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
-        total_batches = len(batches)
-        
-        # Use rate limiter's limits (already has 90% safety margin)
-        safe_requests_per_minute = self.rate_limiter.rpm_limit
-        safe_tokens_per_minute = self.rate_limiter.tpm_limit
-        
-        # Get profiler performance summary
-        perf_summary = self.wave_profiler.get_performance_summary()
-        
-        print(f"🔄 CONTINUOUS FLOW OPTIMIZATION: Using {perf_summary.get('total_measurements', 0)} historical measurements")
-        
-        # Calculate maximum concurrent batches based on rate limits
-        max_concurrent_by_requests = safe_requests_per_minute // api_calls_per_batch
-        max_concurrent_by_tokens = safe_tokens_per_minute // tokens_per_batch
-        max_theoretical_concurrent = min(max_concurrent_by_requests, max_concurrent_by_tokens)
-        
-        # Apply practical limits based on system capacity
-        if perf_summary.get('total_measurements', 0) > 0:
-            # With empirical data, use measured throughput
-            avg_throughput = perf_summary.get('avg_throughput', '1.0 batches/s')
-            if isinstance(avg_throughput, str):
-                avg_throughput = float(avg_throughput.split()[0])
-            # Conservative: assume we can sustain 70% of measured throughput
-            sustainable_concurrent = int(avg_throughput * 0.7 * 60 / api_calls_per_batch)
-            max_concurrent = min(max_theoretical_concurrent, sustainable_concurrent, 50)
-        else:
-            # Without data, be very conservative
-            max_concurrent = min(max_theoretical_concurrent // 10, 20)
-        
-        # Ensure reasonable limits
-        max_concurrent = max(10, min(max_concurrent, 100))
-        
-        # Estimate execution time based on continuous flow
-        # Get average batch processing time from profiler
-        if perf_summary.get('total_measurements', 0) > 0:
-            # Use empirical data
-            estimated_batch_duration = self.wave_profiler.get_duration_estimate(1)  # Single batch
-        else:
-            # Fallback estimate
-            estimated_batch_duration = 0.5  # Conservative 0.5s per batch
-        
-        # In continuous flow, throughput is limited by:
-        # 1. Rate limits (how fast we can launch)
-        # 2. Processing time (how fast batches complete)
-        
-        # Calculate launch rate based on rate limits
-        batches_per_second_limit = min(
-            safe_requests_per_minute / api_calls_per_batch / 60,
-            safe_tokens_per_minute / tokens_per_batch / 60
-        )
-        
-        # Actual throughput is minimum of launch rate and processing rate
-        processing_rate = max_concurrent / estimated_batch_duration if estimated_batch_duration > 0 else float('inf')
-        effective_throughput = min(batches_per_second_limit, processing_rate)
-        
-        # Predicted total time
-        if effective_throughput > 0:
-            estimated_total_time = total_batches / effective_throughput
-        else:
-            estimated_total_time = total_batches * estimated_batch_duration
-        
-        # Display optimization results
-        data_source = "EMPIRICAL" if perf_summary.get('total_measurements', 0) > 0 else "FALLBACK ESTIMATE"
-        print(f"🔄 Continuous flow optimization for {self.config.model}:")
-        print(f"  • OpenAI rate limits: {rate_limits.requests_per_minute} RPM, {rate_limits.tokens_per_minute} TPM")
-        print(f"  • Safety margins (90%): {safe_requests_per_minute} RPM, {safe_tokens_per_minute} TPM")
-        print(f"  • Data to process: {total_batches} batches ({total_batches * api_calls_per_batch} total requests)")
-        print(f"  • Batch processing model: {data_source}")
-        print(f"  • Rate limit capacity: {batches_per_second_limit:.1f} batches/second")
-        print(f"  • Max concurrent batches: {max_concurrent}")
-        print(f"  • Estimated batch duration: {estimated_batch_duration:.1f} seconds")
-        print(f"  • Execution plan:")
-        print(f"    - Continuous batch-by-batch processing")
-        print(f"    - Launch throttling: minimum 0.5s intervals to prevent overload")
-        print(f"    - Sliding window rate limiting for API compliance")
-        print(f"    - Maintain up to {max_concurrent} concurrent batches")
-        print(f"    - Predicted throughput: {min(effective_throughput, 2.0):.1f} batches/second (throttled)")
-        print(f"    - Predicted total time: {max(estimated_total_time, total_batches * 0.5):.1f} seconds")
-        
-        return {
-            "max_concurrent": max_concurrent,
-            "predicted_time": estimated_total_time,
-            "throughput": effective_throughput
-        }
 
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
-        """Process all batches using sliding window rate limiting for optimal throughput"""
+        """Process all batches using aiolimiter for optimal throughput"""
         total_ideas = sum(len(batch) for batch in batches)
         
         # Calculate total sub-batches for reporting
@@ -1081,14 +702,43 @@ class CodeAssigner:
             f"({total_sub_batches} concurrent sub-batches)..."
         )
         
-        # CONTINUOUS FLOW OPTIMIZATION - TRUE BATCH-LEVEL RATE LIMITING
-        flow_strategy = self._calculate_continuous_flow_strategy(batches)
+        print(f"\n🔄 AIOLIMITER PROCESSING: {len(batches)} batches")
+        print(f"🚦 Using {self.window_seconds}s sliding windows for smooth throughput")
+        print(f"🚀 Launching all tasks immediately - aiolimiter handles scheduling")
         
-        print(f"\n🔄 EXECUTING CONTINUOUS FLOW STRATEGY: {len(batches)} batches")
-        print(f"🔄 Max concurrent: {flow_strategy['max_concurrent']} batches, dynamic scheduling")
+        # Launch ALL batch tasks immediately - aiolimiter handles the rate limiting
+        start_time = asyncio.get_event_loop().time()
         
-        # Use continuous flow processing for maximum throughput
-        all_results = await self._process_batches_continuous_flow(batches)
+        # Create all tasks at once
+        tasks = [
+            asyncio.create_task(self._process_batch_with_limiter(batch, i))
+            for i, batch in enumerate(batches)
+        ]
+        
+        # Wait for all tasks to complete
+        all_results = []
+        completed = 0
+        
+        # Use asyncio.as_completed to track progress
+        for coro in asyncio.as_completed(tasks):
+            batch_results = await coro
+            all_results.extend(batch_results)
+            completed += 1
+            
+            # Progress reporting every 10 batches
+            if completed % 10 == 0 or completed == len(batches):
+                elapsed = asyncio.get_event_loop().time() - start_time
+                rate = completed / elapsed if elapsed > 0 else 0
+                print(f"🔄 Progress: {completed}/{len(batches)} batches completed ({rate:.1f} batches/s)")
+        
+        total_time = asyncio.get_event_loop().time() - start_time
+        
+        # Final summary
+        print(f"\n🔄 AIOLIMITER PROCESSING COMPLETED")
+        print(f"   ✅ Total batches processed: {len(batches)}")
+        print(f"   ⏱️  Total execution time: {total_time:.1f}s")
+        print(f"   📊 Average throughput: {len(batches)/total_time:.1f} batches/second")
+        print(f"   🚦 Event-driven scheduling with {self.window_seconds}s sliding windows")
         
         return all_results
 
@@ -1132,15 +782,15 @@ class CodeAssigner:
                 "Low confidence (<0.5)": low_confidence
             })
         
-        # Data-driven optimization summary
+        # Performance summary
         perf_summary = self.wave_profiler.get_performance_summary()
-        print(f"\n🎯 DATA-DRIVEN OPTIMIZATION COMPLETED:")
-        print(f"  📊 Performance measurements: {perf_summary.get('total_measurements', 0)} wave records")
+        print(f"\n🎯 AIOLIMITER OPTIMIZATION COMPLETED:")
+        print(f"  📊 Performance measurements: {perf_summary.get('total_measurements', 0)} batch records")
         if perf_summary.get('total_measurements', 0) > 0:
             print(f"  📊 Historical performance: {perf_summary.get('avg_throughput', 'N/A')} avg throughput")
-            print(f"  📊 Wave size experience: {perf_summary.get('wave_size_range', 'N/A')} batches")
-        print(f"  🚦 Burst + rolling window compliance guaranteed")
-        print(f"  🚦 Future runs will benefit from accumulated performance data")
+        print(f"  🚦 Event-driven rate limiting with {self.window_seconds}s sliding windows")
+        print(f"  🚦 Zero polling overhead - optimal CPU usage")
+        print(f"  🚀 All tasks launched immediately for maximum concurrency")
         
         return self._results
 
