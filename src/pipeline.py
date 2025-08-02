@@ -114,8 +114,8 @@ else:
 """preprocess data"""
 
 from utils import textNormalizer, spellChecker, textFinalizer
-from utils.verboseReporter import VerboseReporter
-from utils.promptPrinter import promptPrinter
+from utils import verboseReporter
+from utils import promptPrinter
 
 FORCE = False
 
@@ -124,8 +124,8 @@ if  FORCE:
     FORCE_STEP   = step_name
 
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 
 code_meanings = {
     99999997: "User missing: Don't know/only expressing uncertainty", 
@@ -241,8 +241,8 @@ step_name        = "quality_filter"
 if  FORCE:
     FORCE_STEP   = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True) 
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -305,8 +305,8 @@ step_name        = "extracted_ideas"
 if  FORCE:
     FORCE_STEP   = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer   = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)  
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -354,8 +354,7 @@ step_name = "embeddings"
 if  FORCE:
     FORCE_STEP   = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
@@ -398,7 +397,7 @@ step_name = "initial_clusters"
 if  FORCE:
     FORCE_STEP   = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -476,8 +475,8 @@ if  FORCE:
     FORCE_STEP      = step_name
     PROMPT_PRINTER  = True
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -712,8 +711,8 @@ if  FORCE:
     FORCE_STEP      = step_name
     PROMPT_PRINTER  = True
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
@@ -893,8 +892,8 @@ if  FORCE:
     FORCE_STEP      = step_name
     PROMPT_PRINTER  = False
 
-verbose_reporter = VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):

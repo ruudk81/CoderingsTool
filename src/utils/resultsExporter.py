@@ -1,25 +1,16 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-# Standard library imports
 import os
-import json
-import io
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Any
 from pathlib import Path
-
-# Third-party imports
-import pandas as pd
-import numpy as np
 import pyreadstat
+
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
-import seaborn as sns
+
 from wordcloud import WordCloud
-from openpyxl.drawing.image import Image
-from openpyxl.styles import Font, Alignment, PatternFill
-from openpyxl.utils.dataframe import dataframe_to_rows
 import xlsxwriter
 
 # === MODELS ========================================================================================================
@@ -34,16 +25,6 @@ from .dataLoader import DataLoader
 from .id_validator import validate_id_consistency
 
 class ResultsExporter:
-    """
-    Export pipeline results to SPSS (.sav) and Excel formats
-    
-    This class handles:
-    1. Creating codes columns for each respondent (themes and concepts)
-    2. Adding codes to original SPSS file and saving as new file
-    3. Creating comprehensive Excel report with multiple tabs
-    
-    Modified to support 2-level hierarchy (Themes → Concepts)
-    """
     
     def __init__(self, config: ExportConfig = None, verbose: bool = True, prompt_printer = None):
         self.config = config or DEFAULT_EXPORT_CONFIG
@@ -56,18 +37,7 @@ class ResultsExporter:
                       filename: str,
                       id_column: str,
                       var_name: str) -> Dict[str, str]:
-        """
-        Export complete results to both SPSS and Excel formats
-        
-        Args:
-            labeled_results: List of LabelModel objects from step 6
-            filename: Original SPSS filename
-            id_column: ID column name in SPSS file
-            var_name: Variable name that was analyzed
-            
-        Returns:
-            Dict with paths to created files
-        """
+
         self.verbose_reporter.section_header("EXPORTING RESULTS")
         
         # Extract data structure from results
@@ -107,14 +77,7 @@ class ResultsExporter:
     def _create_respondent_codes_mapping(self, 
                                        labeled_results: List[models.LabelModel],
                                        hierarchical_structure: Dict) -> Dict[int, Dict[str, Any]]:
-        """
-        Create mapping of respondent_id to their assigned codes using binary approach
         
-        Creates binary variables for:
-        - Each theme (1 if respondent has any segment in theme, 0 otherwise)
-        - Each concept (1 if respondent has any segment in concept, 0 otherwise)  
-        - Quality filter codes (1 if respondent has that filter code, 0 otherwise)
-        """
         respondent_codes = {}
         themes = hierarchical_structure['themes']
         cluster_mappings = {mapping.cluster_id: mapping for mapping in hierarchical_structure['cluster_mappings']}
@@ -177,12 +140,7 @@ class ResultsExporter:
                                      result: models.LabelModel,
                                      cluster_mappings: Dict[int, models.ClusterMapping],
                                      themes: List[models.HierarchicalTheme]) -> List[Tuple[str, str]]:
-        """
-        Find ALL theme/concept assignments for a respondent's segments (not just most common)
-        
-        Returns:
-            List of (theme_id, concept_id) tuples for all segments
-        """
+       
         theme_concept_pairs = []
         
         if not result.response_segment:
@@ -213,12 +171,7 @@ class ResultsExporter:
         return theme_concept_pairs
     
     def _create_spss_metadata(self, themes: List[Tuple[str, str]], concepts: List[Tuple[str, str, str]], var_name: str) -> Tuple[Dict[str, str], Dict[str, Dict[int, str]]]:
-        """
-        Create SPSS metadata including variable labels and value labels
         
-        Returns:
-            Tuple of (variable_labels, value_labels)
-        """
         variable_labels = {}
         value_labels = {}
         
@@ -433,9 +386,9 @@ class ResultsExporter:
         self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables with SPSS metadata")
         self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
         self.verbose_reporter.stat_line(f"  - {len(concepts)} concept variables") 
-        self.verbose_reporter.stat_line(f"  - 3 quality filter variables")
-        self.verbose_reporter.stat_line(f"  - Variable labels: descriptive names for each column")
-        self.verbose_reporter.stat_line(f"  - Value labels: 0='Niet genoemd', 1='Wel genoemd'")
+        self.verbose_reporter.stat_line("  - 3 quality filter variables")
+        self.verbose_reporter.stat_line("  - Variable labels: descriptive names for each column")
+        self.verbose_reporter.stat_line("  - Value labels: 0='Niet genoemd', 1='Wel genoemd'")
         self.verbose_reporter.stat_line(f"SPSS file saved: {output_filename}")
         
         return output_path
@@ -446,9 +399,7 @@ class ResultsExporter:
                         filename: str,
                         var_name: str,
                         export_dir: str) -> str:
-        """
-        Export comprehensive Excel report with embedded visualizations
-        """
+
         self.verbose_reporter.step_start("Exporting to Excel with visualizations")
         
         # Create output filename
