@@ -797,13 +797,18 @@ else:
             is_misc = False
             
             if theme_name:
-                # Find theme details
+                # Find theme details with normalized matching
+                theme_name_normalized = theme_name.strip().lower()
                 for theme in themes:
-                    if theme['theme_name'] == theme_name:
+                    if theme['theme_name'].strip().lower() == theme_name_normalized:
                         theme_info = theme.get('theme_description', '')
                         theme_cluster_id = theme.get('cluster_id', -1)
                         is_misc = theme.get('is_miscellaneous', False)
                         break
+                
+                # Log if theme not found
+                if theme_info is None:
+                    print(f"Warning: Theme '{theme_name}' not found in themes list for code '{entry.code}'")
             
             enriched_entry = models.ThemeEnrichedCodebookEntry(
                 code=entry.code,
@@ -894,8 +899,12 @@ else:
   
         code_assigner_instance = codeAssigner.CodeAssigner(
             cluster_models=initial_cluster_results,  # Use cluster results from Step 6 (includes embeddings)
-            codebook=[models.Codebook(code=entry.code, definition=entry.definition) 
-                     for entry in theme_enriched_codebook.codes],  # Legacy format for compatibility
+            codebook=[models.Codebook(
+                code=entry.code, 
+                definition=entry.definition,
+                theme=entry.theme,
+                theme_description=entry.theme_description
+            ) for entry in theme_enriched_codebook.codes],  # Include theme information
             var_lab=var_lab,
             code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,  # Pass theme mapping for assignment
             verbose=VERBOSE,
