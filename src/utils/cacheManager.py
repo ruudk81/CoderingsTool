@@ -1,15 +1,18 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import pickle
-import hashlib
-import logging
-import sqlite3
+# === MODULES ====================================================================================================
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Type, TypeVar, List, Optional, Dict
+import hashlib
+import logging
+import pickle
+import sqlite3
+
+# === MODELS =====================================================================================================
 from pydantic import BaseModel
 
+# === CONFIG =====================================================================================================
 from config import CacheConfig
 
 logger = logging.getLogger(__name__)

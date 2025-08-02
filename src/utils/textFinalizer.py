@@ -1,14 +1,16 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import re
-from typing import List, Union
-import models
+# === MODULES ====================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
+from typing import List, Union
+import re
+
+# === MODELS =====================================================================================================
+import models
 
 class TextFinalizer:
     
     def __init__(self, verbose: bool = False):
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
 
     @staticmethod
     def capitalize_first_letter(text: str) -> str:

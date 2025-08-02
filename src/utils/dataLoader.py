@@ -1,14 +1,14 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
+# === MODULES ====================================================================================================
+from .verboseReporter import VerboseReporter, ProcessingStats
 import os
 import pandas as pd
 import pyreadstat
-from .verboseReporter import VerboseReporter, ProcessingStats
 
 class DataLoader:
     def __init__(self, data_dir: str = None, verbose: bool = False):
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.stats = ProcessingStats()
         current_dir = os.getcwd()
         if data_dir is None:

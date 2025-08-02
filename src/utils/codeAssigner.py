@@ -1,32 +1,32 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import asyncio
-import nest_asyncio
-import time
-import statistics
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+# === MODULES ====================================================================================================
+from .verboseReporter import VerboseReporter
+from asyncio_throttle import Throttler
 from collections import deque
-
-import instructor
-from openai import AsyncOpenAI, RateLimitError
-import tiktoken
-from pydantic import BaseModel
-import numpy as np
+from dataclasses import dataclass
 from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from asyncio_throttle import Throttler
+from typing import Dict, List, Optional
+import asyncio
+import nest_asyncio
+import numpy as np
+import statistics
+import time
 
+# === MODELS =====================================================================================================
+from pydantic import BaseModel
+import models
+
+# === CONFIG =====================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
-import models
-from .verboseReporter import VerboseReporter
+
+# === UTILS ======================================================================================================
 from utils.embedder import Embedder
+
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
-import logging # remove for debugging 
-logging.getLogger("openai").setLevel(logging.WARNING)
 EMBEDDING_DIMENSION = 3072 # text-embedding-3-large dimension
 
 @dataclass
@@ -256,7 +256,7 @@ class CodeAssigner:
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.CodeAssignedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
