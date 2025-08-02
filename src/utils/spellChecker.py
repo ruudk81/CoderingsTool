@@ -98,8 +98,23 @@ class SpellChecker:
         self.prompt_printer = prompt_printer 
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
+        # Enhanced configuration reporting
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Spell checker configuration:")
+            self.verbose_reporter.stat_line(f"  • Model: {self.openai_model}")
+            self.verbose_reporter.stat_line(f"  • Language: {DEFAULT_LANGUAGE}")
+            self.verbose_reporter.stat_line(f"  • Dictionary: {self.dict_path}")
+            self.verbose_reporter.stat_line(f"  • Hunspell path: {self.hunspell_path}")
+            self.verbose_reporter.stat_line(f"  • Batch size: {self.config.batch_size}")
+        
+        # Enhanced installation check with better error reporting
         if not self.check_hunspell_installation():
-            logger.warning("Hunspell is not properly installed or configured.")
+            self.verbose_reporter.warning("Hunspell is not properly installed or configured - spell checking may fail")
+            self.verbose_reporter.warning(f"Expected Hunspell at: {self.hunspell_path}")
+            self.verbose_reporter.warning(f"Expected dictionary at: {self.dict_path}")
+        else:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line("✓ Hunspell installation verified")
         
         # Stats tracking
         self.stats = {
@@ -549,10 +564,22 @@ class SpellChecker:
         stats.input_count = len(responses)
         
         self.verbose_reporter.step_start("Spell Checking")
+        
+        # Enhanced progress reporting
+        self.verbose_reporter.stat_line(f"Processing {len(responses)} responses for spell checking...")
+        self.verbose_reporter.stat_line(f"Configuration: batch_size={self.config.batch_size}, model={self.openai_model}")
+        
         sentences_list = [response.original_response for response in responses]
+        
+        # Calculate initial metrics
+        total_words = sum(len(sentence.split()) for sentence in sentences_list)
+        avg_words_per_response = total_words / len(responses) if responses else 0
+        
+        self.verbose_reporter.stat_line(f"Total words to analyze: {total_words}")
+        self.verbose_reporter.stat_line(f"Average words per response: {avg_words_per_response:.1f}")
     
         # Step 1: Identify OOV words using single session
-        self.verbose_reporter.stat_line(f"Analyzing {len(responses)} responses for misspellings...")
+        self.verbose_reporter.stat_line(f"Step 1: Identifying out-of-vocabulary words...")
         oov_words = []
         docs_with_oov = 0
         
@@ -580,15 +607,26 @@ class SpellChecker:
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
         self.stats['unique_oov_words'] = len(unique_oov_words)
-        #self.verbose_reporter.stat_line(f"OOV words identified: {len(unique_oov_words)} unique terms")
-        #self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
+        
+        # Enhanced OOV reporting
+        oov_rate = (len(unique_oov_words) / total_words * 100) if total_words > 0 else 0
+        self.verbose_reporter.stat_line(f"OOV analysis results:")
+        self.verbose_reporter.stat_line(f"  • Unique OOV words: {len(unique_oov_words)}")
+        self.verbose_reporter.stat_line(f"  • OOV rate: {oov_rate:.1f}% of total words")
+        self.verbose_reporter.stat_line(f"  • Responses requiring correction: {docs_with_oov}")
+        
+        # Progress indicators for large datasets
+        if len(responses) > 1000:
+            self.verbose_reporter.progress_line(len(responses), len(responses), "analyzing for OOV words")
     
         # Step 2: Get suggestions for unique OOV words only
         if unique_oov_words:
+            self.verbose_reporter.stat_line(f"Step 2: Generating corrections for {len(unique_oov_words)} OOV words...")
             best_suggestions_dict = await self.find_best_suggestions_batch_async(unique_oov_words)
             corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
         else:
+            self.verbose_reporter.stat_line("No OOV words found - skipping correction step")
             corrected_sentences_dict = {}
         
         # Step 3: Update sentences with tracked respondent IDs
