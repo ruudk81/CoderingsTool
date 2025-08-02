@@ -15,6 +15,13 @@ class TextFinalizer:
     
     def __init__(self, verbose: bool = False, prompt_printer = None):
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        
+        # Configuration reporting
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Text finalizer configuration:")
+            self.verbose_reporter.stat_line("  • Capitalization: First letter uppercase")
+            self.verbose_reporter.stat_line("  • Punctuation: Ensure ending punctuation")
+            self.verbose_reporter.stat_line("  • Cleanup: Remove duplicate punctuation and fix spacing")
 
     @staticmethod
     def capitalize_first_letter(text: str) -> str:
@@ -45,14 +52,22 @@ class TextFinalizer:
         return text
     
     def finalize_response(self, text: Union[str, None, object]) -> str:
-        
-        text = text.lower()
-        text = self.capitalize_first_letter(text)
-        text = self.ensure_ending_punctuation(text)
-        text = self.remove_duplicate_punctuation(text)
-        text = self.fix_spacing_after_punctuation(text)
-            
-        return text
+        try:
+            if not isinstance(text, str) or not text:
+                return text
+                
+            text = text.lower()
+            text = self.capitalize_first_letter(text)
+            text = self.ensure_ending_punctuation(text)
+            text = self.remove_duplicate_punctuation(text)
+            text = self.fix_spacing_after_punctuation(text)
+                
+            return text
+        except Exception as e:
+            # Improved error reporting
+            truncated_text = str(text)[:50] + "..." if len(str(text)) > 50 else str(text)
+            self.verbose_reporter.error(f"Error finalizing text '{truncated_text}': {e}")
+            return text
         
         
     def finalize_with_tracking(self, data: models.PreprocessedModel) -> models.PreprocessedModel:
@@ -68,38 +83,103 @@ class TextFinalizer:
         
         self.verbose_reporter.step_start("Text Finalization")
         
-        # Track changes
+        # Enhanced progress reporting
+        self.verbose_reporter.stat_line(f"Processing {len(data)} responses for finalization...")
+        self.verbose_reporter.stat_line("Configuration: Capitalize first letter, ensure punctuation, cleanup format")
+        
+        # Track changes and examples
         capitalization_fixes = 0
         punctuation_additions = 0
         format_cleanup = 0
+        spacing_fixes = 0
+        transformation_examples = []
+        
+        # Calculate initial quality metrics
+        total_length_before = 0
+        responses_needing_fixes = 0
         
         results = []
-        for item in data:
+        for i, item in enumerate(data):
+            # Progress indicators for large datasets
+            if len(data) > 1000 and i % 500 == 0 and i > 0:
+                self.verbose_reporter.progress_line(i, len(data), "finalizing")
+            
             original = item.response
             finalized = self.finalize_with_tracking(item)
             results.append(finalized)
             
-            # Track what changed
-            if original and len(original) > 0:
-                if original[0] != original[0].upper():
+            # Track quality metrics
+            if isinstance(original, str) and original:
+                total_length_before += len(original)
+                needs_fix = False
+                
+                # Track specific changes
+                if len(original) > 0 and original[0] != original[0].upper():
                     capitalization_fixes += 1
+                    needs_fix = True
                 if not original.endswith(('.', '!', '?')):
                     punctuation_additions += 1
-                if re.search(r'\.{2,}|\?{2,}|!{2,}|\s{2,}', original):
+                    needs_fix = True
+                if re.search(r'\.{2,}|\?{2,}|!{2,}', original):
                     format_cleanup += 1
+                    needs_fix = True
+                if re.search(r'([.!?])([a-zA-Z])', original):
+                    spacing_fixes += 1
+                    needs_fix = True
+                
+                if needs_fix:
+                    responses_needing_fixes += 1
+                
+                # Collect transformation examples for debugging
+                if (len(transformation_examples) < 5 and 
+                    original != finalized.response and
+                    isinstance(finalized.response, str)):
+                    transformation_examples.append((original, finalized.response))
         
         stats.output_count = len(results)
         stats.end_timing()
         
-        # Report statistics
+        # Calculate quality metrics
+        avg_length_before = total_length_before / max(1, len(data))
+        total_length_after = sum(len(r.response) for r in results if isinstance(r.response, str))
+        avg_length_after = total_length_after / max(1, len(results))
+        improvement_rate = (responses_needing_fixes / len(data)) * 100 if data else 0
+        
+        # Performance metrics
+        total_time = stats.get_duration()
+        avg_time_per_response = total_time / len(data) if data else 0
+        responses_per_second = len(data) / total_time if total_time > 0 else 0
+        
+        # Enhanced reporting
+        self.verbose_reporter.stat_line(f"Processing completed: {stats.input_count} → {stats.output_count} responses")
+        
+        # Transformation statistics
         if capitalization_fixes > 0:
             self.verbose_reporter.stat_line(f"Capitalization fixes: {capitalization_fixes} responses")
         if punctuation_additions > 0:
             self.verbose_reporter.stat_line(f"Punctuation additions: {punctuation_additions} responses")
         if format_cleanup > 0:
             self.verbose_reporter.stat_line(f"Format cleanup: {format_cleanup} responses")
+        if spacing_fixes > 0:
+            self.verbose_reporter.stat_line(f"Spacing fixes: {spacing_fixes} responses")
         
-        self.verbose_reporter.step_complete("Finalization completed")
+        # Quality metrics
+        self.verbose_reporter.stat_line(f"Quality metrics:")
+        self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
+        self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
+        self.verbose_reporter.stat_line(f"  • Responses improved: {improvement_rate:.1f}%")
+        
+        # Performance metrics
+        self.verbose_reporter.stat_line(f"Performance metrics:")
+        self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
+        self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
+        self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
+        
+        # Show transformation examples in verbose mode
+        if transformation_examples and self.verbose_reporter.enabled:
+            self.verbose_reporter.correction_samples(transformation_examples[:3])
+        
+        self.verbose_reporter.step_complete(f"Finalization completed with {stats.output_count} responses")
         
         return results
 
