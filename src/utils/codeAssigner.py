@@ -667,27 +667,28 @@ class CodeAssigner:
         tokens_per_batch = api_calls_per_batch * estimated_tokens_per_call
         
         # Acquire capacity from both limiters
-        async with self.request_limiter.acquire(api_calls_per_batch):
-            async with self.token_limiter.acquire(tokens_per_batch):
-                # Process the batch
-                batch_start_time = asyncio.get_event_loop().time()
-                try:
-                    results = await self._process_batch(batch, batch_idx)
-                    batch_duration = asyncio.get_event_loop().time() - batch_start_time
-                    
-                    # Record performance for profiler
-                    self.wave_profiler.record_wave(
-                        wave_size=1,
-                        batch_count=1,
-                        duration=batch_duration,
-                        request_count=api_calls_per_batch,
-                        token_count=tokens_per_batch
-                    )
-                    
-                    return results
-                except Exception as e:
-                    print(f"❌ Batch {batch_idx + 1} failed: {str(e)}")
-                    return []
+        await self.request_limiter.acquire(api_calls_per_batch)
+        await self.token_limiter.acquire(tokens_per_batch)
+        
+        # Process the batch
+        batch_start_time = asyncio.get_event_loop().time()
+        try:
+            results = await self._process_batch(batch, batch_idx)
+            batch_duration = asyncio.get_event_loop().time() - batch_start_time
+            
+            # Record performance for profiler
+            self.wave_profiler.record_wave(
+                wave_size=1,
+                batch_count=1,
+                duration=batch_duration,
+                request_count=api_calls_per_batch,
+                token_count=tokens_per_batch
+            )
+            
+            return results
+        except Exception as e:
+            print(f"❌ Batch {batch_idx + 1} failed: {str(e)}")
+            return []
 
 
     async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
