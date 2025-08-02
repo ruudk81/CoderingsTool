@@ -26,13 +26,13 @@ cache_manager = CacheManager(cache_config)
 # var_name = "q19"
 # #var_name = "Q18Q19"
 
-# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Q20"
-
-filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
-var_name = "Qd1_combined"
+var_name = "Q20"
+
+# filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Qd1_combined"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
@@ -230,7 +230,6 @@ else:
     print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     
-
 # === STEP 3 ========================================================================================================
 """quality filter"""
 from utils import qualityFilter
