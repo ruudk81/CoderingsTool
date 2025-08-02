@@ -1,16 +1,23 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import asyncio
+# === MODULES ====================================================================================================
 from typing import List, Dict 
-import instructor
-
-from openai import AsyncOpenAI
-import models
-from prompts import INITIAL_CODEBOOK_CREATION_PROMPT
-from config import ModelConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY
 from utils.verboseReporter import VerboseReporter
+import asyncio
+try:
+
+# === MODELS =====================================================================================================
+import models
+
+# === CONFIG =====================================================================================================
+from config import ModelConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY
+from prompts import INITIAL_CODEBOOK_CREATION_PROMPT
 
 try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
     import nest_asyncio
     nest_asyncio.apply()
 except ImportError:
@@ -26,7 +33,7 @@ class SpeculativeStarterCodes:
         self.var_lab = var_lab
         self.n_codes = n_codes
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.prompt_printer = prompt_printer
         self.language = DEFAULT_LANGUAGE
         self.model_config = ModelConfig()

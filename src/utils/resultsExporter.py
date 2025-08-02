@@ -1,13 +1,14 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import os
-import pandas as pd
-import numpy as np
-import pyreadstat
-from typing import List, Dict, Tuple, Optional, Any
+# === MODULES ====================================================================================================
 from pathlib import Path
+from typing import List, Dict, Tuple, Optional, Any
 import json
 import matplotlib
+import numpy as np
+import os
+import pandas as pd
+import pyreadstat
+
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -39,7 +40,7 @@ class ResultsExporter:
     def __init__(self, config: ExportConfig = None, verbose: bool = True):
         self.config = config or DEFAULT_EXPORT_CONFIG
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.data_loader = DataLoader(verbose=False)
         
     def export_results(self, 

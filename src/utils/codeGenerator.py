@@ -1,36 +1,36 @@
-import os
-import sys
-sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-# === MODULES ========================================================================================================
-import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+
+# === MODULES ====================================================================================================
 from dataclasses import dataclass
+from enum import Enum
+from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
+from langchain_core.prompts import PromptTemplate
+from sklearn.metrics.pairwise import cosine_similarity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
+from typing import List, Dict, Any, Optional, Tuple
+from utils.verboseReporter import VerboseReporter
+import asyncio
+import hashlib
 import logging
 import numpy as np
 import time
+try:
+
+# === MODELS =====================================================================================================
 from pydantic import BaseModel, Field
-from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
-
-import hashlib
-from enum import Enum
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
-
-from openai import AsyncOpenAI
-from sklearn.metrics.pairwise import cosine_similarity
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
-
-# === MODELS ========================================================================================================
 import models
 
-# === CONFIG ========================================================================================================
-from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
+# === CONFIG =====================================================================================================
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
-from utils.verboseReporter import VerboseReporter
+from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 
-# === UTILS ========================================================================================================
 try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
     import nest_asyncio
     nest_asyncio.apply()
 except ImportError:
@@ -40,7 +40,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").disabled = True
-logging.getLogger("tenacity").setLevel(logging.WARNING)   
 
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
@@ -1309,7 +1308,7 @@ class InductiveCodeGenerator:
             cluster_results=cluster_results,
             k=k
         )
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         if self.verbose:
             logger.info("🔧 Configuration:")

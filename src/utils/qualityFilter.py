@@ -1,8 +1,15 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
-import asyncio
+# === MODULES ====================================================================================================
 from typing import Dict, List, Optional, Union
+import asyncio
 try:
+
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
     import nest_asyncio #for Spyder
 except ImportError:
     nest_asyncio = None
@@ -32,7 +39,7 @@ class Grader:
         self.client = async_client
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.QualityFilteredModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()  # For accessing seed
         self.prompt_printer = prompt_printer

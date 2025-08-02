@@ -1,17 +1,18 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-
+# === MODULES ====================================================================================================
+from .verboseReporter import VerboseReporter, ProcessingStats
+from typing import Dict, List, Optional, Union
 import asyncio
 import nest_asyncio
-from typing import Dict, List, Optional, Union
-import instructor
-from openai import AsyncOpenAI
-import tiktoken
-from pydantic import BaseModel
 
+# === MODELS =====================================================================================================
+from pydantic import BaseModel
+import models
+
+# === CONFIG =====================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import IDEA_EXTRACTION_PROMPT
-import models
-from .verboseReporter import VerboseReporter, ProcessingStats
+
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
@@ -35,7 +36,7 @@ class IdeaExtractor:
         self.client = async_client
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
