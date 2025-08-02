@@ -1,16 +1,4 @@
-# Add project paths to sys.path if running from coderingsTool directory
-import os, sys
-if 'coderingsTool' in os.getcwd():
-    base_path = os.getcwd().split('coderingsTool')[0]
-    project_paths = [
-        base_path,
-        base_path + 'coderingsTool',
-        base_path + 'coderingsTool/src',
-        base_path + 'coderingsTool/src/utils'
-    ]
-    for path in project_paths:
-        if path not in sys.path:
-            sys.path.append(path)
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import asyncio
 import nest_asyncio
@@ -19,6 +7,8 @@ import statistics
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import deque
+from pathlib import Path
+import json
 
 import instructor
 from openai import AsyncOpenAI, RateLimitError
@@ -37,9 +27,6 @@ from utils.embedder import Embedder
 
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
-
-# Constants
-EMBEDDING_DIMENSION = 1536  # text-embedding-3-large dimension
 
 
 @dataclass
@@ -191,13 +178,12 @@ class SlidingWindowMonitor:
 class SmartAPIClient:
     """API client with intelligent retry logic and precise rate limiting"""
     
-    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config: CodeAssignmentConfig, encoding, model_config: ModelConfig):
+    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config: CodeAssignmentConfig):
         self.throttler = throttler
         self.monitor = monitor
         self.config = config
         self.client = async_client
-        self.model_config = model_config
-        self.encoding = encoding
+        self.model_config = ModelConfig()
     
     @retry(
         retry=retry_if_exception_type(RateLimitError),
@@ -210,6 +196,14 @@ class SmartAPIClient:
         # Apply precision rate limiting
         async with self.throttler:
             try:
+                # Temporary response model
+                class LLMCodeAssignmentResponse(BaseModel):
+                    idea_id: str
+                    idea: str
+                    assigned_codes: List[str]
+                    assignment_confidence: float
+                    assignment_rationale: str
+                
                 # Make the API call
                 response = await self.client.chat.completions.create(
                     model=self.config.model,
@@ -217,12 +211,12 @@ class SmartAPIClient:
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                     seed=self.model_config.seed,
-                    response_model=CodeAssignmentResponse,
+                    response_model=LLMCodeAssignmentResponse,
                     max_retries=0  # Let tenacity handle retries
                 )
                 
-                # Record successful request with accurate token count
-                estimated_tokens = len(self.encoding.encode(prompt))
+                # Record successful request (estimate tokens)
+                estimated_tokens = len(prompt.encode()) // 3  # Rough approximation
                 self.monitor.record_request(estimated_tokens)
                 
                 return {
@@ -242,9 +236,9 @@ class CodeAssignmentResponse(BaseModel):
     idea_id: str
     idea: str
     assigned_codes: List[str]
+    assigned_themes: List[str]
     assignment_confidence: float
     assignment_rationale: str
-    assigned_themes: Optional[List[str]] = None
 
 
 class CodeAssigner:
@@ -336,9 +330,9 @@ class CodeAssigner:
                     if embedding is not None:
                         embeddings.append(embedding)
                     else:
-                        embeddings.append(np.zeros(EMBEDDING_DIMENSION))
+                        embeddings.append(np.zeros(1536))
                 else:
-                    embeddings.append(np.zeros(EMBEDDING_DIMENSION))
+                    embeddings.append(np.zeros(1536))
             
             self._code_embeddings = np.array(embeddings)
         
@@ -524,7 +518,7 @@ class CodeAssigner:
         # Step 2: Initialize precision throttler and monitor
         throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
         monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
-        api_client = SmartAPIClient(throttler, monitor, self.config, self.workload_analyzer.encoding, self.model_config)
+        api_client = SmartAPIClient(throttler, monitor, self.config)
         
         # Step 3: Launch all requests with precision timing
         print(f"\n🚀 LAUNCHING {len(all_ideas)} REQUESTS AT OPTIMAL RATE")
