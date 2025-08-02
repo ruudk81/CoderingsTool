@@ -1,3 +1,6 @@
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+
+# === MODULES ========================================================================================================
 from typing import List, Optional, Any
 import numpy as np
 import numpy.typing as npt
@@ -5,8 +8,13 @@ import numpy.typing as npt
 #from sklearn.preprocessing import StandardScaler
 from umap import UMAP
 import hdbscan
+
+# === MODELS ========================================================================================================
 from pydantic import BaseModel
 from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
+
+# === UTILS ========================================================================================================
+from verboseReporter import VerboseReporter
 
 
 class ResultMapper(BaseModel):
@@ -28,8 +36,10 @@ class Clusterer:
                  variance_threshold: float = 0.9,
                  umap_n_components: int = 5,
                  umap_n_neighbors: int = 15,
-                 hdbscan_min_cluster_size: int = 10):
+                 hdbscan_min_cluster_size: int = 10,
+                 verbose: bool = False):
 
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.variance_threshold = variance_threshold
         self.umap_n_components = umap_n_components
         self.umap_n_neighbors = umap_n_neighbors
@@ -58,7 +68,7 @@ class Clusterer:
                     processing_order += 1
 
     def run(self):
-        print(f"• Running clustering on {len(self.output_list)} items")
+        self.verbose_reporter.stat_line(f"Running clustering on {len(self.output_list)} items")
 
         embeddings = np.array([item.idea_embedding for item in self.output_list])
 
@@ -121,8 +131,8 @@ class Clusterer:
         num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
         noise_points = list(labels).count(-1)
 
-        print(f"• Found {num_clusters} clusters")
-        print(f"• Noise points: {noise_points} / {len(self.output_list)} ({noise_points / len(self.output_list) * 100:.1f}%)")
+        self.verbose_reporter.stat_line(f"Found {num_clusters} clusters")
+        self.verbose_reporter.stat_line(f"Noise points: {noise_points} / {len(self.output_list)} ({noise_points / len(self.output_list) * 100:.1f}%)")
 
     def to_cluster_model(self) -> List[ClusterModel]:
         respondent_groups = {}

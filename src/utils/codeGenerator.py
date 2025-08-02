@@ -36,11 +36,7 @@ try:
 except ImportError:
     pass
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-logging.getLogger("httpx").disabled = True
-logging.getLogger("tenacity").setLevel(logging.WARNING)   
+logger = logging.getLogger(__name__)   
 
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
@@ -1050,7 +1046,7 @@ Recommendation:
         total_clusters = len(cluster_items)
         total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
         
-        verbose_reporter = VerboseReporter(self.verbose)
+        verbose_reporter = VerboseReporter(self.verbose, capture_logging=True)
         
         # Create ALL batch tasks upfront (Level 0 concurrency)
         batch_tasks = []
@@ -1309,7 +1305,7 @@ class InductiveCodeGenerator:
             cluster_results=cluster_results,
             k=k
         )
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         if self.verbose:
             logger.info("🔧 Configuration:")
