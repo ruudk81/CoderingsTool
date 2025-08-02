@@ -21,6 +21,8 @@ umap-learn==0.5.7
 nest-asyncio==1.6.0
 tqdm==4.67.0
 aiolimiter==1.1.0
+tenacity==8.2.3
+asyncio-throttle==1.0.2
 
 # Jupyter widgets (prevents tqdm warnings)
 ipywidgets==8.1.5

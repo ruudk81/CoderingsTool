@@ -3,18 +3,21 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import asyncio
 import nest_asyncio
 import time
+import statistics
 from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from collections import deque
+from pathlib import Path
+import json
+
 import instructor
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 import tiktoken
 from pydantic import BaseModel
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from dataclasses import dataclass, field
-from pathlib import Path
-import json
-from collections import deque
-from aiolimiter import AsyncLimiter
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from asyncio_throttle import Throttler
 
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
@@ -25,201 +28,209 @@ from utils.embedder import Embedder
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
-@dataclass
-class WavePerformanceRecord:
-    """Record of a wave execution for performance profiling"""
-    wave_size: int
-    batch_count: int
-    duration: float
-    timestamp: float
-    token_count: Optional[int] = None
-    request_count: Optional[int] = None
 
 @dataclass
-class WaveProfiler:
-    """Empirical wave performance measurement and prediction system"""
-    measurements: List[WavePerformanceRecord] = field(default_factory=list)
-    cache_file: Optional[Path] = None
-    ema_alpha: float = 0.3  # Exponential moving average smoothing factor
+class OptimalStrategy:
+    """Evidence-based optimal processing strategy"""
+    target_time_seconds: float
+    launch_rate_per_second: float
+    concurrent_limit: int
+    bottleneck_type: str
+    total_requests: int
+    total_tokens: int
+    safety_factor: float
+
+
+class WorkloadAnalyzer:
+    """Analyzes workload and calculates optimal processing strategy based on evidence"""
     
-    def __post_init__(self):
-        """Load historical measurements if cache file exists"""
-        if self.cache_file and self.cache_file.exists():
-            self.load_measurements()
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        try:
+            self.encoding = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            self.encoding = tiktoken.get_encoding("cl100k_base")
     
-    def record_wave(self, wave_size: int, batch_count: int, duration: float, 
-                   token_count: Optional[int] = None, request_count: Optional[int] = None):
-        """Record a wave execution for future prediction"""
-        record = WavePerformanceRecord(
-            wave_size=wave_size,
-            batch_count=batch_count,
-            duration=duration,
-            timestamp=time.time(),
-            token_count=token_count,
-            request_count=request_count
+    def measure_token_usage(self, sample_prompts: List[str], num_samples: int = 10) -> float:
+        """Measure actual token usage from real prompts"""
+        if not sample_prompts:
+            return 1500  # Conservative fallback
+        
+        # Sample random prompts if we have many
+        sample_size = min(num_samples, len(sample_prompts))
+        sampled_prompts = sample_prompts[:sample_size]
+        
+        token_counts = []
+        for prompt in sampled_prompts:
+            # Count prompt tokens
+            prompt_tokens = len(self.encoding.encode(prompt))
+            # Estimate completion tokens (typically 20-30% of prompt)
+            completion_tokens = int(prompt_tokens * 0.25)
+            total_tokens = prompt_tokens + completion_tokens
+            token_counts.append(total_tokens)
+        
+        return statistics.mean(token_counts)
+    
+    def calculate_optimal_strategy(self, total_ideas: int, avg_tokens_per_request: float) -> OptimalStrategy:
+        """Calculate mathematically optimal processing strategy"""
+        # Get API limits from config
+        rate_limits = get_openai_rate_limits(self.model_name)
+        
+        # Calculate total resource requirements
+        total_requests = total_ideas
+        total_tokens = total_ideas * avg_tokens_per_request
+        
+        # Calculate minimum time based on constraints
+        time_by_requests = total_requests / rate_limits.requests_per_minute * 60
+        time_by_tokens = total_tokens / rate_limits.tokens_per_minute * 60
+        
+        # Find bottleneck and minimum time
+        bottleneck_time = max(time_by_requests, time_by_tokens)
+        bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
+        
+        # Apply safety factor (use 95% of capacity)
+        safety_factor = 0.95
+        target_time = bottleneck_time / safety_factor
+        
+        # Calculate optimal launch rate
+        optimal_launch_rate = total_requests / target_time
+        
+        # Calculate concurrent request limit (3 seconds of buffer)
+        concurrent_limit = int(optimal_launch_rate * 3)
+        
+        return OptimalStrategy(
+            target_time_seconds=target_time,
+            launch_rate_per_second=optimal_launch_rate,
+            concurrent_limit=concurrent_limit,
+            bottleneck_type=bottleneck_type,
+            total_requests=total_requests,
+            total_tokens=total_tokens,
+            safety_factor=safety_factor
         )
-        self.measurements.append(record)
-        
-        # Log for analysis
-        print(f"WAVE_PROFILE: size={wave_size}, batches={batch_count}, "
-              f"duration={duration:.2f}s, throughput={batch_count/duration:.1f} batches/s")
-        
-        # Persist if cache file configured
-        if self.cache_file:
-            self.save_measurements()
+
+
+class SlidingWindowMonitor:
+    """Real-time monitoring of API usage with sliding windows"""
     
-    def get_duration_estimate(self, wave_size: int) -> float:
-        """Get empirical duration estimate for a wave size"""
-        if not self.measurements:
-            # Fallback to original linear model if no data
-            return 4.0 + wave_size * 0.25
+    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60):
+        self.rpm_limit = rpm_limit
+        self.tpm_limit = tpm_limit
+        self.window_seconds = window_seconds
         
-        # Find measurements for similar wave sizes (±20% tolerance)
-        tolerance = max(1, int(wave_size * 0.2))
-        similar_measurements = [
-            m for m in self.measurements 
-            if abs(m.wave_size - wave_size) <= tolerance
-        ]
+        # Sliding windows for tracking usage
+        self.requests_window = deque()  # timestamps
+        self.tokens_window = deque()    # (timestamp, token_count) tuples
         
-        if similar_measurements:
-            # Use recent measurements with exponential moving average
-            recent_measurements = sorted(similar_measurements, key=lambda x: x.timestamp)[-5:]
-            if len(recent_measurements) == 1:
-                return recent_measurements[0].duration
-            
-            # Apply EMA to recent measurements
-            ema_duration = recent_measurements[0].duration
-            for measurement in recent_measurements[1:]:
-                ema_duration = self.ema_alpha * measurement.duration + (1 - self.ema_alpha) * ema_duration
-            return ema_duration
-        
-        # Interpolate/extrapolate from existing data
-        return self._interpolate_duration(wave_size)
+        # Statistics
+        self.total_requests = 0
+        self.total_tokens = 0
+        self.start_time = time.time()
     
-    def _interpolate_duration(self, wave_size: int) -> float:
-        """Interpolate duration estimate from existing measurements"""
-        if len(self.measurements) < 2:
-            return 4.0 + wave_size * 0.25  # Fallback
+    def _cleanup_windows(self):
+        """Remove entries older than window_seconds"""
+        cutoff_time = time.time() - self.window_seconds
         
-        # Simple linear interpolation between closest measurements
-        sorted_measurements = sorted(self.measurements, key=lambda x: x.wave_size)
+        # Clean requests window
+        while self.requests_window and self.requests_window[0] < cutoff_time:
+            self.requests_window.popleft()
         
-        # Find bounding measurements
-        smaller = [m for m in sorted_measurements if m.wave_size <= wave_size]
-        larger = [m for m in sorted_measurements if m.wave_size > wave_size]
-        
-        if smaller and larger:
-            # Interpolate between bounds
-            lower = smaller[-1]  # Largest smaller measurement
-            upper = larger[0]   # Smallest larger measurement
-            
-            if lower.wave_size == upper.wave_size:
-                return lower.duration
-            
-            # Linear interpolation
-            ratio = (wave_size - lower.wave_size) / (upper.wave_size - lower.wave_size)
-            return lower.duration + ratio * (upper.duration - lower.duration)
-        
-        elif smaller:
-            # Extrapolate from trend of recent measurements
-            recent = sorted_measurements[-3:]  # Use last 3 measurements
-            if len(recent) >= 2:
-                # Calculate trend
-                size_diff = recent[-1].wave_size - recent[0].wave_size
-                duration_diff = recent[-1].duration - recent[0].duration
-                if size_diff > 0:
-                    trend = duration_diff / size_diff
-                    return recent[-1].duration + trend * (wave_size - recent[-1].wave_size)
-            
-            # Fallback: use most recent similar measurement
-            return smaller[-1].duration
-        
-        else:
-            # All measurements are larger, use smallest
-            return larger[0].duration
+        # Clean tokens window
+        while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
+            self.tokens_window.popleft()
     
-    def get_optimal_wave_size(self, time_budget: float, max_wave_size: int) -> int:
-        """Find optimal wave size within time budget based on empirical data"""
-        best_size = 1
-        best_efficiency = 0.0
+    def record_request(self, tokens_used: int):
+        """Record a completed API request"""
+        now = time.time()
+        self.requests_window.append(now)
+        self.tokens_window.append((now, tokens_used))
         
-        for size in range(1, min(max_wave_size + 1, 51)):  # Test up to reasonable limit
-            estimated_duration = self.get_duration_estimate(size)
-            if estimated_duration <= time_budget:
-                efficiency = size / estimated_duration  # batches per second
-                if efficiency > best_efficiency:
-                    best_efficiency = efficiency
-                    best_size = size
-            else:
-                break  # Larger sizes will exceed budget
+        self.total_requests += 1
+        self.total_tokens += tokens_used
         
-        return best_size
+        self._cleanup_windows()
     
-    def get_performance_summary(self) -> Dict:
-        """Get summary statistics of wave performance"""
-        if not self.measurements:
-            return {"total_measurements": 0}
+    def get_current_utilization(self) -> Dict:
+        """Get current resource utilization"""
+        self._cleanup_windows()
         
-        durations = [m.duration for m in self.measurements]
-        wave_sizes = [m.wave_size for m in self.measurements]
+        current_rpm = len(self.requests_window)
+        current_tpm = sum(tokens for _, tokens in self.tokens_window)
         
         return {
-            "total_measurements": len(self.measurements),
-            "wave_size_range": f"{min(wave_sizes)}-{max(wave_sizes)}",
-            "duration_range": f"{min(durations):.1f}-{max(durations):.1f}s",
-            "avg_duration": f"{np.mean(durations):.1f}s",
-            "avg_throughput": f"{np.mean([m.batch_count/m.duration for m in self.measurements]):.1f} batches/s"
+            'current_rpm': current_rpm,
+            'current_tpm': current_tpm,
+            'rpm_utilization': current_rpm / self.rpm_limit,
+            'tpm_utilization': current_tpm / self.tpm_limit,
+            'rpm_remaining': self.rpm_limit - current_rpm,
+            'tpm_remaining': self.tpm_limit - current_tpm,
+            'total_requests': self.total_requests,
+            'total_tokens': self.total_tokens,
+            'elapsed_time': time.time() - self.start_time
         }
     
-    def save_measurements(self):
-        """Save measurements to cache file"""
-        if not self.cache_file:
-            return
-        
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "measurements": [
-                {
-                    "wave_size": m.wave_size,
-                    "batch_count": m.batch_count,
-                    "duration": m.duration,
-                    "timestamp": m.timestamp,
-                    "token_count": m.token_count,
-                    "request_count": m.request_count
-                }
-                for m in self.measurements
-            ]
-        }
-        
-        with open(self.cache_file, 'w') as f:
-            json.dump(data, f, indent=2)
+    def is_near_limit(self, threshold: float = 0.9) -> bool:
+        """Check if we're approaching rate limits"""
+        util = self.get_current_utilization()
+        return (util['rpm_utilization'] > threshold or 
+                util['tpm_utilization'] > threshold)
+
+
+class SmartAPIClient:
+    """API client with intelligent retry logic and precise rate limiting"""
     
-    def load_measurements(self):
-        """Load measurements from cache file"""
-        if not self.cache_file or not self.cache_file.exists():
-            return
+    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config: CodeAssignmentConfig):
+        self.throttler = throttler
+        self.monitor = monitor
+        self.config = config
+        self.client = async_client
+        self.model_config = ModelConfig()
+    
+    @retry(
+        retry=retry_if_exception_type(RateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=60)
+    )
+    async def make_request(self, prompt: str, idea_id: str) -> Dict:
+        """Make API request with intelligent retry and rate limiting"""
         
-        try:
-            with open(self.cache_file, 'r') as f:
-                data = json.load(f)
-            
-            self.measurements = [
-                WavePerformanceRecord(
-                    wave_size=m["wave_size"],
-                    batch_count=m["batch_count"],
-                    duration=m["duration"],
-                    timestamp=m["timestamp"],
-                    token_count=m.get("token_count"),
-                    request_count=m.get("request_count")
+        # Apply precision rate limiting
+        async with self.throttler:
+            try:
+                # Temporary response model
+                class LLMCodeAssignmentResponse(BaseModel):
+                    idea_id: str
+                    idea: str
+                    assigned_codes: List[str]
+                    assignment_confidence: float
+                    assignment_rationale: str
+                
+                # Make the API call
+                response = await self.client.chat.completions.create(
+                    model=self.config.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    seed=self.model_config.seed,
+                    response_model=LLMCodeAssignmentResponse,
+                    max_retries=0  # Let tenacity handle retries
                 )
-                for m in data.get("measurements", [])
-            ]
-            
-            print(f"📊 Loaded {len(self.measurements)} wave performance measurements from cache")
-            
-        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
-            print(f"Warning: Could not load wave performance cache: {e}")
-            self.measurements = []
+                
+                # Record successful request (estimate tokens)
+                estimated_tokens = len(prompt.encode()) // 3  # Rough approximation
+                self.monitor.record_request(estimated_tokens)
+                
+                return {
+                    'idea_id': response.idea_id,
+                    'idea': response.idea,
+                    'assigned_codes': response.assigned_codes,
+                    'assignment_confidence': response.assignment_confidence,
+                    'assignment_rationale': response.assignment_rationale
+                }
+                
+            except Exception as e:
+                print(f"❌ API request failed for idea {idea_id}: {str(e)}")
+                raise
+
 
 class CodeAssignmentResponse(BaseModel):
     idea_id: str
@@ -229,14 +240,11 @@ class CodeAssignmentResponse(BaseModel):
     assignment_confidence: float
     assignment_rationale: str
 
+
 class CodeAssigner:
     """
-    High-performance code assigner with precomputed code embeddings:
-    - Precomputes code embeddings once during initialization
-    - Hierarchical concurrency with unlimited batch-level parallelism
-    - Sub-batch processing for improved throughput
-    - No artificial delays between batches
-    - Optimized error handling and fallback mechanisms
+    Evidence-based optimal code assignment with precision rate limiting.
+    Calculates theoretical optimal throughput and executes at maximum safe capacity.
     """
     
     def __init__(
@@ -253,7 +261,6 @@ class CodeAssigner:
         self.codebook = codebook
         self.var_lab = var_lab
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
-        self.client = async_client
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.CodeAssignedModel] = []
         self.verbose_reporter = VerboseReporter(verbose)
@@ -263,8 +270,7 @@ class CodeAssigner:
         
         # Initialize embedder for similarity calculations
         embedding_config = EmbeddingConfig()
-        # Use larger batch size for one-time code embedding generation
-        embedding_config.batch_size = 100  # Increase for efficient one-time processing
+        embedding_config.batch_size = 100
         self.embedder = Embedder(config=embedding_config, verbose=False)
         
         # Cache for code embeddings - will be precomputed
@@ -273,80 +279,24 @@ class CodeAssigner:
         # Theme mapping for code-to-theme assignments
         self.code_to_theme_mapping = code_to_theme_mapping or {}
         
-        # Initialize tokenizer
-        try:
-            self.encoding = tiktoken.encoding_for_model(self.config.model)
-        except KeyError:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-            print(f"Using cl100k_base encoding as fallback for {self.config.model}")
+        # Initialize components for optimal strategy
+        self.workload_analyzer = WorkloadAnalyzer(self.config.model)
         
-        # Initialize wave performance profiler with cache persistence
-        cache_dir = Path.home() / ".cache" / "coderingsTool" / "wave_performance"
-        cache_file = cache_dir / f"wave_perf_{self.config.model.replace('/', '_')}.json"
-        self.wave_profiler = WaveProfiler(cache_file=cache_file)
-        
-        # Initialize aiolimiter with conservative limits
+        # Initialize rate limits and monitoring
         rate_limits = get_openai_rate_limits(self.config.model)
-        # Start very conservative to avoid retries - use 30% of limits
-        conservative_factor = 0.3
-        safe_rpm = int(rate_limits.requests_per_minute * conservative_factor)
-        safe_tpm = int(rate_limits.tokens_per_minute * conservative_factor)
+        self.rpm_limit = rate_limits.requests_per_minute
+        self.tpm_limit = rate_limits.tokens_per_minute
         
-        # Calculate effective RPM based on token constraints
-        avg_tokens_per_request = 1500  # Conservative estimate
-        max_requests_by_tokens = safe_tpm // avg_tokens_per_request
-        effective_rpm = min(safe_rpm, max_requests_by_tokens)
-        
-        # Create single rate limiter for requests (full rate over 60 seconds)
-        self.rate_limiter = AsyncLimiter(effective_rpm, 60)
-        
-        # Add burst protection to prevent too many simultaneous requests
-        self.burst_limiter = AsyncLimiter(10, 1)  # Max 10 requests per second
-        
-        # Track usage for monitoring
-        self.requests_sent = 0
-        self.retry_detected = False
-        self.rate_adjustment_factor = 1.0
-        
-        # Show profiler status
-        perf_summary = self.wave_profiler.get_performance_summary()
-        if perf_summary["total_measurements"] > 0:
-            print(f"📊 Performance history: Loaded {perf_summary['total_measurements']} measurements")
-            print(f"📊 Average throughput: {perf_summary.get('avg_throughput', 'N/A')}")
-        
-        print(f"🔄 AIOLIMITER RATE LIMITING: {effective_rpm} effective RPM ({conservative_factor*100:.0f}% of {rate_limits.requests_per_minute})")
-        print(f"🚦 Burst protection: max 10 requests/second")
-        print(f"🚦 Request-level rate limiting with adaptive adjustment")
-
-    def adjust_rate_limits(self, reduce_by_percent=20):
-        """Dynamically reduce rate limits if we detect retries"""
-        if not self.retry_detected:
-            self.retry_detected = True
-            self.rate_adjustment_factor *= (1 - reduce_by_percent/100)
-            
-            # Calculate new effective RPM
-            rate_limits = get_openai_rate_limits(self.config.model)
-            conservative_factor = 0.3 * self.rate_adjustment_factor
-            safe_rpm = int(rate_limits.requests_per_minute * conservative_factor)
-            safe_tpm = int(rate_limits.tokens_per_minute * conservative_factor)
-            
-            avg_tokens_per_request = 1500
-            max_requests_by_tokens = safe_tpm // avg_tokens_per_request
-            new_effective_rpm = min(safe_rpm, max_requests_by_tokens)
-            
-            # Recreate limiters with reduced rates
-            self.rate_limiter = AsyncLimiter(new_effective_rpm, 60)
-            print(f"⚠️ Retries detected! Reducing rate limit to {new_effective_rpm} RPM")
+        print(f"🎯 EVIDENCE-BASED CODE ASSIGNMENT")
+        print(f"📊 Model: {self.config.model}")
+        print(f"📊 API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
 
     async def initialize_code_embeddings(self):
-        """Initialize code embeddings once during setup - call this before processing"""
+        """Initialize code embeddings once during setup"""
         if self._code_embeddings is None:
             self.verbose_reporter.stat_line(f"Precomputing embeddings for {len(self.codebook)} codes...")
             start_time = time.time()
-            
-            # Use the existing method to generate embeddings
             await self._get_code_embeddings()
-            
             elapsed = time.time() - start_time
             self.verbose_reporter.stat_line(f"Code embeddings computed in {elapsed:.2f}s")
 
@@ -369,7 +319,7 @@ class CodeAssigner:
                 )
                 temp_models.append(temp_model)
             
-            # Generate embeddings using async method directly
+            # Generate embeddings
             embedded_codes = await self.embedder._process_embeddings_with_id_tracking(temp_models)
             
             # Extract embeddings array
@@ -380,7 +330,7 @@ class CodeAssigner:
                     if embedding is not None:
                         embeddings.append(embedding)
                     else:
-                        embeddings.append(np.zeros(1536))  # text-embedding-3-large dimension
+                        embeddings.append(np.zeros(1536))
                 else:
                     embeddings.append(np.zeros(1536))
             
@@ -391,15 +341,10 @@ class CodeAssigner:
     def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 5) -> List[models.Codebook]:
         """Find the top_k most similar codes to an idea based on embedding similarity"""
         if self._code_embeddings is None:
-            raise ValueError("Code embeddings not initialized. Call _get_code_embeddings first.")
+            raise ValueError("Code embeddings not initialized")
         
-        # Calculate cosine similarity
         similarities = cosine_similarity([idea_embedding], self._code_embeddings)[0]
-        
-        # Get top_k most similar indices
         top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        # Return corresponding codes
         return [self.codebook[i] for i in top_indices]
 
     def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
@@ -432,10 +377,8 @@ class CodeAssigner:
         
         return all_ideas
 
-    async def _process_idea_assignment(self, idea_data: tuple) -> CodeAssignmentResponse:
-        """Process a single idea assignment with candidate codes"""
-        respondent_id, idea_id, idea_text, idea_embedding = idea_data
-        
+    def _create_prompt(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray) -> str:
+        """Create prompt for a single idea with most similar codes"""
         # Find most similar codes
         similar_codes = self._find_similar_codes(idea_embedding, top_k=self.config.top_k_similar_codes)
         
@@ -454,65 +397,50 @@ class CodeAssigner:
             candidate_codes=candidate_codes_text
         )
         
-        # Capture prompt for debugging if enabled
-        if self.prompt_printer and not self._captured_prompt:
-            self.prompt_printer.capture_prompt(
-                step_name="code_assignment",
-                utility_name="CodeAssigner",
-                prompt_content=prompt,
-                prompt_type="code_assignment",
-                metadata={
-                    "model": self.config.model,
-                    "var_lab": self.var_lab,
-                    "language": self.language,
-                    "idea_id": idea_id
-                }
-            )
-            self._captured_prompt = True
+        return prompt
+
+    async def _process_single_idea(self, idea_data: tuple, api_client: SmartAPIClient) -> CodeAssignmentResponse:
+        """Process a single idea assignment"""
+        respondent_id, idea_id, idea_text, idea_embedding = idea_data
         
         try:
-            # Apply rate limiting at the individual request level
-            async with self.burst_limiter:  # Prevent bursts
-                async with self.rate_limiter:  # Overall rate limit
-                    # Track request usage
-                    self.requests_sent += 1
-                    
-                    # Temporary response model without themes
-                    class LLMCodeAssignmentResponse(BaseModel):
-                        idea_id: str
-                        idea: str
-                        assigned_codes: List[str]
-                        assignment_confidence: float
-                        assignment_rationale: str
-                    
-                    # Use instructor's built-in retries
-                    llm_response = await self.client.chat.completions.create(
-                        model=self.config.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed,
-                        response_model=LLMCodeAssignmentResponse,
-                        max_retries=self.config.retries
-                    )
+            # Create prompt
+            prompt = self._create_prompt(idea_id, idea_text, idea_embedding)
             
-            # Add theme assignments based on assigned codes
-            assigned_themes = self._assign_themes_to_codes(llm_response.assigned_codes)
+            # Capture prompt for debugging if enabled
+            if self.prompt_printer and not self._captured_prompt:
+                self.prompt_printer.capture_prompt(
+                    step_name="code_assignment",
+                    utility_name="CodeAssigner",
+                    prompt_content=prompt,
+                    prompt_type="code_assignment",
+                    metadata={
+                        "model": self.config.model,
+                        "var_lab": self.var_lab,
+                        "language": self.language,
+                        "idea_id": idea_id
+                    }
+                )
+                self._captured_prompt = True
+            
+            # Make API call
+            response_data = await api_client.make_request(prompt, idea_id)
+            
+            # Add theme assignments
+            assigned_themes = self._assign_themes_to_codes(response_data['assigned_codes'])
             
             return CodeAssignmentResponse(
-                idea_id=llm_response.idea_id,
-                idea=llm_response.idea,
-                assigned_codes=llm_response.assigned_codes,
+                idea_id=response_data['idea_id'],
+                idea=response_data['idea'],
+                assigned_codes=response_data['assigned_codes'],
                 assigned_themes=assigned_themes,
-                assignment_confidence=llm_response.assignment_confidence,
-                assignment_rationale=llm_response.assignment_rationale
+                assignment_confidence=response_data['assignment_confidence'],
+                assignment_rationale=response_data['assignment_rationale']
             )
             
         except Exception as e:
-            error_msg = f"Failed to process idea {idea_id}: {type(e).__name__}: {str(e)}"
-            self.verbose_reporter.stat_line(error_msg)
-            
             # Return fallback response
+            similar_codes = self._find_similar_codes(idea_embedding, top_k=1)
             fallback_code = similar_codes[0].code if similar_codes else "Unknown"
             fallback_themes = self._assign_themes_to_codes([fallback_code]) if fallback_code != "Unknown" else []
             
@@ -522,133 +450,8 @@ class CodeAssigner:
                 assigned_codes=[fallback_code],
                 assigned_themes=fallback_themes,
                 assignment_confidence=0.1,
-                assignment_rationale=f"Failed to process - {type(e).__name__}"
+                assignment_rationale=f"Processing failed: {str(e)}"
             )
-
-    def _create_sub_batches(self, batch: List[tuple], sub_batch_size: int = 5) -> List[List[tuple]]:
-        """Split a batch into smaller sub-batches for concurrent processing"""
-        if not batch:
-            return []
-        
-        sub_batches = []
-        for i in range(0, len(batch), sub_batch_size):
-            sub_batch = batch[i:i + sub_batch_size]
-            sub_batches.append(sub_batch)
-        
-        return sub_batches
-
-    async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int) -> List[CodeAssignmentResponse]:
-        """Process a single sub-batch of ideas"""
-        # Create tasks for all ideas in this sub-batch
-        tasks = [self._process_idea_assignment(idea_data) for idea_data in sub_batch]
-        
-        # Process all ideas in sub-batch concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Handle results and exceptions
-        sub_batch_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # Create fallback result for failed idea
-                respondent_id, idea_id, idea_text, idea_embedding = sub_batch[i]
-                sub_batch_results.append(CodeAssignmentResponse(
-                    idea_id=idea_id,
-                    idea=idea_text,
-                    assigned_codes=["Processing_Error"],
-                    assigned_themes=[],
-                    assignment_confidence=0.0,
-                    assignment_rationale="Processing failed"
-                ))
-            else:
-                sub_batch_results.append(result)
-        
-        return sub_batch_results
-
-    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[CodeAssignmentResponse]:
-        """Process a single batch with hierarchical concurrency"""
-        # Split batch into sub-batches of 5 for better concurrency management
-        sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
-        
-        if not sub_batches:
-            return []
-        
-        # Level 2: Process all sub-batches within this batch concurrently
-        sub_batch_tasks = [
-            self._process_sub_batch(sub_batch, batch_index, i) 
-            for i, sub_batch in enumerate(sub_batches)
-        ]
-        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
-        
-        # Collect results from all sub-batches
-        batch_results = []
-        sub_batch_failures = 0
-        
-        for i, sub_batch_result in enumerate(sub_batch_results):
-            if isinstance(sub_batch_result, Exception):
-                print(f"Sub-batch {i+1} of batch {batch_index+1} failed: {str(sub_batch_result)}")
-                sub_batch_failures += 1
-                continue
-            
-            # Add all results from this sub-batch
-            batch_results.extend(sub_batch_result)
-        
-        if sub_batch_failures > 0:
-            print(f"{sub_batch_failures} out of {len(sub_batches)} sub-batches failed in batch {batch_index+1}")
-        
-        return batch_results
-
-    def _create_batches(self, all_ideas: List[tuple]) -> List[List[tuple]]:
-        """Create token-aware batches for processing"""
-        if not all_ideas:
-            return []
-        
-        # Calculate token budget similar to qualityFilter
-        sample_prompt = CODE_ASSIGNMENT_PROMPT.format(
-            language=self.language,
-            var_lab=self.var_lab,
-            idea_id="sample_id",
-            idea_text="sample text",
-            candidate_codes="sample codes"
-        )
-        prompt_tokens = len(self.encoding.encode(sample_prompt))
-        token_budget = self.config.max_tokens - prompt_tokens - 500  # Reserve for completion
-        
-        # Pre-calculate token counts for ideas
-        idea_tokens = []
-        for _, _, idea_text, _ in all_ideas:
-            tokens = len(self.encoding.encode(idea_text))
-            idea_tokens.append(tokens)
-        
-        # Calculate adaptive batch size
-        avg_tokens = sum(idea_tokens) / max(1, len(idea_tokens))
-        adaptive_max_batch = min(self.config.batch_size, max(1, int(token_budget / max(1, avg_tokens))))
-        
-        batches = []
-        current_batch = []
-        current_tokens = 0
-        
-        for i, (idea_data, tokens) in enumerate(zip(all_ideas, idea_tokens)):
-            # Handle oversized ideas
-            if tokens > token_budget and not current_batch:
-                print(f"Warning: Idea exceeds token budget ({tokens} > {token_budget})")
-                batches.append([idea_data])
-                continue
-            
-            # Check if adding this idea would exceed limits
-            if (current_tokens + tokens > token_budget or 
-                len(current_batch) >= adaptive_max_batch):
-                if current_batch:
-                    batches.append(current_batch)
-                    current_batch = []
-                    current_tokens = 0
-            
-            current_batch.append(idea_data)
-            current_tokens += tokens
-        
-        if current_batch:
-            batches.append(current_batch)
-        
-        return batches
 
     def _merge_results_into_models(self, assignment_results: List[CodeAssignmentResponse]) -> List[models.CodeAssignedModel]:
         """Merge assignment results back into model structure"""
@@ -695,92 +498,80 @@ class CodeAssigner:
         
         return coded_models
 
-    async def _process_batch_with_limiter(self, batch: List[tuple], batch_idx: int) -> List[CodeAssignmentResponse]:
-        """Process a single batch - rate limiting now handled at request level"""
-        # Process the batch (rate limiting is now in _process_idea_assignment)
-        batch_start_time = asyncio.get_event_loop().time()
-        try:
-            results = await self._process_batch(batch, batch_idx)
-            batch_duration = asyncio.get_event_loop().time() - batch_start_time
-            
-            # Record performance for profiler
-            api_calls_in_batch = len(batch)
-            self.wave_profiler.record_wave(
-                wave_size=1,
-                batch_count=1,
-                duration=batch_duration,
-                request_count=api_calls_in_batch,
-                token_count=api_calls_in_batch * 1500  # Estimated tokens per request
-            )
-            
-            return results
-        except Exception as e:
-            print(f"❌ Batch {batch_idx + 1} failed: {str(e)}")
-            return []
-
-
-    async def _process_all_batches(self, batches: List[List[tuple]]) -> List[CodeAssignmentResponse]:
-        """Process all batches using aiolimiter for optimal throughput"""
-        total_ideas = sum(len(batch) for batch in batches)
+    async def _process_with_optimal_strategy(self, all_ideas: List[tuple]) -> List[CodeAssignmentResponse]:
+        """Process all ideas using evidence-based optimal strategy"""
         
-        # Calculate total sub-batches for reporting
-        total_sub_batches = sum(len(self._create_sub_batches(batch, sub_batch_size=5)) for batch in batches)
+        # Step 1: Analyze workload and calculate optimal strategy
+        sample_prompts = [self._create_prompt(idea[1], idea[2], idea[3]) for idea in all_ideas[:10]]
+        avg_tokens = self.workload_analyzer.measure_token_usage(sample_prompts)
+        strategy = self.workload_analyzer.calculate_optimal_strategy(len(all_ideas), avg_tokens)
         
-        self.verbose_reporter.stat_line(
-            f"Processing {total_ideas} ideas in {len(batches)} batches "
-            f"({total_sub_batches} concurrent sub-batches)..."
-        )
+        print(f"\n🎯 OPTIMAL STRATEGY CALCULATED:")
+        print(f"📊 Total requests: {strategy.total_requests}")
+        print(f"📊 Estimated tokens: {strategy.total_tokens:,} ({avg_tokens:.0f} per request)")
+        print(f"📊 Bottleneck: {strategy.bottleneck_type}")
+        print(f"📊 Target time: {strategy.target_time_seconds:.1f}s")
+        print(f"📊 Launch rate: {strategy.launch_rate_per_second:.1f} requests/second")
+        print(f"📊 Max concurrent: {strategy.concurrent_limit}")
+        print(f"📊 Capacity utilization: {strategy.safety_factor:.1%}")
         
-        print(f"\n🔄 AIOLIMITER PROCESSING: {len(batches)} batches")
-        print(f"🚦 Request-level rate limiting with burst protection")
-        print(f"🚀 Progressive task creation to avoid thundering herd")
+        # Step 2: Initialize precision throttler and monitor
+        throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
+        monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
+        api_client = SmartAPIClient(throttler, monitor, self.config)
         
-        # Launch batch tasks progressively to avoid thundering herd
-        start_time = asyncio.get_event_loop().time()
+        # Step 3: Launch all requests with precision timing
+        print(f"\n🚀 LAUNCHING {len(all_ideas)} REQUESTS AT OPTIMAL RATE")
+        start_time = time.time()
         
-        # Create tasks with small delays to smooth out the load
-        tasks = []
-        for i, batch in enumerate(batches):
-            task = asyncio.create_task(self._process_batch_with_limiter(batch, i))
-            tasks.append(task)
-            
-            # Small delay every 5 batches to smooth out the load
-            if i % 5 == 0 and i > 0:
-                await asyncio.sleep(0.1)
+        # Create all tasks - throttler handles the timing
+        tasks = [
+            asyncio.create_task(self._process_single_idea(idea_data, api_client))
+            for idea_data in all_ideas
+        ]
         
-        # Wait for all tasks to complete
+        # Monitor progress
         all_results = []
         completed = 0
         
-        # Use asyncio.as_completed to track progress
+        # Process results as they complete
         for coro in asyncio.as_completed(tasks):
-            batch_results = await coro
-            all_results.extend(batch_results)
+            result = await coro
+            all_results.append(result)
             completed += 1
             
-            # Progress reporting every 10 batches
-            if completed % 10 == 0 or completed == len(batches):
-                elapsed = asyncio.get_event_loop().time() - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                print(f"🔄 Progress: {completed}/{len(batches)} batches completed ({rate:.1f} batches/s)")
+            # Progress reporting every 100 completions
+            if completed % 100 == 0 or completed == len(all_ideas):
+                elapsed = time.time() - start_time
+                current_rate = completed / elapsed if elapsed > 0 else 0
+                util = monitor.get_current_utilization()
+                
+                print(f"🔄 Progress: {completed}/{len(all_ideas)} completed")
+                print(f"   📊 Rate: {current_rate:.1f} requests/second")
+                print(f"   📊 RPM utilization: {util['rpm_utilization']:.1%}")
+                print(f"   📊 TPM utilization: {util['tpm_utilization']:.1%}")
         
-        total_time = asyncio.get_event_loop().time() - start_time
+        total_time = time.time() - start_time
+        final_util = monitor.get_current_utilization()
         
-        # Final summary
-        print(f"\n🔄 AIOLIMITER PROCESSING COMPLETED")
-        print(f"   ✅ Total batches processed: {len(batches)}")
-        print(f"   ⏱️  Total execution time: {total_time:.1f}s")
-        print(f"   📊 Average throughput: {len(batches)/total_time:.1f} batches/second")
-        print(f"   📊 Total requests sent: {self.requests_sent}")
-        print(f"   🚦 Request-level rate limiting with burst protection")
+        # Final performance report
+        print(f"\n🎯 OPTIMAL STRATEGY COMPLETED:")
+        print(f"   ✅ Target time: {strategy.target_time_seconds:.1f}s")
+        print(f"   ✅ Actual time: {total_time:.1f}s")
+        print(f"   ✅ Performance: {(strategy.target_time_seconds/total_time):.1%} of target")
+        print(f"   📊 Average rate: {len(all_ideas)/total_time:.1f} requests/second")
+        print(f"   📊 Peak RPM utilization: {final_util['rpm_utilization']:.1%}")
+        print(f"   📊 Peak TPM utilization: {final_util['tpm_utilization']:.1%}")
+        print(f"   📊 Total requests: {final_util['total_requests']}")
+        print(f"   📊 Total tokens: {final_util['total_tokens']:,}")
         
         return all_results
 
     async def assign_codes(self) -> List[models.CodeAssignedModel]:
-        """Main method to assign codes to all ideas with high-performance processing"""
+        """Main method to assign codes using evidence-based optimal strategy"""
         self.verbose_reporter.section_header("CODE ASSIGNMENT PROCESSING")
         
-        # Ensure code embeddings are initialized ONCE before any processing
+        # Ensure code embeddings are initialized
         if self._code_embeddings is None:
             await self.initialize_code_embeddings()
         
@@ -794,11 +585,8 @@ class CodeAssigner:
         
         self.verbose_reporter.stat_line(f"Processing {total_ideas} ideas with {len(self.codebook)} available codes")
         
-        # Create token-aware batches
-        batches = self._create_batches(all_ideas)
-        
-        # Process all batches with hierarchical concurrency
-        all_results = await self._process_all_batches(batches)
+        # Process with optimal strategy
+        all_results = await self._process_with_optimal_strategy(all_ideas)
         
         # Merge results back into model structure
         self._results = self._merge_results_into_models(all_results)
@@ -815,16 +603,6 @@ class CodeAssigner:
                 "High confidence (≥0.7)": high_confidence,
                 "Low confidence (<0.5)": low_confidence
             })
-        
-        # Performance summary
-        perf_summary = self.wave_profiler.get_performance_summary()
-        print(f"\n🎯 AIOLIMITER OPTIMIZATION COMPLETED:")
-        print(f"  📊 Performance measurements: {perf_summary.get('total_measurements', 0)} batch records")
-        if perf_summary.get('total_measurements', 0) > 0:
-            print(f"  📊 Historical performance: {perf_summary.get('avg_throughput', 'N/A')} avg throughput")
-        print(f"  🚦 Request-level rate limiting eliminated {400 if not self.retry_detected else 0}+ retries")
-        print(f"  🚦 Zero polling overhead - optimal CPU usage")
-        print(f"  🚀 Progressive task creation prevented thundering herd")
         
         return self._results
 
