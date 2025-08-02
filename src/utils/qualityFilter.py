@@ -1,19 +1,30 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
+# Standard library imports
 import asyncio
 from typing import Dict, List, Optional, Union
-try:
-    import nest_asyncio #for Spyder
-except ImportError:
-    nest_asyncio = None
+
+# Third-party imports
 import instructor
 from openai import AsyncOpenAI
 import tiktoken
 
+# === MODELS ========================================================================================================
+import models
+
+# === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG
 from prompts import GRADER_INSTRUCTIONS
-import models
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
+
+try:
+    import nest_asyncio #for Spyder
+    nest_asyncio.apply()
+except ImportError:
+    pass
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY)) 
 
@@ -32,7 +43,7 @@ class Grader:
         self.client = async_client
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.QualityFilteredModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()  # For accessing seed
         self.prompt_printer = prompt_printer
@@ -42,7 +53,7 @@ class Grader:
             self.encoding = tiktoken.encoding_for_model(self.config.model)
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
-            print(f"Using cl100k_base encoding as fallback for {self.config.model}")
+            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
 
     def _calculate_token_budget(self) -> int:
         """Calculate available tokens for responses after accounting for prompt overhead"""

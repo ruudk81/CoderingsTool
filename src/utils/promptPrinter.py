@@ -1,22 +1,35 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
+# Standard library imports
 import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
+# === MODELS ========================================================================================================
+# No models imports needed for this module
+
+# === CONFIG ========================================================================================================
+# No config imports needed for this module
+
+# === UTILS ========================================================================================================
+from verboseReporter import VerboseReporter
+
 
 class promptPrinter:
     """Captures and prints LLM prompts with storage and flexible output options."""
     
-    def __init__(self, enabled: bool = True, print_realtime: bool = True):
+    def __init__(self, enabled: bool = True, print_realtime: bool = True, verbose: bool = False):
         """
         Initialize promptPrinter.
         
         Args:
             enabled: Whether prompt printing is enabled
             print_realtime: Print prompts as they are captured (during pipeline)
+            verbose: Enable verbose output through VerboseReporter
         """
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.enabled = enabled
         self.print_realtime = print_realtime
         self.prompts = []

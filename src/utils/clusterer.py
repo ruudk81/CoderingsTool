@@ -4,14 +4,17 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 from typing import List, Optional, Any
 import numpy as np
 import numpy.typing as npt
-#from sklearn.decomposition import PCA
-#from sklearn.preprocessing import StandardScaler
 from umap import UMAP
 import hdbscan
+#from sklearn.decomposition import PCA
+#from sklearn.preprocessing import StandardScaler
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
 from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
+
+# === CONFIG ========================================================================================================
+# No config imports needed for this module
 
 # === UTILS ========================================================================================================
 from verboseReporter import VerboseReporter
