@@ -726,9 +726,12 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
             "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
         })
         # Extract legacy codebook for backward compatibility
-        enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition, 
-                                            topic=entry.theme, theme=entry.theme) 
-                            for entry in theme_enriched_codebook.codes]
+        enriched_codebook = [models.Codebook(
+            code=entry.code, 
+            definition=entry.definition, 
+            theme=entry.theme,
+            theme_description=entry.theme_description
+        ) for entry in theme_enriched_codebook.codes]
     else:
         print("ERROR: Failed to load theme enriched codebook from cache")
         theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
@@ -832,9 +835,12 @@ else:
         )
         
         # Create legacy enriched codebook for backward compatibility
-        enriched_codebook = [models.Codebook(code=entry.code, definition=entry.definition,
-                                           topic=entry.theme, theme=entry.theme)
-                           for entry in enriched_entries]
+        enriched_codebook = [models.Codebook(
+            code=entry.code, 
+            definition=entry.definition,
+            theme=entry.theme,
+            theme_description=entry.theme_description
+        ) for entry in enriched_entries]
       
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -847,16 +853,33 @@ else:
 if enriched_codebook:
     codebook = enriched_codebook
 
-# idx  = 1
-# themes = set([entry.theme for entry in enriched_codebook])
-# for theme in themes :
-#     print(idx) 
-#     print(theme)
-#     for entry in enriched_codebook:
-#         if theme == entry.theme:
-#            print(f"-{entry.code}")
-#     print("\n")
-#     idx += 1
+# Display theme-enriched codebook summary
+if theme_enriched_codebook and theme_enriched_codebook.codes:
+    print("\n=== THEME-ENRICHED CODEBOOK SUMMARY ===")
+    themes_found = {}
+    for entry in theme_enriched_codebook.codes:
+        if entry.theme:
+            if entry.theme not in themes_found:
+                themes_found[entry.theme] = {
+                    'description': entry.theme_description,
+                    'codes': []
+                }
+            themes_found[entry.theme]['codes'].append(entry.code)
+    
+    for idx, (theme_name, theme_info) in enumerate(themes_found.items(), 1):
+        print(f"\n{idx}. {theme_name}")
+        if theme_info['description']:
+            print(f"   Description: {theme_info['description']}")
+        print(f"   Codes ({len(theme_info['codes'])}):")
+        for code in theme_info['codes']:
+            print(f"   - {code}")
+    
+    # Show codes without themes
+    no_theme_codes = [entry.code for entry in theme_enriched_codebook.codes if not entry.theme]
+    if no_theme_codes:
+        print(f"\nUnthemed codes ({len(no_theme_codes)}):")
+        for code in no_theme_codes:
+            print(f"   - {code}")
 
 
 # === STEP 9 ========================================================================================================
