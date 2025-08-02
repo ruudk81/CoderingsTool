@@ -35,7 +35,7 @@ id_column = "DLNMID"
 var_name = "Qd1_combined"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -853,33 +853,33 @@ else:
 if enriched_codebook:
     codebook = enriched_codebook
 
-# Display theme-enriched codebook summary
-if theme_enriched_codebook and theme_enriched_codebook.codes:
-    print("\n=== THEME-ENRICHED CODEBOOK SUMMARY ===")
-    themes_found = {}
-    for entry in theme_enriched_codebook.codes:
-        if entry.theme:
-            if entry.theme not in themes_found:
-                themes_found[entry.theme] = {
-                    'description': entry.theme_description,
-                    'codes': []
-                }
-            themes_found[entry.theme]['codes'].append(entry.code)
+# # Display theme-enriched codebook summary
+# if theme_enriched_codebook and theme_enriched_codebook.codes:
+#     print("\n=== THEME-ENRICHED CODEBOOK SUMMARY ===")
+#     themes_found = {}
+#     for entry in theme_enriched_codebook.codes:
+#         if entry.theme:
+#             if entry.theme not in themes_found:
+#                 themes_found[entry.theme] = {
+#                     'description': entry.theme_description,
+#                     'codes': []
+#                 }
+#             themes_found[entry.theme]['codes'].append(entry.code)
     
-    for idx, (theme_name, theme_info) in enumerate(themes_found.items(), 1):
-        print(f"\n{idx}. {theme_name}")
-        if theme_info['description']:
-            print(f"   Description: {theme_info['description']}")
-        print(f"   Codes ({len(theme_info['codes'])}):")
-        for code in theme_info['codes']:
-            print(f"   - {code}")
+#     for idx, (theme_name, theme_info) in enumerate(themes_found.items(), 1):
+#         print(f"\n{idx}. {theme_name}")
+#         if theme_info['description']:
+#             print(f"   Description: {theme_info['description']}")
+#         print(f"   Codes ({len(theme_info['codes'])}):")
+#         for code in theme_info['codes']:
+#             print(f"   - {code}")
     
-    # Show codes without themes
-    no_theme_codes = [entry.code for entry in theme_enriched_codebook.codes if not entry.theme]
-    if no_theme_codes:
-        print(f"\nUnthemed codes ({len(no_theme_codes)}):")
-        for code in no_theme_codes:
-            print(f"   - {code}")
+#     # Show codes without themes
+#     no_theme_codes = [entry.code for entry in theme_enriched_codebook.codes if not entry.theme]
+#     if no_theme_codes:
+#         print(f"\nUnthemed codes ({len(no_theme_codes)}):")
+#         for code in no_theme_codes:
+#             print(f"   - {code}")
 
 
 # === STEP 9 ========================================================================================================
