@@ -1,16 +1,4 @@
-# Add project paths to sys.path if running from coderingsTool directory
-import os, sys
-if 'coderingsTool' in os.getcwd():
-    base_path = os.getcwd().split('coderingsTool')[0]
-    project_paths = [
-        base_path,
-        base_path + 'coderingsTool',
-        base_path + 'coderingsTool/src',
-        base_path + 'coderingsTool/src/utils'
-    ]
-    for path in project_paths:
-        if path not in sys.path:
-            sys.path.append(path)
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import asyncio
 import nest_asyncio
