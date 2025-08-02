@@ -1,21 +1,20 @@
-import os
-import sys
-sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
+# Standard library imports
 import asyncio
+import hashlib
+import logging
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-import logging
+from enum import Enum
+
+# Third-party imports
 import numpy as np
-import time
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
-
-import hashlib
-from enum import Enum
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
-
 from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
 from langchain_openai import ChatOpenAI
@@ -27,9 +26,10 @@ import models
 # === CONFIG ========================================================================================================
 from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
-from utils.verboseReporter import VerboseReporter
 
 # === UTILS ========================================================================================================
+from utils.verboseReporter import VerboseReporter
+
 try:
     import nest_asyncio
     nest_asyncio.apply()

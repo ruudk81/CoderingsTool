@@ -1,9 +1,12 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
+# Standard library imports
 import asyncio
-import nest_asyncio
 from typing import Dict, List, Optional, Union
+
+# Third-party imports
+import nest_asyncio
 import instructor
 from openai import AsyncOpenAI
 import tiktoken
