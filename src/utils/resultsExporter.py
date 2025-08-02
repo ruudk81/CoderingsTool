@@ -1,27 +1,36 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
+# Standard library imports
 import os
+import json
+import io
+from typing import List, Dict, Tuple, Optional, Any
+from pathlib import Path
+
+# Third-party imports
 import pandas as pd
 import numpy as np
 import pyreadstat
-from typing import List, Dict, Tuple, Optional, Any
-from pathlib import Path
-import json
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
-import io
 from openpyxl.drawing.image import Image
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 import xlsxwriter
 
+# === MODELS ========================================================================================================
 import models
+
+# === CONFIG ========================================================================================================
+from config import ExportConfig, DEFAULT_EXPORT_CONFIG
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter
 from .dataLoader import DataLoader
-from config import ExportConfig, DEFAULT_EXPORT_CONFIG
 from .id_validator import validate_id_consistency
 
 class ResultsExporter:
@@ -36,10 +45,10 @@ class ResultsExporter:
     Modified to support 2-level hierarchy (Themes → Concepts)
     """
     
-    def __init__(self, config: ExportConfig = None, verbose: bool = True):
+    def __init__(self, config: ExportConfig = None, verbose: bool = True, prompt_printer = None):
         self.config = config or DEFAULT_EXPORT_CONFIG
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.data_loader = DataLoader(verbose=False)
         
     def export_results(self, 

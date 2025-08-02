@@ -1,16 +1,17 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
+# Standard library imports
 import time
 import asyncio
 import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+
+# Third-party imports
 import numpy as np
 import instructor
 from openai import AsyncOpenAI
-
-# === CLUSTERING =====================================================================================================
 from umap import UMAP
 import hdbscan
 from sklearn.metrics.pairwise import cosine_similarity
@@ -21,9 +22,10 @@ from pydantic import BaseModel, Field, model_validator
 # === CONFIG ========================================================================================================
 from prompts import THEME_IDENTIFICATION_PROMPT, ASSIGN_MISCELLANEOUS_PROMPT
 from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
-from utils.verboseReporter import VerboseReporter
 
 # === UTILS ========================================================================================================
+from utils.verboseReporter import VerboseReporter
+
 try:
     import nest_asyncio
     nest_asyncio.apply()
@@ -238,7 +240,7 @@ class ThemeIdentifier:
         self.codebook = codebook
         self.var_lab = var_lab
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.prompt_printer = prompt_printer
         self.model_config = ModelConfig()
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))

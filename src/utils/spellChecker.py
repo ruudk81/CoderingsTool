@@ -1,31 +1,34 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
+# Standard library imports
 import re
 import asyncio
-import nest_asyncio
+import subprocess
+import logging
 from functools import lru_cache
-from pydantic import BaseModel
 from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict
+
+# Third-party imports
+import nest_asyncio
+from pydantic import BaseModel
 from openai import AsyncOpenAI
 import instructor
 import tiktoken
 import spacy
-import subprocess
-from collections import defaultdict
-import logging
 
+# === MODELS ========================================================================================================
+import models
+
+# === CONFIG ========================================================================================================
 from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
 from prompts import SPELLCHECK_INSTRUCTIONS
-import models
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Suppress noisy third-party library logs
-logging.getLogger("httpx").setLevel(logging.WARNING)           
-logging.getLogger("utils.cacheManager").setLevel(logging.WARNING)
 
 # Nederlands or Engels
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -95,7 +98,7 @@ class SpellChecker:
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
         self.prompt_printer = prompt_printer 
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         if not self.check_hunspell_installation():
             logger.warning("Hunspell is not properly installed or configured.")

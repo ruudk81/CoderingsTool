@@ -1,9 +1,20 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
+# Standard library imports
 import re
-from typing import List, Union, Optional 
+from typing import List, Union, Optional
+
+# Third-party imports
 from pydantic import BaseModel, Field, field_validator
+
+# === MODELS ========================================================================================================
 import models
+
+# === CONFIG ========================================================================================================
+# No config imports needed for this module
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 
 
@@ -19,9 +30,9 @@ class NormalizerConfig(BaseModel):
         return v
 
 class TextNormalizer:
-    def __init__(self, config: Optional[NormalizerConfig] = None, verbose: bool = False):
+    def __init__(self, config: Optional[NormalizerConfig] = None, verbose: bool = False, prompt_printer = None):
         self.config = config if config is not None else NormalizerConfig()
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
     
     #TODO: language recognition
     
