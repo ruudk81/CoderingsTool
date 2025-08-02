@@ -1,16 +1,22 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
 import asyncio
 import nest_asyncio
 from typing import Dict, List, Optional, Union
 import instructor
 from openai import AsyncOpenAI
 import tiktoken
-from pydantic import BaseModel
 
+# === MODELS ========================================================================================================
+from pydantic import BaseModel
+import models
+
+# === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from prompts import IDEA_EXTRACTION_PROMPT
-import models
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
@@ -35,7 +41,7 @@ class IdeaExtractor:
         self.client = async_client
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
@@ -46,7 +52,7 @@ class IdeaExtractor:
             self.encoding = tiktoken.encoding_for_model(self.config.model)
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
-            print(f"Using cl100k_base encoding as fallback for {self.config.model}")
+            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
 
     def _calculate_token_budget(self) -> int:
         """Calculate available tokens for responses after accounting for prompt"""
@@ -78,7 +84,7 @@ class IdeaExtractor:
         for i, (response, tokens) in enumerate(zip(self.responses, response_tokens)):
             # Handle oversized responses
             if tokens > token_budget and not current_batch:
-                print(f"Warning: Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
+                self.verbose_reporter.warning(f"Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
                 batches.append([(i, response.respondent_id, response.response)])
                 continue
             
@@ -123,7 +129,7 @@ class IdeaExtractor:
             return response
             
         except Exception as e:
-            print(f"\nAPI call failed: {str(e)}")
+            self.verbose_reporter.error(f"API call failed: {str(e)}")
             raise
 
     async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeasExtractedModel:
@@ -168,7 +174,7 @@ class IdeaExtractor:
             )
             
         except Exception as e:
-            print(f"Processing failed for respondent {respondent_id}: {str(e)}")
+            self.verbose_reporter.error(f"Processing failed for respondent {respondent_id}: {str(e)}")
             # Return error result
             return models.IdeasExtractedModel(
                 respondent_id=respondent_id,
@@ -232,7 +238,7 @@ class IdeaExtractor:
         total_failures = 0
         for i, batch_result in enumerate(batch_results):
             if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed: {str(batch_result)}")
+                self.verbose_reporter.error(f"Batch {i+1} processing failed: {str(batch_result)}")
                 total_failures += 1
                 continue
             
@@ -240,7 +246,7 @@ class IdeaExtractor:
             self._results.extend(batch_result)
         
         if total_failures > 0:
-            print(f"{total_failures} out of {len(batches)} batches failed completely")
+            self.verbose_reporter.warning(f"{total_failures} out of {len(batches)} batches failed completely")
 
     def extract(self) -> List[models.IdeasExtractedModel]:
         """Main method to extract ideas from responses"""

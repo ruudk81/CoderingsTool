@@ -1,15 +1,22 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
 import os
 import csv
 import json
 from typing import Type, TypeVar, List, get_type_hints, get_origin, get_args
+
+# === MODELS ========================================================================================================
 from pydantic import BaseModel
+
+# === UTILS ========================================================================================================
+from verboseReporter import VerboseReporter
 
 T = TypeVar('T', bound=BaseModel)
 
 class CsvHandler:
-    def __init__(self, data_dir: str = None):
+    def __init__(self, data_dir: str = None, verbose: bool = False):
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         current_dir = os.getcwd()
         if os.path.basename(current_dir) == 'utils':
             data_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'data'))
@@ -323,13 +330,13 @@ class CsvHandler:
                     result.append(model_cls(**parsed_row))
                 except Exception as e:
                     # Add more debugging info
-                    print(f"Error creating model from row: {e}")
-                    print(f"Problematic row: {parsed_row}")
+                    self.verbose_reporter.error(f"Error creating model from row: {e}")
+                    self.verbose_reporter.error(f"Problematic row: {parsed_row}")
                     if model_cls.__name__ == 'EmbeddingsModel' and 'response_segment' in parsed_row:
                         for i, segment in enumerate(parsed_row.get('response_segment', [])):
                             for field in ['code_embedding', 'description_embedding']:
                                 if field in segment:
-                                    print(f"Field {field} in segment {i} has type: {type(segment[field])}")
+                                    self.verbose_reporter.error(f"Field {field} in segment {i} has type: {type(segment[field])}")
                     # You could log the problematic row here
                     raise
         

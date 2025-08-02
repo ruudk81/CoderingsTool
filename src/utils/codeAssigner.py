@@ -1,5 +1,6 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+# === MODULES ========================================================================================================
 import asyncio
 import nest_asyncio
 import time
@@ -11,22 +12,25 @@ from collections import deque
 import instructor
 from openai import AsyncOpenAI, RateLimitError
 import tiktoken
-from pydantic import BaseModel
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
 
+# === MODELS ========================================================================================================
+from pydantic import BaseModel
+import models
+
+# === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
-import models
+
+# === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
-import logging # remove for debugging 
-logging.getLogger("openai").setLevel(logging.WARNING)
 EMBEDDING_DIMENSION = 3072 # text-embedding-3-large dimension
 
 @dataclass
@@ -221,7 +225,7 @@ class SmartAPIClient:
                 }
                 
             except Exception as e:
-                print(f"❌ API request failed for idea {idea_id}: {str(e)}")
+                self.verbose_reporter.error(f"API request failed for idea {idea_id}: {str(e)}")
                 raise
 
 
@@ -256,7 +260,7 @@ class CodeAssigner:
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.CodeAssignedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
@@ -280,8 +284,8 @@ class CodeAssigner:
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
-        print(f"📊 Model: {self.config.model}")
-        print(f"📊 API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
+        self.verbose_reporter.stat_line(f"Model: {self.config.model}")
+        self.verbose_reporter.stat_line(f"API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
 
     async def initialize_code_embeddings(self):
         """Initialize code embeddings once during setup"""
@@ -533,7 +537,7 @@ class CodeAssigner:
             completed += 1
             
             if completed % 100 == 0 or completed == len(all_ideas):
-                print(f"Progress: {completed}/{len(all_ideas)} completed")
+                self.verbose_reporter.progress_line(completed, len(all_ideas), "code assignments")
                 
                 #debug
                 # elapsed = time.time() - start_time
