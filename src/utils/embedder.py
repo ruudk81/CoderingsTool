@@ -1,18 +1,15 @@
-import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+import os, sys
+sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-# === MODULES ====================================================================================================
+import os
+import numpy as np
+import asyncio
+from typing import List, Tuple
+from openai import AsyncOpenAI
+import models
+from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 from .verboseReporter import VerboseReporter, ProcessingStats
 from dataclasses import dataclass
-from typing import List, Tuple
-import asyncio
-import numpy as np
-import os
-
-# === MODELS =====================================================================================================
-import models
-
-# === CONFIG =====================================================================================================
-from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
 
 
 @dataclass
@@ -39,7 +36,7 @@ class Embedder:
         self.embedding_model = embedding_model or self.config.embedding_model
         self.var_lab = var_lab
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = VerboseReporter(verbose)
         self.stats = ProcessingStats()
         
         self.verbose_reporter.stat_line("Initialized Embedder")

@@ -1,11 +1,9 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-# === MODULES ====================================================================================================
-from typing import Type, TypeVar, List, get_type_hints, get_origin, get_args
+
+import os
 import csv
 import json
-import os
-
-# === MODELS =====================================================================================================
+from typing import Type, TypeVar, List, get_type_hints, get_origin, get_args
 from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)

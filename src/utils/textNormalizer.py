@@ -1,12 +1,11 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-# === MODULES ====================================================================================================
-from .verboseReporter import VerboseReporter, ProcessingStats
-from typing import List, Union, Optional 
-import re
 
-# === MODELS =====================================================================================================
+import re
+from typing import List, Union, Optional 
 from pydantic import BaseModel, Field, field_validator
 import models
+from .verboseReporter import VerboseReporter, ProcessingStats
+
 
 class NormalizerConfig(BaseModel):
     custom_symbols: str = Field(default="'#%&:;<=>@[\]^_{|}~-", description="Symbols to remove during normalization")
@@ -22,7 +21,7 @@ class NormalizerConfig(BaseModel):
 class TextNormalizer:
     def __init__(self, config: Optional[NormalizerConfig] = None, verbose: bool = False):
         self.config = config if config is not None else NormalizerConfig()
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = VerboseReporter(verbose)
     
     #TODO: language recognition
     

@@ -1,16 +1,13 @@
-import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
-# === MODULES ====================================================================================================
 from typing import List, Optional, Any
 import numpy as np
 import numpy.typing as npt
-
-# === MODELS =====================================================================================================
-from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
-from pydantic import BaseModel
-
-# === DOMAIN-SPECIFIC ============================================================================================
+#from sklearn.decomposition import PCA
+#from sklearn.preprocessing import StandardScaler
 from umap import UMAP
 import hdbscan
+from pydantic import BaseModel
+from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
+
 
 class ResultMapper(BaseModel):
     respondent_id: Any
