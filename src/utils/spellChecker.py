@@ -98,7 +98,7 @@ class SpellChecker:
         self.prompt_printer = prompt_printer 
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
-        # Enhanced configuration reporting
+        # Configuration reporting (verbose only)
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Spell checker configuration:")
             self.verbose_reporter.stat_line(f"  • Model: {self.openai_model}")
@@ -107,11 +107,12 @@ class SpellChecker:
             self.verbose_reporter.stat_line(f"  • Hunspell path: {self.hunspell_path}")
             self.verbose_reporter.stat_line(f"  • Batch size: {self.config.batch_size}")
         
-        # Enhanced installation check with better error reporting
+        # Installation check with verbose error reporting
         if not self.check_hunspell_installation():
-            self.verbose_reporter.warning("Hunspell is not properly installed or configured - spell checking may fail")
-            self.verbose_reporter.warning(f"Expected Hunspell at: {self.hunspell_path}")
-            self.verbose_reporter.warning(f"Expected dictionary at: {self.dict_path}")
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.warning("Hunspell is not properly installed or configured - spell checking may fail")
+                self.verbose_reporter.warning(f"Expected Hunspell at: {self.hunspell_path}")
+                self.verbose_reporter.warning(f"Expected dictionary at: {self.dict_path}")
         else:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("✓ Hunspell installation verified")
@@ -495,7 +496,11 @@ class SpellChecker:
                 self.stats['llm_calls_successful'] += 1
                 
             except Exception as e:
-                logger.error(f"LLM call failed for batch {batch_index}: {e}")
+                # Verbose error reporting for OpenAI issues
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.error(f"OpenAI API call failed for batch {batch_index}: {e}")
+                else:
+                    logger.error(f"LLM call failed for batch {batch_index}: {e}")
                 corrections = []
                 self.stats['llm_calls_failed'] += 1
             
@@ -563,23 +568,22 @@ class SpellChecker:
         stats.start_timing()
         stats.input_count = len(responses)
         
-        self.verbose_reporter.step_start("Spell Checking")
+        # Always show main progress
+        print(f"Processing {len(responses)} responses for spell checking...")
         
-        # Enhanced progress reporting
-        self.verbose_reporter.stat_line(f"Processing {len(responses)} responses for spell checking...")
-        self.verbose_reporter.stat_line(f"Configuration: batch_size={self.config.batch_size}, model={self.openai_model}")
+        # Verbose configuration details
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Configuration: batch_size={self.config.batch_size}, model={self.openai_model}")
         
         sentences_list = [response.original_response for response in responses]
         
-        # Calculate initial metrics
-        total_words = sum(len(sentence.split()) for sentence in sentences_list)
-        avg_words_per_response = total_words / len(responses) if responses else 0
-        
-        self.verbose_reporter.stat_line(f"Total words to analyze: {total_words}")
-        self.verbose_reporter.stat_line(f"Average words per response: {avg_words_per_response:.1f}")
-    
-        # Step 1: Identify OOV words using single session
-        self.verbose_reporter.stat_line(f"Step 1: Identifying out-of-vocabulary words...")
+        # Verbose metrics
+        if self.verbose_reporter.enabled:
+            total_words = sum(len(sentence.split()) for sentence in sentences_list)
+            avg_words_per_response = total_words / len(responses) if responses else 0
+            self.verbose_reporter.stat_line(f"Total words to analyze: {total_words}")
+            self.verbose_reporter.stat_line(f"Average words per response: {avg_words_per_response:.1f}")
+            self.verbose_reporter.stat_line(f"Step 1: Identifying out-of-vocabulary words...")
         oov_words = []
         docs_with_oov = 0
         
@@ -608,25 +612,29 @@ class SpellChecker:
         unique_oov_words = list(set(oov_words))
         self.stats['unique_oov_words'] = len(unique_oov_words)
         
-        # Enhanced OOV reporting
-        oov_rate = (len(unique_oov_words) / total_words * 100) if total_words > 0 else 0
-        self.verbose_reporter.stat_line(f"OOV analysis results:")
-        self.verbose_reporter.stat_line(f"  • Unique OOV words: {len(unique_oov_words)}")
-        self.verbose_reporter.stat_line(f"  • OOV rate: {oov_rate:.1f}% of total words")
-        self.verbose_reporter.stat_line(f"  • Responses requiring correction: {docs_with_oov}")
+        # Verbose OOV analysis details
+        if self.verbose_reporter.enabled:
+            total_words = sum(len(sentence.split()) for sentence in sentences_list)
+            oov_rate = (len(unique_oov_words) / total_words * 100) if total_words > 0 else 0
+            self.verbose_reporter.stat_line(f"OOV analysis results:")
+            self.verbose_reporter.stat_line(f"  • Unique OOV words: {len(unique_oov_words)}")
+            self.verbose_reporter.stat_line(f"  • OOV rate: {oov_rate:.1f}% of total words")
+            self.verbose_reporter.stat_line(f"  • Responses requiring correction: {docs_with_oov}")
         
-        # Progress indicators for large datasets
-        if len(responses) > 1000:
+        # Verbose progress indicators for large datasets
+        if self.verbose_reporter.enabled and len(responses) > 1000:
             self.verbose_reporter.progress_line(len(responses), len(responses), "analyzing for OOV words")
     
         # Step 2: Get suggestions for unique OOV words only
         if unique_oov_words:
-            self.verbose_reporter.stat_line(f"Step 2: Generating corrections for {len(unique_oov_words)} OOV words...")
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Step 2: Generating corrections for {len(unique_oov_words)} OOV words...")
             best_suggestions_dict = await self.find_best_suggestions_batch_async(unique_oov_words)
             corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
         else:
-            self.verbose_reporter.stat_line("No OOV words found - skipping correction step")
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line("No OOV words found - skipping correction step")
             corrected_sentences_dict = {}
         
         # Step 3: Update sentences with tracked respondent IDs
@@ -658,16 +666,18 @@ class SpellChecker:
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration()
 
-        self.verbose_reporter.stat_line(f"Corrections attempted: {self.stats['corrections_attempted']}")
-        self.verbose_reporter.stat_line(f"Corrections applied: {self.stats['corrections_applied']}")
-        self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
-        self.verbose_reporter.stat_line(f"Corrections '[NO RESPONSE]': {self.stats['corrections_no_response']}")
+        # Always show main stats (as was before)
+        print(f"Corrections attempted: {self.stats['corrections_attempted']}, applied: {self.stats['corrections_applied']}, validated: {self.stats['corrections_applied'] - self.stats['corrections_rejected_validation']}")
         
-        # Show correction examples in verbose mode
-        if correction_examples:
-            self.verbose_reporter.correction_samples(correction_examples)
-        
-        self.verbose_reporter.step_complete("Spell checking completed")
+        # Verbose detailed breakdown
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Detailed correction breakdown:")
+            self.verbose_reporter.stat_line(f"  • Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
+            self.verbose_reporter.stat_line(f"  • Corrections '[NO RESPONSE]': {self.stats['corrections_no_response']}")
+            
+            # Show correction examples in verbose mode
+            if correction_examples:
+                self.verbose_reporter.correction_samples(correction_examples)
 
         processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
