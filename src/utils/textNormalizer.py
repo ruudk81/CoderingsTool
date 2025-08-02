@@ -27,6 +27,13 @@ class TextNormalizer:
     def __init__(self, config: Optional[NormalizerConfig] = None, verbose: bool = False, prompt_printer = None):
         self.config = config if config is not None else NormalizerConfig()
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        
+        # Report configuration if verbose
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Text normalizer configuration:")
+            self.verbose_reporter.stat_line(f"  • Minimum length: {self.config.min_length} characters")
+            self.verbose_reporter.stat_line(f"  • NA placeholder: '{self.config.na_placeholder}'")
+            self.verbose_reporter.stat_line(f"  • Custom symbols: '{self.config.custom_symbols}'")
     
     #TODO: language recognition
     
@@ -61,7 +68,9 @@ class TextNormalizer:
             
             return text
         except Exception as e:
-            print(f"Error processing text: {e}")
+            # Improved error reporting
+            truncated_text = str(text)[:50] + "..." if len(str(text)) > 50 else str(text)
+            self.verbose_reporter.error(f"Error processing text '{truncated_text}': {e}")
             return self.config.na_placeholder
     
     def normalize_with_tracking(self, data: models.PreprocessedModel) -> models.PreprocessedModel:
@@ -77,43 +86,98 @@ class TextNormalizer:
         
         self.verbose_reporter.step_start("Text Normalization")
         
-        # Track changes
+        # Enhanced progress reporting
+        self.verbose_reporter.stat_line(f"Processing {len(data)} responses for normalization...")
+        self.verbose_reporter.stat_line(f"Configuration: min_length={self.config.min_length}, placeholder='{self.config.na_placeholder}'")
+        
+        # Track changes and examples
         symbol_changes = 0
         case_changes = 0
         whitespace_changes = 0
         invalid_filtered = 0
+        slash_changes = 0
+        transformation_examples = []
+        
+        # Calculate initial quality metrics
+        total_length_before = 0
+        valid_responses_before = 0
         
         results = []
-        for item in data:
+        for i, item in enumerate(data):
+            # Progress indicators for large datasets
+            if len(data) > 1000 and i % 500 == 0 and i > 0:
+                self.verbose_reporter.progress_line(i, len(data), "normalizing")
+            
             original = item.response
             normalized = self.normalize_with_tracking(item)
             results.append(normalized)
             
+            # Track quality metrics
             if isinstance(original, str):
+                total_length_before += len(original)
+                valid_responses_before += 1
+                
+                # Track specific changes
                 if original != original.lower():
                     case_changes += 1
-                # if any(symbol in original for symbol in self.config.custom_symbols):
-                #     symbol_changes += 1
-                if re.search(r'\s{2,}', original or ''):
+                if re.search(r'\s{2,}', original):
                     whitespace_changes += 1
-                if normalized.response == self.config.na_placeholder:
-                    invalid_filtered += 1
+                if '/' in original:
+                    slash_changes += 1
+                
+                # Collect transformation examples for debugging
+                if (len(transformation_examples) < 5 and 
+                    original != normalized.response and 
+                    normalized.response != self.config.na_placeholder):
+                    transformation_examples.append((original, normalized.response))
+            
+            if normalized.response == self.config.na_placeholder:
+                invalid_filtered += 1
         
         stats.output_count = len(results) - invalid_filtered
         stats.end_timing()
         
-        # Report statistics
-        self.verbose_reporter.stat_line(f"Started with {stats.input_count} responses")
-        if symbol_changes > 0:
-            self.verbose_reporter.stat_line(f"Symbol removal: {symbol_changes} responses updated")
+        # Calculate quality metrics
+        valid_results = [r for r in results if r.response != self.config.na_placeholder]
+        avg_length_before = total_length_before / max(1, valid_responses_before)
+        avg_length_after = sum(len(r.response) for r in valid_results) / max(1, len(valid_results))
+        retention_rate = (len(valid_results) / len(data)) * 100 if data else 0
+        
+        # Performance metrics
+        total_time = stats.get_duration()
+        avg_time_per_response = total_time / len(data) if data else 0
+        responses_per_second = len(data) / total_time if total_time > 0 else 0
+        
+        # Enhanced reporting
+        self.verbose_reporter.stat_line(f"Processing completed: {stats.input_count} → {stats.output_count} responses")
+        
+        # Transformation statistics
         if case_changes > 0:
             self.verbose_reporter.stat_line(f"Case normalization: {case_changes} responses updated")
         if whitespace_changes > 0:
             self.verbose_reporter.stat_line(f"Whitespace cleanup: {whitespace_changes} responses updated")
+        if slash_changes > 0:
+            self.verbose_reporter.stat_line(f"Slash replacement: {slash_changes} responses updated")
         if invalid_filtered > 0:
             self.verbose_reporter.stat_line(f"Invalid responses filtered: {invalid_filtered} responses")
         
-        self.verbose_reporter.step_complete(f"Completed with {stats.output_count} valid responses")
+        # Quality metrics
+        self.verbose_reporter.stat_line(f"Quality metrics:")
+        self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
+        self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
+        self.verbose_reporter.stat_line(f"  • Data retention rate: {retention_rate:.1f}%")
+        
+        # Performance metrics
+        self.verbose_reporter.stat_line(f"Performance metrics:")
+        self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
+        self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
+        self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
+        
+        # Show transformation examples in verbose mode
+        if transformation_examples and self.verbose_reporter.enabled:
+            self.verbose_reporter.correction_samples(transformation_examples[:3])
+        
+        self.verbose_reporter.step_complete(f"Normalization completed with {stats.output_count} valid responses")
         
         return results
     
