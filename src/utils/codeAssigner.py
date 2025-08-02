@@ -16,7 +16,7 @@ import asyncio
 import nest_asyncio
 import time
 import statistics
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from collections import deque
 
@@ -35,12 +35,11 @@ import models
 from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
-
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
-# Constants
-EMBEDDING_DIMENSION = 1536  # text-embedding-3-large dimension
-
+import logging # remove for debugging 
+logging.getLogger("openai").setLevel(logging.WARNING)
+EMBEDDING_DIMENSION = 3072 # text-embedding-3-large dimension
 
 @dataclass
 class OptimalStrategy:
@@ -293,7 +292,6 @@ class CodeAssigner:
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
-        print(f"🎯 EVIDENCE-BASED CODE ASSIGNMENT")
         print(f"📊 Model: {self.config.model}")
         print(f"📊 API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
 
@@ -512,14 +510,14 @@ class CodeAssigner:
         avg_tokens = self.workload_analyzer.measure_token_usage(sample_prompts)
         strategy = self.workload_analyzer.calculate_optimal_strategy(len(all_ideas), avg_tokens)
         
-        print(f"\n🎯 OPTIMAL STRATEGY CALCULATED:")
-        print(f"📊 Total requests: {strategy.total_requests}")
-        print(f"📊 Estimated tokens: {strategy.total_tokens:,} ({avg_tokens:.0f} per request)")
-        print(f"📊 Bottleneck: {strategy.bottleneck_type}")
-        print(f"📊 Target time: {strategy.target_time_seconds:.1f}s")
-        print(f"📊 Launch rate: {strategy.launch_rate_per_second:.1f} requests/second")
-        print(f"📊 Max concurrent: {strategy.concurrent_limit}")
-        print(f"📊 Capacity utilization: {strategy.safety_factor:.1%}")
+        #print("\n🎯 OPTIMAL STRATEGY CALCULATED:")
+        #print(f"📊 Total requests: {strategy.total_requests}")
+        #print(f"📊 Estimated tokens: {strategy.total_tokens:,} ({avg_tokens:.0f} per request)")
+        #print(f"📊 Bottleneck: {strategy.bottleneck_type}")
+        #print(f"📊 Target time: {strategy.target_time_seconds:.1f}s")
+        #print(f"📊 Launch rate: {strategy.launch_rate_per_second:.1f} requests/second")
+        #print(f"📊 Max concurrent: {strategy.concurrent_limit}")
+        #print(f"📊 Capacity utilization: {strategy.safety_factor:.1%}")
         
         # Step 2: Initialize precision throttler and monitor
         throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
@@ -527,8 +525,8 @@ class CodeAssigner:
         api_client = SmartAPIClient(throttler, monitor, self.config, self.workload_analyzer.encoding, self.model_config)
         
         # Step 3: Launch all requests with precision timing
-        print(f"\n🚀 LAUNCHING {len(all_ideas)} REQUESTS AT OPTIMAL RATE")
-        start_time = time.time()
+        #print(f"\n🚀 LAUNCHING {len(all_ideas)} REQUESTS AT OPTIMAL RATE")
+        #start_time = time.time() # needed for debug reporting
         
         # Create all tasks - throttler handles the timing
         tasks = [
@@ -546,30 +544,29 @@ class CodeAssigner:
             all_results.append(result)
             completed += 1
             
-            # Progress reporting every 100 completions
             if completed % 100 == 0 or completed == len(all_ideas):
-                elapsed = time.time() - start_time
-                current_rate = completed / elapsed if elapsed > 0 else 0
-                util = monitor.get_current_utilization()
+                print(f"Progress: {completed}/{len(all_ideas)} completed")
                 
-                print(f"🔄 Progress: {completed}/{len(all_ideas)} completed")
-                print(f"   📊 Rate: {current_rate:.1f} requests/second")
-                print(f"   📊 RPM utilization: {util['rpm_utilization']:.1%}")
-                print(f"   📊 TPM utilization: {util['tpm_utilization']:.1%}")
+                #debug
+                # elapsed = time.time() - start_time
+                # current_rate = completed / elapsed if elapsed > 0 else 0
+                # #util = monitor.get_current_utilization()
+                #print(f"   📊 Rate: {current_rate:.1f} requests/second")
+                #print(f"   📊 RPM utilization: {util['rpm_utilization']:.1%}")
+                #print(f"   📊 TPM utilization: {util['tpm_utilization']:.1%}")
         
-        total_time = time.time() - start_time
-        final_util = monitor.get_current_utilization()
-        
-        # Final performance report
-        print(f"\n🎯 OPTIMAL STRATEGY COMPLETED:")
-        print(f"   ✅ Target time: {strategy.target_time_seconds:.1f}s")
-        print(f"   ✅ Actual time: {total_time:.1f}s")
-        print(f"   ✅ Performance: {(strategy.target_time_seconds/total_time):.1%} of target")
-        print(f"   📊 Average rate: {len(all_ideas)/total_time:.1f} requests/second")
-        print(f"   📊 Peak RPM utilization: {final_util['rpm_utilization']:.1%}")
-        print(f"   📊 Peak TPM utilization: {final_util['tpm_utilization']:.1%}")
-        print(f"   📊 Total requests: {final_util['total_requests']}")
-        print(f"   📊 Total tokens: {final_util['total_tokens']:,}")
+        # debub
+        #total_time = time.time() - start_time
+        #final_util = monitor.get_current_utilization()
+        #print("\n🎯 OPTIMAL STRATEGY COMPLETED:")
+        #print(f"   ✅ Target time: {strategy.target_time_seconds:.1f}s")
+        #print(f"   ✅ Actual time: {total_time:.1f}s")
+        #print(f"   ✅ Performance: {(strategy.target_time_seconds/total_time):.1%} of target")
+        #print(f"   📊 Average rate: {len(all_ideas)/total_time:.1f} requests/second")
+        #print(f"   📊 Peak RPM utilization: {final_util['rpm_utilization']:.1%}")
+        #print(f"   📊 Peak TPM utilization: {final_util['tpm_utilization']:.1%}")
+        #print(f"   📊 Total requests: {final_util['total_requests']}")
+        #print(f"   📊 Total tokens: {final_util['total_tokens']:,}")
         
         return all_results
 

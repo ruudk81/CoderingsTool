@@ -863,7 +863,7 @@ FORCE = True
 step_name = "code_assignment"
 if  FORCE:
     FORCE_STEP      = step_name
-    PROMPT_PRINTER  = True
+    PROMPT_PRINTER  = False
 
 verbose_reporter = VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)
