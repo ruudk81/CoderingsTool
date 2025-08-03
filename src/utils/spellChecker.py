@@ -100,12 +100,13 @@ class SpellChecker:
         
         # Configuration reporting (verbose only)
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("\nSpell checker configuration:")
-            self.verbose_reporter.stat_line(f"  • Model: {self.openai_model}")
-            self.verbose_reporter.stat_line(f"  • Language: {DEFAULT_LANGUAGE}")
-            self.verbose_reporter.stat_line(f"  • Dictionary: {self.dict_path}")
-            self.verbose_reporter.stat_line(f"  • Hunspell path: {self.hunspell_path}")
-            self.verbose_reporter.stat_line(f"  • Batch size: {self.config.batch_size}")
+            self.verbose_reporter.empty_line()
+            print("Spell checker configuration:")
+            self.verbose_reporter.stat_line(f"Model: {self.openai_model}", indent=1)
+            self.verbose_reporter.stat_line(f"Language: {DEFAULT_LANGUAGE}", indent=1)
+            self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
+            self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
+            self.verbose_reporter.stat_line(f"Batch size: {self.config.batch_size}", indent=1)
         
         # Installation check with verbose error reporting
         if not self.check_hunspell_installation():
@@ -569,6 +570,7 @@ class SpellChecker:
         stats.input_count = len(responses)
         
         # Always show main progress
+        self.verbose_reporter.empty_line()
         print(f"Processing {len(responses)} responses for spell checking...")
         
         sentences_list = [response.original_response for response in responses]
@@ -576,8 +578,7 @@ class SpellChecker:
         # Verbose metrics
         if self.verbose_reporter.enabled:
             total_words = sum(len(sentence.split()) for sentence in sentences_list)
-            total_words = total_words
-            self.verbose_reporter.stat_line("Total words to analyze: {total_words}")
+            self.verbose_reporter.stat_line(f"Total words to analyze: {total_words}")
         oov_words = []
         docs_with_oov = 0
         
@@ -653,16 +654,23 @@ class SpellChecker:
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration() 
         
+        # Group all stats together
         if self.verbose_reporter.enabled: 
+            self.verbose_reporter.stat_line(f"Responses requiring correction: {self.stats['responses_with_tasks']}")
             self.verbose_reporter.stat_line(f"Corrections attempted: {self.stats['corrections_attempted']}")
             self.verbose_reporter.stat_line(f"Corrections Failed (no correction): {self.stats['corrections_no_response']}")
             self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
           
         print(f"Corrections applied: {self.stats['corrections_applied']}")
         
-        if self.verbose_reporter.enabled: 
-            if correction_examples:
-                self.verbose_reporter.correction_samples(correction_examples)
+        # Move sample corrections to the end
+        if self.verbose_reporter.enabled and correction_examples: 
+            self.verbose_reporter.empty_line()
+            # Select only 1 random sample
+            import random
+            sample = random.choice(correction_examples) if correction_examples else None
+            if sample:
+                self.verbose_reporter.correction_samples([sample])
 
         processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
