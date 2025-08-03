@@ -30,21 +30,14 @@ class TextNormalizer:
         
         # Report configuration if verbose
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Text normalizer configuration:")
+            self.verbose_reporter.stat_line("\nText normalizer configuration:")
             self.verbose_reporter.stat_line(f"  • Minimum length: {self.config.min_length} characters")
             self.verbose_reporter.stat_line(f"  • NA placeholder: '{self.config.na_placeholder}'")
             self.verbose_reporter.stat_line(f"  • Custom symbols: '{self.config.custom_symbols}'")
     
-    #TODO: language recognition
-    
     def replace_slash(self, text: str) -> str: 
-        return re.sub(r'\s*/\s*|/', ' of ', text) #TODO: remove or if DUTCH
-    
-    # def remove_symbols(self, text: str) -> str:
-    #     escaped_punctuation = re.escape(self.config.custom_symbols)
-    #     text = re.sub(f"[{escaped_punctuation}]", " ", text)
-    #     return text.strip()
-    
+        return re.sub(r'\s*/\s*|/', ' , ', text) 
+
     def normalize_whitespace(self, text: str) -> str:
         text = " ".join(text.split())
         text = re.sub(r"\s+([,.;!?])", r"\1", text)
@@ -62,7 +55,6 @@ class TextNormalizer:
                 
             text = text.lower()
             text = self.replace_slash(text)
-            #text = self.remove_symbols(text)
             text = self.normalize_whitespace(text)
             text = self.handle_empty(text)
             
@@ -83,16 +75,8 @@ class TextNormalizer:
         stats = ProcessingStats()
         stats.start_timing()
         stats.input_count = len(data)
-        
-        # Always show main progress
-        print(f"Processing {len(data)} responses for normalization...")
-        
-        # Verbose configuration details
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Configuration: min_length={self.config.min_length}, placeholder='{self.config.na_placeholder}'")
-        
+                  
         # Track changes and examples
-        symbol_changes = 0
         case_changes = 0
         whitespace_changes = 0
         invalid_filtered = 0
@@ -137,18 +121,7 @@ class TextNormalizer:
         
         stats.output_count = len(results) - invalid_filtered
         stats.end_timing()
-        
-        # Calculate quality metrics
-        valid_results = [r for r in results if r.response != self.config.na_placeholder]
-        avg_length_before = total_length_before / max(1, valid_responses_before)
-        avg_length_after = sum(len(r.response) for r in valid_results) / max(1, len(valid_results))
-        retention_rate = (len(valid_results) / len(data)) * 100 if data else 0
-        
-        # Performance metrics
-        total_time = stats.get_duration()
-        avg_time_per_response = total_time / len(data) if data else 0
-        responses_per_second = len(data) / total_time if total_time > 0 else 0
-        
+   
         # Always show main completion stats (as was before)
         print(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
         
@@ -161,20 +134,8 @@ class TextNormalizer:
             if slash_changes > 0:
                 self.verbose_reporter.stat_line(f"Slash replacement: {slash_changes} responses updated")
             if invalid_filtered > 0:
-                self.verbose_reporter.stat_line(f"Invalid responses filtered: {invalid_filtered} responses")
-            
-            # Quality metrics
-            self.verbose_reporter.stat_line(f"Quality metrics:")
-            self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
-            self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
-            self.verbose_reporter.stat_line(f"  • Data retention rate: {retention_rate:.1f}%")
-            
-            # Performance metrics
-            self.verbose_reporter.stat_line(f"Performance metrics:")
-            self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
-            self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
-            self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
-            
+                self.verbose_reporter.stat_line(f"Empty strings filtered: {invalid_filtered} responses")
+  
             # Show transformation examples in verbose mode
             if transformation_examples:
                 self.verbose_reporter.correction_samples(transformation_examples[:3])

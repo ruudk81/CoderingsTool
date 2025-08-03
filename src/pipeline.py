@@ -118,6 +118,7 @@ from utils import verboseReporter
 from utils import promptPrinter
 
 FORCE = False
+VERBOSE = True
 
 step_name        = "preprocessed"
 if  FORCE:
@@ -235,6 +236,7 @@ else:
 from utils import qualityFilter
 
 FORCE = False
+VERBOSE = False
 
 step_name        = "quality_filter"
 if  FORCE:

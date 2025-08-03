@@ -18,7 +18,7 @@ class TextFinalizer:
         
         # Configuration reporting
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Text finalizer configuration:")
+            self.verbose_reporter.stat_line("\nText finalizer configuration:")
             self.verbose_reporter.stat_line("  • Capitalization: First letter uppercase")
             self.verbose_reporter.stat_line("  • Punctuation: Ensure ending punctuation")
             self.verbose_reporter.stat_line("  • Cleanup: Remove duplicate punctuation and fix spacing")
@@ -83,11 +83,7 @@ class TextFinalizer:
         
         # Always show main progress
         print(f"Processing {len(data)} responses for finalization...")
-        
-        # Verbose configuration details
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Configuration: Capitalize first letter, ensure punctuation, cleanup format")
-        
+             
         # Track changes and examples
         capitalization_fixes = 0
         punctuation_additions = 0
