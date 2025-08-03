@@ -137,18 +137,7 @@ class TextFinalizer:
         
         stats.output_count = len(results)
         stats.end_timing()
-        
-        # Calculate quality metrics
-        avg_length_before = total_length_before / max(1, len(data))
-        total_length_after = sum(len(r.response) for r in results if isinstance(r.response, str))
-        avg_length_after = total_length_after / max(1, len(results))
-        improvement_rate = (responses_needing_fixes / len(data)) * 100 if data else 0
-        
-        # Performance metrics
-        total_time = stats.get_duration()
-        avg_time_per_response = total_time / len(data) if data else 0
-        responses_per_second = len(data) / total_time if total_time > 0 else 0
-        
+            
         # Always show main completion stats (as was before)
         self.verbose_reporter.empty_line()
         print(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")
@@ -164,20 +153,7 @@ class TextFinalizer:
             if spacing_fixes > 0:
                 self.verbose_reporter.stat_line(f"Spacing fixes: {spacing_fixes} responses")
             
-            # Quality metrics
-            self.verbose_reporter.empty_line()
-            print("Quality metrics:")
-            self.verbose_reporter.stat_line(f"Average length before: {avg_length_before:.1f} characters", indent=1)
-            self.verbose_reporter.stat_line(f"Average length after: {avg_length_after:.1f} characters", indent=1)
-            self.verbose_reporter.stat_line(f"Responses improved: {improvement_rate:.1f}%", indent=1)
-            
-            # Performance metrics
-            self.verbose_reporter.empty_line()
-            print("Performance metrics:")
-            self.verbose_reporter.stat_line(f"Total time: {total_time:.2f}s", indent=1)
-            self.verbose_reporter.stat_line(f"Average per response: {avg_time_per_response:.3f}s", indent=1)
-            self.verbose_reporter.stat_line(f"Responses per second: {responses_per_second:.1f}", indent=1)
-            
+                      
             # Store examples for end-of-phase summary (don't show here)
             self.transformation_examples = transformation_examples if transformation_examples else []
         
