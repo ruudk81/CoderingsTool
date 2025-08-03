@@ -656,12 +656,11 @@ class SpellChecker:
         
         # Group all stats together
         if self.verbose_reporter.enabled: 
-            self.verbose_reporter.stat_line(f"Responses requiring correction: {self.stats['responses_with_tasks']}")
-            self.verbose_reporter.stat_line(f"Corrections attempted: {self.stats['corrections_attempted']}")
+          
             self.verbose_reporter.stat_line(f"Corrections Failed (no correction): {self.stats['corrections_no_response']}")
             self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
           
-        print(f"Corrections applied: {self.stats['corrections_applied']}")
+        print(f"• Corrections applied: {self.stats['corrections_applied']}")
         
         # Store examples for end-of-phase summary (don't show here)
         self.correction_examples = correction_examples if correction_examples else []
