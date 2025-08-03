@@ -178,14 +178,8 @@ class TextFinalizer:
             self.verbose_reporter.stat_line(f"Average per response: {avg_time_per_response:.3f}s", indent=1)
             self.verbose_reporter.stat_line(f"Responses per second: {responses_per_second:.1f}", indent=1)
             
-            # Show transformation examples at the very end
-            if transformation_examples:
-                self.verbose_reporter.empty_line()
-                # Select only 1 random sample
-                import random
-                sample = random.choice(transformation_examples) if transformation_examples else None
-                if sample:
-                    self.verbose_reporter.correction_samples([sample])
+            # Store examples for end-of-phase summary (don't show here)
+            self.transformation_examples = transformation_examples if transformation_examples else []
         
         return results
 

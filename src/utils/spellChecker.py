@@ -663,14 +663,8 @@ class SpellChecker:
           
         print(f"Corrections applied: {self.stats['corrections_applied']}")
         
-        # Move sample corrections to the end
-        if self.verbose_reporter.enabled and correction_examples: 
-            self.verbose_reporter.empty_line()
-            # Select only 1 random sample
-            import random
-            sample = random.choice(correction_examples) if correction_examples else None
-            if sample:
-                self.verbose_reporter.correction_samples([sample])
+        # Store examples for end-of-phase summary (don't show here)
+        self.correction_examples = correction_examples if correction_examples else []
 
         processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
         
