@@ -18,10 +18,11 @@ class TextFinalizer:
         
         # Configuration reporting
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("\nText finalizer configuration:")
-            self.verbose_reporter.stat_line("  • Capitalization: First letter uppercase")
-            self.verbose_reporter.stat_line("  • Punctuation: Ensure ending punctuation")
-            self.verbose_reporter.stat_line("  • Cleanup: Remove duplicate punctuation and fix spacing")
+            self.verbose_reporter.empty_line()
+            print("Text finalizer configuration:")
+            self.verbose_reporter.stat_line("Capitalization: First letter uppercase", indent=1)
+            self.verbose_reporter.stat_line("Punctuation: Ensure ending punctuation", indent=1)
+            self.verbose_reporter.stat_line("Cleanup: Remove duplicate punctuation and fix spacing", indent=1)
 
     @staticmethod
     def capitalize_first_letter(text: str) -> str:
@@ -82,6 +83,7 @@ class TextFinalizer:
         stats.input_count = len(data)
         
         # Always show main progress
+        self.verbose_reporter.empty_line()
         print(f"Processing {len(data)} responses for finalization...")
              
         # Track changes and examples
@@ -148,6 +150,7 @@ class TextFinalizer:
         responses_per_second = len(data) / total_time if total_time > 0 else 0
         
         # Always show main completion stats (as was before)
+        self.verbose_reporter.empty_line()
         print(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")
         
         # Verbose detailed transformation statistics
@@ -162,20 +165,27 @@ class TextFinalizer:
                 self.verbose_reporter.stat_line(f"Spacing fixes: {spacing_fixes} responses")
             
             # Quality metrics
-            self.verbose_reporter.stat_line(f"Quality metrics:")
-            self.verbose_reporter.stat_line(f"  • Average length before: {avg_length_before:.1f} characters")
-            self.verbose_reporter.stat_line(f"  • Average length after: {avg_length_after:.1f} characters")
-            self.verbose_reporter.stat_line(f"  • Responses improved: {improvement_rate:.1f}%")
+            self.verbose_reporter.empty_line()
+            print("Quality metrics:")
+            self.verbose_reporter.stat_line(f"Average length before: {avg_length_before:.1f} characters", indent=1)
+            self.verbose_reporter.stat_line(f"Average length after: {avg_length_after:.1f} characters", indent=1)
+            self.verbose_reporter.stat_line(f"Responses improved: {improvement_rate:.1f}%", indent=1)
             
             # Performance metrics
-            self.verbose_reporter.stat_line(f"Performance metrics:")
-            self.verbose_reporter.stat_line(f"  • Total time: {total_time:.2f}s")
-            self.verbose_reporter.stat_line(f"  • Average per response: {avg_time_per_response:.3f}s")
-            self.verbose_reporter.stat_line(f"  • Responses per second: {responses_per_second:.1f}")
+            self.verbose_reporter.empty_line()
+            print("Performance metrics:")
+            self.verbose_reporter.stat_line(f"Total time: {total_time:.2f}s", indent=1)
+            self.verbose_reporter.stat_line(f"Average per response: {avg_time_per_response:.3f}s", indent=1)
+            self.verbose_reporter.stat_line(f"Responses per second: {responses_per_second:.1f}", indent=1)
             
-            # Show transformation examples in verbose mode
+            # Show transformation examples at the very end
             if transformation_examples:
-                self.verbose_reporter.correction_samples(transformation_examples[:3])
+                self.verbose_reporter.empty_line()
+                # Select only 1 random sample
+                import random
+                sample = random.choice(transformation_examples) if transformation_examples else None
+                if sample:
+                    self.verbose_reporter.correction_samples([sample])
         
         return results
 

@@ -210,25 +210,30 @@ else:
 
     cache_manager.save_to_cache(preprocessed_text, filename, step_name, elapsed_time)
     
-    print("\n=== QUALITY FILTER CODE SUMMARY ===")
-    code_counts = {}
-    for item in preprocessed_text:
-        code = item.quality_filter_code
-        if code is not None:
-            code_counts[code] = code_counts.get(code, 0) + 1
+    # Quality filter summary
+    if VERBOSE:
+        print()  # Empty line
+        print("=== QUALITY FILTER CODE SUMMARY ===")
+        code_counts = {}
+        for item in preprocessed_text:
+            code = item.quality_filter_code
+            if code is not None:
+                code_counts[code] = code_counts.get(code, 0) + 1
+        
+        code_meanings = {
+            99999997: "User missing: Don't know/only expressing uncertainty", 
+            99999998: "System missing: NA",
+            99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+        
+        for code, count in sorted(code_counts.items()):
+            meaning = code_meanings.get(code, "Unknown code")
+            print(f"Code {code}: {count} items - {meaning}")
+        
+        print(f"Total items with codes: {sum(code_counts.values())}")
+        print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
+        print()  # Empty line
     
-    code_meanings = {
-        99999997: "User missing: Don't know/only expressing uncertainty", 
-        99999998: "System missing: NA",
-        99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
-    
-    for code, count in sorted(code_counts.items()):
-        meaning = code_meanings.get(code, "Unknown code")
-        print(f"Code {code}: {count} items - {meaning}")
-    
-    print(f"Total items with codes: {sum(code_counts.values())}")
-    print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
-    print(f"\n\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     
 # === STEP 3 ========================================================================================================

@@ -30,10 +30,11 @@ class TextNormalizer:
         
         # Report configuration if verbose
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("\nText normalizer configuration:")
-            self.verbose_reporter.stat_line(f"  • Minimum length: {self.config.min_length} characters")
-            self.verbose_reporter.stat_line(f"  • NA placeholder: '{self.config.na_placeholder}'")
-            self.verbose_reporter.stat_line(f"  • Custom symbols: '{self.config.custom_symbols}'")
+            self.verbose_reporter.empty_line()
+            print("Text normalizer configuration:")
+            self.verbose_reporter.stat_line(f"Minimum length: {self.config.min_length} characters", indent=1)
+            self.verbose_reporter.stat_line(f"NA placeholder: '{self.config.na_placeholder}'", indent=1)
+            self.verbose_reporter.stat_line(f"Custom symbols: '{self.config.custom_symbols}'", indent=1)
     
     def replace_slash(self, text: str) -> str: 
         return re.sub(r'\s*/\s*|/', ' , ', text) 
@@ -123,6 +124,7 @@ class TextNormalizer:
         stats.end_timing()
    
         # Always show main completion stats (as was before)
+        self.verbose_reporter.empty_line()
         print(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
         
         # Verbose detailed transformation statistics
@@ -138,7 +140,8 @@ class TextNormalizer:
   
             # Show transformation examples in verbose mode
             if transformation_examples:
-                self.verbose_reporter.correction_samples(transformation_examples[:3])
+                self.verbose_reporter.empty_line()
+                self.verbose_reporter.correction_samples(transformation_examples[:1])  # Show only 1 random sample
         
         return results
     

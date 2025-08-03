@@ -100,11 +100,12 @@ class VerboseReporter:
         timing = f" ({elapsed:.1f}s)" if elapsed > 0.1 else ""
         print(f"{emoji} {message}{timing}")
     
-    def stat_line(self, message: str, bullet: str = "•") -> None:
-        """Print a statistics line with bullet point."""
+    def stat_line(self, message: str, bullet: str = "•", indent: int = 0) -> None:
+        """Print a statistics line with bullet point and optional indentation."""
         if not self.enabled:
             return
-        print(f"{bullet} {message}")
+        indent_str = "  " * indent  # 2 spaces per indent level
+        print(f"{indent_str}{bullet} {message}")
     
     def warning(self, message: str, source: Optional[str] = None) -> None:
         """Print a warning message."""
@@ -196,6 +197,12 @@ class VerboseReporter:
         percentage = (current / total * 100) if total > 0 else 0
         operation_text = f" {operation}" if operation else ""
         print(f"Processing{operation_text}... {current}/{total} ({percentage:.1f}%)")
+    
+    def empty_line(self) -> None:
+        """Print an empty line for spacing between sections."""
+        if not self.enabled:
+            return
+        print()
 
 
 class ProcessingStats:
