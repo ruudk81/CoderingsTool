@@ -138,10 +138,8 @@ class TextNormalizer:
             if invalid_filtered > 0:
                 self.verbose_reporter.stat_line(f"Empty strings filtered: {invalid_filtered} responses")
   
-            # Show transformation examples in verbose mode
-            if transformation_examples:
-                self.verbose_reporter.empty_line()
-                self.verbose_reporter.correction_samples(transformation_examples[:1])  # Show only 1 random sample
+            # Store examples for end-of-phase summary (don't show here)
+            self.transformation_examples = transformation_examples if transformation_examples else []
         
         return results
     

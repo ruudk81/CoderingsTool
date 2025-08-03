@@ -233,6 +233,39 @@ else:
         print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
         print()  # Empty line
     
+    # Show consolidated sample corrections from all preprocessing steps
+    if VERBOSE:
+        print()
+        print("📋 Sample preprocessing corrections:")
+        
+        # Collect samples from all processing steps
+        all_samples = []
+        
+        # From text normalizer
+        if hasattr(text_normalizer, 'transformation_examples') and text_normalizer.transformation_examples:
+            all_samples.extend(text_normalizer.transformation_examples)
+        
+        # From spell checker (most important for user)
+        if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+            all_samples.extend(spell_checker.correction_examples)
+        
+        # From text finalizer
+        if hasattr(text_finalizer, 'transformation_examples') and text_finalizer.transformation_examples:
+            all_samples.extend(text_finalizer.transformation_examples)
+        
+        # Show one random sample from spell checker (most relevant) if available
+        if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+            import random
+            sample = random.choice(spell_checker.correction_examples)
+            print(f'  "{sample[0]}" → "{sample[1]}"')
+        elif all_samples:
+            import random
+            sample = random.choice(all_samples)
+            print(f'  "{sample[0]}" → "{sample[1]}"')
+        else:
+            print("  No corrections made")
+        print()
+    
     print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
     
