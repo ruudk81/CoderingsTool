@@ -98,6 +98,21 @@ def get_openai_rate_limits(model: str) -> OpenAIRateLimits:
     else:
         return OPENAI_RATE_LIMITS["default"]
 
+# =============================================================================
+# EMBEDDING MODEL DIMENSIONS
+# =============================================================================
+
+# Embedding dimensions for different OpenAI embedding models
+EMBEDDING_MODEL_DIMENSIONS = {
+    "text-embedding-3-large": 3072,
+    "text-embedding-3-small": 1536,
+    "text-embedding-ada-002": 1536,
+}
+
+def get_embedding_dimensions(model: str) -> int:
+    """Get embedding dimensions for a specific OpenAI embedding model"""
+    return EMBEDDING_MODEL_DIMENSIONS.get(model, 1536)  # Default to 1536 if unknown
+
 @dataclass
 class ModelConfig:
     """Centralized configuration for all models used throughout the pipeline"""
@@ -160,7 +175,6 @@ class ModelConfig:
         """Get the appropriate model for a pipeline stage"""
         stage_models = {
             'spell_check': self.spell_check_model,
-            'tiktoken_spellChecker' : self.token_model,
             'quality_filter': self.quality_filter_model,
             'segmentation': self.segmentation_model,
             'description': self.description_model,

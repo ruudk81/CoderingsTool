@@ -22,7 +22,7 @@ from pydantic import BaseModel
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, EmbeddingConfig, get_openai_rate_limits, get_embedding_dimensions
 from prompts import CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -30,8 +30,6 @@ from .verboseReporter import VerboseReporter
 from utils.embedder import Embedder
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
-
-EMBEDDING_DIMENSION = 3072 # text-embedding-3-large dimension
 
 @dataclass
 class OptimalStrategy:
@@ -326,9 +324,15 @@ class CodeAssigner:
                     if embedding is not None:
                         embeddings.append(embedding)
                     else:
-                        embeddings.append(np.zeros(EMBEDDING_DIMENSION))
+                        # Get dimensions from the embedding model being used
+                        embedding_config = EmbeddingConfig()
+                        dim = get_embedding_dimensions(embedding_config.embedding_model)
+                        embeddings.append(np.zeros(dim))
                 else:
-                    embeddings.append(np.zeros(EMBEDDING_DIMENSION))
+                    # Get dimensions from the embedding model being used  
+                    embedding_config = EmbeddingConfig()
+                    dim = get_embedding_dimensions(embedding_config.embedding_model)
+                    embeddings.append(np.zeros(dim))
             
             self._code_embeddings = np.array(embeddings)
         
