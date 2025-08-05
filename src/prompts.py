@@ -436,6 +436,8 @@ Use these decision guidelines:
 - **REVISE**: The core concept is valid, but the label or definition needs refinement (e.g., too vague, compound, or imprecise).
 - **REJECT**: The recommendation fails parsimony (existing codes suffice), shows substantial overlap with existing codes, or includes multiple unrelated concepts.
 
+**IMPORTANT for REJECT decisions**: You must ALWAYS provide an alternative validated_code that specifies which existing code(s) from the codebook should be used instead. Never leave validated_code empty.
+
 When approving or revising a code, ensure that it adheres to these principles:
 - **ATOMIC**: One idea per code — no compound concepts using "and", "with", or "including".
 - **CONCISE LABELS**: 2–5 words capturing the essence of the code without being vague.
@@ -456,8 +458,8 @@ Provide your validation output in {language} as a valid JSON object in this form
   "decision": "APPROVE | REVISE | REJECT",
   "decision_rationale": "synthesize the evaluation into a clear decision explanation",
   "validated_code": {{
-    "code": "final code name (approved/revised) or null if rejected",
-    "definition": "final definition (approved/revised) or null if rejected"
+    "code": "ALWAYS provide appropriate code name - for REJECT provide the existing code that should be used instead",
+    "definition": "ALWAYS provide appropriate definition - for REJECT provide the existing code's definition or refined version"
   }}
 }}
 
