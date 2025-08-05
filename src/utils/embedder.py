@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG
+from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, get_embedding_dimensions
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -47,7 +47,11 @@ class Embedder:
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.stats = ProcessingStats()
         
-        self.verbose_reporter.stat_line("Initialized Embedder")
+        # Get embedding dimensions based on model
+        self.embedding_dimensions = get_embedding_dimensions(self.embedding_model)
+        
+        # Enhanced verbose reporting with model and dimension info
+        self.verbose_reporter.stat_line(f"Model: {self.embedding_model} ({self.embedding_dimensions} dimensions)")
     
     def _get_ResponseData(self, data: List[models.IdeasExtractedModel]) -> List[ResponseData]:
         """Create segment identifiers for tracking"""
@@ -97,7 +101,7 @@ class Embedder:
         # Extract texts for embedding
         texts_to_embed = [response_item.text_to_embed for response_item in response_data]
         
-        self.verbose_reporter.stat_line(f"Processing {len(texts_to_embed)}  embeddings with ID tracking")
+        self.verbose_reporter.stat_line(f"Processing {len(texts_to_embed)} embeddings with ID tracking")
         
         # Create batches
         batch_size = self.config.batch_size
@@ -196,7 +200,7 @@ class Embedder:
             )
             result.append(embeddings_model)
         
-        self.verbose_reporter.stat_line(f"Successfully applied {updated_count} embeddings using ID tracking")
+        self.verbose_reporter.stat_line(f"Successfully applied {updated_count} embeddings")
         
         return result
    
@@ -206,8 +210,6 @@ class Embedder:
             self.var_lab = var_lab
  
         result = asyncio.run(self._process_embeddings_with_id_tracking(data)) 
-        
-        self.verbose_reporter.step_start("Generating Embeddings with IDs Tracked", emoji="🔗")
 
         return result
 

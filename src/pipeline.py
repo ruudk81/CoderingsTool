@@ -338,7 +338,7 @@ else:
 """Response segments/ideas"""
 from utils import ideaExtractor
 
-FORCE = True
+FORCE = False
 VERBOSE = True
 
 step_name        = "extracted_ideas"
@@ -389,7 +389,7 @@ else:
 from config import EmbeddingConfig
 from utils.embedder import Embedder
 
-FORCE = False
+FORCE = True
 
 step_name = "embeddings"
 if  FORCE:
@@ -407,7 +407,8 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
     start_time = time.time()
-    print("\nEmbedding of extracted ideas")
+    verbose_reporter.step_start("Generating Embeddings with IDs Tracked", emoji="🔗")
+
 
     embedding_config = EmbeddingConfig()
     get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
