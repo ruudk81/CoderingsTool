@@ -4,7 +4,9 @@
       "Bash(git fetch:*)",
       "Bash(git restore:*)",
       "Bash(git add:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }

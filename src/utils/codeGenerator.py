@@ -64,15 +64,15 @@ class ValidationEvaluation(BaseModel):
 
 class ValidatedCode(BaseModel):
     """Validated code output"""
-    code: Optional[str] = Field(default=None, description="Final code name (approved/revised) or null if rejected")
-    definition: Optional[str] = Field(default=None, description="Final definition (approved/revised) or null if rejected")
+    code: Optional[str] = Field(default=None, description="Final validated code name - always provide appropriate code even for REJECT")
+    definition: Optional[str] = Field(default=None, description="Final validated definition - always provide appropriate definition even for REJECT")
 
 class ValidationResponse(BaseModel):
     """Output for validation step (Step 4)"""
     evaluation: ValidationEvaluation = Field(description="Detailed evaluation scores and reasoning")
     decision: str = Field(description="Overall decision: APPROVE/REVISE/REJECT")
     decision_rationale: str = Field(description="Explanation for the overall decision")
-    validated_code: ValidatedCode = Field(description="Final validated code if approved")
+    validated_code: ValidatedCode = Field(description="Final validated code - ALWAYS provide appropriate code/definition for any decision (APPROVE/REVISE/REJECT)")
 
 # ============================================================================
 # ERROR HANDLING AND RETRY CONFIGURATION
@@ -883,7 +883,8 @@ Recommendation:
                             }
                         }
                         
-                        if validation_results.decision in ['APPROVE', 'REVISE'] and validation_results.validated_code.code:
+                        # Extract validated code for ANY decision (APPROVE, REVISE, or REJECT)
+                        if validation_results.validated_code and validation_results.validated_code.code:
                             validated_code = {
                                 'code': validation_results.validated_code.code,
                                 'definition': validation_results.validated_code.definition
