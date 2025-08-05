@@ -326,6 +326,7 @@ class LangChainBatchProcessor:
         self.max_concurrent_steps = max_concurrent_steps
         self.max_concurrent_requests = max_concurrent_requests
         self.verbose = verbose
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.prompt_printer = prompt_printer
         
         # Initialize LangChain components
@@ -336,6 +337,7 @@ class LangChainBatchProcessor:
             'clusters_processed': 0,
             'new_codes_added': 0,
             'no_new_codes_needed': 0,
+            'codes_modified': 0,
             'errors': 0,
             'retries': 0,  
             'partial_failures': 0,   
@@ -344,7 +346,12 @@ class LangChainBatchProcessor:
             'embedding_time': 0.0,
             'parallel_steps_executed': 0,
             'sub_batches_processed': 0,
-            'concurrent_batches': 0
+            'concurrent_batches': 0,
+            'decisions': {
+                'use_existing': 0,
+                'modify_existing': 0,
+                'create_new': 0
+            }
         }
         
         if self.verbose:
@@ -741,6 +748,14 @@ Recommendation:
                 if hasattr(recommendations, 'decision'):
                     decision = recommendations.decision.lower()
                     
+                    # Track decision statistics
+                    if 'use_existing' in decision:
+                        self.stats['decisions']['use_existing'] += 1
+                    elif 'modify_existing' in decision:
+                        self.stats['decisions']['modify_existing'] += 1
+                    elif 'create_new' in decision:
+                        self.stats['decisions']['create_new'] += 1
+                    
                     if 'create_new' in decision:
                         # Access new code details from action_details
                         if hasattr(recommendations, 'action_details'):
@@ -900,7 +915,7 @@ Recommendation:
                             )
                             
                             if replaced:
-                                self.stats['new_codes_added'] += 1
+                                self.stats['codes_modified'] += 1
                                 if self.verbose:
                                     new_code_name = validated_code.get('code', '')
                                     new_definition = validated_code.get('definition', '')
@@ -1044,7 +1059,9 @@ Recommendation:
         total_clusters = len(cluster_items)
         total_batches = (total_clusters + self.batch_size - 1) // self.batch_size
         
-        verbose_reporter = VerboseReporter(self.verbose, capture_logging=True)
+        # Track progress
+        self.completed_batches = 0
+        self.completed_clusters = 0
         
         # Create ALL batch tasks upfront (Level 0 concurrency)
         batch_tasks = []
@@ -1054,43 +1071,94 @@ Recommendation:
             batch_clusters = cluster_items[i:i + self.batch_size]
             
             # Create async task for each batch using hierarchical processing
-            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters):
+            async def process_batch(batch_num=batch_num, batch_clusters=batch_clusters, batch_start_idx=i):
                 """Process a single batch with hierarchical concurrency"""
-                if self.verbose:
-                    logger.info(f"Batch {batch_num}/{total_batches} started (hierarchical)")
+                # # Display batch start
+                # print(f"Processing batch {batch_num}/{total_batches}... ", end="", flush=True)
                 
                 results = await self.process_batch_langchain(batch_clusters, batch_num - 1)
                 
-                if self.verbose:
-                    new_codes = sum(1 for r in results if r['status'] == 'new_code_added')
-                    logger.info(f"Batch {batch_num}/{total_batches} complete: {new_codes} new codes")
+                # Collect codes and modifications from this batch
+                new_codes_this_batch = []
+                modified_codes_this_batch = []
+                used_existing = 0
                 
-                return batch_num, results
+                for r in results:
+                    if r['status'] == 'new_code_added' and r.get('code'):
+                        new_codes_this_batch.append(r['code'])
+                    elif r['status'] == 'code_modified' and r.get('code'):
+                        # Try to get original code name for modification display
+                        original = r.get('original_code', r.get('code', 'Unknown'))
+                        new_code = r.get('code', '')
+                        
+                        # Determine type of modification
+                        if original != new_code:
+                            if original.lower() in new_code.lower() or new_code.lower() in original.lower():
+                                mod_type = "refined"
+                            else:
+                                mod_type = "renamed"
+                        else:
+                            mod_type = "definition updated"
+                        
+                        modified_codes_this_batch.append((original, mod_type))
+                    elif r['status'] in ['existing_codes_used', 'no_new_code_needed']:
+                        used_existing += 1
+                
+                # Update global counters
+                self.completed_batches += 1
+                self.completed_clusters += len(batch_clusters)
+                
+                # Display codes added this batch
+                if new_codes_this_batch:
+                    for code in new_codes_this_batch:
+                        self.verbose_reporter.stat_line(f'"{code}"', indent=1)
+                
+                # Display modifications this batch
+                if modified_codes_this_batch:
+                    self.verbose_reporter.stat_line("Codes modified this batch:")
+                    for code_info in modified_codes_this_batch:
+                        if isinstance(code_info, tuple):
+                            original, mod_type = code_info
+                            self.verbose_reporter.stat_line(f'"{original}" ({mod_type})', indent=1)
+                        else:
+                            # Fallback for old format
+                            self.verbose_reporter.stat_line(f'"{code_info}" (definition refined)', indent=1)
+                    
+                return batch_num, results, len(new_codes_this_batch), len(modified_codes_this_batch), used_existing
             
             batch_tasks.append(process_batch())
         
         # Process ALL batches concurrently (Level 0 concurrency)
-        if self.verbose:
-            verbose_reporter.step_start(
-                f"Processing {total_clusters} clusters in {total_batches} concurrent batches (HIERARCHICAL)"
-            )
-        
         all_batch_start = time.time()
         self.stats['concurrent_batches'] = total_batches
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         all_batch_time = time.time() - all_batch_start
         
-        # Collect all results
+        # Collect all results and track running totals
         all_results = []
+        running_new_codes = 0
+        running_modified_codes = 0
+        running_existing_used = 0
+        
         for result in batch_results:
             if isinstance(result, Exception):
                 logger.error(f"Batch error: {result}")
-            elif isinstance(result, tuple):
+            elif isinstance(result, tuple) and len(result) >= 5:
+                batch_num, batch_cluster_results, new_count, modified_count, existing_count = result
+                all_results.extend(batch_cluster_results)
+                
+                # Update running totals
+                running_new_codes += new_count
+                running_modified_codes += modified_count
+                running_existing_used += existing_count
+                
+            elif isinstance(result, tuple) and len(result) == 2:
+                # Handle old format for compatibility
                 batch_num, batch_cluster_results = result
                 all_results.extend(batch_cluster_results)
         
         if self.verbose:
-            verbose_reporter.step_complete(
+            self.verbose_reporter.step_complete(
                 f"All {total_batches} batches completed in {all_batch_time:.1f}s "
                 f"(Hierarchical: {self.stats['parallel_steps_executed']} parallel step executions)"
             )
@@ -1281,7 +1349,6 @@ class InductiveCodeGenerator:
         config = None,  # For compatibility
         embedded_text: List[models.EmbeddingsModel] = None  # Deprecated - for backward compatibility
     ):
-        logger.info("🚀 INITIALIZING CODEBOOK GENERATOR (Hierarchical concurrency + parallel steps)")
         self.cluster_results = cluster_results
         # Note: embedded_text is no longer needed since ClusterModel contains embeddings
         if embedded_text is not None:
@@ -1304,20 +1371,12 @@ class InductiveCodeGenerator:
             k=k
         )
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
-        
-        if self.verbose:
-            logger.info("🔧 Configuration:")
-            logger.info(f"  - Batch size: {batch_size} (Level 0 concurrency)")
-            logger.info(f"  - Sub-batch size: {sub_batch_size} (Level 1 concurrency)")
-            logger.info(f"  - Step parallelization: {enable_step_parallelization} (Level 2 concurrency)")
-            logger.info(f"  - Max concurrent steps: {max_concurrent_steps}")
     
     async def generate_async(self) -> Dict[str, Any]:
         """Generate codebook with hierarchical concurrency"""
         start_time = time.time()
         
-        logger.info("🚀 STARTING CODEBOOK GENERATION (Hierarchical concurrency + parallel steps)")
-        self.verbose_reporter.section_header("CODEBOOK GENERATION - HIERARCHICAL CONCURRENCY", emoji="⚡")
+        # Note: Section header will be handled by main pipeline, this is a sub-phase
         
         # Initialize shared codebook
         shared_codebook = SharedCodebook(self.starter_codes)
@@ -1334,9 +1393,20 @@ class InductiveCodeGenerator:
                 'stats': {'error': 'No clusters to process'}
             }
         
-        self.verbose_reporter.step_start(
-            f"Processing {len(clusters)} clusters with hierarchical concurrency"
-        )
+        # Count total ideas
+        total_ideas = sum(len(cluster_data['ideas']) for cluster_data in clusters.values())
+        
+        # Display configuration
+        self.verbose_reporter.step_start("Inductive code generation from clusters", emoji="🔄")
+        self.verbose_reporter.stat_line(f"Input: {len(clusters)} clusters with {total_ideas} ideas")
+        self.verbose_reporter.stat_line(f"Starter codes: {len(self.starter_codes)}")
+        self.verbose_reporter.stat_line("Configuration:")
+        self.verbose_reporter.stat_line(f"Model (analysis): {self.model_config.get_model_for_stage('codebook_analysis')}", indent=1)
+        self.verbose_reporter.stat_line(f"Model (validation): {self.model_config.get_model_for_stage('code_validation')}", indent=1)
+        self.verbose_reporter.stat_line(f"Nearest neighbors (k): {self.k}", indent=1)
+        self.verbose_reporter.stat_line(f"Batch size: {self.batch_size} clusters", indent=1)
+        self.verbose_reporter.stat_line("Concurrency: 3-level hierarchical", indent=1)
+        self.verbose_reporter.stat_line("Creating batches for concurrent processing and printing new codes ...")
         
         # Initialize  batch processor
         batch_processor = LangChainBatchProcessor(
@@ -1409,29 +1479,25 @@ class InductiveCodeGenerator:
         if batch_processor.stats['successful_recoveries'] > 0:
             error_summary["Successful recoveries"] = batch_processor.stats['successful_recoveries']
         
-        summary_data = {
-            "Initial codes": len(self.starter_codes),
-            "New codes added": batch_processor.stats['new_codes_added'],
-            "Final codebook size": len(final_codes),
-            "Clusters processed": len(clusters),
-            "Processing time": f"{processing_time:.2f}s",
-            "Avg per cluster": f"{final_stats['avg_time_per_cluster']:.2f}s",
-            "LLM time": f"{batch_processor.stats['llm_time']:.2f}s",
-            "Embedding time": f"{batch_processor.stats['embedding_time']:.2f}s",
-            "Parallel steps executed": batch_processor.stats['parallel_steps_executed'],
-            "Sub-batches processed": batch_processor.stats['sub_batches_processed'],
-            "Concurrent batches": batch_processor.stats['concurrent_batches'],
-            "Method": "Hierarchical concurrency with parallel step execution"
-        }
+        # Complete processing
+        self.verbose_reporter.step_complete("Cluster processing completed", emoji="✅")
         
-        # Add error summary if there were any issues
-        if error_summary:
-            summary_data.update(error_summary)
-            
-        self.verbose_reporter.summary("GENERATION COMPLETE", summary_data)
+        # Display final totals
+        self.verbose_reporter.stat_line("Final totals:")
+        self.verbose_reporter.stat_line(f"New codes added: {batch_processor.stats['new_codes_added']}", indent=1)
+        self.verbose_reporter.stat_line(f"Codes modified: {batch_processor.stats['codes_modified']}", indent=1)
+        self.verbose_reporter.stat_line(f"Existing codes used: {batch_processor.stats['no_new_codes_needed']}", indent=1)
         
-        logger.info(f"✅ HIERARCHICAL GENERATION COMPLETE: {len(final_codes)} total codes, {batch_processor.stats['new_codes_added']} new codes added")
-        logger.info(f"🔥 Performance: {batch_processor.stats['parallel_steps_executed']} parallel step executions, {batch_processor.stats['sub_batches_processed']} sub-batches")
+        # Display codebook evolution
+        self.verbose_reporter.stat_line(f"Codebook evolution: {len(self.starter_codes)} → {len(final_codes)} codes")
+        
+        # # Display sample new codes
+        # if batch_processor.stats['new_codes_added'] > 0 and self.verbose:
+        #     self._display_sample_new_codes(final_codes, self.starter_codes, step4_validated_codes)
+        
+        # # Display sample modified codes  
+        # if batch_processor.stats['codes_modified'] > 0 and self.verbose:
+        #     self._display_sample_modified_codes(step3_recommendations, step4_validated_codes)
         
         return {
             'codebook': final_codes,
@@ -1443,6 +1509,52 @@ class InductiveCodeGenerator:
             'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS'
         }
     
+    # def _display_sample_new_codes(self, final_codes: List[Dict], starter_codes: List[Dict], validated_codes: Dict) -> None:
+    #     """Display sample new codes that were added"""
+    #     # Find codes that are in final_codes but not in starter_codes
+    #     starter_code_names = {code['code'] for code in starter_codes}
+    #     new_codes = [code for code in final_codes if code['code'] not in starter_code_names]
+        
+    #     if new_codes:
+    #         self.verbose_reporter.empty_line()
+    #         print("📋 Sample new codes added:")
+            
+    #         # Show up to 3 new codes
+    #         num_samples = min(3, len(new_codes))
+    #         for i, code in enumerate(new_codes[:num_samples]):
+    #             definition = code['definition']
+    #             if len(definition) > 80:
+    #                 definition = definition[:77] + "..."
+    #             print(f"  {i+1}. \"{code['code']}\" - {definition}")
+            
+    #         if len(new_codes) > num_samples:
+    #             print(f"  ... and {len(new_codes) - num_samples} more new codes")
+    
+    # def _display_sample_modified_codes(self, step3_recommendations: Dict, validated_codes: Dict) -> None:
+    #     """Display sample codes that were modified"""
+    #     modifications = []
+        
+    #     # Find modifications from step3 recommendations
+    #     for cluster_id, rec in step3_recommendations.items():
+    #         if hasattr(rec, 'decision') and 'modify_existing' in rec.decision.lower():
+    #             if hasattr(rec, 'action_details'):
+    #                 original = getattr(rec.action_details, 'code_to_modify', None)
+    #                 modified = getattr(rec.action_details, 'modified_code_name', None)
+    #                 if original and modified:
+    #                     modifications.append((original, modified))
+        
+    #     if modifications:
+    #         self.verbose_reporter.empty_line()
+    #         print("📋 Sample code modifications:")
+            
+    #         # Show up to 3 modifications
+    #         num_samples = min(3, len(modifications))
+    #         for i, (original, modified) in enumerate(modifications[:num_samples]):
+    #             print(f"  {i+1}. \"{original}\" → \"{modified}\"")
+            
+    #         if len(modifications) > num_samples:
+    #             print(f"  ... and {len(modifications) - num_samples} more modifications")
+
     def generate(self) -> Dict[str, Any]:
         """Synchronous wrapper for async generation"""
         return asyncio.run(self.generate_async())
