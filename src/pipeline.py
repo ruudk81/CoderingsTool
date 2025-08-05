@@ -35,7 +35,7 @@ var_name = "Q20"
 # var_name = "Qd1_combined"
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 VERBOSE = True  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
@@ -274,7 +274,7 @@ else:
 from utils import qualityFilter
 
 FORCE = False
-VERBOSE = False
+VERBOSE = True
 
 step_name        = "quality_filter"
 if  FORCE:
@@ -338,7 +338,8 @@ else:
 """Response segments/ideas"""
 from utils import ideaExtractor
 
-FORCE = False
+FORCE = True
+VERBOSE = True
 
 step_name        = "extracted_ideas"
 if  FORCE:
@@ -353,10 +354,11 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     segments = sum(item.idea_count for item in encoded_text)
     verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
 else: 
-    verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSD PHASE")
+    verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSED PHASE")
     start_time = time.time()
-    # Filter out items that were marked as meaningless in quality filtering
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
+    verbose_reporter.stat_line(f"Input: {len(quality_filtered_text)} quality-filtered responses")
+    verbose_reporter.stat_line(f"Processing: {len(filtered_text)} meaningful responses (excluded {len(quality_filtered_text) - len(filtered_text)} filtered responses)")
     encoder = ideaExtractor.IdeaExtractor(
         responses=filtered_text,
         var_lab=var_lab,

@@ -2,17 +2,23 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import asyncio
+import time
+import statistics
 from typing import Dict, List, Optional, Union
+from dataclasses import dataclass
+from collections import deque
 
 import instructor
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 import tiktoken
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from asyncio_throttle import Throttler
 
 # === MODELS ========================================================================================================
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig,QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, get_openai_rate_limits
 from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -24,7 +30,194 @@ try:
 except ImportError:
     pass
 
-async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY)) 
+async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+
+
+@dataclass
+class OptimalStrategy:
+    """Evidence-based optimal processing strategy for quality filtering"""
+    target_time_seconds: float
+    launch_rate_per_second: float
+    concurrent_limit: int
+    bottleneck_type: str
+    total_requests: int
+    total_tokens: int
+    safety_factor: float
+    sub_batch_size: int
+
+
+class WorkloadAnalyzer:
+    """Analyzes workload and calculates optimal processing strategy"""
+    
+    def __init__(self, model_name: str, encoding):
+        self.model_name = model_name
+        self.encoding = encoding
+    
+    def measure_token_usage(self, sample_batches: List[List[tuple]], base_prompt_template: str, var_lab: str) -> float:
+        """Measure actual token usage from real batch prompts"""
+        if not sample_batches:
+            return 1500  # Conservative fallback
+        
+        token_counts = []
+        for batch in sample_batches[:3]:  # Sample first 3 batches
+            responses_text = "\n".join(f"respondent_id: {rid}, response: \"{response}\"" for _, rid, response in batch)
+            prompt = base_prompt_template.format(
+                language=DEFAULT_LANGUAGE,
+                var_lab=var_lab,
+                responses=responses_text
+            )
+            prompt_tokens = len(self.encoding.encode(prompt))
+            # Estimate completion tokens (typically 20-30% of prompt for structured output)
+            completion_tokens = int(prompt_tokens * 0.25)
+            total_tokens = prompt_tokens + completion_tokens
+            token_counts.append(total_tokens)
+        
+        return statistics.mean(token_counts) if token_counts else 1500
+    
+    def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float, sub_batches_per_batch: int) -> OptimalStrategy:
+        """Calculate mathematically optimal processing strategy"""
+        # Get API limits from config
+        rate_limits = get_openai_rate_limits(self.model_name)
+        
+        # Calculate total resource requirements
+        total_requests = total_batches * sub_batches_per_batch
+        total_tokens = total_requests * avg_tokens_per_batch
+        
+        # Calculate minimum time based on constraints
+        time_by_requests = total_requests / rate_limits.requests_per_minute * 60
+        time_by_tokens = total_tokens / rate_limits.tokens_per_minute * 60
+        
+        # Find bottleneck and minimum time
+        bottleneck_time = max(time_by_requests, time_by_tokens)
+        bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
+        
+        # Apply safety factor (use 85% of capacity for quality filter due to batch complexity)
+        safety_factor = 0.85
+        target_time = bottleneck_time / safety_factor
+        
+        # Calculate optimal launch rate
+        optimal_launch_rate = total_requests / target_time
+        
+        # Calculate concurrent request limit (5 seconds of buffer for quality filter)
+        concurrent_limit = int(optimal_launch_rate * 5)
+        
+        return OptimalStrategy(
+            target_time_seconds=target_time,
+            launch_rate_per_second=optimal_launch_rate,
+            concurrent_limit=concurrent_limit,
+            bottleneck_type=bottleneck_type,
+            total_requests=total_requests,
+            total_tokens=total_tokens,
+            safety_factor=safety_factor,
+            sub_batch_size=sub_batches_per_batch
+        )
+
+
+class SlidingWindowMonitor:
+    """Real-time monitoring of API usage with sliding windows"""
+    
+    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60):
+        self.rpm_limit = rpm_limit
+        self.tpm_limit = tpm_limit
+        self.window_seconds = window_seconds
+        
+        # Sliding windows for tracking usage
+        self.requests_window = deque()  # timestamps
+        self.tokens_window = deque()    # (timestamp, token_count) tuples
+        
+        # Statistics
+        self.total_requests = 0
+        self.total_tokens = 0
+        self.start_time = time.time()
+    
+    def _cleanup_windows(self):
+        """Remove entries older than window_seconds"""
+        cutoff_time = time.time() - self.window_seconds
+        
+        # Clean requests window
+        while self.requests_window and self.requests_window[0] < cutoff_time:
+            self.requests_window.popleft()
+        
+        # Clean tokens window
+        while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
+            self.tokens_window.popleft()
+    
+    def record_request(self, tokens_used: int):
+        """Record a completed API request"""
+        now = time.time()
+        self.requests_window.append(now)
+        self.tokens_window.append((now, tokens_used))
+        
+        self.total_requests += 1
+        self.total_tokens += tokens_used
+        
+        self._cleanup_windows()
+    
+    def get_current_utilization(self) -> Dict:
+        """Get current resource utilization"""
+        self._cleanup_windows()
+        
+        current_rpm = len(self.requests_window)
+        current_tpm = sum(tokens for _, tokens in self.tokens_window)
+        
+        return {
+            'current_rpm': current_rpm,
+            'current_tpm': current_tpm,
+            'rpm_utilization': current_rpm / self.rpm_limit,
+            'tpm_utilization': current_tpm / self.tpm_limit,
+            'rpm_remaining': self.rpm_limit - current_rpm,
+            'tpm_remaining': self.tpm_limit - current_tpm,
+            'total_requests': self.total_requests,
+            'total_tokens': self.total_tokens,
+            'elapsed_time': time.time() - self.start_time
+        }
+
+
+class SmartAPIClient:
+    """API client with intelligent retry logic and precise rate limiting"""
+    
+    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config: QualityFilterConfig, 
+                 encoding, model_config: ModelConfig, verbose_reporter: VerboseReporter):
+        self.throttler = throttler
+        self.monitor = monitor
+        self.config = config
+        self.client = async_client
+        self.model_config = model_config
+        self.encoding = encoding
+        self.verbose_reporter = verbose_reporter
+    
+    @retry(
+        retry=retry_if_exception_type(RateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=60)
+    )
+    async def make_request(self, prompt: str, batch_info: str) -> List[models.QualityFilteredModel]:
+        """Make API request with intelligent retry and rate limiting"""
+        
+        # Apply precision rate limiting
+        async with self.throttler:
+            try:
+                # Make the API call
+                response = await self.client.chat.completions.create(
+                    model=self.config.model,
+                    response_model=List[models.QualityFilteredModel],
+                    max_retries=0,  # Let tenacity handle retries
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    seed=self.model_config.seed
+                )
+                
+                # Record successful request with accurate token count
+                estimated_tokens = len(self.encoding.encode(prompt))
+                self.monitor.record_request(estimated_tokens)
+                
+                return response
+                
+            except Exception as e:
+                self.verbose_reporter.error(f"API request failed for {batch_info}: {str(e)}")
+                raise
+
 
 class Grader:
     def __init__(
@@ -38,12 +231,11 @@ class Grader:
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
-        self.client = async_client
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
-        self.model_config = ModelConfig()  # For accessing seed
+        self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         
         # Initialize tokenizer for batch size calculation
@@ -52,6 +244,14 @@ class Grader:
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
+        
+        # Initialize workload analyzer
+        self.workload_analyzer = WorkloadAnalyzer(self.config.model, self.encoding)
+        
+        # Get rate limits
+        rate_limits = get_openai_rate_limits(self.config.model)
+        self.rpm_limit = rate_limits.requests_per_minute
+        self.tpm_limit = rate_limits.tokens_per_minute
 
     def _calculate_token_budget(self) -> int:
         """Calculate available tokens for responses after accounting for prompt overhead"""
@@ -107,7 +307,7 @@ class Grader:
             
             # Handle oversized responses
             if tokens > token_budget and not current_batch:
-                print(f"Warning: Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
+                self.verbose_reporter.warning(f"Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
                 batches.append([indexed_item])
                 continue
             
@@ -128,40 +328,21 @@ class Grader:
         return batches
 
     def _build_prompt(self, var_lab: str, batch: List[tuple]) -> str:
-        
         responses_text = "\n".join(f"respondent_id: {rid}, response: \"{response}\"" for _, rid, response in batch)
         return self.grader_instructions.format(
             language=DEFAULT_LANGUAGE,
             var_lab=var_lab,
             responses=responses_text)
 
-    async def _call_openai_api(self, prompt: str) -> List[models.QualityFilteredModel]:
-        """Call OpenAI API with structured output using instructor's built-in retries"""
-        try:
-            # Use AsyncOpenAI directly with instructor's built-in retries
-            response = await self.client.chat.completions.create(
-                model=self.config.model,
-                response_model=List[models.QualityFilteredModel],
-                max_retries=self.config.retries,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                seed=self.model_config.seed
-            )
-            return response
-            
-        except Exception as e:
-            print(f"\nAPI call failed: {str(e)}")
-            raise
-
-    async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int) -> List[models.QualityFilteredModel]:
-        """Process a single sub-batch of responses"""
+    async def _process_sub_batch(self, sub_batch: List[tuple], batch_index: int, sub_batch_index: int, 
+                                 api_client: SmartAPIClient) -> List[models.QualityFilteredModel]:
+        """Process a single sub-batch of responses with smart retry logic"""
         prompt = self._build_prompt(self.question, sub_batch)
         
         # Capture prompt only for the first sub-batch of the first batch
         if self.prompt_printer and batch_index == 0 and sub_batch_index == 0:
             self.prompt_printer.capture_prompt(
-                step_name="segmentation",
+                step_name="quality_filter",
                 utility_name="QualityFilter",
                 prompt_content=prompt,
                 prompt_type="quality_assessment",
@@ -176,73 +357,70 @@ class Grader:
             )
         
         try:
-            response_data = await self._call_openai_api(prompt)
+            batch_info = f"batch {batch_index + 1}, sub-batch {sub_batch_index + 1}"
+            response_data = await api_client.make_request(prompt, batch_info)
             return response_data
         except Exception as e:
-            print(f"Sub-batch {sub_batch_index + 1} of batch {batch_index + 1} processing failed: {str(e)}")
+            self.verbose_reporter.error(f"Sub-batch {sub_batch_index + 1} of batch {batch_index + 1} processing failed: {str(e)}")
             # Return empty results for failed sub-batch
             return []
 
-    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.QualityFilteredModel]:
-        """Process a single batch with concurrent sub-batch processing (hybrid approach)"""
-        # Split large batch into sub-batches of 5
-        sub_batches = self._create_sub_batches(batch, sub_batch_size=5)
+    async def _process_with_optimal_strategy(self, batches: List[List[tuple]]) -> List[models.QualityFilteredModel]:
+        """Process all batches using evidence-based optimal strategy"""
         
-        if not sub_batches:
-            return []
+        # Calculate sub-batches for each batch
+        sub_batch_size = 5
+        total_sub_batches = sum(len(self._create_sub_batches(batch, sub_batch_size)) for batch in batches)
         
-        # Level 2: Process all sub-batches within this batch concurrently
-        sub_batch_tasks = [
-            self._process_sub_batch(sub_batch, batch_index, i) 
-            for i, sub_batch in enumerate(sub_batches)
-        ]
-        sub_batch_results = await asyncio.gather(*sub_batch_tasks, return_exceptions=True)
+        # Analyze workload and calculate optimal strategy
+        avg_tokens = self.workload_analyzer.measure_token_usage(
+            batches[:3], self.grader_instructions, self.question
+        )
+        strategy = self.workload_analyzer.calculate_optimal_strategy(
+            len(batches), avg_tokens, sub_batch_size
+        )
         
-        # Collect results from all sub-batches
-        batch_results = []
-        sub_batch_failures = 0
+        # Show optimal strategy
+        self.verbose_reporter.stat_line(f"Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
+        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches ({total_sub_batches} sub-batches)...")
         
-        for i, sub_batch_result in enumerate(sub_batch_results):
-            if isinstance(sub_batch_result, Exception):
-                print(f"Sub-batch {i+1} of batch {batch_index+1} failed completely: {str(sub_batch_result)}")
-                sub_batch_failures += 1
-                continue
+        # Initialize precision throttler and monitor
+        throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
+        monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
+        api_client = SmartAPIClient(throttler, monitor, self.config, self.encoding, 
+                                   self.model_config, self.verbose_reporter)
+        
+        # Create all tasks with throttling
+        all_tasks = []
+        for batch_idx, batch in enumerate(batches):
+            sub_batches = self._create_sub_batches(batch, sub_batch_size)
+            for sub_batch_idx, sub_batch in enumerate(sub_batches):
+                task = asyncio.create_task(
+                    self._process_sub_batch(sub_batch, batch_idx, sub_batch_idx, api_client)
+                )
+                all_tasks.append(task)
+        
+        # Process results as they complete
+        all_results = []
+        completed = 0
+        
+        for coro in asyncio.as_completed(all_tasks):
+            result = await coro
+            all_results.extend(result)
+            completed += 1
             
-            # Add all results from this sub-batch
-            batch_results.extend(sub_batch_result)
+            # Progress reporting
+            if completed % 10 == 0 or completed == len(all_tasks):
+                self.verbose_reporter.progress_line(completed, len(all_tasks), "sub-batches")
         
-        if sub_batch_failures > 0:
-            print(f"{sub_batch_failures} out of {len(sub_batches)} sub-batches failed in batch {batch_index+1}")
+        # Final stats
+        final_stats = monitor.get_current_utilization()
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Completed in {final_stats['elapsed_time']:.1f}s " +
+                                          f"(RPM: {final_stats['rpm_utilization']:.0%}, " +
+                                          f"TPM: {final_stats['tpm_utilization']:.0%} utilization)")
         
-        return batch_results
-
-    async def _process_all_batches(self):
-        """Process all batches using hierarchical concurrency with sub-batch processing"""
-        batches = self._batch()
-        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
-        
-        # Calculate total sub-batches for reporting
-        total_sub_batches = sum(len(self._create_sub_batches(batch, sub_batch_size=5)) for batch in batches)
-        
-        self.verbose_reporter.stat_line(f"Processing {len(items_to_process)} responses in {len(batches)} batches ({total_sub_batches} concurrent sub-batches)...")
-        
-        # Level 1: Process all batches concurrently (no limits)
-        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-        # Collect results from all batches
-        total_failures = 0
-        for i, batch_result in enumerate(batch_results):
-            if isinstance(batch_result, Exception):
-                print(f"Batch {i+1} processing failed completely: {str(batch_result)}")
-                total_failures += 1
-                continue
-            
-            # Add all results from this batch
-            self._results.extend(batch_result)
-             
-        if total_failures > 0:
-            print(f"{total_failures} out of {len(batches)} batches failed completely")
+        return all_results
 
     def grade(self) -> List[models.QualityFilteredModel]:
         self._stats.start_timing()
@@ -253,6 +431,7 @@ class Grader:
         pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
         
         self.verbose_reporter.step_start("Quality Assessment")
+        self.verbose_reporter.stat_line(f"Model: {self.config.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
         self.verbose_reporter.stat_line(f"Items needing LLM evaluation: {len(items_to_process)}")
         self.verbose_reporter.stat_line(f"Pre-filtered items: {len(pre_filtered_items)}")
         
@@ -262,12 +441,19 @@ class Grader:
             original_responses = self.responses
             self.responses = items_to_process
             
+            # Get batches
+            batches = self._batch()
+            
+            # Process with optimal strategy
             if nest_asyncio:
                 nest_asyncio.apply()
-            asyncio.run(self._process_all_batches())
+            llm_results = asyncio.run(self._process_with_optimal_strategy(batches))
             
             # Restore original responses
             self.responses = original_responses
+            
+            # Store LLM results
+            self._results = llm_results
         else:
             self.verbose_reporter.stat_line("No items require LLM evaluation")
         
@@ -362,4 +548,3 @@ class Grader:
             "llm_processed": llm_processed,
             "pre_filtered": pre_filtered
         }
-

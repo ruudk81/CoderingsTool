@@ -2,19 +2,25 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import asyncio
+import time
+import statistics
 from typing import Dict, List, Optional, Union
+from dataclasses import dataclass
+from collections import deque
 
 import nest_asyncio
 import instructor
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 import tiktoken
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from asyncio_throttle import Throttler
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, get_openai_rate_limits
 from prompts import IDEA_EXTRACTION_PROMPT
 
 # === UTILS ========================================================================================================
@@ -22,10 +28,198 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
+
+@dataclass
+class OptimalStrategy:
+    """Evidence-based optimal processing strategy for idea extraction"""
+    target_time_seconds: float
+    launch_rate_per_second: float
+    concurrent_limit: int
+    bottleneck_type: str
+    total_requests: int
+    total_tokens: int
+    safety_factor: float
+
+
+class WorkloadAnalyzer:
+    """Analyzes workload and calculates optimal processing strategy for individual response processing"""
+    
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        try:
+            self.encoding = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            self.encoding = tiktoken.get_encoding("cl100k_base")
+    
+    def measure_token_usage(self, sample_prompts: List[str], num_samples: int = 10) -> float:
+        """Measure actual token usage from real prompts"""
+        if not sample_prompts:
+            return 1500  # Conservative fallback
+        
+        # Sample random prompts if we have many
+        sample_size = min(num_samples, len(sample_prompts))
+        sampled_prompts = sample_prompts[:sample_size]
+        
+        token_counts = []
+        for prompt in sampled_prompts:
+            # Count prompt tokens
+            prompt_tokens = len(self.encoding.encode(prompt))
+            # Estimate completion tokens (typically 20-30% of prompt for idea extraction)
+            completion_tokens = int(prompt_tokens * 0.25)
+            total_tokens = prompt_tokens + completion_tokens
+            token_counts.append(total_tokens)
+        
+        return statistics.mean(token_counts)
+    
+    def calculate_optimal_strategy(self, total_responses: int, avg_tokens_per_request: float) -> OptimalStrategy:
+        """Calculate mathematically optimal processing strategy"""
+        # Get API limits from config
+        rate_limits = get_openai_rate_limits(self.model_name)
+        
+        # Calculate total resource requirements
+        total_requests = total_responses
+        total_tokens = total_responses * avg_tokens_per_request
+        
+        # Calculate minimum time based on constraints
+        time_by_requests = total_requests / rate_limits.requests_per_minute * 60
+        time_by_tokens = total_tokens / rate_limits.tokens_per_minute * 60
+        
+        # Find bottleneck and minimum time
+        bottleneck_time = max(time_by_requests, time_by_tokens)
+        bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
+        
+        # Apply safety factor (use 95% of capacity like codeAssigner)
+        safety_factor = 0.95
+        target_time = bottleneck_time / safety_factor
+        
+        # Calculate optimal launch rate
+        optimal_launch_rate = total_requests / target_time
+        
+        # Calculate concurrent request limit (3 seconds of buffer like codeAssigner)
+        concurrent_limit = int(optimal_launch_rate * 3)
+        
+        return OptimalStrategy(
+            target_time_seconds=target_time,
+            launch_rate_per_second=optimal_launch_rate,
+            concurrent_limit=concurrent_limit,
+            bottleneck_type=bottleneck_type,
+            total_requests=total_requests,
+            total_tokens=total_tokens,
+            safety_factor=safety_factor
+        )
+
+
+class SlidingWindowMonitor:
+    """Real-time monitoring of API usage with sliding windows"""
+    
+    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60):
+        self.rpm_limit = rpm_limit
+        self.tpm_limit = tpm_limit
+        self.window_seconds = window_seconds
+        
+        # Sliding windows for tracking usage
+        self.requests_window = deque()  # timestamps
+        self.tokens_window = deque()    # (timestamp, token_count) tuples
+        
+        # Statistics
+        self.total_requests = 0
+        self.total_tokens = 0
+        self.start_time = time.time()
+    
+    def _cleanup_windows(self):
+        """Remove entries older than window_seconds"""
+        cutoff_time = time.time() - self.window_seconds
+        
+        # Clean requests window
+        while self.requests_window and self.requests_window[0] < cutoff_time:
+            self.requests_window.popleft()
+        
+        # Clean tokens window
+        while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
+            self.tokens_window.popleft()
+    
+    def record_request(self, tokens_used: int):
+        """Record a completed API request"""
+        now = time.time()
+        self.requests_window.append(now)
+        self.tokens_window.append((now, tokens_used))
+        
+        self.total_requests += 1
+        self.total_tokens += tokens_used
+        
+        self._cleanup_windows()
+    
+    def get_current_utilization(self) -> Dict:
+        """Get current resource utilization"""
+        self._cleanup_windows()
+        
+        current_rpm = len(self.requests_window)
+        current_tpm = sum(tokens for _, tokens in self.tokens_window)
+        
+        return {
+            'current_rpm': current_rpm,
+            'current_tpm': current_tpm,
+            'rpm_utilization': current_rpm / self.rpm_limit,
+            'tpm_utilization': current_tpm / self.tpm_limit,
+            'rpm_remaining': self.rpm_limit - current_rpm,
+            'tpm_remaining': self.tpm_limit - current_tpm,
+            'total_requests': self.total_requests,
+            'total_tokens': self.total_tokens,
+            'elapsed_time': time.time() - self.start_time
+        }
+
+
+class SmartAPIClient:
+    """API client with intelligent retry logic and precise rate limiting"""
+    
+    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config: SegmentationConfig, 
+                 encoding, model_config: ModelConfig, verbose_reporter: VerboseReporter):
+        self.throttler = throttler
+        self.monitor = monitor
+        self.config = config
+        self.client = async_client
+        self.model_config = model_config
+        self.encoding = encoding
+        self.verbose_reporter = verbose_reporter
+    
+    @retry(
+        retry=retry_if_exception_type(RateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=60)
+    )
+    async def make_request(self, prompt: str, respondent_id: str) -> List:
+        """Make API request with intelligent retry and rate limiting"""
+        
+        # Apply precision rate limiting
+        async with self.throttler:
+            try:
+                # Make the API call
+                response = await self.client.chat.completions.create(
+                    model=self.config.model,
+                    response_model=List[IdeaResponse],
+                    max_retries=0,  # Let tenacity handle retries
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    seed=self.model_config.seed
+                )
+                
+                # Record successful request with accurate token count
+                estimated_tokens = len(self.encoding.encode(prompt))
+                self.monitor.record_request(estimated_tokens)
+                
+                return response
+                
+            except Exception as e:
+                self.verbose_reporter.error(f"API request failed for respondent {respondent_id}: {str(e)}")
+                raise
+
+
 class IdeaResponse(BaseModel):
     respondent_id: str
     idea_id: str
     idea: str
+
 
 class IdeaExtractor:
     def __init__(
@@ -39,7 +233,6 @@ class IdeaExtractor:
         self.responses = responses
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
-        self.client = async_client
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
@@ -48,62 +241,20 @@ class IdeaExtractor:
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
         
+        # Initialize components for optimal strategy
+        self.workload_analyzer = WorkloadAnalyzer(self.config.model)
+        
+        # Initialize rate limits and monitoring
+        rate_limits = get_openai_rate_limits(self.config.model)
+        self.rpm_limit = rate_limits.requests_per_minute
+        self.tpm_limit = rate_limits.tokens_per_minute
+        
         # Initialize tokenizer for batch size calculation
         try:
             self.encoding = tiktoken.encoding_for_model(self.config.model)
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
-
-    def _calculate_token_budget(self) -> int:
-        """Calculate available tokens for responses after accounting for prompt"""
-        base_prompt = IDEA_EXTRACTION_PROMPT.format(
-            var_lab=self.var_lab,
-            language=self.language,
-            respondent_id="",
-            response=""
-        )
-        prompt_tokens = len(self.encoding.encode(base_prompt))
-        return self.config.max_tokens - prompt_tokens - self.config.completion_reserve
-
-    def _batch(self) -> List[List[tuple]]:
-        """Create token-aware batches of responses with cached token calculations"""
-        token_budget = self._calculate_token_budget()
-        
-        if not self.responses:
-            return []
-        
-        # Pre-calculate and cache all token counts
-        response_tokens = [len(self.encoding.encode(r.response)) for r in self.responses]
-        avg_tokens = sum(response_tokens) / max(1, len(response_tokens))
-        adaptive_max_batch = min(self.config.max_batch_size, max(1, int(token_budget / max(1, avg_tokens))))
-        
-        batches = []
-        current_batch = []
-        current_tokens = 0
-        
-        for i, (response, tokens) in enumerate(zip(self.responses, response_tokens)):
-            # Handle oversized responses
-            if tokens > token_budget and not current_batch:
-                self.verbose_reporter.warning(f"Response from {response.respondent_id} exceeds token budget ({tokens} > {token_budget})")
-                batches.append([(i, response.respondent_id, response.response)])
-                continue
-            
-            # Check if adding this response would exceed limits
-            if (current_tokens + tokens > token_budget or 
-                len(current_batch) >= adaptive_max_batch):
-                if current_batch:
-                    batches.append(current_batch)
-                    current_batch = []
-                    current_tokens = 0
-            
-            current_batch.append((i, response.respondent_id, response.response))
-            current_tokens += tokens
-        
-        if current_batch:
-            batches.append(current_batch)
-        
-        return batches
 
     def _build_prompt(self, respondent_id: str, response: str) -> str:
         """Build prompt for a single response"""
@@ -114,54 +265,39 @@ class IdeaExtractor:
             response=response
         )
 
-    async def _call_openai_api(self, prompt: str) -> List[IdeaResponse]:
-        """Call OpenAI API with structured output for single response"""
+    async def _process_single_response(self, response_data: tuple, api_client: SmartAPIClient) -> models.IdeasExtractedModel:
+        """Process a single response and extract ideas using smart API client"""
+        idx, respondent_id, response_text = response_data
+        
         try:
-            # Use AsyncOpenAI directly with instructor's built-in retries
-            response = await self.client.chat.completions.create(
-                model=self.config.model,
-                response_model=List[IdeaResponse],
-                max_retries=self.config.max_retries,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                seed=self.model_config.seed
-            )
-            return response
+            # Create prompt
+            prompt = self._build_prompt(respondent_id, response_text)
             
-        except Exception as e:
-            self.verbose_reporter.error(f"API call failed: {str(e)}")
-            raise
-
-    async def _process_single_response(self, idx: int, respondent_id: str, response_text: str) -> models.IdeasExtractedModel:
-        """Process a single response and extract ideas"""
-        prompt = self._build_prompt(respondent_id, response_text)
-        
-        # Capture prompt only for the first response
-        if self.prompt_printer and not self._captured_prompt:
-            self.prompt_printer.capture_prompt(
-                step_name="idea_extraction",
-                utility_name="IdeaExtractor",
-                prompt_content=prompt,
-                prompt_type="idea_extraction",
-                metadata={
-                    "model": self.config.model,
-                    "var_lab": self.var_lab,
-                    "language": self.language,
-                    "respondent_id": respondent_id
-                }
-            )
-            self._captured_prompt = True
-        
-        try:
-            response_data = await self._call_openai_api(prompt)
+            # Capture prompt for debugging if enabled
+            if self.prompt_printer and not self._captured_prompt:
+                self.prompt_printer.capture_prompt(
+                    step_name="idea_extraction",
+                    utility_name="IdeaExtractor",
+                    prompt_content=prompt,
+                    prompt_type="idea_extraction",
+                    metadata={
+                        "model": self.config.model,
+                        "var_lab": self.var_lab,
+                        "language": self.language,
+                        "respondent_id": respondent_id
+                    }
+                )
+                self._captured_prompt = True
+            
+            # Make API call through smart client
+            response_data_list = await api_client.make_request(prompt, respondent_id)
             
             # Process response - array of IdeaResponse objects
             ideas = []
-            for i, idea_response in enumerate(response_data):
+            for i, idea_response in enumerate(response_data_list):
                 if idea_response.idea:
                     ideas.append(models.IdeasExtractedSubmodel(
-                        idea_id=f"{respondent_id}_{i+1}",  # Manual generation for data integrity
+                        idea_id=f"{respondent_id}_{i+1}",
                         idea=idea_response.idea
                     ))
             
@@ -191,78 +327,79 @@ class IdeaExtractor:
                 idea_count=1
             )
 
-    async def _process_batch(self, batch: List[tuple], batch_index: int) -> List[models.IdeasExtractedModel]:
-        """Process a batch of responses concurrently (LangChain-style within-batch processing)"""
-        # Create tasks for all responses in this batch
-        tasks = []
-        for idx, respondent_id, response_text in batch:
-            task = self._process_single_response(idx, respondent_id, response_text)
-            tasks.append(task)
+    async def _process_with_optimal_strategy(self, all_responses: List[tuple]) -> List[models.IdeasExtractedModel]:
+        """Process all responses using evidence-based optimal strategy (like codeAssigner)"""
         
-        # Process all responses in batch concurrently (no limits)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Step 1: Analyze workload and calculate optimal strategy
+        sample_prompts = [self._build_prompt(resp[1], resp[2]) for resp in all_responses[:10]]
+        avg_tokens = self.workload_analyzer.measure_token_usage(sample_prompts)
+        strategy = self.workload_analyzer.calculate_optimal_strategy(len(all_responses), avg_tokens)
         
-        # Handle results and exceptions
-        batch_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # Create error result for failed response
-                idx, respondent_id, response_text = batch[i]
-                batch_results.append(models.IdeasExtractedModel(
-                    respondent_id=respondent_id,
-                    response=response_text,
-                    quality_filter=self.responses[idx].quality_filter,
-                    quality_filter_code=self.responses[idx].quality_filter_code,
-                    response_ideas=[
-                        models.IdeasExtractedSubmodel(
-                            idea_id=f"{respondent_id}_1",
-                            idea="PROCESSING_ERROR"
-                        )
-                    ],
-                    idea_count=1
-                ))
-            else:
-                batch_results.append(result)
+        # Show optimal strategy
+        self.verbose_reporter.stat_line(f"Model: {self.config.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
+        self.verbose_reporter.stat_line(f"Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
+        self.verbose_reporter.stat_line(f"Processing {len(all_responses)} responses with individual API calls...")
         
-        return batch_results
-
-    async def _process_all_responses(self):
-        """Process all responses using hierarchical concurrency (LangChain-style)"""
-        batches = self._batch()
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses in {len(batches)} batches...")
+        # Step 2: Initialize precision throttler and monitor
+        throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
+        monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
+        api_client = SmartAPIClient(throttler, monitor, self.config, self.workload_analyzer.encoding, 
+                                   self.model_config, self.verbose_reporter)
         
-        # Level 1: Process all batches concurrently (no limits)
-        batch_tasks = [self._process_batch(batch, i) for i, batch in enumerate(batches)]
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        # Step 3: Launch all requests with precision timing (like codeAssigner)
+        # Create all tasks - throttler handles the timing
+        tasks = [
+            asyncio.create_task(self._process_single_response(response_data, api_client))
+            for response_data in all_responses
+        ]
         
-        # Collect results from all batches
-        total_failures = 0
-        for i, batch_result in enumerate(batch_results):
-            if isinstance(batch_result, Exception):
-                self.verbose_reporter.error(f"Batch {i+1} processing failed: {str(batch_result)}")
-                total_failures += 1
-                continue
+        # Monitor progress
+        all_results = []
+        completed = 0
+        
+        # Process results as they complete (like codeAssigner)
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            all_results.append(result)
+            completed += 1
             
-            # Add all results from this batch
-            self._results.extend(batch_result)
+            if completed % 50 == 0 or completed == len(all_responses):
+                self.verbose_reporter.progress_line(completed, len(all_responses), "responses")
         
-        if total_failures > 0:
-            self.verbose_reporter.warning(f"{total_failures} out of {len(batches)} batches failed completely")
+        # Final stats
+        final_stats = monitor.get_current_utilization()
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Completed in {final_stats['elapsed_time']:.1f}s " +
+                                          f"(RPM: {final_stats['rpm_utilization']:.0%}, " +
+                                          f"TPM: {final_stats['tpm_utilization']:.0%} utilization)")
+        
+        return all_results
 
     def extract(self) -> List[models.IdeasExtractedModel]:
-        """Main method to extract ideas from responses"""
+        """Main method to extract ideas from responses using optimal strategy"""
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
         
         self.verbose_reporter.step_start("Idea Extraction", emoji="💡")
-        self.verbose_reporter.stat_line(f"Processing {len(self.responses)} responses...")
+        
+        # Show configuration
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("Idea extraction configuration:")
+        self.verbose_reporter.stat_line(f"  • Model: {self.config.model}")
+        self.verbose_reporter.stat_line(f"  • Temperature: {self.config.temperature}")
+        self.verbose_reporter.empty_line()
         
         if not self.responses:
             self.verbose_reporter.stat_line("No responses to process")
             return []
         
-        nest_asyncio.apply()
-        asyncio.run(self._process_all_responses())
+        # Prepare all responses for processing (individual, like codeAssigner)
+        all_responses = [(i, resp.respondent_id, resp.response) for i, resp in enumerate(self.responses)]
+        
+        # Process with optimal strategy
+        if nest_asyncio:
+            nest_asyncio.apply()
+        self._results = asyncio.run(self._process_with_optimal_strategy(all_responses))
         
         # Ensure all responses are accounted for
         result_ids = {r.respondent_id for r in self._results}
@@ -287,40 +424,52 @@ class IdeaExtractor:
         self._stats.end_timing()
         
         # Calculate statistics
-        idea_examples = []
         unique_ideas = set()
         multi_idea_responses = 0
         total_idea_length = 0
         idea_count = 0
         
+        # Collect response examples with all their ideas
+        response_examples = []
         for resp in self._results:
             if resp.response_ideas and len(resp.response_ideas) > 0:
                 if len(resp.response_ideas) > 1:
                     multi_idea_responses += 1
                 
+                valid_ideas = []
                 for idea in resp.response_ideas:
                     if idea.idea and idea.idea not in ["NA", "PROCESSING_ERROR", "NOT_PROCESSED"]:
                         unique_ideas.add(idea.idea)
                         idea_words = idea.idea.split()
                         total_idea_length += len(idea_words)
                         idea_count += 1
-                        
-                        # Collect examples
-                        if len(idea_examples) < self.config.max_code_examples:
-                            idea_examples.append(f'"{resp.response}" → "{idea.idea}"')
-        
-        avg_idea_length = total_idea_length / idea_count if idea_count > 0 else 0
+                        valid_ideas.append(idea.idea)
+                
+                # Collect complete response examples
+                if valid_ideas and len(response_examples) < self.config.max_code_examples:
+                    response_examples.append({
+                        'response': resp.response,
+                        'ideas': valid_ideas
+                    })
         
         # Report statistics
-        self.verbose_reporter.stat_line(f"Total responses: {len(self._results)}")
+        self.verbose_reporter.stat_line(f"Total responses processed: {len(self._results)}")
+        self.verbose_reporter.stat_line(f"Total ideas extracted: {idea_count}")
         self.verbose_reporter.stat_line(f"Unique ideas identified: {len(unique_ideas)}")
-        self.verbose_reporter.stat_line(f"Average idea length: {avg_idea_length:.1f} words")
         if multi_idea_responses > 0:
-            self.verbose_reporter.stat_line(f"Responses with multiple ideas: {multi_idea_responses}")
+            single_idea_responses = len([r for r in self._results if r.response_ideas and len(r.response_ideas) == 1])
+            self.verbose_reporter.stat_line(f"Single idea responses: {single_idea_responses} ({single_idea_responses/len(self._results)*100:.1f}%)")
+            self.verbose_reporter.stat_line(f"Multiple idea responses: {multi_idea_responses} ({multi_idea_responses/len(self._results)*100:.1f}%)")
         
-        # Show idea examples
-        if idea_examples:
-            self.verbose_reporter.sample_list("Sample extracted ideas", idea_examples)
+        # Show idea examples with enhanced format
+        if response_examples:
+            print("\n📋 Sample extracted ideas:")
+            for example in response_examples:
+                print(f'  • "{example["response"]}"')
+                for idea in example['ideas']:
+                    print(f'    → "{idea}"')
+                if example != response_examples[-1]:
+                    print()
         
         self.verbose_reporter.step_complete("Idea extraction completed")
         
@@ -349,18 +498,3 @@ class IdeaExtractor:
             "unique_ideas": unique_ideas,
             "avg_ideas_per_response": round(total_ideas / total, 2) if total > 0 else 0
         }
-    
-    # def generate_codes(self, responses: List[models.QualityFilteredModel], var_lab: str, max_retries: int = 3) -> List[models.IdeaModel]:
-    #     """Compatibility method for v1 interface"""
-    #     # Update instance variables
-    #     self.responses = responses
-    #     self.var_lab = var_lab
-    #     if max_retries != self.config.max_retries:
-    #         self.config.max_retries = max_retries
-        
-    #     # Reset results for new run
-    #     self._results = []
-    #     self._captured_prompt = False
-        
-    #     # Call the main extract method
-    #     return self.extract()
