@@ -1,11 +1,12 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import numpy as np
 import numpy.typing as npt
 from umap import UMAP
 import hdbscan
+import random
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
@@ -31,9 +32,9 @@ class ResultMapper(BaseModel):
 class Clusterer:
     def __init__(self, input_list: List[EmbeddingsModel],
                  variance_threshold: float = 0.9,
-                 umap_n_components: int = 5,
-                 umap_n_neighbors: int = 15,
-                 hdbscan_min_cluster_size: int = 10,
+                 umap_n_components: int = 10,
+                 umap_n_neighbors: int = 5,
+                 hdbscan_min_cluster_size: int = 2,
                  verbose: bool = False):
 
         self.verbose_reporter = verboseReporter.VerboseReporter(verbose, capture_logging=True)
@@ -65,9 +66,14 @@ class Clusterer:
                     processing_order += 1
 
     def run(self):
-        self.verbose_reporter.stat_line(f"Running clustering on {len(self.output_list)} items")
-
+        # Display input statistics and configuration
+        self.verbose_reporter.step_start("Clustering embedded ideas", emoji="🔄")
+        
         embeddings = np.array([item.idea_embedding for item in self.output_list])
+        
+        self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
+        self.verbose_reporter.stat_line(f"UMAP configuration: {self.umap_n_neighbors} neighbors, {self.umap_n_components} components, cosine metric")
+        self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_cluster_size={self.hdbscan_min_cluster_size}, euclidean metric")
         
         #from sklearn.decomposition import PCA
         #from sklearn.preprocessing import StandardScaler
@@ -95,9 +101,12 @@ class Clusterer:
         # print(f"[PCA] Reduced {embeddings.shape[1]} → {optimal_dims} dims ({total_variance * 100:.2f}% variance retained)")
 
         # === Step 2: UMAP ===
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line(f"Reducing dimensions with UMAP... ({embeddings.shape[1]} → {self.umap_n_components} dims)")
+        
         umap = UMAP(
-            n_neighbors = 5,  # Higher for better semantic relationships
-            n_components = 10,  # More dimensions to preserve semantic nuances
+            n_neighbors = self.umap_n_neighbors,  # Higher for better semantic relationships
+            n_components = self.umap_n_components,  # More dimensions to preserve semantic nuances
             min_dist = 0.1,  # Slight separation for better cluster distinction
             metric = "cosine",   
             random_state  = 42,
@@ -114,8 +123,10 @@ class Clusterer:
         #print(f"[UMAP] Reduced {optimal_dims} → {self.umap_n_components} dims")
 
         # === Step 3: HDBSCAN ===
+        self.verbose_reporter.stat_line("Clustering with HDBSCAN...")
+        
         hdb = hdbscan.HDBSCAN(
-            min_cluster_size= 2,  # Smallest clusters for best semantic coherence; with min clusters = 1, no noise
+            min_cluster_size= self.hdbscan_min_cluster_size,  # Smallest clusters for best semantic coherence; with min clusters = 1, no noise
             min_samples= None, # Lower threshold for more selective clustering
             metric= "euclidean",   
             cluster_selection_method = "eom",
@@ -128,11 +139,86 @@ class Clusterer:
         for item, label in zip(self.output_list, labels):
             item.initial_idea_cluster = int(label)
 
-        num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        # Calculate cluster statistics
+        unique_labels = set(labels)
+        num_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
         noise_points = list(labels).count(-1)
+        
+        # Calculate cluster size statistics
+        cluster_sizes = {}
+        for label in labels:
+            if label != -1:  # Exclude noise
+                cluster_sizes[label] = cluster_sizes.get(label, 0) + 1
+        
+        if cluster_sizes:
+            sizes = list(cluster_sizes.values())
+            min_size = min(sizes)
+            max_size = max(sizes)
+            median_size = sorted(sizes)[len(sizes)//2]
+        else:
+            min_size = max_size = median_size = 0
 
+        # Report statistics
         self.verbose_reporter.stat_line(f"Found {num_clusters} clusters")
         self.verbose_reporter.stat_line(f"Noise points: {noise_points} / {len(self.output_list)} ({noise_points / len(self.output_list) * 100:.1f}%)")
+        if num_clusters > 0:
+            self.verbose_reporter.stat_line(f"Cluster sizes: min={min_size}, max={max_size}, median={median_size}")
+        
+        # Display sample clusters
+        self._display_sample_clusters(labels, cluster_sizes)
+        
+        # Complete the step
+        self.verbose_reporter.step_complete("Initial clustering completed", emoji="✅")
+
+    def _display_sample_clusters(self, labels: np.ndarray, cluster_sizes: Dict[int, int]) -> None:
+        """Display sample clusters with example ideas"""
+        if not cluster_sizes or not self.verbose_reporter.enabled:
+            return
+        
+        # Select up to 3 sample clusters
+        num_samples = min(3, len(cluster_sizes))
+        if num_samples == 0:
+            return
+        
+        # Sort clusters by size and select some interesting ones
+        sorted_clusters = sorted(cluster_sizes.items(), key=lambda x: x[1], reverse=True)
+        
+        # Get a mix of large and medium clusters
+        sample_clusters = []
+        if len(sorted_clusters) >= 3:
+            # Get largest, a middle one, and a smaller one
+            sample_clusters = [
+                sorted_clusters[0],  # Largest
+                sorted_clusters[len(sorted_clusters)//3],  # Middle
+                sorted_clusters[2*len(sorted_clusters)//3]  # Smaller
+            ]
+        else:
+            sample_clusters = sorted_clusters[:num_samples]
+        
+        self.verbose_reporter.empty_line()
+        print("📋 Sample clusters:")
+        
+        for cluster_id, size in sample_clusters:
+            # Get ideas from this cluster
+            cluster_ideas = []
+            for i, (item, label) in enumerate(zip(self.output_list, labels)):
+                if label == cluster_id:
+                    cluster_ideas.append(item.idea)
+            
+            # Display cluster info
+            print(f"  Cluster {cluster_id} ({size} ideas):")
+            
+            # Show up to 3 random examples from this cluster
+            examples = random.sample(cluster_ideas, min(3, len(cluster_ideas)))
+            for example in examples:
+                # Truncate long ideas to 80 characters
+                if len(example) > 80:
+                    example = example[:77] + "..."
+                print(f"    → \"{example}\"")
+            
+            # Add spacing between clusters
+            if (cluster_id, size) != sample_clusters[-1]:
+                print()
 
     def to_cluster_model(self) -> List[ClusterModel]:
         respondent_groups = {}

@@ -382,12 +382,11 @@ class IdeaExtractor:
         
         self.verbose_reporter.step_start("Idea Extraction", emoji="💡")
         
-        # Show configuration
-        self.verbose_reporter.empty_line()
-        self.verbose_reporter.stat_line("Idea extraction configuration:")
-        self.verbose_reporter.stat_line(f"  • Model: {self.config.model}")
-        self.verbose_reporter.stat_line(f"  • Temperature: {self.config.temperature}")
-        self.verbose_reporter.empty_line()
+        # self.verbose_reporter.empty_line()
+        # self.verbose_reporter.stat_line("Idea extraction configuration:")
+        # self.verbose_reporter.stat_line(f"  • Model: {self.config.model}")
+        # self.verbose_reporter.stat_line(f"  • Temperature: {self.config.temperature}")
+        # self.verbose_reporter.empty_line()
         
         if not self.responses:
             self.verbose_reporter.stat_line("No responses to process")

@@ -2,6 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import asyncio
+import time
 from typing import List, Dict
 
 # Third-party imports
@@ -71,22 +72,40 @@ class SpeculativeStarterCodes:
             return []
     
     def generate(self) -> List[Dict[str, str]]:
-        self.verbose_reporter.section_header("SPECULATIVE STARTER CODES GENERATION")
+        # Note: Section header will be handled by main pipeline, this is a sub-phase
+        
+        # Display configuration
+        self.verbose_reporter.step_start("Generating starter codes", emoji="🔄")
+        self.verbose_reporter.stat_line(f"Survey question: \"{self.var_lab}\"")
+        self.verbose_reporter.stat_line(f"Model: {self.model_config.get_model_for_stage('speculative_codes')}")
+        self.verbose_reporter.stat_line(f"Requested codes: {self.n_codes}")
+        self.verbose_reporter.stat_line(f"Language: {self.language}")
+        
+        # Generate codes
+        start_time = time.time()
         starter_codes_models = asyncio.run(self._generate_codes_async())
+        elapsed_time = time.time() - start_time
         
         starter_codes = [
             {"code": code.code, "definition": code.definition} 
             for code in starter_codes_models]
         
-        self.verbose_reporter.summary("STARTER CODES GENERATED", {
-            "Requested codes": self.n_codes,
-            "Generated codes": len(starter_codes) })
+        # Report completion
+        self.verbose_reporter.step_complete(f"Starter codes generated", emoji="✅")
+        self.verbose_reporter.stat_line(f"Generated: {len(starter_codes)} codes")
         
-        if self.verbose and starter_codes:
-            print("\nSample starter codes:")
-            for i, code in enumerate(starter_codes[:3]):
-                print(f"  {i+1}. {code['code']}: {code['definition']}")
-            if len(starter_codes) > 3:
-                print(f"  ... and {len(starter_codes) - 3} more codes")
+        # Display sample codes
+        if starter_codes and self.verbose:
+            self.verbose_reporter.empty_line()
+            print("📋 Sample starter codes:")
+            num_samples = min(5, len(starter_codes))
+            for i, code in enumerate(starter_codes[:num_samples]):
+                # Format with proper truncation for long definitions
+                definition = code['definition']
+                if len(definition) > 80:
+                    definition = definition[:77] + "..."
+                print(f"  {i+1}. \"{code['code']}\" - {definition}")
+            if len(starter_codes) > num_samples:
+                print(f"  ... and {len(starter_codes) - num_samples} more codes")
         
         return starter_codes

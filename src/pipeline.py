@@ -389,7 +389,7 @@ else:
 from config import EmbeddingConfig
 from utils.embedder import Embedder
 
-FORCE = True
+FORCE = False
 
 step_name = "embeddings"
 if  FORCE:
@@ -407,7 +407,7 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
     start_time = time.time()
-    verbose_reporter.step_start("Generating Embeddings with IDs Tracked", emoji="🔗")
+    verbose_reporter.step_start("Generating Embeddings", emoji="🔗")
 
 
     embedding_config = EmbeddingConfig()
@@ -434,6 +434,7 @@ else:
 from utils.clusterer import Clusterer
 
 FORCE = False
+VERBOSE = True
 
 step_name = "initial_clusters"
 if  FORCE:
@@ -455,9 +456,8 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
     start_time = time.time()
-    print("\nClustering embedded ideas")
     
-    clusterer = Clusterer(embedded_text)
+    clusterer = Clusterer(embedded_text, verbose=VERBOSE)
     clusterer.run()
     initial_cluster_results = clusterer.to_cluster_model()
     
@@ -510,12 +510,13 @@ else:
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
-FORCE = False
+FORCE = True
+VERBOSE = True
+PROMPT_PRINTER  = False
 
 step_name = "codebook_generation"
 if  FORCE:
     FORCE_STEP      = step_name
-    PROMPT_PRINTER  = True
 
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
@@ -539,7 +540,8 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
-  
+    
+    # Phase 1: Generate starter codes
     starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
         var_lab=var_lab, 
         verbose=VERBOSE, 
@@ -556,6 +558,7 @@ else:
         )
         codebook = []
     else:
+        # Phase 2: Inductive code generation
         generator = codeGenerator.InductiveCodeGenerator(
              cluster_results=initial_cluster_results,
              starter_codes=starter_codes,
@@ -567,26 +570,37 @@ else:
              prompt_printer=prompt_printer  )
         results = generator.generate()
         
-        # Convert results to new CodebookModel structure
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility
         
         if results and isinstance(results, dict):
+            # Display final codebook summary
+            if VERBOSE and 'codebook' in results:
+                verbose_reporter.empty_line()
+                print("📊 FINAL CODEBOOK SUMMARY")
+                verbose_reporter.stat_line(f"Total codes: {len(results['codebook'])}")
+                
+                # Show sample codes (first 10)
+                verbose_reporter.empty_line()
+                print("📋 Complete codebook:")
+                
             idx = 1
             for key, value in results.items():
                 if key == 'codebook':
                     for item in value:
-                        print(f"{idx}. {item['code']} : {item['definition']}")
+                        if VERBOSE:
+                            definition = item['definition']
+                            if len(definition) > 100:
+                                definition = definition[:97] + "..."
+                            print(f"  {idx}. \"{item['code']}\" - {definition}")
                         
-                        # New structured format
                         codebook_entry = models.CodebookEntry(
                             code=item['code'],
                             definition=item['definition'],
-                            source_clusters=None  # Could be enhanced later with cluster tracing
+                            source_clusters=None  
                         )
                         codebook_entries.append(codebook_entry)
                         
-                        # Legacy format for backward compatibility
                         legacy_entry = models.Codebook(
                             code=item['code'],
                             definition=item['definition'],
@@ -598,7 +612,6 @@ else:
         else:
             print("Warning: Codebook generator returned no results")
         
-        # Create structured codebook model
         codebook_model = models.CodebookModel(
             codes=codebook_entries,
             generation_metadata={
@@ -614,7 +627,6 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    # Debug: Check what we're trying to cache
     if 'codebook_model' not in locals():
         print("ERROR: codebook_model was not created!")
         codebook_model = models.CodebookModel(
@@ -623,9 +635,6 @@ else:
             source_variable=var_name
         )
     
-    print(f"DEBUG: Attempting to cache CodebookModel with {len(codebook_model.codes)} codes")
-    
-    # Cache the structured codebook model (wrap in list as cache manager expects List[T])
     cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -740,6 +749,65 @@ else:
     
 # for key, value in results.items():
 #     print(key)
+
+# Unpack and display Step 7 results (code generation)
+if VERBOSE and 'results' in locals():
+    import random
+    
+    print("\n" + "="*80 + "\nSTEP 7 RESULTS ANALYSIS\n" + "="*80)
+    
+    # Get the data
+    step3 = results.get('step3_recommendations', {})
+    validation = results.get('validation_details', {})
+    step4 = results.get('step4_validated_codes', {})
+    
+    # Sample a random cluster
+    if step3:
+        available_ids = list(step3.keys())
+        sampled_id = random.choice(available_ids)
+        
+        print("\n📋 Random Sample Cluster Analysis:")
+        print("-" * 40)
+        rec = step3[sampled_id]
+        print(f"Cluster ID: {sampled_id}")
+        print(f"Cluster Theme: {rec.cluster_core_theme}")
+        print(f"Decision: {rec.decision}")
+        
+        # Check action_details based on decision type
+        if hasattr(rec, 'action_details') and rec.action_details:
+            if rec.decision == 'use_existing' and rec.action_details.codes_to_use:
+                print(f"Codes to use: {', '.join(rec.action_details.codes_to_use)}")
+            elif rec.decision == 'modify_existing':
+                print(f"Code to modify: {rec.action_details.code_to_modify}")
+                print(f"Modified code name: {rec.action_details.modified_code_name}")
+                print(f"Modified definition: {rec.action_details.modified_code_definition}")
+            elif rec.decision == 'create_new':
+                print(f"New code name: {rec.action_details.new_code_name}")
+                print(f"New code definition: {rec.action_details.new_code_definition}")
+        
+        print(f"Justification: {rec.justification}")
+        
+        # Get validation details if they exist
+        val = validation.get(sampled_id)
+        if val:
+            print(f"\nValidation Decision: {val['decision']}")
+            print(f"Decision Rationale: {val['decision_rationale']}")
+            reasoning = val.get('reasoning', {})
+            print("Reasoning:")
+            print(f"  Parsimony: {reasoning.get('parsimony', 'N/A')}")
+            print(f"  Redundancy: {reasoning.get('redundancy', 'N/A')}")
+            print(f"  Justification: {reasoning.get('justification', 'N/A')}")
+        
+        # Get final validated code if it exists
+        validated_code = step4.get(sampled_id)
+        if validated_code:
+            print(f"\n✅ Final Validated Code:")
+            print(f"Code: {validated_code['code']}")
+            print(f"Definition: {validated_code['definition']}")
+        else:
+            print(f"\n❌ No validated code for this cluster")
+    
+    
 
 
 # === STEP 8 ========================================================================================================
