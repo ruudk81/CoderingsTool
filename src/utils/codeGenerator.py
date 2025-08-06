@@ -1118,6 +1118,7 @@ Recommendation:
                 
                 # Display codes added this batch
                 if new_codes_this_batch:
+                    self.verbose_reporter.stat_line("New codes added this batch:")
                     for code in new_codes_this_batch:
                         self.verbose_reporter.stat_line(f'"{code}"', indent=1)
                 
