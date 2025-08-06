@@ -273,22 +273,30 @@ Return ONLY the JSON array in {language}.
 
 SYSTEM_MESSAGE = """
 Act as a {language} qualitative data analyst who is a helpful assistent in the development of a codebook.
-A codebook in this setting is a collection of codes and definitions that can be used to describe pieces of data collected from an open-ended question in a survey. 
+A codebook in this setting is a collection of codes and definitions that can be used to describe written responses collected from an open-ended question in a survey. 
 """
 
 CODEBOOK_ANALYSIS_PROMPT = """
 {system_message}
 This time we will focus on written responses to the following survey question: "{survey_question}".
 
-Given these codes from the codebook:
+First, analyse these written responses:
+<clustered_ideas>
+{cluster_text}
+</clustered_ideas>
+   
+Now, review the existing codes in the codebook:
 <existing_codebook>
 {code_text}
 </existing_codebook>
 
-Analyze what specific aspects or dimensions of the survey question do these codes address?
+Answer this question: are none, some or all codes relevant in describing the writen responses?
 
-Output a concise summary in {language} following this structure:
-"Coverage: These codes address [short description of aspects and dimensions covered]"
+Please return the candidates codes in the following JSON format:
+
+    
+    
+
 
 IMPORTANT: Return ONLY the analysis text following this exact format, no JSON or additional explanation.
 """

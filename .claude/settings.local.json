@@ -6,7 +6,8 @@
       "Bash(git add:*)",
       "Bash(git push:*)",
       "Bash(python:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(cp:*)"
     ],
     "deny": []
   }
