@@ -11,7 +11,7 @@ from enum import Enum
 
 import numpy as np
 from pydantic import BaseModel, Field, RootModel
-from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
+from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser, JsonOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
@@ -503,8 +503,8 @@ class LangChainBatchProcessor:
             sub_batches.append(sub_batch)
         return sub_batches
 
-    def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
-        """Format prompt 3 for Step 4"""
+    def _format_step3_recommendation(self, recommendation) -> str:
+        """Format Step 3 recommendation for Step 4"""
         if not recommendation:
             return "No recommendation available"
             
@@ -513,15 +513,22 @@ Cluster Theme: {recommendation.cluster_core_theme}
 Recommendation: 
 - {recommendation.decision.replace('_', ' ').title()}
 """
-        if recommendation.action_details.codes_to_use:
-            formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
-        if recommendation.action_details.codes_to_modify:
-            formatted += f"- Code to modify: {recommendation.action_details.codes_to_modify}\n"
-            formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
-            formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
-        if recommendation.action_details.new_code_name:
-            formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
-            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
+        
+        if recommendation.action_details:
+            action_details = recommendation.action_details
+            
+            if action_details.codes_to_use:
+                formatted += f"- Code(s) to use: {', '.join(action_details.codes_to_use)}\n"
+            if action_details.codes_to_modify:
+                formatted += f"- Code to modify: {action_details.codes_to_modify}\n"
+            if action_details.modified_code_name:
+                formatted += f"- Modified code name: {action_details.modified_code_name}\n"
+            if action_details.modified_code_definition:
+                formatted += f"- Modified definition: {action_details.modified_code_definition}\n"
+            if action_details.new_code_name:
+                formatted += f"- New code name: {action_details.new_code_name}\n"
+            if action_details.new_code_definition:
+                formatted += f"- New code definition: {action_details.new_code_definition}\n"
 
         formatted += f"\nJustification: {recommendation.justification}"
         
@@ -586,6 +593,12 @@ Recommendation:
             return await self.match_chain.ainvoke(inputs)
         except Exception as e:
             error_type = classify_error(e)
+            # Log more details for parsing errors
+            if "JSON" in str(e) or "parse" in str(e).lower():
+                logger.error(f"Step 3 JSON parsing error: {str(e)}")
+                logger.error(f"Input that caused error - survey_question: {inputs.get('survey_question', 'N/A')[:100]}")
+                logger.error(f"Cluster summary: {inputs.get('cluster_summary', 'N/A')[:200]}")
+            
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
                             ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
                 self.stats['retries'] += 1
@@ -819,32 +832,24 @@ Recommendation:
                     
                     if 'create_new' in decision:
                         # Access new code details from action_details
-                        if hasattr(recommendations, 'action_details'):
-                            new_code = recommendations.action_details.new_code_name
-                            new_definition = recommendations.action_details.new_code_definition
-                            
-                            # Only add if we have actual code and definition (not null/empty)
-                            if new_code and new_definition and new_code.strip() and new_definition.strip():
+                        action_details = recommendations.action_details
+                        if action_details and action_details.new_code_name and action_details.new_code_definition:
+                            if action_details.new_code_name.strip() and action_details.new_code_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'code': new_code.strip(),
-                                    'definition': new_definition.strip()
+                                    'code': action_details.new_code_name.strip(),
+                                    'definition': action_details.new_code_definition.strip()
                                 })
                     elif 'modify_existing' in decision:
                         # Trigger Step 4 for modification validation
-                        if hasattr(recommendations, 'action_details'):
-                            # Handle codes_to_modify as single string
-                            original_code = recommendations.action_details.codes_to_modify
-                            modified_code = recommendations.action_details.modified_code_name
-                            modified_definition = recommendations.action_details.modified_code_definition
-                            
-                            # Only proceed if we have modification details
-                            if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
+                        action_details = recommendations.action_details
+                        if action_details and action_details.codes_to_modify and action_details.modified_code_name and action_details.modified_code_definition:
+                            if action_details.modified_code_name.strip() and action_details.modified_code_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'original_code': original_code.strip(),
-                                    'modified_code': modified_code.strip(),
-                                    'modified_definition': modified_definition.strip()
+                                    'original_code': action_details.codes_to_modify.strip(),
+                                    'modified_code': action_details.modified_code_name.strip(),
+                                    'modified_definition': action_details.modified_code_definition.strip()
                                 })
                     
                     # Store the full recommendation for potential Step 4 use
