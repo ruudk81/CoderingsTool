@@ -590,14 +590,23 @@ Recommendation:
     async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 3 (Match & Recommend) with retry logic"""
         try:
-            return await self.match_chain.ainvoke(inputs)
+            result = await self.match_chain.ainvoke(inputs)
+            return result
         except Exception as e:
             error_type = classify_error(e)
             # Log more details for parsing errors
-            if "JSON" in str(e) or "parse" in str(e).lower():
+            if "JSON" in str(e) or "parse" in str(e).lower() or "cluster_core_theme" in str(e):
                 logger.error(f"Step 3 JSON parsing error: {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                logger.error(f"Full error: {repr(e)}")
                 logger.error(f"Input that caused error - survey_question: {inputs.get('survey_question', 'N/A')[:100]}")
                 logger.error(f"Cluster summary: {inputs.get('cluster_summary', 'N/A')[:200]}")
+                
+                # Check if we can get the raw output from the exception
+                if hasattr(e, 'llm_output'):
+                    logger.error(f"Raw LLM output: {repr(e.llm_output)}")
+                if hasattr(e, 'text'):
+                    logger.error(f"Text that failed to parse: {repr(e.text)}")
             
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
                             ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
@@ -812,7 +821,10 @@ Recommendation:
                 recommendations = []
             except Exception as e:
                 logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
-                recommendations = []
+                logger.error(f"Step 3 error type: {type(e).__name__}")
+                logger.error(f"Step 3 error repr: {repr(e)}")
+                # Re-raise to get better error details in the outer catch
+                raise
             
             # Extract new code recommendations from single MatchRecommendation object
             new_codes_needed = False
@@ -1034,6 +1046,16 @@ Recommendation:
             
         except Exception as e:
             logger.error(f"Processing error for cluster {cluster_id}: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {repr(e)}")
+            
+            # Log more context if it's a parsing error
+            if "parse" in str(e).lower() or "json" in str(e).lower() or "cluster_core_theme" in str(e):
+                logger.error(f"Cluster {cluster_id} data preview:")
+                logger.error(f"  Survey question: {self.var_lab[:100]}")
+                logger.error(f"  Cluster ideas count: {len(cluster_data.get('ideas', []))}")
+                logger.error(f"  First idea: {cluster_data.get('ideas', ['No ideas'])[0][:100] if cluster_data.get('ideas') else 'No ideas'}")
+                
             return {
                 'cluster_id': cluster_id,
                 'status': 'Processing_error',
