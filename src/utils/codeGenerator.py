@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 from openai import AsyncOpenAI
@@ -45,9 +45,9 @@ class CandidateCode(BaseModel):
     code: str = Field(description="Exact code name from existing codebook")
     definition: str = Field(description="Exact definition from existing codebook")
 
-class CodebookAnalysisOutput(BaseModel):
-    """Output from Step 1 - Codebook Analysis"""
-    candidate_codes: List[CandidateCode] = Field(description="Selected relevant codes")
+class CodebookAnalysisOutput(RootModel[List[CandidateCode]]):
+    """Output from Step 1 - Codebook Analysis - Direct array of candidate codes"""
+    root: List[CandidateCode] = Field(description="Array of selected relevant codes")
 
 class ActionDetails(BaseModel):
     """Action details based on decision type"""
@@ -664,11 +664,12 @@ Recommendation:
             
             # Extract candidate codes from Step 1 output
             candidate_codes = []
-            if hasattr(codebook_analysis_result, 'candidate_codes'):
-                candidate_codes = codebook_analysis_result.candidate_codes
+            if hasattr(codebook_analysis_result, 'root'):
+                # RootModel structure
+                candidate_codes = codebook_analysis_result.root
             elif isinstance(codebook_analysis_result, list):
                 # Handle case where result is already a list
-                candidate_codes = codebook_analysis_result
+                candidate_codes = [CandidateCode(code=c['code'], definition=c['definition']) if isinstance(c, dict) else c for c in codebook_analysis_result]
             
             # Format candidate codes for Step 3 and validation
             if candidate_codes:

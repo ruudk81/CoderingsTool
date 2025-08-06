@@ -456,7 +456,7 @@ Use these decision guidelines:
 - REJECT: Existing codes suffice, there is substantial overlap, or the proposal includes multiple unrelated concepts.
 
 
-6. Provide your validation output in {langauage} as a valid JSON object in this format:
+6. Provide your validation output in {language} as a valid JSON object in this format:
 <json_format>
 {{
   "evaluation": {{
