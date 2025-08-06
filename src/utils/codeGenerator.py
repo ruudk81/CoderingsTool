@@ -22,7 +22,7 @@ from langchain_core.prompts import PromptTemplate
 import models
 
 # === CONFIG ========================================================================================================
-from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
+from prompts import CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 
 # === UTILS ========================================================================================================
@@ -40,10 +40,19 @@ logger = logging.getLogger(__name__)
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
 # ============================================================================
 
+class CandidateCode(BaseModel):
+    """Single candidate code from codebook analysis"""
+    code: str = Field(description="Exact code name from existing codebook")
+    definition: str = Field(description="Exact definition from existing codebook")
+
+class CodebookAnalysisOutput(BaseModel):
+    """Output from Step 1 - Codebook Analysis"""
+    candidate_codes: List[CandidateCode] = Field(description="Selected relevant codes")
+
 class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
-    code_to_modify: Optional[str] = Field(default=None, description="code name if modify_existing")
+    codes_to_modify: Optional[List[str]] = Field(default=None, description="List of code names if modify_existing")
     modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
     modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
@@ -390,19 +399,19 @@ class LangChainBatchProcessor:
         # Step 1: Codebook Analysis Chain
         codebook_prompt = PromptTemplate(
             template=CODEBOOK_ANALYSIS_PROMPT,
-            input_variables=["system_message", "language", "survey_question", "code_text"]
+            input_variables=["language", "survey_question", "cluster_text", "code_text"]
         )
         
         self.codebook_chain = (
             codebook_prompt 
             | self.step1_llm 
-            | StrOutputParser()
+            | PydanticOutputParser(pydantic_object=CodebookAnalysisOutput)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 2: Response Summary Chain
         summary_prompt = PromptTemplate(
             template=RESPONSE_SUMMARY_PROMPT,
-            input_variables=["system_message", "language", "survey_question", "cluster_text"]
+            input_variables=["language", "survey_question", "cluster_text"]
         )
         
         self.summary_chain = (
@@ -414,7 +423,7 @@ class LangChainBatchProcessor:
         # Step 3: Match and Recommend Chain
         match_prompt = PromptTemplate(
             template=MATCH_AND_RECOMMEND_PROMPT,
-            input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "codebook_analysis", "summaries"]
+            input_variables=["language", "survey_question", "candidate_codes", "clustered_survey_responses", "cluster_summary"]
         )
         
         self.match_chain = (
@@ -426,7 +435,7 @@ class LangChainBatchProcessor:
         # Step 4: Validation Chain
         validation_prompt = PromptTemplate(
             template=VALIDATION_PROMPT,
-            input_variables=["system_message", "survey_question", "existing_codes", "clustered_ideas", "step3_recommendation"]
+            input_variables=["language", "survey_question", "candidate_codes", "clustered_ideas", "step3_recommendation"]
         )
         
         self.validation_chain = (
@@ -468,8 +477,8 @@ Recommendation:
 """
         if recommendation.action_details.codes_to_use:
             formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
-        if recommendation.action_details.code_to_modify:
-            formatted += f"- Code to modify: {recommendation.action_details.code_to_modify}\n"
+        if recommendation.action_details.codes_to_modify:
+            formatted += f"- Code(s) to modify: {', '.join(recommendation.action_details.codes_to_modify)}\n"
             formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
             formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
         if recommendation.action_details.new_code_name:
@@ -565,15 +574,14 @@ Recommendation:
         if not self.enable_step_parallelization:
             # Fallback to sequential processing
             codebook_input = {
-                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                 "language": DEFAULT_LANGUAGE,
                 "survey_question": self.var_lab,
+                "cluster_text": cluster_text,
                 "code_text": code_text
             }
             codebook_analysis = await self._process_step1_with_retry(codebook_input)
             
             summary_input = {
-                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                 "language": DEFAULT_LANGUAGE,
                 "survey_question": self.var_lab,
                 "cluster_text": cluster_text
@@ -584,14 +592,13 @@ Recommendation:
         
         # Parallel execution of Steps 1 & 2
         codebook_input = {
-            "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
             "language": DEFAULT_LANGUAGE,
             "survey_question": self.var_lab,
+            "cluster_text": cluster_text,
             "code_text": code_text
         }
         
         summary_input = {
-            "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
             "language": DEFAULT_LANGUAGE,
             "survey_question": self.var_lab,
             "cluster_text": cluster_text
@@ -651,16 +658,33 @@ Recommendation:
             cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             
             # Execute Steps 1 & 2 in parallel  
-            codebook_analysis, summaries = await self._process_parallel_steps(
+            codebook_analysis_result, summaries = await self._process_parallel_steps(
                 cluster_id, cluster_data, code_text, cluster_text
             )
+            
+            # Extract candidate codes from Step 1 output
+            candidate_codes = []
+            if hasattr(codebook_analysis_result, 'candidate_codes'):
+                candidate_codes = codebook_analysis_result.candidate_codes
+            elif isinstance(codebook_analysis_result, list):
+                # Handle case where result is already a list
+                candidate_codes = codebook_analysis_result
+            
+            # Format candidate codes for Step 3 and validation
+            if candidate_codes:
+                candidate_codes_text = "\n".join([
+                    f"- {code.code}: {code.definition}" if hasattr(code, 'code') else f"- {code['code']}: {code['definition']}"
+                    for code in candidate_codes
+                ])
+            else:
+                candidate_codes_text = "No candidate codes available"
             
             # Capture prompts if needed (diversity-first logic)
             if self._should_capture_prompt('codebook'):
                 codebook_input = {
-                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
+                    "cluster_text": cluster_text,
                     "code_text": code_text
                 }
                 self.prompt_printer.capture_prompt(
@@ -674,6 +698,7 @@ Recommendation:
                         "stage": "1/4 - Codebook Analysis (Parallel)",
                         "nearest_codes_count": len(nearest_codes),
                         "codebook_version": version,
+                        "candidate_codes_count": len(candidate_codes),
                         "parallel_execution": self.enable_step_parallelization
                     }
                 )
@@ -681,7 +706,6 @@ Recommendation:
             
             if self._should_capture_prompt('summary'):
                 summary_input = {
-                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
                     "cluster_text": cluster_text
@@ -702,15 +726,13 @@ Recommendation:
                 )
                 self._record_capture('summary')
             
-            # Step 3: Match and recommend (depends on Steps 1 & 2 results)
+            # Step 3: Match and recommend (uses candidate codes from Step 1)
             match_input = {
-                "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                 "language": DEFAULT_LANGUAGE,
                 "survey_question": self.var_lab,
-                "existing_codes": code_text,
-                "clustered_ideas": cluster_text,
-                "codebook_analysis": codebook_analysis if isinstance(codebook_analysis, str) else str(codebook_analysis),
-                "summaries": summaries if isinstance(summaries, str) else str(summaries)
+                "candidate_codes": candidate_codes_text,
+                "clustered_survey_responses": cluster_text,
+                "cluster_summary": summaries if isinstance(summaries, str) else str(summaries)
             }
             
             # Capture Step 3 prompt
@@ -725,7 +747,7 @@ Recommendation:
                         "var_lab": self.var_lab,
                         "stage": "3/4 - Match & Recommend",
                         "cluster_id": cluster_id,
-                        "codebook_analysis_present": bool(codebook_analysis),
+                        "candidate_codes_count": len(candidate_codes),
                         "summaries_present": bool(summaries)
                     }
                 )
@@ -772,7 +794,9 @@ Recommendation:
                     elif 'modify_existing' in decision:
                         # Trigger Step 4 for modification validation
                         if hasattr(recommendations, 'action_details'):
-                            original_code = recommendations.action_details.code_to_modify
+                            # Handle codes_to_modify as list, process first code for now
+                            codes_to_modify = recommendations.action_details.codes_to_modify
+                            original_code = codes_to_modify[0] if codes_to_modify and len(codes_to_modify) > 0 else None
                             modified_code = recommendations.action_details.modified_code_name
                             modified_definition = recommendations.action_details.modified_code_definition
                             
@@ -810,31 +834,13 @@ Recommendation:
                 # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
                 is_create_new = any(pc.get('definition') for pc in proposed_codes)
                 
-                if is_create_new:
-                    # Use definition-based nearest codes for new code redundancy detection
-                    definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
-                    if definition_text:
-                        definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
-                        if definition_nearest_codes:
-                            definition_code_text = "\n".join([
-                                f"- {code['code']}: {code['definition']}" 
-                                for code in definition_nearest_codes
-                            ])
-                        else:
-                            # Fallback to cluster-based codes if definition embedding fails
-                            definition_code_text = code_text
-                    else:
-                        # Fallback to cluster-based codes if no definition extracted
-                        definition_code_text = code_text
-                else:
-                    # For modify_existing: keep using cluster-based codes
-                    definition_code_text = code_text
+                # Use candidate codes from Step 1 for validation consistency
+                definition_code_text = candidate_codes_text
                 
                 validation_input = {
-                    "system_message": SYSTEM_MESSAGE.format(language=DEFAULT_LANGUAGE),
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
-                    "existing_codes": definition_code_text,
+                    "candidate_codes": definition_code_text,
                     "clustered_ideas": cluster_text,
                     "step3_recommendation": formatted_recommendation
                 }
