@@ -52,7 +52,7 @@ class CodebookAnalysisOutput(RootModel[List[CandidateCode]]):
 class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
-    codes_to_modify: Optional[List[str]] = Field(default=None, description="List of code names if modify_existing")
+    codes_to_modify: Optional[str] = Field(default=None, description="Single code name if modify_existing")
     modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
     modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
@@ -516,7 +516,7 @@ Recommendation:
         if recommendation.action_details.codes_to_use:
             formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
         if recommendation.action_details.codes_to_modify:
-            formatted += f"- Code(s) to modify: {', '.join(recommendation.action_details.codes_to_modify)}\n"
+            formatted += f"- Code to modify: {recommendation.action_details.codes_to_modify}\n"
             formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
             formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
         if recommendation.action_details.new_code_name:
@@ -833,9 +833,8 @@ Recommendation:
                     elif 'modify_existing' in decision:
                         # Trigger Step 4 for modification validation
                         if hasattr(recommendations, 'action_details'):
-                            # Handle codes_to_modify as list, process first code for now
-                            codes_to_modify = recommendations.action_details.codes_to_modify
-                            original_code = codes_to_modify[0] if codes_to_modify and len(codes_to_modify) > 0 else None
+                            # Handle codes_to_modify as single string
+                            original_code = recommendations.action_details.codes_to_modify
                             modified_code = recommendations.action_details.modified_code_name
                             modified_definition = recommendations.action_details.modified_code_definition
                             
