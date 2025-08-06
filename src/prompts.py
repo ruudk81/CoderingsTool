@@ -403,7 +403,7 @@ Return ONLY raw JSON (no markdown fences, no extra text). Use null for non-appli
   "decision": "use_existing | modify_existing | create_new",
   "action_details": {{
     "codes_to_use": ["exact code names"] ,
-    "codes_to_modify": "single exact code name or null",
+    "codes_to_modify": ["exact code names to modify"],
     "modified_code_name": "new name if modifying, else null",
     "modified_code_definition": "1–2 sentence operational definition if modifying, else null",
     "new_code_name": "name if creating new, else null",
