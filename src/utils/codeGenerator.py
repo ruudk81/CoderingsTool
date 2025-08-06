@@ -11,7 +11,7 @@ from enum import Enum
 
 import numpy as np
 from pydantic import BaseModel, Field, RootModel
-from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 from openai import AsyncOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
@@ -22,7 +22,7 @@ from langchain_core.prompts import PromptTemplate
 import models
 
 # === CONFIG ========================================================================================================
-from prompts import CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
+from prompts import SYSTEM_MESSAGE,  CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 
 # === UTILS ========================================================================================================
@@ -53,8 +53,8 @@ class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
     codes_to_modify: Optional[str] = Field(default=None, description="Single code name if modify_existing")
-    modified_code_name: Optional[str] = Field(default=None, description="Modified code name if modify_existing")
-    modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if modify_existing")
+    modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
+    modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
     new_code_definition: Optional[str] = Field(default=None, description="New code definition if create_new")
 
@@ -148,44 +148,6 @@ FAST_EMBEDDING_RETRY_CONFIG = {
     "before_sleep": before_sleep_log(logger, logging.WARNING),
     "reraise": True
 }
-
-# ============================================================================
-# TOKEN ESTIMATION FOR DURATION PREDICTION
-# ============================================================================
-
-def estimate_tokens(text: str) -> int:
-    """
-    Estimate token count for text input using rough heuristic
-    Approximation: 1 token ≈ 4 characters for English/Dutch
-    More accurate than word counting for mixed content
-    """
-    if not text:
-        return 0
-    
-    # Remove extra whitespace and count characters
-    cleaned_text = ' '.join(text.split())
-    char_count = len(cleaned_text)
-    
-    # Rough token estimation: 4 chars per token
-    # Add small buffer for punctuation and special tokens
-    estimated_tokens = int(char_count / 4) + 10
-    return max(estimated_tokens, 1)
-
-def estimate_code_list_tokens(codes: list) -> int:
-    """Estimate tokens for a list of code dictionaries"""
-    if not codes:
-        return 10  # Empty list still has structure tokens
-    
-    total_chars = 0
-    for code in codes:
-        if isinstance(code, dict):
-            total_chars += len(code.get('code', '')) + len(code.get('definition', ''))
-        else:
-            total_chars += len(str(code))
-    
-    # Add JSON structure overhead (brackets, quotes, commas)
-    structure_overhead = len(codes) * 20  # ~20 chars per code for JSON structure
-    return int((total_chars + structure_overhead) / 4) + 15
 
 # ============================================================================
 # SHARED CODEBOOK WITH REAL-TIME UPDATES
@@ -503,8 +465,8 @@ class LangChainBatchProcessor:
             sub_batches.append(sub_batch)
         return sub_batches
 
-    def _format_step3_recommendation(self, recommendation) -> str:
-        """Format Step 3 recommendation for Step 4"""
+    def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
+        """Format prompt 3 for Step 4"""
         if not recommendation:
             return "No recommendation available"
             
@@ -513,22 +475,15 @@ Cluster Theme: {recommendation.cluster_core_theme}
 Recommendation: 
 - {recommendation.decision.replace('_', ' ').title()}
 """
-        
-        if recommendation.action_details:
-            action_details = recommendation.action_details
-            
-            if action_details.codes_to_use:
-                formatted += f"- Code(s) to use: {', '.join(action_details.codes_to_use)}\n"
-            if action_details.codes_to_modify:
-                formatted += f"- Code to modify: {action_details.codes_to_modify}\n"
-            if action_details.modified_code_name:
-                formatted += f"- Modified code name: {action_details.modified_code_name}\n"
-            if action_details.modified_code_definition:
-                formatted += f"- Modified definition: {action_details.modified_code_definition}\n"
-            if action_details.new_code_name:
-                formatted += f"- New code name: {action_details.new_code_name}\n"
-            if action_details.new_code_definition:
-                formatted += f"- New code definition: {action_details.new_code_definition}\n"
+        if recommendation.action_details.codes_to_use:
+            formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
+        if recommendation.action_details.codes_to_modify:
+            formatted += f"- Code to modify: {recommendation.action_details.codes_to_modify}\n"
+            formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
+            formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
+        if recommendation.action_details.new_code_name:
+            formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
+            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
 
         formatted += f"\nJustification: {recommendation.justification}"
         
@@ -590,24 +545,9 @@ Recommendation:
     async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 3 (Match & Recommend) with retry logic"""
         try:
-            result = await self.match_chain.ainvoke(inputs)
-            return result
+            return await self.match_chain.ainvoke(inputs)
         except Exception as e:
             error_type = classify_error(e)
-            # Log more details for parsing errors
-            if "JSON" in str(e) or "parse" in str(e).lower() or "cluster_core_theme" in str(e):
-                logger.error(f"Step 3 JSON parsing error: {str(e)}")
-                logger.error(f"Error type: {type(e).__name__}")
-                logger.error(f"Full error: {repr(e)}")
-                logger.error(f"Input that caused error - survey_question: {inputs.get('survey_question', 'N/A')[:100]}")
-                logger.error(f"Cluster summary: {inputs.get('cluster_summary', 'N/A')[:200]}")
-                
-                # Check if we can get the raw output from the exception
-                if hasattr(e, 'llm_output'):
-                    logger.error(f"Raw LLM output: {repr(e.llm_output)}")
-                if hasattr(e, 'text'):
-                    logger.error(f"Text that failed to parse: {repr(e.text)}")
-            
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
                             ErrorType.API_SERVER_ERROR, ErrorType.NETWORK_ERROR]:
                 self.stats['retries'] += 1
@@ -759,7 +699,6 @@ Recommendation:
                         "stage": "1/4 - Codebook Analysis (Parallel)",
                         "nearest_codes_count": len(nearest_codes),
                         "codebook_version": version,
-                        "candidate_codes_count": len(candidate_codes),
                         "parallel_execution": self.enable_step_parallelization
                     }
                 )
@@ -808,7 +747,7 @@ Recommendation:
                         "var_lab": self.var_lab,
                         "stage": "3/4 - Match & Recommend",
                         "cluster_id": cluster_id,
-                        "candidate_codes_count": len(candidate_codes),
+                        "codebook_analysis_present": bool(codebook_analysis),
                         "summaries_present": bool(summaries)
                     }
                 )
@@ -816,25 +755,19 @@ Recommendation:
             
             try:
                 recommendations = await self._process_step3_with_retry(match_input)
-                # Validate the result is actually a MatchRecommendation object
-                if not hasattr(recommendations, 'cluster_core_theme') or not hasattr(recommendations, 'decision'):
-                    logger.error(f"Step 3 returned invalid object for cluster {cluster_id}: {type(recommendations)} - {repr(recommendations)[:200]}")
-                    recommendations = None
             except (APIError, ProcessingError) as e:
                 logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
-                recommendations = None
+                recommendations = []
             except Exception as e:
                 logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
-                logger.error(f"Step 3 error type: {type(e).__name__}")
-                logger.error(f"Step 3 error repr: {repr(e)}")
-                recommendations = None
+                recommendations = []
             
             # Extract new code recommendations from single MatchRecommendation object
             new_codes_needed = False
             proposed_codes = []
             
             try:
-                if recommendations and hasattr(recommendations, 'decision'):
+                if hasattr(recommendations, 'decision'):
                     decision = recommendations.decision.lower()
                     
                     # Track decision statistics
@@ -847,24 +780,31 @@ Recommendation:
                     
                     if 'create_new' in decision:
                         # Access new code details from action_details
-                        action_details = recommendations.action_details
-                        if action_details and action_details.new_code_name and action_details.new_code_definition:
-                            if action_details.new_code_name.strip() and action_details.new_code_definition.strip():
+                        if hasattr(recommendations, 'action_details'):
+                            new_code = recommendations.action_details.new_code_name
+                            new_definition = recommendations.action_details.new_code_definition
+                            
+                            # Only add if we have actual code and definition (not null/empty)
+                            if new_code and new_definition and new_code.strip() and new_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'code': action_details.new_code_name.strip(),
-                                    'definition': action_details.new_code_definition.strip()
+                                    'code': new_code.strip(),
+                                    'definition': new_definition.strip()
                                 })
                     elif 'modify_existing' in decision:
                         # Trigger Step 4 for modification validation
-                        action_details = recommendations.action_details
-                        if action_details and action_details.codes_to_modify and action_details.modified_code_name and action_details.modified_code_definition:
-                            if action_details.modified_code_name.strip() and action_details.modified_code_definition.strip():
+                        if hasattr(recommendations, 'action_details'):
+                            original_code = recommendations.action_details.codes_to_modify
+                            modified_code = recommendations.action_details.modified_code_name
+                            modified_definition = recommendations.action_details.modified_code_definition
+                            
+                            # Only proceed if we have modification details
+                            if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'original_code': action_details.codes_to_modify.strip(),
-                                    'modified_code': action_details.modified_code_name.strip(),
-                                    'modified_definition': action_details.modified_code_definition.strip()
+                                    'original_code': original_code.strip(),
+                                    'modified_code': modified_code.strip(),
+                                    'modified_definition': modified_definition.strip()
                                 })
                     
                     # Store the full recommendation for potential Step 4 use
@@ -887,13 +827,30 @@ Recommendation:
             # Step 4: Validate if new codes are proposed
             if proposed_codes:
                 # Format Step 3 recommendation for readable context
-                formatted_recommendation = self._format_step3_recommendation(recommendations) if recommendations and hasattr(recommendations, 'cluster_core_theme') else str(recommendations or "No recommendation")
+                formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
                 
                 # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
                 is_create_new = any(pc.get('definition') for pc in proposed_codes)
                 
-                # Use candidate codes from Step 1 for validation consistency
-                definition_code_text = candidate_codes_text
+                if is_create_new:
+                    # Use definition-based nearest codes for new code redundancy detection
+                    definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
+                    if definition_text:
+                        definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
+                        if definition_nearest_codes:
+                            definition_code_text = "\n".join([
+                                f"- {code['code']}: {code['definition']}" 
+                                for code in definition_nearest_codes
+                            ])
+                        else:
+                            # Fallback to cluster-based codes if definition embedding fails
+                            definition_code_text = code_text
+                    else:
+                        # Fallback to cluster-based codes if no definition extracted
+                        definition_code_text = code_text
+                else:
+                    # For modify_existing: keep using cluster-based codes
+                    definition_code_text = code_text
                 
                 validation_input = {
                     "language": DEFAULT_LANGUAGE,
@@ -1049,16 +1006,6 @@ Recommendation:
             
         except Exception as e:
             logger.error(f"Processing error for cluster {cluster_id}: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error details: {repr(e)}")
-            
-            # Log more context if it's a parsing error
-            if "parse" in str(e).lower() or "json" in str(e).lower() or "cluster_core_theme" in str(e):
-                logger.error(f"Cluster {cluster_id} data preview:")
-                logger.error(f"  Survey question: {self.var_lab[:100]}")
-                logger.error(f"  Cluster ideas count: {len(cluster_data.get('ideas', []))}")
-                logger.error(f"  First idea: {cluster_data.get('ideas', ['No ideas'])[0][:100] if cluster_data.get('ideas') else 'No ideas'}")
-                
             return {
                 'cluster_id': cluster_id,
                 'status': 'Processing_error',
@@ -1190,6 +1137,7 @@ Recommendation:
                 
                 # Display modifications this batch
                 if modified_codes_this_batch:
+                    self.verbose_reporter.stat_line("Codes modified this batch:")
                     for code_info in modified_codes_this_batch:
                         if isinstance(code_info, tuple):
                             original, mod_type = code_info
@@ -1446,66 +1394,6 @@ class InductiveCodeGenerator:
         )
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
     
-    def _estimate_batch_tokens(self, batch_clusters: List[Dict[str, Any]], nearest_codes: List[Dict[str, str]]) -> tuple[int, int]:
-        """
-        Estimate input and output tokens for a batch of clusters
-        Returns: (input_tokens, output_tokens)
-        """
-        total_input_tokens = 0
-        total_output_tokens = 0
-        
-        for cluster_data in batch_clusters:
-            # Estimate cluster text tokens (all ideas joined)
-            cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-            cluster_text_tokens = estimate_tokens(cluster_text)
-            
-            # Estimate code text tokens (k nearest codes)
-            code_text_tokens = estimate_code_list_tokens(nearest_codes[:self.k])
-            
-            # Step 1: Codebook Analysis
-            step1_input = cluster_text_tokens + code_text_tokens + 200  # prompt template
-            step1_output = 300  # JSON array of candidate codes
-            
-            # Step 2: Response Summary  
-            step2_input = cluster_text_tokens + 150  # prompt template
-            step2_output = 150  # summary text
-            
-            # Step 3: Match & Recommend (uses candidate codes from step 1)
-            candidate_codes_tokens = 250  # estimated from step 1 output
-            step3_input = candidate_codes_tokens + cluster_text_tokens + 150 + 250  # candidates + cluster + summary + prompt
-            step3_output = 450  # recommendation JSON
-            
-            # Step 4: Validation
-            step4_input = candidate_codes_tokens + cluster_text_tokens + 450 + 200  # candidates + cluster + recommendation + prompt  
-            step4_output = 300  # validation JSON
-            
-            total_input_tokens += step1_input + step2_input + step3_input + step4_input
-            total_output_tokens += step1_output + step2_output + step3_output + step4_output
-        
-        return total_input_tokens, total_output_tokens
-    
-    def _predict_batch_duration(self, batch_clusters: List[Dict[str, Any]], nearest_codes: List[Dict[str, str]]) -> float:
-        """
-        Predict processing duration for a batch based on token count
-        Returns estimated seconds
-        """
-        input_tokens, output_tokens = self._estimate_batch_tokens(batch_clusters, nearest_codes)
-        total_tokens = input_tokens + output_tokens
-        
-        # Conservative estimates for gpt-4.1-mini with API overhead
-        tokens_per_second = 6000  # Conservative estimate
-        concurrency_efficiency = 0.6  # Account for API rate limits and parallel processing overhead
-        
-        base_duration = total_tokens / tokens_per_second
-        adjusted_duration = base_duration / concurrency_efficiency
-        
-        # Add API overhead (network latency, processing time)
-        api_overhead = 2.0  # seconds
-        
-        # Return realistic estimate with reasonable bounds
-        estimated_duration = max(3.0, min(15.0, adjusted_duration + api_overhead))
-        return estimated_duration
-    
     async def generate_async(self) -> Dict[str, Any]:
         """Generate codebook with hierarchical concurrency"""
         start_time = time.time()
@@ -1540,20 +1428,7 @@ class InductiveCodeGenerator:
         self.verbose_reporter.stat_line(f"Nearest neighbors (k): {self.k}", indent=1)
         self.verbose_reporter.stat_line(f"Batch size: {self.batch_size} clusters", indent=1)
         self.verbose_reporter.stat_line("Concurrency: 3-level hierarchical", indent=1)
-        # Predict processing duration for the first batch to give users realistic expectations
-        if self.verbose:
-            # Create sample batches to predict first batch duration
-            cluster_list = [(cid, cdata) for cid, cdata in clusters.items()]
-            first_batch_clusters = [cluster_list[i][1] for i in range(min(self.batch_size, len(cluster_list)))]
-            
-            # Get sample nearest codes for prediction (use starter codes as approximation)
-            sample_nearest_codes = self.starter_codes[:self.k]
-            
-            # Predict duration for first batch
-            estimated_duration = self._predict_batch_duration(first_batch_clusters, sample_nearest_codes)
-            
-            self.verbose_reporter.stat_line("Creating batches for concurrent processing...")
-            self.verbose_reporter.stat_line(f"Waiting for first batch to complete (est. {estimated_duration:.0f}s)...", indent=1)
+        self.verbose_reporter.stat_line("Creating batches for concurrent processing and printing new codes ...")
         
         # Initialize  batch processor
         batch_processor = LangChainBatchProcessor(
@@ -1685,7 +1560,7 @@ class InductiveCodeGenerator:
     #     for cluster_id, rec in step3_recommendations.items():
     #         if hasattr(rec, 'decision') and 'modify_existing' in rec.decision.lower():
     #             if hasattr(rec, 'action_details'):
-    #                 original = getattr(rec.action_details, 'code_to_modify', None)
+    #                 original = getattr(rec.action_details, 'codes_to_modify', None)
     #                 modified = getattr(rec.action_details, 'modified_code_name', None)
     #                 if original and modified:
     #                     modifications.append((original, modified))
