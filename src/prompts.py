@@ -384,37 +384,81 @@ Also, take note of this summary about the cluster's core theme:
 {cluster_summary}
 </summary>
 
-Now, decide whether to use candidate codes, modify them, or create new ones by adhering to this decision process:
-1) Compare the cluster’s core theme to each existing code.
-2) Assess coverage and fit: Can existing codes (as-is or revised) adequately represent the cluster?
-3) Prefer existing codes or modifying them; create new only if necessary.
-4) If the cluster mixes distinct ideas, note heterogeneity; act on the dominant theme and flag ambiguity in justification.
-5) When proposing a new or modified code, ensure naming that is/has:
-   - ATOMIC: one concept only (no “and/with/including” compounds).
-   - Operational clarity: short, testable definition.
-   - Parsimony: simplest precise wording; avoid synonyms that duplicate existing codes.
-6) Ground all recommendations in the provided cluster content; do not introduce concepts not evidenced in the responses.
+Now, decide whether to use candidate codes, modify them, or create new ones. Follow this strict, bias-to-reuse decision rubric:
+
+Core definitions (apply everywhere)
+- ATOMIC CONCEPT: One idea only.
+  Tests:
+  • Conjunction test: label/definition must not rely on “and”, “with”, “including”, “plus”.
+  • Separability test: if the idea can be split into two independently applicable ideas, it is not atomic.
+- ABSTRACTION LEVEL: The code’s scope must match the cluster’s dominant theme (neither broader umbrella nor overly narrow subcase unless the cluster is truly that subcase).
+
+A) USE EXISTING (preferred)
+Use existing code(s) as-is if ALL are true:
+1. Coverage: One code (or a small set of non-overlapping codes) fully captures the dominant theme and its essential components—no key element is missing.
+2. Atomicity: Each selected code passes the atomic tests.
+3. Scope match: Each selected code is at the same abstraction level as the dominant theme.
+4. Non-redundancy: Do not select two codes that largely duplicate meaning; if two are close, choose the more atomic one and one only.
+→ If met: set decision = "use_existing" and list the codes in action_details.codes_to_use.
+
+B) MODIFY EXISTING (minimal change, no scope creep)
+Modify exactly one best-fit existing code only if ALL are true:
+1. Near-fit: The code almost matches but fails atomicity (compound/ambiguous) OR is slightly off in scope (a bit too broad/narrow).
+2. Minimal fix suffices: A small rename and/or a 1–2 sentence definition edit will make it atomic AND align scope to the dominant theme, without changing the original code’s abstraction level.
+3. No overlap introduced: The modified code will not duplicate another existing code’s meaning.
+4. Name stability: Do not promote a specific code into a general umbrella or demote a general code into a narrow subcase to force fit. If level changes are needed, do not modify; consider creating new.
+→ If met: set decision = "modify_existing"; set codes_to_use = null; fill modified_code_name and modified_code_definition.
+
+Anti-patterns to avoid when modifying:
+- Adding “and/with/including” to cram multiple ideas.
+- Broadening a specific code into a catch-all to avoid creating a new code.
+- Renaming into a synonym of an already existing code (creates redundancy).
+
+C) CREATE NEW (last resort)
+Create a new code only if ALL are true:
+1. No adequate reuse/minimal modification: No existing code, even with minimal atomicity/scope tweak, can represent the dominant theme without losing essential meaning.
+2. Atomicity by design: The proposed code passes conjunction + separability tests.
+3. Abstraction match: The new code’s scope aligns with the dominant theme (not umbrella or irrelevant subcase).
+4. Non-redundancy: It is not a synonym/near-duplicate of any existing code.
+5. Operational clarity: Provide a 1–2 sentence definition that enables reliable “applies vs. not” decisions.
+6. Parsimony of wording: Short, specific label (2–5 words), no vagueness or fluff.
+→ If met: set decision = "create_new" and provide new_code_name and new_code_definition.
+
+Tie-breakers & guards
+- Two candidates fit? Pick the one more atomic and closer in scope to the dominant theme.
+- Heterogeneous cluster? Note heterogeneity in justification; act on the dominant theme only (do not propose multiple new codes).
+- Reference existing code names verbatim (case & punctuation).
+- Ground all recommendations in the provided cluster; do not introduce concepts not evidenced in the responses.
+
+(Optional internal scoring to sharpen choices—omit from output)
+For each existing code, assess:
+- FIT (0–2): match to dominant theme
+- ATOMIC (0–2): passes atomicity tests
+- SCOPE (0–2): abstraction level alignment
+Pick USE if any code has FIT≥2 & ATOMIC=2 & SCOPE≥1.
+Pick MODIFY if best code has FIT≥2 and can reach ATOMIC=2 & SCOPE≥2 with minimal edits.
+Else CREATE NEW.
 
 Output
 Return ONLY raw JSON (no markdown fences, no extra text). Use null for non-applicable fields. Escape quotes. Keys must appear in the order shown.
 
-{{
+{
   "cluster_core_theme": "one-sentence description of the core theme",
   "decision": "use_existing | modify_existing | create_new",
-  "action_details": {{
+  "action_details": {
     "codes_to_use": ["exact code names"] ,
-    "codes_to_modify": ["exact code names to modify"],
+    "codes_to_modify": "single exact code name or null",
     "modified_code_name": "new name if modifying, else null",
     "modified_code_definition": "1–2 sentence operational definition if modifying, else null",
     "new_code_name": "name if creating new, else null",
     "new_code_definition": "1–2 sentence operational definition if creating new, else null"
-  }},
-  "justification": "why this decision best balances parsimony with conceptual accuracy"
-}}
+  },
+  "justification": "why this action preserves atomicity and scope while maximizing parsimony and non-redundancy"
+}
 
 IMPORTANT:
 - Fill only relevant fields in action_details based on your decision; set the others to null.
-- All text in {language}.
+- All text must be in {language}.
 - No commentary before or after the JSON.
 """
 
