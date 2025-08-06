@@ -1118,11 +1118,13 @@ Recommendation:
                 
                 # Display codes added this batch
                 if new_codes_this_batch:
+                    self.verbose_reporter.stat_line("New codes added this batch:")
                     for code in new_codes_this_batch:
-                        self.verbose_reporter.stat_line(f'"{code} (created)"', indent=1)
+                        self.verbose_reporter.stat_line(f'"{code}"', indent=1)
                 
                 # Display modifications this batch
                 if modified_codes_this_batch:
+                    self.verbose_reporter.stat_line("Codes modified this batch:")
                     for code_info in modified_codes_this_batch:
                         if isinstance(code_info, tuple):
                             original, mod_type = code_info
@@ -1135,50 +1137,34 @@ Recommendation:
             
             batch_tasks.append(process_batch())
         
-        # Process ALL batches concurrently (Level 0 concurrency) with real-time output
+        # Process ALL batches concurrently (Level 0 concurrency)
         all_batch_start = time.time()
         self.stats['concurrent_batches'] = total_batches
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        all_batch_time = time.time() - all_batch_start
         
         # Collect all results and track running totals
         all_results = []
         running_new_codes = 0
         running_modified_codes = 0
         running_existing_used = 0
-        completed_batches = 0
         
-        # Stream results as batches complete for real-time output
-        for task in asyncio.as_completed(batch_tasks):
-            try:
-                result = await task
-                completed_batches += 1
+        for result in batch_results:
+            if isinstance(result, Exception):
+                logger.error(f"Batch error: {result}")
+            elif isinstance(result, tuple) and len(result) >= 5:
+                batch_num, batch_cluster_results, new_count, modified_count, existing_count = result
+                all_results.extend(batch_cluster_results)
                 
-                if isinstance(result, tuple) and len(result) >= 5:
-                    batch_num, batch_cluster_results, new_count, modified_count, existing_count = result
-                    all_results.extend(batch_cluster_results)
-                    
-                    # Update running totals
-                    running_new_codes += new_count
-                    running_modified_codes += modified_count
-                    running_existing_used += existing_count
-                    
-                    # Real-time progress update
-                    if self.verbose and completed_batches < total_batches:
-                        progress_pct = (completed_batches / total_batches) * 100
-                        self.verbose_reporter.stat_line(
-                            f"Batch {completed_batches}/{total_batches} completed ({progress_pct:.0f}%)",
-                            indent=0
-                        )
-                    
-                elif isinstance(result, tuple) and len(result) == 2:
-                    # Handle old format for compatibility
-                    batch_num, batch_cluster_results = result
-                    all_results.extend(batch_cluster_results)
-                    
-            except Exception as e:
-                logger.error(f"Batch error: {e}")
-                completed_batches += 1
-        
-        all_batch_time = time.time() - all_batch_start
+                # Update running totals
+                running_new_codes += new_count
+                running_modified_codes += modified_count
+                running_existing_used += existing_count
+                
+            elif isinstance(result, tuple) and len(result) == 2:
+                # Handle old format for compatibility
+                batch_num, batch_cluster_results = result
+                all_results.extend(batch_cluster_results)
         
         if self.verbose:
             self.verbose_reporter.step_complete(
