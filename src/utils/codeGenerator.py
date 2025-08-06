@@ -816,22 +816,25 @@ Recommendation:
             
             try:
                 recommendations = await self._process_step3_with_retry(match_input)
+                # Validate the result is actually a MatchRecommendation object
+                if not hasattr(recommendations, 'cluster_core_theme') or not hasattr(recommendations, 'decision'):
+                    logger.error(f"Step 3 returned invalid object for cluster {cluster_id}: {type(recommendations)} - {repr(recommendations)[:200]}")
+                    recommendations = None
             except (APIError, ProcessingError) as e:
                 logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
-                recommendations = []
+                recommendations = None
             except Exception as e:
                 logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
                 logger.error(f"Step 3 error type: {type(e).__name__}")
                 logger.error(f"Step 3 error repr: {repr(e)}")
-                # Re-raise to get better error details in the outer catch
-                raise
+                recommendations = None
             
             # Extract new code recommendations from single MatchRecommendation object
             new_codes_needed = False
             proposed_codes = []
             
             try:
-                if hasattr(recommendations, 'decision'):
+                if recommendations and hasattr(recommendations, 'decision'):
                     decision = recommendations.decision.lower()
                     
                     # Track decision statistics
@@ -884,7 +887,7 @@ Recommendation:
             # Step 4: Validate if new codes are proposed
             if proposed_codes:
                 # Format Step 3 recommendation for readable context
-                formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
+                formatted_recommendation = self._format_step3_recommendation(recommendations) if recommendations and hasattr(recommendations, 'cluster_core_theme') else str(recommendations or "No recommendation")
                 
                 # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
                 is_create_new = any(pc.get('definition') for pc in proposed_codes)
