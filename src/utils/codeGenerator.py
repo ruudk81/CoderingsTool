@@ -150,6 +150,44 @@ FAST_EMBEDDING_RETRY_CONFIG = {
 }
 
 # ============================================================================
+# TOKEN ESTIMATION FOR DURATION PREDICTION
+# ============================================================================
+
+def estimate_tokens(text: str) -> int:
+    """
+    Estimate token count for text input using rough heuristic
+    Approximation: 1 token ≈ 4 characters for English/Dutch
+    More accurate than word counting for mixed content
+    """
+    if not text:
+        return 0
+    
+    # Remove extra whitespace and count characters
+    cleaned_text = ' '.join(text.split())
+    char_count = len(cleaned_text)
+    
+    # Rough token estimation: 4 chars per token
+    # Add small buffer for punctuation and special tokens
+    estimated_tokens = int(char_count / 4) + 10
+    return max(estimated_tokens, 1)
+
+def estimate_code_list_tokens(codes: list) -> int:
+    """Estimate tokens for a list of code dictionaries"""
+    if not codes:
+        return 10  # Empty list still has structure tokens
+    
+    total_chars = 0
+    for code in codes:
+        if isinstance(code, dict):
+            total_chars += len(code.get('code', '')) + len(code.get('definition', ''))
+        else:
+            total_chars += len(str(code))
+    
+    # Add JSON structure overhead (brackets, quotes, commas)
+    structure_overhead = len(codes) * 20  # ~20 chars per code for JSON structure
+    return int((total_chars + structure_overhead) / 4) + 15
+
+# ============================================================================
 # SHARED CODEBOOK WITH REAL-TIME UPDATES
 # ============================================================================
 
@@ -1118,13 +1156,11 @@ Recommendation:
                 
                 # Display codes added this batch
                 if new_codes_this_batch:
-                    self.verbose_reporter.stat_line("New codes added this batch:")
                     for code in new_codes_this_batch:
                         self.verbose_reporter.stat_line(f'"{code}"', indent=1)
                 
                 # Display modifications this batch
                 if modified_codes_this_batch:
-                    self.verbose_reporter.stat_line("Codes modified this batch:")
                     for code_info in modified_codes_this_batch:
                         if isinstance(code_info, tuple):
                             original, mod_type = code_info
@@ -1381,6 +1417,66 @@ class InductiveCodeGenerator:
         )
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
     
+    def _estimate_batch_tokens(self, batch_clusters: List[Dict[str, Any]], nearest_codes: List[Dict[str, str]]) -> tuple[int, int]:
+        """
+        Estimate input and output tokens for a batch of clusters
+        Returns: (input_tokens, output_tokens)
+        """
+        total_input_tokens = 0
+        total_output_tokens = 0
+        
+        for cluster_data in batch_clusters:
+            # Estimate cluster text tokens (all ideas joined)
+            cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
+            cluster_text_tokens = estimate_tokens(cluster_text)
+            
+            # Estimate code text tokens (k nearest codes)
+            code_text_tokens = estimate_code_list_tokens(nearest_codes[:self.k])
+            
+            # Step 1: Codebook Analysis
+            step1_input = cluster_text_tokens + code_text_tokens + 200  # prompt template
+            step1_output = 300  # JSON array of candidate codes
+            
+            # Step 2: Response Summary  
+            step2_input = cluster_text_tokens + 150  # prompt template
+            step2_output = 150  # summary text
+            
+            # Step 3: Match & Recommend (uses candidate codes from step 1)
+            candidate_codes_tokens = 250  # estimated from step 1 output
+            step3_input = candidate_codes_tokens + cluster_text_tokens + 150 + 250  # candidates + cluster + summary + prompt
+            step3_output = 450  # recommendation JSON
+            
+            # Step 4: Validation
+            step4_input = candidate_codes_tokens + cluster_text_tokens + 450 + 200  # candidates + cluster + recommendation + prompt  
+            step4_output = 300  # validation JSON
+            
+            total_input_tokens += step1_input + step2_input + step3_input + step4_input
+            total_output_tokens += step1_output + step2_output + step3_output + step4_output
+        
+        return total_input_tokens, total_output_tokens
+    
+    def _predict_batch_duration(self, batch_clusters: List[Dict[str, Any]], nearest_codes: List[Dict[str, str]]) -> float:
+        """
+        Predict processing duration for a batch based on token count
+        Returns estimated seconds
+        """
+        input_tokens, output_tokens = self._estimate_batch_tokens(batch_clusters, nearest_codes)
+        total_tokens = input_tokens + output_tokens
+        
+        # Conservative estimates for gpt-4.1-mini with API overhead
+        tokens_per_second = 6000  # Conservative estimate
+        concurrency_efficiency = 0.6  # Account for API rate limits and parallel processing overhead
+        
+        base_duration = total_tokens / tokens_per_second
+        adjusted_duration = base_duration / concurrency_efficiency
+        
+        # Add API overhead (network latency, processing time)
+        api_overhead = 2.0  # seconds
+        
+        # Return realistic estimate with reasonable bounds
+        estimated_duration = max(3.0, min(15.0, adjusted_duration + api_overhead))
+        return estimated_duration
+    
     async def generate_async(self) -> Dict[str, Any]:
         """Generate codebook with hierarchical concurrency"""
         start_time = time.time()
@@ -1415,7 +1511,20 @@ class InductiveCodeGenerator:
         self.verbose_reporter.stat_line(f"Nearest neighbors (k): {self.k}", indent=1)
         self.verbose_reporter.stat_line(f"Batch size: {self.batch_size} clusters", indent=1)
         self.verbose_reporter.stat_line("Concurrency: 3-level hierarchical", indent=1)
-        self.verbose_reporter.stat_line("Creating batches for concurrent processing and printing new codes ...")
+        # Predict processing duration for the first batch to give users realistic expectations
+        if self.verbose:
+            # Create sample batches to predict first batch duration
+            cluster_list = [(cid, cdata) for cid, cdata in clusters.items()]
+            first_batch_clusters = [cluster_list[i][1] for i in range(min(self.batch_size, len(cluster_list)))]
+            
+            # Get sample nearest codes for prediction (use starter codes as approximation)
+            sample_nearest_codes = self.starter_codes[:self.k]
+            
+            # Predict duration for first batch
+            estimated_duration = self._predict_batch_duration(first_batch_clusters, sample_nearest_codes)
+            
+            self.verbose_reporter.stat_line("Creating batches for concurrent processing...")
+            self.verbose_reporter.stat_line(f"Waiting for first batch to complete (est. {estimated_duration:.0f}s)...", indent=1)
         
         # Initialize  batch processor
         batch_processor = LangChainBatchProcessor(
