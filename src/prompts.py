@@ -407,7 +407,7 @@ Modify exactly one best-fit existing code only if ALL are true:
 2. Minimal fix suffices: A small rename and/or a 1–2 sentence definition edit will make it atomic AND align scope to the dominant theme, without changing the original code’s abstraction level.
 3. No overlap introduced: The modified code will not duplicate another existing code’s meaning.
 4. Name stability: Do not promote a specific code into a general umbrella or demote a general code into a narrow subcase to force fit. If level changes are needed, do not modify; consider creating new.
-→ If met: set decision = "modify_existing"; set codes_to_use = null; fill modified_code_name and modified_code_definition.
+→ If met: set decision = "modify_existing"; set codes_to_modify with the exact code name being modified; fill modified_code_name and modified_code_definition.
 
 Anti-patterns to avoid when modifying:
 - Adding “and/with/including” to cram multiple ideas.

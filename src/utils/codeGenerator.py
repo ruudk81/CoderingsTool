@@ -53,8 +53,8 @@ class ActionDetails(BaseModel):
     """Action details based on decision type"""
     codes_to_use: Optional[List[str]] = Field(default=None, description="List of codes if use_existing")
     codes_to_modify: Optional[str] = Field(default=None, description="Single code name if modify_existing")
-    modified_code_name: Optional[str] = Field(default=None, description="Modified code name if create_new")
-    modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if create_new")
+    modified_code_name: Optional[str] = Field(default=None, description="Modified code name if modify_existing")
+    modified_code_definition: Optional[str] = Field(default=None, description="Modified code definition if modify_existing")
     new_code_name: Optional[str] = Field(default=None, description="New code name if create_new")
     new_code_definition: Optional[str] = Field(default=None, description="New code definition if create_new")
 
