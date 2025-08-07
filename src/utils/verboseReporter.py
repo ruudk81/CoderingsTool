@@ -78,7 +78,7 @@ class VerboseReporter:
             for handler in handlers:
                 logger.addHandler(handler)
         
-    def section_header(self, title: str, emoji: str = "📝") -> None:
+    def section_header(self, title: str, emoji: str = "[SECTION]") -> None:
         """Print a formatted section header."""
         if not self.enabled:
             return
@@ -178,7 +178,7 @@ class VerboseReporter:
         for before, after in display_corrections:
             print(f'  "{before}" → "{after}"')
     
-    def summary(self, title: str, stats: Dict[str, Any], emoji: str = "📊") -> None:
+    def summary(self, title: str, stats: Dict[str, Any], emoji: str = "[STATS]") -> None:
         """Print a formatted summary section."""
         if not self.enabled:
             return

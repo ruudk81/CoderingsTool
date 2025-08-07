@@ -36,8 +36,8 @@ var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = False  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
-VERBOSE = True  # Enable verbose output for debugging in Spyder
+FORCE_STEP = "gatos_codebook"  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
+VERBOSE = False  # Enable verbose output for debugging in Spyder
 PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
 
 # Clustering parameters
@@ -51,11 +51,11 @@ var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 print("=" * 80)
 print("CODERINGSTOOL PIPELINE")
 print("=" * 80)
-print(f"📊 Data file: {filename}")
-print(f"📌 Variable: {var_name} - {var_lab}")
-print(f"🔧 Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
-print(f"💬 Verbose mode: {VERBOSE}")
-print(f"🤖 Prompt printer: {PROMPT_PRINTER}")
+print(f"Data file: {filename}")
+print(f"Variable: {var_name} - {var_lab}")
+print(f"Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
+print(f"Verbose mode: {VERBOSE}")
+print(f"Prompt printer: {PROMPT_PRINTER}")
 print("=" * 80)
 
 
@@ -257,11 +257,11 @@ else:
         if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
             import random
             sample = random.choice(spell_checker.correction_examples)
-            print(f'  "{sample[0]}" → "{sample[1]}"')
+            print(f'  "{sample[0]}" -> "{sample[1]}"')
         elif all_samples:
             import random
             sample = random.choice(all_samples)
-            print(f'  "{sample[0]}" → "{sample[1]}"')
+            print(f'  "{sample[0]}" -> "{sample[1]}"')
         else:
             print("  No corrections made")
         print()
@@ -352,7 +352,7 @@ force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     encoded_text = cache_manager.load_from_cache(filename, step_name, models.IdeasExtractedModel)
     segments = sum(item.idea_count for item in encoded_text)
-    verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses → Output": f"{segments} response segments"})
+    verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses -> Output": f"{segments} response segments"})
 else: 
     verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSED PHASE")
     start_time = time.time()
@@ -639,13 +639,13 @@ else:
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 #debug 
-# idx = 1
-# for entry in codebook:
-#     print(idx)
-#     print(entry.code)
-#     print(entry.definition)
-#     print("\n")
-#     idx += 1
+idx = 1
+for entry in codebook:
+    print(idx)
+    print(entry.code)
+    print(entry.definition)
+    print("\n")
+    idx += 1
 
 # Unpack and display Step 7 results (code generation)
 if VERBOSE and 'results' in locals():
@@ -675,14 +675,14 @@ if VERBOSE and 'results' in locals():
             if rec.decision == 'use_existing' and rec.action_details.codes_to_use:
                 print(f"Codes to use: {', '.join(rec.action_details.codes_to_use)}")
             elif rec.decision == 'modify_existing':
-                print(f"Code to modify: {rec.action_details.code_to_modify}")
+                print(f"Code to modify: {rec.action_details.codes_to_modify}")
                 print(f"Modified code name: {rec.action_details.modified_code_name}")
                 print(f"Modified definition: {rec.action_details.modified_code_definition}")
             elif rec.decision == 'create_new':
                 print(f"New code name: {rec.action_details.new_code_name}")
                 print(f"New code definition: {rec.action_details.new_code_definition}")
         
-        print(f"Justification: {rec.justification}")
+        print(f"\nJustification: {rec.justification}")
         
         # Get validation details if they exist
         val = validation.get(sampled_id)
@@ -690,10 +690,10 @@ if VERBOSE and 'results' in locals():
             print(f"\nValidation Decision: {val['decision']}")
             print(f"Decision Rationale: {val['decision_rationale']}")
             reasoning = val.get('reasoning', {})
-            print("Reasoning:")
-            print(f"  Parsimony: {reasoning.get('parsimony', 'N/A')}")
-            print(f"  Redundancy: {reasoning.get('redundancy', 'N/A')}")
-            print(f"  Justification: {reasoning.get('justification', 'N/A')}")
+            #print("Reasoning:")
+            # print(f"  Parsimony: {reasoning.get('parsimony', 'N/A')}")
+            # print(f"  Redundancy: {reasoning.get('redundancy', 'N/A')}")
+            #print(f"  Justification: {reasoning.get('justification', 'N/A')}")
         
         # Get final validated code if it exists
         validated_code = step4.get(sampled_id)
