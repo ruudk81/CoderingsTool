@@ -8,7 +8,11 @@
       "Bash(python:*)",
       "Bash(git commit:*)",
       "Bash(cp:*)",
-      "Bash(git revert:*)"
+      "Bash(git revert:*)",
+      "Bash(find:*)",
+      "Bash(diff:*)",
+      "Bash(rm:*)",
+      "Bash(mv:*)"
     ],
     "deny": []
   }
