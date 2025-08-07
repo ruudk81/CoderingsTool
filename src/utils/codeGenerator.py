@@ -870,33 +870,10 @@ Recommendation:
                 # Format Step 3 recommendation for readable context
                 formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
                 
-                # For create_new: use definition-based codes. For modify_existing: use cluster-based codes
-                is_create_new = any(pc.get('definition') for pc in proposed_codes)
-                
-                if is_create_new:
-                    # Use definition-based nearest codes for new code redundancy detection
-                    definition_text = await self._extract_definition_for_embedding(proposed_codes, recommendations)
-                    if definition_text:
-                        definition_nearest_codes = await self._find_nearest_codes_by_definition(definition_text)
-                        if definition_nearest_codes:
-                            definition_code_text = "\n".join([
-                                f"- {code['code']}: {code['definition']}" 
-                                for code in definition_nearest_codes
-                            ])
-                        else:
-                            # Fallback to cluster-based codes if definition embedding fails
-                            definition_code_text = code_text
-                    else:
-                        # Fallback to cluster-based codes if no definition extracted
-                        definition_code_text = code_text
-                else:
-                    # For modify_existing: keep using cluster-based codes
-                    definition_code_text = code_text
-                
                 validation_input = {
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
-                    "candidate_codes": definition_code_text,
+                    "candidate_codes": candidate_codes_text,
                     "clustered_ideas": cluster_text,
                     "step3_recommendation": formatted_recommendation
                 }
