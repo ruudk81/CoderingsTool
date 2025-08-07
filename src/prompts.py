@@ -442,19 +442,19 @@ Else CREATE NEW.
 Output
 Return ONLY raw JSON (no markdown fences, no extra text). Use null for non-applicable fields. Escape quotes. Keys must appear in the order shown.
 
-{
+{{
   "cluster_core_theme": "one-sentence description of the core theme",
   "decision": "use_existing | modify_existing | create_new",
-  "action_details": {
+  "action_details": {{
     "codes_to_use": ["exact code names"] ,
     "codes_to_modify": "single exact code name or null",
     "modified_code_name": "new name if modifying, else null",
     "modified_code_definition": "1–2 sentence operational definition if modifying, else null",
     "new_code_name": "name if creating new, else null",
     "new_code_definition": "1–2 sentence operational definition if creating new, else null"
-  },
+  }},
   "justification": "why this action preserves atomicity and scope while maximizing parsimony and non-redundancy"
-}
+}}
 
 IMPORTANT:
 - Fill only relevant fields in action_details based on your decision; set the others to null.
