@@ -242,9 +242,6 @@ You will be working with the following inputs:
 - Number of codes to generate: <n_codes> {n_codes} </n_codes>
 - Survey question to analyze: <survey_question> {survey_question} </survey_question>
 
-All code definitions must follow this structure:
-"References to [specific concept/aspect]."
-
 Your task is to generate {{n_codes}} diverse, hypothetical codes that might emerge from analyzing responses to the given survey question. Create codes that could apply to ANY survey topic. Do not assume the survey is about education, healthcare, or any specific domain. Let the survey question guide your code generation.
 
 Consider different code types when generating your codes:
@@ -348,19 +345,17 @@ Next,extract the cluster's pattern to enable code matching:
 2. Determine the key components: What are the 2-3 essential elements that ALL responses in this cluster share?
 
 After your analysis, provide a concise summary in {language} using the following structure:
-<analysis>    
-"This cluster's core theme is: [core theme description]. The essential shared components are [element 1], [element 2], and [element 3]."
-</analysis>
+This cluster's core theme is: [core theme description]. The essential shared components are [element 1], [element 2], and [element 3].
 
 IMPORTANT: 
 - Your entire response should be in {language}.
-- Return ONLY the analysis text within the <analysis> tags.
 - Do not include any JSON formatting, additional explanations, or text outside the <analysis> tags.
 """
 
 MATCH_AND_RECOMMEND_PROMPT = """
-You are a qualitative data analyst working in {language}. Produce all analysis and the JSON output in {language}.
-Goal: Decide whether to use existing codes, modify them, or create new ones for a cluster of open-ended responses, keeping the codebook parsimonious, non-redundant, and clear.
+You are a {language} qualitative data analyst specializing in codebook development and analysis. 
+You respond concisely, analytically, and return only the required JSON format, without explanation or padding.
+Your task is to decide whether to use existing codes, modify existing codes, or create new codes for a cluster of open-ended responses. 
 
 Follow these steps carefully:
 
@@ -369,75 +364,45 @@ First, review the survey question that generated the responses:
 {survey_question}
 </survey_question>
 
-Next, examine the candidate codes in the codebook (preserve names exactly when referencing them):
+Next, examine the available candidate codes in the codebook (preserve names exactly when referencing them):
 <candidate_codes>
 {candidate_codes}
 </candidate_codes>
 
-Then, review a cluster of survey responses under investigation:
+Review a cluster of semantically similar survey responses, grouped using embeddings, UMAP, and HDBSCAN:
 <clustered_survey_responses>
 {clustered_survey_responses}
 </clustered_survey_responses>
 
-Also, take note of this summary about the cluster's core theme:
-<summary>
 {cluster_summary}
-</summary>
 
 Now, decide whether to use candidate codes, modify them, or create new ones. Follow this strict, bias-to-reuse decision rubric:
 
-Core definitions (apply everywhere)
-- ATOMIC CONCEPT: One idea only.
-  Tests:
-  • Conjunction test: label/definition must not rely on “and”, “with”, “including”, “plus”.
-  • Separability test: if the idea can be split into two independently applicable ideas, it is not atomic.
-- ABSTRACTION LEVEL: The code’s scope must match the cluster’s dominant theme (neither broader umbrella nor overly narrow subcase unless the cluster is truly that subcase).
-
 A) USE EXISTING (preferred)
-Use existing code(s) as-is if ALL are true:
-1. Coverage: One code (or a small set of non-overlapping codes) fully captures the dominant theme and its essential components—no key element is missing.
-2. Atomicity: Each selected code passes the atomic tests.
-3. Scope match: Each selected code is at the same abstraction level as the dominant theme.
-4. Non-redundancy: Do not select two codes that largely duplicate meaning; if two are close, choose the more atomic one and one only.
+Use candidate code as-is if ALL are true:
+1. Coverage:  
+   The atomic concepts of the cluster’s core theme are adequately captured by one or more of the following candidate codes in {language}:  
+   {candidate_codes}  
+
+   These must cover the core of the cluster's core theme and elements described in this summary in {language}:  
+   {cluster_summary}
+    
+2. Parsimony: Reusing the code avoids unnecessary proliferation of similar codes and contributes to a lean, efficient codebook.
 → If met: set decision = "use_existing" and list the codes in action_details.codes_to_use.
 
-B) MODIFY EXISTING (minimal change, no scope creep)
-Modify exactly one best-fit existing code only if ALL are true:
-1. Near-fit: The code almost matches but fails atomicity (compound/ambiguous) OR is slightly off in scope (a bit too broad/narrow).
-2. Minimal fix suffices: A small rename and/or a 1–2 sentence definition edit will make it atomic AND align scope to the dominant theme, without changing the original code’s abstraction level.
-3. No overlap introduced: The modified code will not duplicate another existing code’s meaning.
-4. Name stability: Do not promote a specific code into a general umbrella or demote a general code into a narrow subcase to force fit. If level changes are needed, do not modify; consider creating new.
+B) MODIFY EXISTING (but only if atomicity is maintained - i.e. no compounding of atomic concepts!)
+Use a modified version of an existing candidate code if ALL are true: 
+1. Near Miss: The code is close to what’s needed, but fails one or more of the A) criteria (Coverage, Parsimony).
+2. Minor Adjustment: A small change to the name of the code would bring it in line with the cluster’s core theme.
+3. Atomicity is maintained. The modified code (name+label+description) MUST pass these tests:
+  • Separability test: if the idea can be split into two independently applicable ideas, it is not atomic.
+  • Conjunction test: labeling the modified code does NOT need to rely on “and”, “with”, “including”, “plus”.
 → If met: set decision = "modify_existing"; set codes_to_modify with the exact code name being modified; fill modified_code_name and modified_code_definition.
 
-Anti-patterns to avoid when modifying:
-- Adding “and/with/including” to cram multiple ideas.
-- Broadening a specific code into a catch-all to avoid creating a new code.
-- Renaming into a synonym of an already existing code (creates redundancy).
-
 C) CREATE NEW (last resort)
-Create a new code only if ALL are true:
-1. No adequate reuse/minimal modification: No existing code, even with minimal atomicity/scope tweak, can represent the dominant theme without losing essential meaning.
-2. Atomicity by design: The proposed code passes conjunction + separability tests.
-3. Abstraction match: The new code’s scope aligns with the dominant theme (not umbrella or irrelevant subcase).
-4. Non-redundancy: It is not a synonym/near-duplicate of any existing code.
-5. Operational clarity: Provide a 1–2 sentence definition that enables reliable “applies vs. not” decisions.
-6. Parsimony of wording: Short, specific label (2–5 words), no vagueness or fluff.
+Create a new code only if both A) USE EXISTING and B) MODIFY EXISTING criteria are not met.  
+This is the fallback when no existing code adequately fits and cannot be adapted without violating atomicity, semantic fit, or parsimony.
 → If met: set decision = "create_new" and provide new_code_name and new_code_definition.
-
-Tie-breakers & guards
-- Two candidates fit? Pick the one more atomic and closer in scope to the dominant theme.
-- Heterogeneous cluster? Note heterogeneity in justification; act on the dominant theme only (do not propose multiple new codes).
-- Reference existing code names verbatim (case & punctuation).
-- Ground all recommendations in the provided cluster; do not introduce concepts not evidenced in the responses.
-
-(Optional internal scoring to sharpen choices—omit from output)
-For each existing code, assess:
-- FIT (0–2): match to dominant theme
-- ATOMIC (0–2): passes atomicity tests
-- SCOPE (0–2): abstraction level alignment
-Pick USE if any code has FIT≥2 & ATOMIC=2 & SCOPE≥1.
-Pick MODIFY if best code has FIT≥2 and can reach ATOMIC=2 & SCOPE≥2 with minimal edits.
-Else CREATE NEW.
 
 Output
 Return ONLY raw JSON (no markdown fences, no extra text). Use null for non-applicable fields. Escape quotes. Keys must appear in the order shown.
@@ -462,10 +427,12 @@ IMPORTANT:
 - No commentary before or after the JSON.
 """
 
-
 VALIDATION_PROMPT = """
-You are a {language} language expert and qualitative researcher tasked with validating codes and descriptions for a codebook used in analyzing survey responses. 
-Your goal is to ensure the codebook remains parsimonious, non-redundant, and clear. 
+You are a {language} qualitative data analyst specializing in codebook development and analysis. 
+You respond concisely, analytically, and return only the required JSON format, without explanation or padding.
+Your goal is to ensure the codebook remains parsimonious, non-redundant, and clear.
+
+Your task is to critically assess a colleague's recommendation about whether to use existing codes, modify existing codes, or create a new code to represent a cluster of semantically similar open-ended responses. Based on your assessment, you must provide the final validated code.
 
 Follow these steps carefully:
 
@@ -479,7 +446,7 @@ Follow these steps carefully:
 {candidate_codes}
 </candidate_codes>
 
-3. Review the cluster of survey responses under investigation:
+3. Review a cluster of semantically similar survey responses, grouped using embeddings, UMAP, and HDBSCAN:
 <clusterd_responses>
 {clustered_ideas}
 </clusterd_responses>
@@ -489,17 +456,20 @@ Follow these steps carefully:
 {step3_recommendation}
 </recommendation>
 
-5. Decide whether to APPROVE, REVISE, or REJECT the recommendation based on the following evaluation criteria:
-   a) Parsimony: Were existing code options properly exhausted? Would using or modifying an existing code result in a meaningful loss of nuance?
-   b) Non-redundancy: Does the proposed code avoid conceptual overlap with existing codes?
-   c) Justification alignment: Is the reasoning provided consistent and logically supportive of the proposed action?
+5. Assess the recommendation using the following criteria:
+a) Semantic Fit & Coverage – Does the proposed code adequately capture the core theme of the response cluster?
+b) Atomicity – Is the proposed code a single concept?  
+   - Separability test: Can the idea be split into two independently applicable ideas?  
+   - Conjunction test: Does the label avoid “and”, “with”, “including”, or “plus”?
+c) Parsimony  – Were existing code options properly exhausted? Would reuse or minor modification lead to meaningful loss of nuance?
+d) Non-redundancy – Does the proposed code avoid overlap with existing codes?
+e) Justification Alignment – Is the reasoning consistent and logically supportive of the action?
 
-Use these decision guidelines:
-- APPROVE: All criteria met. The code is necessary, atomic, well-formed, and clear.
-- REVISE: The core concept is valid, but the label or definition needs refinement (e.g., too vague, compound, or imprecise).
-- REJECT: Existing codes suffice, there is substantial overlap, or the proposal includes multiple unrelated concepts.
-
-
+Use these decision rules:
+1. APPROVE – The goal of a parsimonious, non-redundant, and clear codebook is achieved because all evaluation criteria are fully met. The proposed code is necessary, atomic, semantically precise, and well-justified.
+2. REVISE – The core idea is valid, but the code name or definition needs refinement (e.g., it is too vague, not atomic, or lacks clarity).
+3. REJECT – The proposed action is not warranted. A different code—either existing, newly created, or a modified version of an existing code—should be used instead.
+    
 6. Provide your validation output in {language} as a valid JSON object in this format:
 <json_format>
 {{
@@ -518,12 +488,12 @@ Use these decision guidelines:
 </json_format>
 
 Strict rules:
-- Base your assessment ONLY on the provided question, candidate codes, cluster, and recommendation. Do not invent codes or concepts.
-- Use existing code names verbatim (case and punctuation) when referencing them.
-- If APPROVE: return the approved code name/definition to adopt.
-- If REVISE: return the refined label/definition you recommend adopting.
-- If REJECT: return the single best existing code (not multiple); definition should match that code (or a minimally clarified version).
-- All text must be in {language}.
+- Base your assessment ONLY on the provided question, codes, cluster, and recommendation. Do not invent new codes or concepts beyond what is present.
+- Use exact code names from the candidate list (respecting case and punctuation).
+- For **APPROVE**, return the proposed code name and definition as-is.
+- For **REVISE**, return a corrected version of the label and/or definition.
+- For **REJECT**, return the single best existing code and its definition (not multiple options).
+- All output must be in {language}.
 """
 
 # =============================================================================

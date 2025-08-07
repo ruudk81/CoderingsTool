@@ -511,8 +511,8 @@ from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
 FORCE = True
-VERBOSE = True
-PROMPT_PRINTER  = False
+VERBOSE = False
+PROMPT_PRINTER  = True
 
 step_name = "codebook_generation"
 if  FORCE:

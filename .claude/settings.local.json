@@ -12,7 +12,8 @@
       "Bash(find:*)",
       "Bash(diff:*)",
       "Bash(rm:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(ls:*)"
     ],
     "deny": []
   }
