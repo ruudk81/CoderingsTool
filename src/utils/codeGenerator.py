@@ -616,7 +616,7 @@ Recommendation:
             # Handle individual step failures
             if isinstance(codebook_analysis, Exception):
                 logger.error(f"Step 1 failed for cluster {cluster_id}: {str(codebook_analysis)}")
-                codebook_analysis = "Analysis failed - could not analyze thematic areas"
+                codebook_analysis = None  # Return None instead of string to avoid type confusion
             
             if isinstance(summaries, Exception):
                 logger.error(f"Step 2 failed for cluster {cluster_id}: {str(summaries)}")
@@ -627,9 +627,8 @@ Recommendation:
             
         except Exception as e:
             logger.error(f"Parallel steps processing error for cluster {cluster_id}: {e}")
-            # Fallback results
-            return ("Analysis failed - parallel processing error", 
-                   "Analysis failed - parallel processing error")
+            # Fallback results - return None for Step 1 to avoid type issues
+            return (None, "Analysis failed - parallel processing error")
 
     async def _process_cluster_optimized(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
         """Process a single cluster with optimized parallel step execution"""
@@ -664,7 +663,11 @@ Recommendation:
             
             # Extract candidate codes from Step 1 output
             candidate_codes = []
-            if hasattr(codebook_analysis_result, 'root'):
+            if codebook_analysis_result is None or isinstance(codebook_analysis_result, str):
+                # Step 1 failed
+                logger.warning(f"Step 1 failed for cluster {cluster_id}")
+                candidate_codes = []
+            elif hasattr(codebook_analysis_result, 'root'):
                 # RootModel structure
                 candidate_codes = codebook_analysis_result.root
             elif isinstance(codebook_analysis_result, list):
@@ -747,7 +750,7 @@ Recommendation:
                         "var_lab": self.var_lab,
                         "stage": "3/4 - Match & Recommend",
                         "cluster_id": cluster_id,
-                        "codebook_analysis_present": bool(codebook_analysis),
+                        "codebook_analysis_present": bool(codebook_analysis_result),
                         "summaries_present": bool(summaries)
                     }
                 )
@@ -1006,6 +1009,8 @@ Recommendation:
             
         except Exception as e:
             logger.error(f"Processing error for cluster {cluster_id}: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error traceback: ", exc_info=True)
             return {
                 'cluster_id': cluster_id,
                 'status': 'Processing_error',
