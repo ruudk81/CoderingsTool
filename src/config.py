@@ -31,7 +31,7 @@ DEFAULT_LANGUAGE = "Dutch"
 
 # LLM settings (core settings)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-4o-mini"
 
 # =============================================================================
 # OPENAI RATE LIMITS (Official limits as of 2025)
@@ -124,7 +124,7 @@ class ModelConfig:
     # Step 2: Text preprocessing models
     spell_check_model: str = DEFAULT_MODEL
     token_model: str = "gpt-4o-mini"
-    tiktoken_spellChecker: str = "gpt-4o-mini"  # For token counting in spell checker      
+    tiktoken_spellChecker: str = "gpt-4o-mini"  # 
     
     # Step 3: Quality filtering and segmentation models  
     quality_filter_model: str = DEFAULT_MODEL      
