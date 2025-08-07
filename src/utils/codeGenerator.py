@@ -426,10 +426,22 @@ class LangChainBatchProcessor:
             input_variables=["language", "survey_question", "candidate_codes", "clustered_survey_responses", "cluster_summary"]
         )
         
+        # Add debug wrapper for Step 3 parser
+        class DebugPydanticOutputParser(PydanticOutputParser):
+            def parse(self, text: str):
+                try:
+                    # Log raw text before parsing
+                    logger.debug(f"Step 3 raw LLM output (first 200 chars): {repr(text[:200])}")
+                    return super().parse(text)
+                except Exception as e:
+                    logger.error(f"Step 3 parsing failed. Error: {str(e)}")
+                    logger.error(f"Raw text that failed: {repr(text[:500])}")
+                    raise
+        
         self.match_chain = (
             match_prompt
             | self.step3_llm
-            | PydanticOutputParser(pydantic_object=MatchRecommendation)
+            | DebugPydanticOutputParser(pydantic_object=MatchRecommendation)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain
@@ -545,7 +557,10 @@ Recommendation:
     async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
         """Process Step 3 (Match & Recommend) with retry logic"""
         try:
-            return await self.match_chain.ainvoke(inputs)
+            result = await self.match_chain.ainvoke(inputs)
+            # Debug: log successful result type
+            logger.debug(f"Step 3 returned type: {type(result)}, has cluster_core_theme: {hasattr(result, 'cluster_core_theme') if hasattr(result, '__dict__') else 'N/A'}")
+            return result
         except Exception as e:
             error_type = classify_error(e)
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
