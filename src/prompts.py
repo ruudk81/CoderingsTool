@@ -447,9 +447,9 @@ Follow these steps carefully:
 </candidate_codes>
 
 3. Review a cluster of semantically similar survey responses, grouped using embeddings, UMAP, and HDBSCAN:
-<clusterd_responses>
+<clustered_responses>
 {clustered_ideas}
-</clusterd_responses>
+</clustered_responses>
 
 4. Evaluate the recommendation of a colleague coder about whether to use or modify an existing code, or to create a new one:
 <recommendation>
@@ -467,13 +467,15 @@ e) Justification Alignment – Is the reasoning consistent and logically support
 
 Use these decision rules:
 1. APPROVE – The goal of a parsimonious, non-redundant, and clear codebook is achieved because all evaluation criteria are fully met. The proposed code is necessary, atomic, semantically precise, and well-justified.
-2. REVISE – The core idea is valid, but the code name or definition needs refinement (e.g., it is too vague, not atomic, or lacks clarity).
-3. REJECT – The proposed action is not warranted. A different code—either existing, newly created, or a modified version of an existing code—should be used instead.
+2. REVISE – The core idea is valid, but the proposed code name or definition is not appropriate (e.g., it is too vague, not atomic, or lacks clarity). Recommend an apppropriate - new or modified - code name and/or definition.
+3. REJECT – The the proposed action is not warranted. A different code—either existing, newly created, or a modified version of an existing code—should be used instead.
     
 6. Provide your validation output in {language} as a valid JSON object in this format:
 <json_format>
 {{
   "evaluation": {{
+    "semantic_fit_reasoning": "assessment of semantic fit and coverage",
+    "atomicity_reasoning": "assessment of atomicity (separability and conjunction tests)",
     "parsimony_reasoning": "assessment of whether existing options were exhausted",
     "redundancy_reasoning": "assessment of conceptual overlap with existing codes",
     "justification_reasoning": "assessment of logic consistency in the recommendation"
@@ -481,8 +483,8 @@ Use these decision rules:
   "decision": "APPROVE | REVISE | REJECT",
   "decision_rationale": "synthesize the evaluation into a clear decision explanation",
   "validated_code": {{
-    "code": "ALWAYS provide an appropriate code name — for REJECT, provide the single best existing code to use instead (verbatim name)",
-    "definition": "ALWAYS provide an appropriate definition — for REJECT, provide the chosen existing code’s definition (or a minimally refined version if clarity requires it)"
+    "code": "ALWAYS provide an appropriate code name — for REVISE and REJECT, provide the single best existing code to use instead (verbatim name)",
+    "definition": "ALWAYS provide an appropriate definition — for REVISE and REJECT, provide the chosen existing code’s definition (or a minimally refined version if clarity requires it)"
   }}
 }}
 </json_format>
@@ -491,9 +493,13 @@ Strict rules:
 - Base your assessment ONLY on the provided question, codes, cluster, and recommendation. Do not invent new codes or concepts beyond what is present.
 - Use exact code names from the candidate list (respecting case and punctuation).
 - For **APPROVE**, return the proposed code name and definition as-is.
-- For **REVISE**, return a corrected version of the label and/or definition.
-- For **REJECT**, return the single best existing code and its definition (not multiple options).
-- All output must be in {language}.
+- For **REVISE**, return a valid code name and description based on the decision rationale.
+- For **REJECT**, return a valid code name and description based on the decision rationale.
+
+IMPORTANT:
+- Ensure your JSON is valid with NO trailing commas after the last item in any object
+- The "justification_reasoning" field must NOT have a comma after it since it's the last item in "evaluation"
+- Return ONLY the JSON object with all text in {language}
 """
 
 # =============================================================================
@@ -501,87 +507,79 @@ Strict rules:
 # =============================================================================
 
 THEME_IDENTIFICATION_PROMPT = """
-You are a {language} language expert and qualitative researcher specializing in thematic analysis using Braun & Clarke (2006) methodology.
+You are a {language} language expert and qualitative researcher specializing in thematic analysis using Braun & Clarke (2006).
 
-Your task is to analyze a cluster of codes and recommend whether to use an existing theme, revise one, or create a new theme — but only if the codes clearly belong together conceptually.
+Your task is to evaluate a cluster of descriptive codes and decide whether they should:
+1. Be grouped under an existing theme,
+2. Be assigned to a revised version of an existing theme,
+3. Form a new, single theme, or
+4. Be split into multiple distinct themes, or
+5. Be rejected as too mixed or incoherent to group meaningfully.
 
----
+You may only group codes if they conceptually share a single, ATOMIC idea and express a consistent sentiment (all positive, all negative, or all neutral).
 
-First, review the survey question that generated the codes:
+Follow these steps carefully:
+
+### STEP 1: Review the data
+
 <survey_question>
 {survey_question}
 </survey_question>
 
-Next, examine the existing themes in the codebook:
 <existing_themes>
 {existing_themes_text}
 </existing_themes>
 
-Now, analyze the following cluster of {codes_count} codes that may require a new or revised theme:
 <clustered_codes>
 {codes_text}
 </clustered_codes>
 
----
+This cluster contains {codes_count} codes.
 
-Before continuing, check whether the codes in this cluster express a **single shared, semantically coherent concept** AND **consistent sentiment**.
+### STEP 2: Analyze the cluster
 
 Ask yourself:
-- Do all the codes **clearly relate to one unifying idea**?
-- Do all the codes express **similar sentiment** (all positive, all negative, or all neutral)?
-- Can they all complete the sentence: **"This is about…"** with the same concept AND sentiment?
-- If either conceptual unity OR sentiment consistency is missing, **consider splitting**.
-- Never combine unrelated subthemes (e.g. "Concerns about price and product design") into one theme.
-- Never combine different sentiments about the same concept (e.g. "positive communication experiences" + "negative communication problems") into one theme. 
+
+- **Conceptual Coherence**: Do all codes refer to the same core idea or experience?
+- **Atomicity**: Is that idea *one single concept* (not a combination like “price and usability”)?
+- **Sentiment Consistency**: Do the codes express a similar tone (all positive, all negative, or all neutral)?
+- **Thematic Sentence Test**: Can every code in the cluster complete the phrase:  
+  **“This is about…”** with the same concept **and** sentiment?
+
+### STEP 3: Make a decision
+
+Follow these guidelines:
+- **Use Existing Theme**  
+  If all codes fit well within a single existing theme in both concept and sentiment.
+
+- **Revise Existing Theme**  
+  If the cluster mostly fits but requires a more specific or clearer version of an existing theme.
+
+- **Create New Theme**  
+  If there’s strong conceptual and sentiment unity, but no suitable theme currently exists.
+
+- **Split into Multiple Themes**  
+  If the cluster contains:
+    - Two or more distinct conceptual groups (e.g. “price concerns” vs. “design preferences”)
+    - The same concept expressed with different sentiments (e.g. “trust in staff” vs. “distrust in staff”)
+
+- **Reject Mixed Cluster**  
+  If codes are too diverse or vague to meaningfully group.
 
 
----
+### STEP 4: Ensure quality of themes
 
-**Evaluation Process**:
-1. **Compare conceptual focus**: How do the clustered codes relate to each existing theme?
-2. **Assess thematic coverage**: Do existing themes already capture the conceptual meaning of this cluster?
-3. **Assess sentiment consistency**: Do the codes express the same evaluative tone (e.g., all positive, all negative, or all neutral)?
-4. **Identify sentiment patterns**: If sentiment differs, are there clear positive vs negative groupings about the same concept?
-5. **Determine fit**: Can one or more existing themes — as-is or with revision — represent the cluster **as one unified idea with consistent sentiment**?
+Each proposed theme must be:
 
----
+- **Atomic**: One idea only — no compound or vague themes like "quality and service"
+- **Concise**: 2–5 words for the name
+- **Narrative**: Describes a meaningful pattern or concept
+- **Distinct**: No overlap with other themes
+- **Language**: Use {language} for all theme names and descriptions
 
-**Decision Guidelines**:
-- **Create single theme** if the cluster is conceptually coherent AND sentiment-consistent, with no existing theme fit.
-- **Use existing theme** if the cluster fits well with an existing theme (concept + sentiment).
-- **Split into multiple themes** if the cluster contains:
-  * 2-3 distinct conceptual groups that should be separate atomic themes, OR
-  * **Same concept but clearly different sentiments** (e.g., positive vs negative evaluation), OR
-  * Both conceptual AND sentiment mixing
-- **Reject mixed cluster** if codes are too incoherent to form any meaningful themes.
-- **Favor revision or reuse** of existing themes whenever possible.
 
----
+### STEP 5: Return output in this exact JSON format:
 
-**When Splitting Clusters**:
-1. **Identify distinct conceptual groups** within the cluster (2-3 groups maximum)
-2. **Identify sentiment groups** - codes expressing different evaluative tones about the same concept
-3. **Prioritize conceptual splits first**, then sentiment splits within concepts if needed
-4. **Assign each code** to its most appropriate group by code number (concept + sentiment)
-5. **Create separate themes** for each group, ensuring each is atomic
-6. **Verify each group** has consistent concept AND sentiment
-
-**Examples of Sentiment-Based Splitting**:
-- Cluster about "communication": Split into "positive communication experiences" vs "negative communication problems"
-- Cluster about "workload": Split into "manageable workload satisfaction" vs "overwhelming workload stress"
-- Same conceptual area but different evaluative tone = separate themes
-
----
-
-**High-Quality Themes Must Be**:
-- **ATOMIC**: One idea only — no compound concepts with "and", "with", or "including"
-- **CONCISE**: Theme labels must be 2–5 words
-- **NARRATIVE**: Each theme should tell a meaningful story about the data
-- **DISTINCT**: No major conceptual overlap between themes (mutual exclusivity)
-
----
-
-**Output Format (JSON):**
 {{
   "decision": "create_single_theme | use_existing_theme | split_into_multiple_themes | reject_mixed_cluster",
   "themes": [
@@ -597,16 +595,88 @@ Ask yourself:
   "rationale": "[Detailed explanation of decision, including conceptual grouping logic if splitting]"
 }}
 
----
-
-**Important**:
-- Theme **name and description must be in {language}**
-- If using an existing theme, copy the **exact name** from the list above
-- Focus on **conceptual fit**, not surface similarity or keyword overlap.
-- Return **ONLY the JSON object**
-
+Final Reminders:
+- DO NOT invent vague or overly broad themes.
+- NEVER group together different sentiments or unrelated ideas.
+- ALWAYS return a valid JSON object as shown above — nothing else.
+- Theme name and description must be in {language}.
 """
 
+
+
+THEME_IDENTIFICATION_PROMPT = """
+You are a {language} language expert and qualitative researcher specializing in thematic analysis using Braun & Clarke (2006) methodology. Your task is to analyze a cluster of codes and recommend whether to use an existing theme, revise one, or create a new theme — but only if the codes conceptually share an overarching, unifying and ATOMIC theme.
+Follow these steps carefully:
+
+1. Review the survey question that generated the codes:
+<survey_question>
+{survey_question}
+</survey_question>
+
+
+2. Examine the existing themes in the codebook:
+<existing_themes>
+{existing_themes_text}
+</existing_themes>
+
+3. Analyze the following cluster of {{CODES_COUNT}} codes that may require a new or revised theme:
+<clustered_codes>
+{codes_text}
+</clustered_codes>
+
+
+4. Check whether the codes in this cluster can be grouped together. Ask yourself:
+   - Do all the codes in the cluster conceptually share an overarching, unifying and ATOMIC idea, concept or theme?
+   - Do all the codes express similar sentiment (all positive, all negative, or all neutral)?
+   - Can they all complete the sentence: "This is about…" with the same concept AND sentiment?
+
+5. After this analysis, decide whether to create a new theme, modify one, or use an existing theme.
+
+Decision Guidelines:
+- Use existing theme if the cluster fits well with an existing theme (concept + sentiment).
+- Create a new single theme if existing themes don't suffice AND the cluster has a shared, coherent theme.
+- Split into multiple themes if either conceptual unity OR sentiment consistency is missing.
+
+Critical:   
+- Never combine unrelated subthemes (e.g. "Concerns about price and product design") into one theme.
+- Never combine different sentiments about the same concept (e.g. "positive communication experiences" + "negative communication problems") into one theme.
+
+When Splitting Clusters:
+1. Identify distinct conceptual groups within the cluster 
+2. Identify sentiment groups - codes clearly expressing different sentiment (positive vs negative) 
+3. Prioritize conceptual splits first, then sentiment splits within concepts if needed
+4. Assign each code to its most appropriate group by code number (concept + sentiment)
+5. Create separate themes for each group, ensuring each is atomic
+6. Verify each group has consistent concept AND sentiment
+
+New Themes Must Be:
+- ATOMIC: One idea only — no compound concepts with "and", "with", or "including"
+- CONCISE: Theme labels must be 2–5 words
+- NARRATIVE: Each theme should tell a meaningful story about the data
+- DISTINCT: No major conceptual overlap between themes (mutual exclusivity)
+
+Output your analysis and decision in the following JSON format:
+{{
+  "decision": "create_single_theme | use_existing_theme | split_into_multiple_themes | reject_mixed_cluster",
+  "themes": [
+    {{
+      "theme_name": "[Theme name in {language}]",
+      "theme_description": "[Brief conceptual description in {language}]",
+      "assigned_codes": [1, 3, 5],
+      "confidence": "high | medium | low",
+      "is_existing": false
+    }}
+  ],
+  "existing_theme_used": "[Exact name from above, or null]",
+  "rationale": "[Detailed explanation of decision, including conceptual grouping logic if splitting]"
+}}
+
+Important reminders:
+- Theme name and description must be in {{LANGUAGE}}
+- If using an existing theme, copy the exact name from the list above
+- Focus on conceptual fit, not surface similarity or keyword overlap
+- Return ONLY the JSON object as your final output
+"""
 
 ASSIGN_MISCELLANEOUS_PROMPT = """
 You are {language} language expert and a qualitative researcher specializing in thematic analysis following Braun & Clarke (2006) methodology.

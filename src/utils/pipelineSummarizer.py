@@ -4,7 +4,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 from typing import List, Dict, Any, Optional
 
 # === UTILS ========================================================================================================
-from verboseReporter import VerboseReporter
+from utils.verboseReporter import VerboseReporter
 
 class PipelineSummarizer:
     """Generates count summaries for themes and codes"""

@@ -67,6 +67,8 @@ class MatchRecommendation(BaseModel):
 
 class ValidationEvaluation(BaseModel):
     """Evaluation reasoning for Step 4"""
+    semantic_fit_reasoning: str = Field(description="Assessment of semantic fit and coverage")
+    atomicity_reasoning: str = Field(description="Assessment of atomicity (separability and conjunction tests)")
     parsimony_reasoning: str = Field(description="Assessment of whether existing options were exhausted")
     redundancy_reasoning: str = Field(description="Assessment of overlap with existing codes")
     justification_reasoning: str = Field(description="Assessment of decision alignment with reasoning")
@@ -862,6 +864,7 @@ Recommendation:
                     'status': 'no_new_code_needed',
                     'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                     'step4_validated_code': None,
+                    'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                     'processing_time': time.time() - start_time
                 }
             
@@ -916,9 +919,11 @@ Recommendation:
                             'decision': validation_results.decision,
                             'decision_rationale': validation_results.decision_rationale,
                             'reasoning': {
-                                'parsimony': validation_results.evaluation.parsimony_reasoning,
-                                'redundancy': validation_results.evaluation.redundancy_reasoning,
-                                'justification': validation_results.evaluation.justification_reasoning
+                                'semantic_fit_reasoning': validation_results.evaluation.semantic_fit_reasoning,
+                                'atomicity_reasoning': validation_results.evaluation.atomicity_reasoning,
+                                'parsimony_reasoning': validation_results.evaluation.parsimony_reasoning,
+                                'redundancy_reasoning': validation_results.evaluation.redundancy_reasoning,
+                                'justification_reasoning': validation_results.evaluation.justification_reasoning
                             }
                         }
                         
@@ -979,6 +984,7 @@ Recommendation:
                                 'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                                 'step4_validated_code': validated_code,
                                 'validation_details': validation_details,
+                                'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                                 'processing_time': time.time() - start_time
                             }
                     else:
@@ -1001,6 +1007,7 @@ Recommendation:
                             'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                             'step4_validated_code': validated_code,
                             'validation_details': validation_details,
+                            'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                             'processing_time': time.time() - start_time
                         }
                 else:
@@ -1010,6 +1017,7 @@ Recommendation:
                         'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                         'step4_validated_code': None,
                         'validation_details': validation_details,
+                        'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                         'processing_time': time.time() - start_time
                     }
 
@@ -1019,6 +1027,7 @@ Recommendation:
             return {
                 'cluster_id': cluster_id,
                 'status': 'processed_no_validation_needed',
+                'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                 'processing_time': time.time() - start_time
             }
             
@@ -1030,6 +1039,7 @@ Recommendation:
                 'status': 'Processing_error',
                 'error': str(e),
                 'error_type': type(e).__name__,
+                'candidate_codes': [],
                 'processing_time': time.time() - start_time if 'start_time' in locals() else 0
             }
 
@@ -1156,7 +1166,6 @@ Recommendation:
                 
                 # Display modifications this batch
                 if modified_codes_this_batch:
-                    self.verbose_reporter.stat_line("Codes modified this batch:")
                     for code_info in modified_codes_this_batch:
                         if isinstance(code_info, tuple):
                             original, mod_type = code_info
@@ -1519,9 +1528,10 @@ class InductiveCodeGenerator:
             
             # Predict duration for first batch
             estimated_duration = self._predict_batch_duration(first_batch_clusters, sample_nearest_codes)
+            estimated_duration_range = 2*estimated_duration
             
             self.verbose_reporter.stat_line("Creating batches for concurrent processing...")
-            self.verbose_reporter.stat_line(f"Waiting for first batch to complete (est. {estimated_duration:.0f}s)...", indent=1)
+            self.verbose_reporter.stat_line(f"Waiting for first batch to complete (est. {estimated_duration:.0f}s - {estimated_duration_range:.0f}s)...", indent=1)
         else:
             self.verbose_reporter.stat_line("Creating batches for concurrent processing...")
         
@@ -1549,6 +1559,8 @@ class InductiveCodeGenerator:
         validation_details = {}
         step3_recommendations = {}
         step4_validated_codes = {}
+        step2_summaries = {}
+        candidate_codes_data = {}
         
         for result in results:
             cluster_id = result['cluster_id']
@@ -1568,6 +1580,14 @@ class InductiveCodeGenerator:
             # Store Step 4 validated codes if available
             if result.get('step4_validated_code'):
                 step4_validated_codes[cluster_id] = result['step4_validated_code']
+                
+            # Store Step 2 summaries if available
+            if result.get('step2_summary'):
+                step2_summaries[cluster_id] = result['step2_summary']
+                
+            # Store candidate codes if available
+            if result.get('candidate_codes'):
+                candidate_codes_data[cluster_id] = result['candidate_codes']
         
         # Get final stats
         final_codes, final_version = await shared_codebook.get_current_snapshot()
@@ -1619,9 +1639,12 @@ class InductiveCodeGenerator:
         return {
             'codebook': final_codes,
             'cluster_assignments': cluster_to_code,
+            'cluster_data': clusters,
             'validation_details': validation_details,
             'step3_recommendations': step3_recommendations,
             'step4_validated_codes': step4_validated_codes,
+            'step2_summaries': step2_summaries,
+            'candidate_codes_data': candidate_codes_data,
             'stats': final_stats,
             'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS'
         }

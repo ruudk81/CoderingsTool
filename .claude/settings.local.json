@@ -13,7 +13,9 @@
       "Bash(diff:*)",
       "Bash(rm:*)",
       "Bash(mv:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }
