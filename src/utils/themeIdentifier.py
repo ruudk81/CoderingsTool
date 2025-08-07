@@ -275,6 +275,9 @@ class ThemeIdentifier:
     def _prepare_codes_for_embedding(self) -> List[CodeEmbedding]:
         """Prepare codes for embedding using Code: [name]. Definition: [definition] format"""
         code_embeddings = []
+        #print("\n🔍 DEBUG STEP 1: INPUT CODES FROM CODEBOOK")
+        #print(f"Total codes in codebook: {len(self.codebook)}")
+        
         for i, code in enumerate(self.codebook, 1):
             embedding_text = f"Code: {code.code}. Definition: {code.definition}"
             code_embedding = CodeEmbedding(
@@ -284,11 +287,19 @@ class ThemeIdentifier:
                 embedding_text=embedding_text
             )
             code_embeddings.append(code_embedding)
+            #print(f"  {i}. '{code.code}' -> code_number={i}")
+        
+        #print(f"✅ Step 1 complete: Created {len(code_embeddings)} CodeEmbedding objects")
         return code_embeddings
     
     async def _generate_embeddings(self, code_embeddings: List[CodeEmbedding]) -> List[CodeEmbedding]:
         """Generate embeddings for codes"""
         self.verbose_reporter.stat_line(f"Generating embeddings for {len(code_embeddings)} codes...")
+        
+        # print("\n🔍 DEBUG STEP 2: EMBEDDING GENERATION")
+        # print("Codes going into embedding (first 3):")
+        # for i, code in enumerate(code_embeddings[:3]):
+        #     print(f"  {code.code_number}. '{code.code_name}' (embedding_text: {code.embedding_text[:50]}...)")
         
         # Extract texts for embedding
         texts = [code.embedding_text for code in code_embeddings]
@@ -304,6 +315,8 @@ class ThemeIdentifier:
             for code_embedding, embedding_data in zip(code_embeddings, response.data):
                 code_embedding.embedding = np.array(embedding_data.embedding, dtype=np.float32)
             
+            #print(f"✅ Step 2 complete: Generated embeddings for {len(code_embeddings)} codes")
+            #print(f"Sample embedding shapes: {[code.embedding.shape for code in code_embeddings[:3]]}")
             self.verbose_reporter.stat_line(f"✅ Generated {len(code_embeddings)} embeddings")
             return code_embeddings
             
@@ -315,8 +328,12 @@ class ThemeIdentifier:
         """Perform PCA → UMAP → HDBSCAN clustering on code embeddings"""
         self.verbose_reporter.stat_line("Starting clustering pipeline...")
         
+        #print("\n🔍 DEBUG STEP 3: UMAP + HDBSCAN CLUSTERING")
+        #print(f"Input: {len(code_embeddings)} codes with embeddings")
+        
         # Extract embeddings matrix
         embeddings = np.array([code.embedding for code in code_embeddings])
+        #print(f"Embeddings matrix shape: {embeddings.shape}")
         
         # === Step 2: UMAP ===
         n_codes = len(code_embeddings)
@@ -331,6 +348,7 @@ class ThemeIdentifier:
             transform_seed=42
         )
         umap_embeddings = umap.fit_transform(embeddings)
+        #print(f"UMAP output shape: {umap_embeddings.shape}")
           
         # === Step 3: HDBSCAN ===
         hdb = hdbscan.HDBSCAN(
@@ -345,6 +363,9 @@ class ThemeIdentifier:
         )
         labels = hdb.fit_predict(umap_embeddings)
         
+        #print(f"HDBSCAN labels: {list(labels)}")
+        #print(f"Unique clusters: {sorted(set(labels))}")
+        
         # Assign cluster labels to codes
         for code_embedding, label in zip(code_embeddings, labels):
             code_embedding.cluster_id = int(label)
@@ -352,6 +373,7 @@ class ThemeIdentifier:
         num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
         noise_points = list(labels).count(-1)
         
+        #print(f"✅ Step 3 complete: {num_clusters} clusters, {noise_points} noise points")
         self.verbose_reporter.stat_line(f"[HDBSCAN] Found {num_clusters} clusters")
         self.verbose_reporter.stat_line(f"[HDBSCAN] Noise points: {noise_points} / {len(code_embeddings)} ({noise_points / len(code_embeddings) * 100:.1f}%)")
         
@@ -359,12 +381,20 @@ class ThemeIdentifier:
     
     def _group_codes_by_cluster(self, code_embeddings: List[CodeEmbedding]) -> Dict[int, List[CodeEmbedding]]:
         """Group codes by their cluster assignments"""
+        #print("\n🔍 DEBUG STEP 4: GROUPING CODES BY CLUSTER")
         clusters = {}
         for code in code_embeddings:
             cluster_id = code.cluster_id
             if cluster_id not in clusters:
                 clusters[cluster_id] = []
             clusters[cluster_id].append(code)
+        
+        #print("Cluster composition:")
+        #for cluster_id, codes in clusters.items():
+        #    print(f"  Cluster {cluster_id}: {len(codes)} codes")
+        #    for code in codes:
+        #        print(f"    - Code {code.code_number}: '{code.code_name}'")
+        #print(f"✅ Step 4 complete: Grouped into {len(clusters)} clusters")
         return clusters
     
     async def _find_nearest_existing_themes(self, cluster_codes: List[CodeEmbedding], 
@@ -419,11 +449,20 @@ class ThemeIdentifier:
     def _create_cluster_theme_prompt(self, cluster_codes: List[CodeEmbedding], existing_options: List[ExistingThemeOption]) -> str:
         """Create prompt for naming a cluster theme"""
         
+        # print("\n🔍 DEBUG STEP 5: CREATING PROMPT FOR CLUSTER")
+        # print(f"Input cluster_codes: {len(cluster_codes)} codes")
+        # for code in cluster_codes:
+        #     print(f"  - Code {code.code_number}: '{code.code_name}' (cluster_id: {code.cluster_id})")
+        
         # Format cluster codes
         codes_text = "\n".join([
             f"{code.code_number}. Code: {code.code_name}. Definition: {code.definition}"
             for code in cluster_codes
         ])
+        
+        # print("Generated codes_text:")
+        # for line in codes_text.split('\n'):
+        #     print(f"  {line}")
         
         # Format existing theme options
         existing_themes_text = ""
@@ -431,6 +470,8 @@ class ThemeIdentifier:
             existing_themes_text = "\nEXISTING THEMES (ranked by similarity to this cluster):\n"
             for i, option in enumerate(existing_options, 1):
                 existing_themes_text += f"{i}. {option.theme_name}: {option.theme_description} (similarity: {option.similarity_score:.3f})\n"
+        
+        #print(f"Existing themes text length: {len(existing_themes_text)} chars")
         
         prompt = THEME_IDENTIFICATION_PROMPT.format(
             language=DEFAULT_LANGUAGE,
@@ -440,6 +481,7 @@ class ThemeIdentifier:
             existing_themes_text=existing_themes_text
         )
         
+        #print(f"✅ Step 5 complete: Generated prompt with {len(codes_text)} chars of codes_text")
         return prompt
     
     async def _decide_cluster_theme(self, cluster_codes: List[CodeEmbedding], code_embeddings: List[CodeEmbedding]) -> ClusterThemeDecision:
@@ -738,6 +780,11 @@ class ThemeIdentifier:
         
         total_codes = len(self.codebook)
         self.verbose_reporter.stat_line(f"Starting with {total_codes} codes")
+        
+        #print("\n" + "="*80)
+        #print("🚀 THEME IDENTIFIER DEBUG TRACING ENABLED")
+        #print("="*80)
+        #print(f"Input codebook: {total_codes} codes")
         
         # Step 1: Prepare codes for embedding
         code_embeddings = self._prepare_codes_for_embedding()
