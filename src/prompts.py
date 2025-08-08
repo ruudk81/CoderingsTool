@@ -267,45 +267,43 @@ Examples of well-structured code definitions:
 - "Expressions of [emotion or attitude] regarding [situation or process]."
 
 Avoid these weak definitions:
-- ❌ Compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
-- ❌ Vague: "Mentions of various [things] related to [topic]"
-- ❌ Interpretive: "Underlying [abstract concept] manifesting in different ways"
+- Compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
+- Vague: "Mentions of various [things] related to [topic]"
+- Interpretive: "Underlying [abstract concept] manifesting in different ways"
 
 
 Return ONLY the JSON array in {language}. Do not include any additional text or explanations outside of the JSON array.
 """
 
 CODEBOOK_ANALYSIS_PROMPT = """
-You are a {language} qualitative data analyst specializing in codebook development and analysis. 
-Your task is to analyze survey responses and select relevant codes from an existing codebook to describe the written responses to a specific survey question.
+You are a {language} qualitative data analyst specializing in generating qualitative codebooks for thematic analysis. 
+Your task is to select appropriate codes for a cluster of semantically similar responses to be used in constructing a codebook. 
+A codebook in this context is a structured collection of code names and definitions used to label and interpret open-ended survey responses.
 
-First, review the survey question that provides context for this task:
+
+First, review the survey question that generated the responses:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Now, carefully analyze the written responses to the survey question:
-<writen_responses>
-{cluster_text}
-</writen_responses>
-
-Next, review the existing codes in the codebook:
+Now, examine the existing codes in the codebook:
 <existing_codebook>
 {code_text}
 </existing_codebook>
 
-Your task is to select candidate codes that:
-1. Are relevant in describing the written responses to the survey question
-2. Cover all ideas expressed in the written responses
+Next, carefully analyze the main response patterns of the semantically similar survey responses, which have been grouped using embeddings, UMAP, and HDBSCAN:
+<writen_responses>
+{cluster_text}
+</writen_responses>
 
-To complete this task, follow these steps:
-1. Carefully read and understand the clustered ideas from the survey responses.
-2. Review each code in the existing codebook.
-3. Identify codes that accurately describe the ideas expressed in the responses.
-4. Ensure that the selected codes collectively cover all major themes in the responses.
+To select appropriate candidate codes, follow these steps:
+1. Attempt to describe the main response patterns by using the provided codes
+2. Select the codes, if any, that are relevant in capturing these response patterns
+3. Be selective: only select suitable codes for our codebook
+4. Present your selection in the JSON array format described below
+5. If no existing codes are suitable, return an empty JSON array: []
 
-Present your selected candidate codes in the following JSON array format:
-<output_format>
+<json_output_format>
 [
   {{
     "code": "exact same name of existing code 1",
@@ -316,9 +314,9 @@ Present your selected candidate codes in the following JSON array format:
     "definition": "exact same definition of existing code 2"
   }}
 ]
-</output_format>
+</json_output_format>
 
-Important notes:
+IMPORTANT:
 - You may select NONE, ONE, or MULTIPLE candidate codes, depending on your analysis.
 - Do not create new codes or modify existing ones. Use only the exact names and definitions from the existing codebook.
 - If no existing codes are suitable, return an empty JSON array: []
@@ -326,86 +324,93 @@ Important notes:
 """
 
 RESPONSE_SUMMARY_PROMPT = """
-You are a {language} qualitative data analyst specializing in codebook development and analysis. 
-Your task is to analyze a cluster of written responses to a survey question and extract the core theme and key components. 
+You are a {language} data analyst specializing in generating qualitative codebooks for thematic analysis. 
+A codebook in this context is a structured collection of code names and definitions used to label and interpret open-ended survey responses.
+Your task is to analyze a cluster of written responses to a survey question and extract the core theme. 
+This theme will be used to guide the development of code names and descriptions.
+
 Follow these steps carefully:
 
-First, review the survey question that provides context for this task:
+1. Review the survey question that generated the responses:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Now, carefully analyze this cluster of semantically related responses to the survey question:
+2. Carefully examine the cluster of semantically related responses, which have been grouped using embeddings, UMAP, and HDBSCAN:
 <writen_responses>
 {cluster_text}
 </writen_responses>
 
-Next,extract the cluster's pattern to enable code matching:
-1. Identify the core theme: What is the central concept unifying these responses? Be specific and use the language of the respondents where appropriate.
-2. Determine the key components: What are the 2-3 essential elements that ALL responses in this cluster share?
+3. Extract the cluster's shared theme by adhering to these instructions:
+- Look for patterns and shared meanings among the responses.
+- Identify overarching narratives that might represent broader themes.
+- Remember that themes don't simply "emerge" from the data; actively construe relationships among the codes and examine how these relationships inform potential themes.
+- Consider the importance and salience of potential themes.
+- Keep in mind that the a theme must be meaningful for analyzing this survey question: "{survey_question}".
 
-After your analysis, provide a concise summary in {language} using the following structure:
-This cluster's core theme is: [core theme description]. The essential shared components are [element 1], [element 2], and [element 3].
+4. Provide a concise summary in {language} using the following structure:
+<structure>    
+This cluster's shared theme is: [core theme description]. This theme is meaningful in light of the survey question, because it addresses [aspect 1], [aspect 2], and [aspect 3].
+<\structure>
 
 IMPORTANT: 
 - Your entire response should be in {language}.
-- Do not include any JSON formatting, additional explanations, or text outside the <analysis> tags.
+- Do not include any JSON formatting, additional explanations or <structure> tags.
+- Be concise and specific in your analysis.
+- Use the language of the respondents where appropriate.
+- Ensure that your identified components are truly shared by ALL responses in the cluster.    
 """
 
 MATCH_AND_RECOMMEND_PROMPT = """
-You are a {language} qualitative data analyst specializing in codebook development and analysis. 
-You respond concisely, analytically, and return only the required JSON format, without explanation or padding.
-Your task is to decide whether to use existing codes, modify existing codes, or create new codes for a cluster of open-ended responses. 
+You are a {language} data analyst specializing in qualitative research and thematic coding. 
+Your expertise lies in developing parsimonious, clearly defined, non-redundant codebooks at a consistent level of abstraction.
 
-Follow these steps carefully:
+A codebook in this context is a structured collection of code names and definitions used to label and interpret open-ended survey responses.
 
-First, review the survey question that generated the responses:
-<survey_question>
-{survey_question}
-</survey_question>
-
-Next, examine the available candidate codes in the codebook (preserve names exactly when referencing them):
-<candidate_codes>
-{candidate_codes}
-</candidate_codes>
-
-Review a cluster of semantically similar survey responses, grouped using embeddings, UMAP, and HDBSCAN:
-<clustered_survey_responses>
-{clustered_survey_responses}
-</clustered_survey_responses>
+Your task is to analyze the cluster of semantically related responses below and decide whether:
+1. Existing codes adequately capture the main idea(s) in the cluster,
+2. One or more existing codes should be modified,
+3. Or a new code is needed.
 
 {cluster_summary}
 
-Now, decide whether to use candidate codes, modify them, or create new ones. Follow this strict, bias-to-reuse decision rubric:
+<context>
+Survey Question:
+{survey_question}
 
-A) USE EXISTING (preferred)
-Use candidate code as-is if ALL are true:
-1. Coverage:  
-   The atomic concepts of the cluster’s core theme are adequately captured by one or more of the following candidate codes in {language}:  
-   {candidate_codes}  
+Clustered Responses:
+{clustered_survey_responses}
 
-   These must cover the core of the cluster's core theme and elements described in this summary in {language}:  
-   {cluster_summary}
-    
-2. Parsimony: Reusing the code avoids unnecessary proliferation of similar codes and contributes to a lean, efficient codebook.
-→ If met: set decision = "use_existing" and list the codes in action_details.codes_to_use.
+Available Codes:
+{candidate_codes}
+</context>
 
-B) MODIFY EXISTING (but only if atomicity is maintained - i.e. no compounding of atomic concepts!)
-Use a modified version of an existing candidate code if ALL are true: 
-1. Near Miss: The code is close to what’s needed, but fails one or more of the A) criteria (Coverage, Parsimony).
-2. Minor Adjustment: A small change to the name of the code would bring it in line with the cluster’s core theme.
-3. Atomicity is maintained. The modified code (name+label+description) MUST pass these tests:
-  • Separability test: if the idea can be split into two independently applicable ideas, it is not atomic.
-  • Conjunction test: labeling the modified code does NOT need to rely on “and”, “with”, “including”, “plus”.
-→ If met: set decision = "modify_existing"; set codes_to_modify with the exact code name being modified; fill modified_code_name and modified_code_definition.
+Follow this process:
 
-C) CREATE NEW (last resort)
-Create a new code only if both A) USE EXISTING and B) MODIFY EXISTING criteria are not met.  
-This is the fallback when no existing code adequately fits and cannot be adapted without violating atomicity, semantic fit, or parsimony.
-→ If met: set decision = "create_new" and provide new_code_name and new_code_definition.
+Step 1: Evaluate Fit with Existing Codes
+- Carefully examine the cluster summary and responses.
+- Determine whether any existing codes (alone or in combination) can sufficiently describe the cluster's core theme and dominant idea(s).
+- If a good fit exists, select those codes and stop.
 
-Output
-Return ONLY raw JSON (no markdown fences, no extra text). Use null for non-applicable fields. Escape quotes. Keys must appear in the order shown.
+Step 2: If Necessary, Modify or Create Code(s)
+- If none of the available codes fit, or only partially fit, you may either:
+  - Propose a **modification** of an existing code (including new definition), or
+  - Propose a **new code**, with a short and distinct name and clear operational definition.
+
+Evaluation Criteria (Mandatory):
+<evaluation_criteria>
+1. **Parsimony**: Have you reused existing codes or combinations before proposing anything new?
+2. **Abstraction Level**: Is the level of abstraction aligned with other codes?
+3. **Non-Redundancy**: Does your proposal avoid overlapping with existing codes?
+</evaluation_criteria>
+
+Atomicity Rules (Required for New or Modified Codes):
+Your proposed code must **describe one single, indivisible concept**. It must pass:
+- **Separability Test**: If it can be split into two distinct ideas, it's not atomic.
+- **Conjunction Test**: Avoid use of "and", "with", "including", or "plus" in code names or definitions.
+
+Output instructions: 
+Return only valid raw JSON (no markdown, no commentary). Use `null` for non-applicable fields.
 
 {{
   "cluster_core_theme": "one-sentence description of the core theme",
@@ -428,49 +433,53 @@ IMPORTANT:
 """
 
 VALIDATION_PROMPT = """
-You are a {language} qualitative data analyst specializing in codebook development and analysis. 
-You respond concisely, analytically, and return only the required JSON format, without explanation or padding.
-Your goal is to ensure the codebook remains parsimonious, non-redundant, and clear.
+You are a {language} qualitative data analyst specializing in codebook development and evaluation. 
+Your expertise lies in producing parsimonious, clearly defined, non-redundant codebooks at a consistent level of abstraction.
 
-Your task is to critically assess a colleague's recommendation about whether to use existing codes, modify existing codes, or create a new code to represent a cluster of semantically similar open-ended responses. Based on your assessment, you must provide the final validated code.
+A codebook in this context is a structured set of code names and definitions used to label and interpret open-ended survey responses.
+
+Your task is to **critically assess** a colleague’s coding recommendation — whether to use existing codes, modify one, or create a new one. Based on your assessment, you must provide a validated, final code and justification.
 
 Follow these steps carefully:
 
-1. Review the survey question that generated the responses:
+Step 1: Review the survey question that generated the responses:
 <survey_question>
 {survey_question}
 </survey_question>
 
-2. Examine the candidate codes in the codebook (preserve names exactly when referencing them):
+
+Step 2: Examine the candidate codes in the codebook (preserve names and definitions exactly as provided):
 <candidate_codes>
 {candidate_codes}
 </candidate_codes>
 
-3. Review a cluster of semantically similar survey responses, grouped using embeddings, UMAP, and HDBSCAN:
+Step 3: Review a cluster of semantically similar responses grouped using embeddings, UMAP, and HDBSCAN:
 <clustered_responses>
 {clustered_ideas}
 </clustered_responses>
 
-4. Evaluate the recommendation of a colleague coder about whether to use or modify an existing code, or to create a new one:
+Step 4: Evaluate your colleague’s recommendation:
 <recommendation>
 {step3_recommendation}
 </recommendation>
 
-5. Assess the recommendation using the following criteria:
-a) Semantic Fit & Coverage – Does the proposed code adequately capture the core theme of the response cluster?
-b) Atomicity – Is the proposed code a single concept?  
-   - Separability test: Can the idea be split into two independently applicable ideas?  
-   - Conjunction test: Does the label avoid “and”, “with”, “including”, or “plus”?
-c) Parsimony  – Were existing code options properly exhausted? Would reuse or minor modification lead to meaningful loss of nuance?
-d) Non-redundancy – Does the proposed code avoid overlap with existing codes?
-e) Justification Alignment – Is the reasoning consistent and logically supportive of the action?
+Step 5: Assess the recommendation using these criteria:
+a) **Semantic Fit & Coverage** – Does the proposed code capture the core meaning of the response cluster?
+b) **Atomicity** – Does the proposed code describe a single, indivisible idea?  
+   - **Separability test**: Can the idea be split into two independently applicable ideas?  
+   - **Conjunction test**: Does the code name or definition avoid "and", "with", "including", "plus"?
+c) **Parsimony** – Were all existing code options reasonably exhausted before modifying or proposing a new code?
+d) **Non-redundancy** – Does the proposed code avoid conceptual overlap with existing codes?
+e) **Justification Alignment** – Is the reasoning internally consistent and supportive of the proposed action?
 
-Use these decision rules:
-1. APPROVE – The goal of a parsimonious, non-redundant, and clear codebook is achieved because all evaluation criteria are fully met. The proposed code is necessary, atomic, semantically precise, and well-justified.
-2. REVISE – The core idea is valid, but the proposed code name or definition is not appropriate (e.g., it is too vague, not atomic, or lacks clarity). Recommend an apppropriate - new or modified - code name and/or definition.
-3. REJECT – The the proposed action is not warranted. A different code—either existing, newly created, or a modified version of an existing code—should be used instead.
-    
-6. Provide your validation output in {language} as a valid JSON object in this format:
+
+Decision Rules:
+Return one of the following decisions:
+- **APPROVE** – The proposed code is clearly necessary, atomic, semantically precise, and justified. No changes needed.
+- **REVISE** – The core idea is valid, but the proposed code name or definition is flawed (e.g., vague, too broad, or not atomic). Suggest a revised name and/or definition.
+- **REJECT** – The proposed action is not justified. Recommend using a different existing code (verbatim) or, if needed, a minimally adjusted version of an existing one.
+
+Step 6: Return your validation result in {language} as raw JSON (no commentary):
 <json_format>
 {{
   "evaluation": {{
@@ -490,16 +499,19 @@ Use these decision rules:
 </json_format>
 
 Strict rules:
-- Base your assessment ONLY on the provided question, codes, cluster, and recommendation. Do not invent new codes or concepts beyond what is present.
-- Use exact code names from the candidate list (respecting case and punctuation).
-- For **APPROVE**, return the proposed code name and definition as-is.
-- For **REVISE**, return a valid code name and description based on the decision rationale.
-- For **REJECT**, return a valid code name and description based on the decision rationale.
+- Base your assessment **only** on the provided question, cluster, codebook, and recommendation.  
+- **Never invent codes** or themes beyond what’s presented.
+- Use exact code names from the candidate code list (respecting case and punctuation).
+- For **APPROVE**, return the colleague’s proposed code name and definition exactly as-is.
+- For **REVISE**, return a valid alternative name and definition, based on the rationale.
+- For **REJECT**, return the best fitting **existing** code name and definition from the candidate list.
 
 IMPORTANT:
-- Ensure your JSON is valid with NO trailing commas after the last item in any object
-- The "justification_reasoning" field must NOT have a comma after it since it's the last item in "evaluation"
-- Return ONLY the JSON object with all text in {language}
+- Output **only** valid raw JSON.
+- DO NOT use markdown, code fences, or commentary.
+- Ensure the final JSON has **no trailing commas** in any object.
+- The final field inside "evaluation" (`justification_reasoning`) must **not** be followed by a comma.
+- All text must be returned in **{language}**.
 """
 
 # =============================================================================

@@ -1,25 +1,13 @@
-"""
-Results display utilities for the CoderingsTool pipeline
-"""
 import random
 from typing import Dict, Any, Optional, List
 
 
-def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] = None, 
-                           show_detailed_reasoning: bool = False) -> None:
-    """
-    Display comprehensive analysis for a specific cluster or random sample
+def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] = None, show_detailed_reasoning: bool = False) -> None:
     
-    Args:
-        results: The results dictionary from generator.generate()
-        cluster_id: Specific cluster ID to display (None for random)
-        show_detailed_reasoning: Whether to show detailed validation reasoning
-    """
     print("\n" + "="*80 + "\nSTEP 7 RESULTS ANALYSIS\n" + "="*80)
     
     # Extract data from results
     cluster_data = results.get('cluster_data', {})
-    cluster_assignments = results.get('cluster_assignments', {})
     step2 = results.get('step2_summaries', {})
     step3 = results.get('step3_recommendations', {})
     step4 = results.get('step4_validated_codes', {})
@@ -45,7 +33,7 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
     
     # Step 2: Cluster Summary
     if step2 and cluster_id in step2:
-        print(f"\n📝 STEP 2 - Cluster Theme Summary:")
+        print("\n📝 STEP 2 - Cluster Theme Summary:")
         summary_text = step2[cluster_id]
         # Format the summary with proper indentation
         print(f'"{summary_text}"')
@@ -71,7 +59,7 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
     # Candidate Codes (from Step 1)
     if candidate_codes_data and cluster_id in candidate_codes_data:
         codes = candidate_codes_data[cluster_id]
-        print(f"\n🔍 Candidate Codes (from Step 1):")
+        print("\n🔍 Candidate Codes:")
         
         # Show up to 5 candidate codes
         for i, code in enumerate(codes[:5], 1):
@@ -87,10 +75,13 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
         
         if len(codes) > 5:
             print(f"  ... and {len(codes) - 5} more candidate codes")
-    
+    else:
+        print("\n🔍 Candidate Codes:")
+        print("  No candidate codes")
+  
     # Step 3: Recommendation
     rec = step3[cluster_id]
-    print(f"\n📋 STEP 3 - Recommendation:")
+    print("\n📋 STEP 3 - Recommendation:")
     print(f"• Decision: {rec.decision}")
     print(f"• Core Theme: {rec.cluster_core_theme}")
     
@@ -112,7 +103,7 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
             print(f"  - New code definition: {rec.action_details.new_code_definition}")
     
     # Justification
-    print(f"• Justification:")
+    print("• Justification:")
     # Format justification with proper indentation
     justification_lines = rec.justification.split('\n')
     for line in justification_lines:
@@ -122,9 +113,9 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
     # Step 4: Validation
     val = validation.get(cluster_id)
     if val:
-        print(f"\n✅ STEP 4 - Validation:")
+        print("\n✅ STEP 4 - Validation:")
         print(f"• Decision: {val['decision']}")
-        print(f"• Decision Rationale:")
+        print("• Decision Rationale:")
         rationale_lines = val['decision_rationale'].split('\n')
         for line in rationale_lines:
             if line.strip():
@@ -143,11 +134,11 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
     # Final Validated Code
     validated_code = step4.get(cluster_id)
     if validated_code:
-        print(f"\n📌 Final Validated Code:")
+        print("\n📌 Final Validated Code:")
         print(f"• Code: {validated_code['code']}")
-        print(f"• Definition: {validated_code['definition']}")
+        print("• Definition: {validated_code['definition']}")
     else:
-        print(f"\n📌 Final Validated Code: [Not generated/validated]")
+        print("\n📌 Final Validated Code: [Not generated/validated]")
     
     print("\n" + "="*80)
 
@@ -168,7 +159,7 @@ def display_summary_statistics(results: Dict[str, Any]) -> None:
     # Decision breakdown
     if step3:
         decisions = [rec.decision for rec in step3.values()]
-        print(f"\nStep 3 Decisions:")
+        print("\nStep 3 Decisions:")
         print(f"• Create new: {decisions.count('create_new')}")
         print(f"• Modify existing: {decisions.count('modify_existing')}")
         print(f"• Use existing: {decisions.count('use_existing')}")
@@ -177,20 +168,18 @@ def display_summary_statistics(results: Dict[str, Any]) -> None:
     # Validation breakdown
     if validation:
         val_decisions = [v['decision'] for v in validation.values()]
-        print(f"\nStep 4 Validation:")
+        print("\nStep 4 Validation:")
         print(f"• Approved: {val_decisions.count('APPROVE')}")
         print(f"• Revised: {val_decisions.count('REVISE')}")
         print(f"• Rejected: {val_decisions.count('REJECT')}")
     
     # Performance stats
     if stats:
-        print(f"\nPerformance:")
-        print(f"• Total processing time: {stats.get('total_time', 0):.2f}s")
+        print("\nPerformance:")
+        #print(f"• Total processing time: {stats.get('total_time', 0):.2f}s")
         print(f"• New codes added: {stats.get('new_codes_added', 0)}")
         print(f"• Codes modified: {stats.get('codes_modified', 0)}")
         print(f"• No new codes needed: {stats.get('no_new_codes_needed', 0)}")
-    
-    print("\n" + "="*80)
 
 
 def display_multiple_clusters(results: Dict[str, Any], cluster_ids: List[int] = None, 
