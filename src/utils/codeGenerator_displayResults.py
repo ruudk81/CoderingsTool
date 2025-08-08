@@ -1,18 +1,20 @@
 import random
-from typing import Dict, Any, Optional, List
+from typing import Optional, List
+import models
 
 
-def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] = None, show_detailed_reasoning: bool = False) -> None:
+def display_cluster_analysis(codebook_reasoning: models.CodeGeneratorReasoningResults, 
+                           cluster_id: Optional[int] = None, 
+                           show_detailed_reasoning: bool = False) -> None:
+    """Display analysis using cached reasoning results only"""
     
-    print("\n" + "="*80 + "\nSTEP 7 RESULTS ANALYSIS\n" + "="*80)
+    print("\n" + "="*80 + "\nCODEBOOK REASONING ANALYSIS\n" + "="*80)
     
-    # Extract data from results
-    cluster_data = results.get('cluster_data', {})
-    step2 = results.get('step2_summaries', {})
-    step3 = results.get('step3_recommendations', {})
-    step4 = results.get('step4_validated_codes', {})
-    validation = results.get('validation_details', {})
-    candidate_codes_data = results.get('candidate_codes_data', {})
+    # Direct access to reasoning data
+    step2 = codebook_reasoning.step2_summaries
+    step3 = codebook_reasoning.step3_recommendations
+    step4_validations = codebook_reasoning.step4_validations
+    candidate_codes_data = codebook_reasoning.candidate_codes
     
     # Select cluster to display
     if cluster_id is None:
@@ -40,21 +42,8 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
     else:
         print("\n📝 STEP 2 - Cluster Theme Summary: [Not available]")
     
-    # Cluster Ideas
-    if cluster_data and cluster_id in cluster_data:
-        cluster_info = cluster_data[cluster_id]
-        ideas = cluster_info.get('ideas', [])
-        print(f"\n💡 Cluster Ideas ({len(ideas)} total):")
-        
-        # Show up to 10 ideas
-        for i, idea in enumerate(ideas[:10], 1):
-            if len(idea) > 80:
-                print(f"  {i}. {idea[:77]}...")
-            else:
-                print(f"  {i}. {idea}")
-        
-        if len(ideas) > 10:
-            print(f"  ... and {len(ideas) - 10} more")
+    # Note: Cluster ideas are not available in reasoning cache (to save space)
+    print(f"\n💡 Cluster Ideas: [Not cached - enable full cluster data if needed]")
     
     # Candidate Codes (from Step 1)
     if candidate_codes_data and cluster_id in candidate_codes_data:
@@ -111,7 +100,7 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
             print(f"  {line.strip()}")
     
     # Step 4: Validation
-    val = validation.get(cluster_id)
+    val = step4_validations.get(cluster_id)
     if val:
         print("\n✅ STEP 4 - Validation:")
         print(f"• Decision: {val['decision']}")
@@ -130,29 +119,32 @@ def display_cluster_analysis(results: Dict[str, Any], cluster_id: Optional[int] 
             print(f"  - Parsimony: {reasoning.get('parsimony_reasoning', 'N/A')}")
             print(f"  - Non-redundancy: {reasoning.get('redundancy_reasoning', 'N/A')}")
             print(f"  - Justification Alignment: {reasoning.get('justification_reasoning', 'N/A')}")
-    
-    # Final Validated Code
-    validated_code = step4.get(cluster_id)
-    if validated_code:
-        print("\n📌 Final Validated Code:")
-        print(f"• Code: {validated_code['code']}")
-        print("• Definition: {validated_code['definition']}")
+        
+        # Final Validated Code (extract from validation if available)
+        if 'validated_code' in val and val['validated_code']:
+            validated_code = val['validated_code']
+            print("\n📌 Final Validated Code:")
+            print(f"• Code: {validated_code['code']}")
+            print(f"• Definition: {validated_code['definition']}")
+        else:
+            print("\n📌 Final Validated Code: [Not generated/validated]")
     else:
+        print("\n✅ STEP 4 - Validation: [No validation performed]")
         print("\n📌 Final Validated Code: [Not generated/validated]")
     
     print("\n" + "="*80)
 
 
-def display_summary_statistics(results: Dict[str, Any]) -> None:
+def display_summary_statistics(codebook_reasoning: models.CodeGeneratorReasoningResults) -> None:
     """
     Display summary statistics for the entire pipeline run
     
     Args:
-        results: The results dictionary from generator.generate()
+        codebook_reasoning: The cached reasoning results
     """
-    stats = results.get('stats', {})
-    step3 = results.get('step3_recommendations', {})
-    validation = results.get('validation_details', {})
+    stats = codebook_reasoning.stats
+    step3 = codebook_reasoning.step3_recommendations
+    validation = codebook_reasoning.step4_validations
     
     print("\n" + "="*80 + "\nPIPELINE SUMMARY STATISTICS\n" + "="*80)
     
@@ -182,17 +174,18 @@ def display_summary_statistics(results: Dict[str, Any]) -> None:
         print(f"• No new codes needed: {stats.get('no_new_codes_needed', 0)}")
 
 
-def display_multiple_clusters(results: Dict[str, Any], cluster_ids: List[int] = None, 
+def display_multiple_clusters(codebook_reasoning: models.CodeGeneratorReasoningResults, 
+                            cluster_ids: List[int] = None, 
                             max_clusters: int = 5) -> None:
     """
     Display analysis for multiple clusters
     
     Args:
-        results: The results dictionary from generator.generate()
+        codebook_reasoning: The cached reasoning results
         cluster_ids: List of specific cluster IDs to display (None for random selection)
         max_clusters: Maximum number of clusters to display
     """
-    step3 = results.get('step3_recommendations', {})
+    step3 = codebook_reasoning.step3_recommendations
     
     if cluster_ids is None:
         # Random selection
@@ -204,25 +197,57 @@ def display_multiple_clusters(results: Dict[str, Any], cluster_ids: List[int] = 
     
     for idx, cluster_id in enumerate(cluster_ids, 1):
         print(f"\n{'='*20} CLUSTER {idx}/{len(cluster_ids)} {'='*20}")
-        display_cluster_analysis(results, cluster_id, show_detailed_reasoning=False)
+        display_cluster_analysis(codebook_reasoning, cluster_id, show_detailed_reasoning=False)
 
 
-def find_clusters_by_decision(results: Dict[str, Any], decision_type: str) -> List[int]:
+def find_clusters_by_decision(codebook_reasoning: models.CodeGeneratorReasoningResults, 
+                             decision_type: str) -> List[int]:
     """
     Find all clusters with a specific decision type
     
     Args:
-        results: The results dictionary from generator.generate()
+        codebook_reasoning: The cached reasoning results
         decision_type: 'create_new', 'modify_existing', or 'use_existing'
     
     Returns:
         List of cluster IDs matching the decision type
     """
-    step3 = results.get('step3_recommendations', {})
+    step3 = codebook_reasoning.step3_recommendations
     matching_clusters = []
     
     for cluster_id, rec in step3.items():
-        if rec.decision == decision_type:
+        if hasattr(rec, 'decision') and rec.decision == decision_type:
+            matching_clusters.append(cluster_id)
+        elif isinstance(rec, dict) and rec.get('decision') == decision_type:
             matching_clusters.append(cluster_id)
     
     return matching_clusters
+
+
+def load_and_display_reasoning(cache_manager, filename: str, cluster_id: int = None, 
+                              step_name: str = "codebook_generation"):
+    """
+    Load cached reasoning results and display them
+    
+    Args:
+        cache_manager: The cache manager instance
+        filename: The cache filename
+        cluster_id: Specific cluster to display (None for random)
+        step_name: The step name
+    """
+    try:
+        reasoning_models = cache_manager.load_from_cache(
+            filename, f"{step_name}_reasoning", models.CodeGeneratorReasoningResults
+        )
+        
+        if reasoning_models and len(reasoning_models) > 0:
+            codebook_reasoning = reasoning_models[0]
+            print("📁 Displaying from cached reasoning results...")
+            display_cluster_analysis(codebook_reasoning, cluster_id)
+        else:
+            print("ERROR: No reasoning cache found.")
+            print("   Enable CACHE_CODEGENERATOR_REASONING=True in pipeline and re-run to create cache.")
+            
+    except Exception as e:
+        print(f"ERROR: Error loading reasoning cache: {e}")
+        print("   Make sure the cache file exists and was created with the current model structure.")

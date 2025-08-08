@@ -96,10 +96,10 @@ class ThemeEnrichedCodebookModel(CodebookModel):
     theme_methodology: Optional[str] = None
 
     
-# === STEP 7 DETAILED RESULTS MODEL ========================================================================================================
+# === CODE GENERATOR REASONING RESULTS MODEL ========================================================================================================
 
-class Step7DetailedResults(BaseModel):
-    """Detailed debugging information for Step 7 code generation"""
+class CodeGeneratorReasoningResults(BaseModel):
+    """Detailed LLM reasoning and decisions from code generation process"""
     
     # All cluster processing details
     cluster_results: List[Dict[str, Any]]  # Raw results from each cluster

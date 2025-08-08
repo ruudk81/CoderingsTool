@@ -13,7 +13,7 @@ import models
 # === CONFIG ========================================================================================================
 from utils import dataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG
+from config import CacheConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -512,7 +512,8 @@ from utils import codeGenerator as codeGenerator
 
 FORCE = True
 VERBOSE = True
-PROMPT_PRINTER  = True
+PROMPT_PRINTER = True
+CACHE_CODEGENERATOR_REASONING = False  # Cache detailed LLM reasoning for debugging
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -525,17 +526,31 @@ force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     codebook_models = cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
     if codebook_models and len(codebook_models) > 0:
-        codebook_model = codebook_models[0]  # Extract the single model from the list
+        codebook_main = codebook_models[0]  # Extract the single model from the list
         verbose_reporter.summary("CODEBOOK FROM CACHE", {
-            "Total codes": len(codebook_model.codes),
-            "Source variable": codebook_model.source_variable
+            "Total codes": len(codebook_main.codes),
+            "Source variable": codebook_main.source_variable
         })
         # Extract legacy codebook list for backward compatibility
         codebook = [models.Codebook(code=entry.code, definition=entry.definition) 
-                    for entry in codebook_model.codes]
+                    for entry in codebook_main.codes]
+        
+        # Load reasoning cache if flag is enabled
+        if CACHE_CODEGENERATOR_REASONING:
+            try:
+                reasoning_models = cache_manager.load_from_cache(
+                    filename, f"{step_name}_reasoning", models.CodeGeneratorReasoningResults
+                )
+                if reasoning_models and len(reasoning_models) > 0:
+                    codebook_reasoning = reasoning_models[0]
+                    print("✓ Loaded codebook reasoning from cache")
+                else:
+                    print("Note: Reasoning cache not found (run with CACHE_CODEGENERATOR_REASONING=True to create)")
+            except Exception as e:
+                print(f"Warning: Failed to load reasoning cache: {e}")
     else:
         print("ERROR: Failed to load codebook from cache")
-        codebook_model = models.CodebookModel(codes=[], source_variable=var_name)
+        codebook_main = models.CodebookModel(codes=[], source_variable=var_name)
         codebook = []
 else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
@@ -549,12 +564,9 @@ else:
     )
     starter_codes = starter_generator.generate()
   
-    # Initialize processing config for all branches
-    processing_config = DEFAULT_PROCESSING_CONFIG
-    
     if not starter_codes:
         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-        codebook_model = models.CodebookModel(
+        codebook_main = models.CodebookModel(
             codes=[],
             generation_metadata={"error": "Failed to generate starter codes"},
             source_variable=var_name
@@ -571,8 +583,7 @@ else:
              verbose=True,
              batch_size=10,
              max_concurrent_requests=5,
-             prompt_printer=prompt_printer,
-             config=processing_config)
+             prompt_printer=prompt_printer)
         results = generator.generate()
         
         codebook_entries = []
@@ -617,7 +628,7 @@ else:
         else:
             print("Warning: Codebook generator returned no results")
         
-        codebook_model = models.CodebookModel(
+        codebook_main = models.CodebookModel(
             codes=codebook_entries,
             generation_metadata={
                 "methodology": "Inductive codebook generation from clusters",
@@ -632,21 +643,22 @@ else:
     end_time = time.time()
     elapsed_time = end_time - start_time
     
-    if 'codebook_model' not in locals():
-        print("ERROR: codebook_model was not created!")
-        codebook_model = models.CodebookModel(
+    if 'codebook_main' not in locals():
+        print("ERROR: codebook_main was not created!")
+        codebook_main = models.CodebookModel(
             codes=[],
             generation_metadata={"error": "Failed to create codebook model"},
             source_variable=var_name
         )
     
-    cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
+    # Always cache main codebook
+    cache_manager.save_to_cache([codebook_main], filename, step_name, elapsed_time)
     
-    # Conditionally cache detailed results for debugging
-    if results and (results.get('cache_detailed', False) or processing_config.cache_detailed_step7):
+    # Conditionally cache reasoning results for debugging
+    if CACHE_CODEGENERATOR_REASONING and results:
         from datetime import datetime
         try:
-            detailed_results = models.Step7DetailedResults(
+            codebook_reasoning = models.CodeGeneratorReasoningResults(
                 cluster_results=[],  # Could include raw cluster results if needed
                 step2_summaries=results.get('step2_summaries', {}),
                 step3_recommendations=results.get('step3_recommendations', {}),
@@ -660,10 +672,12 @@ else:
                 processing_timestamp=datetime.now().isoformat(),
                 cluster_assignments=results.get('cluster_assignments', {})
             )
-            cache_manager.save_to_cache([detailed_results], filename, f"{step_name}_detailed", elapsed_time)
-            print(f"✓ Cached detailed Step 7 results for debugging")
+            cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", elapsed_time)
+            print("✓ Cached codebook reasoning for debugging")
         except Exception as e:
-            print(f"Warning: Failed to cache detailed results: {e}")
+            print(f"Warning: Failed to cache reasoning results: {e}")
+    elif CACHE_CODEGENERATOR_REASONING:
+        print("Note: CACHE_CODEGENERATOR_REASONING enabled but no results to cache")
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -799,7 +813,7 @@ else:
                 print(f"     - Code {code_info['code_number']}: {code_name}")
         
         # Enrich codebook entries with theme information
-        for entry in codebook_model.codes:
+        for entry in codebook_main.codes:
             theme_name = code_to_theme_mapping.get(entry.code)
             theme_info = None
             theme_cluster_id = None
@@ -833,8 +847,8 @@ else:
         # Create structured theme-enriched codebook
         theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
             codes=enriched_entries,
-            generation_metadata=codebook_model.generation_metadata,
-            source_variable=codebook_model.source_variable,
+            generation_metadata=codebook_main.generation_metadata,
+            source_variable=codebook_main.source_variable,
             themes_summary=themes,
             code_to_theme_mapping=code_to_theme_mapping,
             theme_methodology=result.get('methodology', 'Clustering-based theme identification')
