@@ -44,14 +44,12 @@ class ClusterModel(EmbeddingsModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
 
 class AssignedIdeaSubmodel(ClusterSubmodel):
-    """Idea with cluster info + assigned codes and themes"""
     assigned_codes: Optional[List[str]] = None
     assigned_themes: Optional[List[str]] = None
     assignment_confidence: Optional[float] = None
     assignment_rationale: Optional[str] = None
 
 class CodeAssignedModel(ClusterModel):
-    """ClusterModel + Code/Theme Assignments (Step 9)"""
     response_ideas: Optional[List[AssignedIdeaSubmodel]] = None
     assignment_metadata: Optional[Dict[str, Any]] = None
 
@@ -98,6 +96,34 @@ class ThemeEnrichedCodebookModel(CodebookModel):
     theme_methodology: Optional[str] = None
 
     
+# === STEP 7 DETAILED RESULTS MODEL ========================================================================================================
+
+class Step7DetailedResults(BaseModel):
+    """Detailed debugging information for Step 7 code generation"""
+    
+    # All cluster processing details
+    cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
+    
+    # Separated by step for easy analysis
+    step2_summaries: Dict[int, str]
+    step3_recommendations: Dict[int, Any]  # Raw recommendation objects
+    step4_validations: Dict[int, Dict[str, Any]]
+    candidate_codes: Dict[int, List[Dict[str, str]]]
+    
+    # Processing metadata
+    stats: Dict[str, Any]
+    generator_version: str
+    var_lab: str
+    total_clusters: int
+    total_ideas: int
+    processing_timestamp: str
+    
+    # Cluster assignments for cross-reference
+    cluster_assignments: Dict[int, str]
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 # class SuggestedTheme(BaseModel):
 #     theme_name: str
 #     concept: str

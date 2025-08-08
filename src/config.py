@@ -504,6 +504,30 @@ class ExportConfig:
         return os.path.join(base_data_dir, "exports")
 
 # =============================================================================
+# PROCESSING CONFIGURATION
+# =============================================================================
+
+@dataclass
+class ProcessingConfig:
+    """Configuration for processing behavior and debugging options"""
+    
+    # Debugging and detailed caching
+    cache_detailed_step7: bool = False  # Cache detailed Step 7 results for debugging
+    
+    # General processing options
+    verbose: bool = True
+    show_progress: bool = True
+    parallel_processing: bool = True
+    
+    # Error handling
+    stop_on_error: bool = False
+    log_errors: bool = True
+    
+    # Performance tuning
+    max_parallel_workers: int = 4
+    memory_optimization: bool = True
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -518,5 +542,6 @@ DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
+DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 
 
