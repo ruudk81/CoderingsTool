@@ -1402,7 +1402,6 @@ class InductiveCodeGenerator:
         enable_step_parallelization: bool = True,
         max_concurrent_steps: int = 2,
         max_concurrent_requests: int = 10,
-        config = None,  # For compatibility
         embedded_text: List[models.EmbeddingsModel] = None  # Deprecated - for backward compatibility
     ):
         self.cluster_results = cluster_results
@@ -1419,9 +1418,6 @@ class InductiveCodeGenerator:
         self.enable_step_parallelization = enable_step_parallelization
         self.max_concurrent_steps = max_concurrent_steps
         self.max_concurrent_requests = max_concurrent_requests
-        
-        # Store processing config
-        self.processing_config = config if config else None
         
         # Initialize components
         self.model_config = ModelConfig()
@@ -1655,8 +1651,7 @@ class InductiveCodeGenerator:
             'step2_summaries': step2_summaries,
             'candidate_codes_data': candidate_codes_data,
             'stats': final_stats,
-            'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS',
-            'cache_detailed': self.processing_config.cache_detailed_step7 if self.processing_config else False
+            'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS'
         }
     
     # def _display_sample_new_codes(self, final_codes: List[Dict], starter_codes: List[Dict], validated_codes: Dict) -> None:
