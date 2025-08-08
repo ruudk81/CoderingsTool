@@ -375,14 +375,14 @@ else:
 #     print(text)
 #     break
 
-# # debug - example outputs
-# import random
-# n_samples = 1
-# sampled_items = random.sample(encoded_text, n_samples)
-# for item in sampled_items:
-#     print(item.response)
-#     for segment in item.response_ideas:
-#         print(f"- {segment.idea}")
+# debug - example outputs
+import random
+n_samples = 1
+sampled_items = random.sample(encoded_text, n_samples)
+for item in sampled_items:
+    print(item.response)
+    for segment in item.response_ideas:
+        print(f"- {segment.idea}")
 
 # === STEP 5 =======================================================================================================
 """Generate embeddings"""
@@ -466,7 +466,7 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
-# #debug - print random clusters  
+# # #debug - print random clusters  
 # import random
 # cluster_ids = list(set([
 #     response_idea.initial_cluster 
@@ -485,24 +485,24 @@ else:
 #     print(f"-    {segment_desc}")
     
     
-# #debug - print all clusters
-# cluster_ids = list(set([
-#     response_idea.initial_cluster 
-#     for result in initial_cluster_results 
-#     for response_idea in result.response_ideas  # This has initial_cluster
-#     if response_idea.initial_cluster is not None]))
-# for x in range(1, round(len(cluster_ids) / 20) + 1):
-#     y = x * 20
-#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+#debug - print all clusters
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas  # This has initial_cluster
+    if response_idea.initial_cluster is not None]))
+for x in range(1, round(len(cluster_ids) / 20) + 1):
+    y = x * 20
+    print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
 
-#     for z in range(y - 20, y):
-#         if z < len(cluster_ids):
-#             print(f"\nCluster {z}")
-#             for item in initial_cluster_results:
-#                 for subitem in item.response_ideas:
-#                     if subitem.initial_cluster == z:
-#                         print(subitem.idea)
-#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    for z in range(y - 20, y):
+        if z < len(cluster_ids):
+            print(f"\nCluster {z}")
+            for item in initial_cluster_results:
+                for subitem in item.response_ideas:
+                    if subitem.initial_cluster == z:
+                        print(subitem.idea)
+    input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
 
 # === STEP 7 ========================================================================================================
@@ -510,9 +510,9 @@ else:
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
-FORCE = False
+FORCE = True
 VERBOSE = True
-PROMPT_PRINTER  = False
+PROMPT_PRINTER  = True
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -638,7 +638,7 @@ else:
     cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug 
+# #debug 
 # idx = 1
 # for entry in codebook:
 #     print(idx)
@@ -647,91 +647,34 @@ else:
 #     print("\n")
 #     idx += 1
 
-# # Unpack and display Step 7 results (code generation)
-# if 'results' in locals():
-#     import random
+from utils.codeGenerator_displayResults import display_cluster_analysis, display_summary_statistics
+if 'results' in locals():
     
-#     print("\n" + "="*80 + "\nSTEP 7 RESULTS ANALYSIS\n" + "="*80)
+    # display code generations statistics
+    display_summary_statistics(results)
     
-#     step3 = results.get('step3_recommendations', {})
-#     validation = results.get('validation_details', {})
-#     step4 = results.get('step4_validated_codes', {})
-#     cluster_data = results.get('cluster_data', {})  # Raw cluster ideas and embeddings
-#     cluster_assignments = results.get('cluster_assignments', {})
+    # debug 1: Display a random cluster with full details
+    display_cluster_analysis(results)
     
-#     # Sample a random cluster
-#     if step3:
-#         available_ids = list(step3.keys())
-#         sampled_id = random.choice(available_ids)
-        
-#         print("\n📋 Random Sample Cluster Analysis:")
-#         print("-" * 40)
-#         rec = step3[sampled_id]
-#         print(f"Cluster ID: {sampled_id}")
-#         print(f"Cluster Theme: {rec.cluster_core_theme}")
-#         print(f"Decision: {rec.decision}")
-        
-#         # cluster of extracted ideas
-#         if cluster_data and sampled_id in cluster_data:
-#             cluster_info = cluster_data[sampled_id]
-#             ideas = cluster_info.get('ideas', [])
-#             print(f"\nCluster Ideas ({len(ideas)} total):")
-#             for i, idea in enumerate(ideas[:10], 1):
-#                 print(f"  {i}. {idea[:80]}..." if len(idea) > 80 else f"  {i}. {idea}")
-#             if len(ideas) > 3:
-#                 print(f"  ... and {len(ideas) - 10} more")
-        
-#         # candidate codes
-#         candidate_codes = results.get('candidate_codes_data', {})
-#         if candidate_codes and sampled_id in candidate_codes:
-#              codes = candidate_codes[sampled_id]
-#              print("\nCandidate Codes:")
-#              for i, code in enumerate(codes[:5], 1):  # Show up to 5 candidate codes
-#                  if isinstance(code, dict):
-#                      print(f"  {i}. {code.get('code', 'Unknown')}: {code.get('definition', 'No definition')[:60]}...")
-#                  else:
-#                      print(f"  {i}. {code}")
-#              if len(codes) > 5:
-#                  print(f"  ... and {len(codes) - 5} more candidate codes")
-#         else:
-#              print("\n� Candidate Codes: [Not captured in current implementation]")
-                
-#         # Check action_details based on decision type
-#         print("\nInitial recommendation")
-#         if hasattr(rec, 'action_details') and rec.action_details:
-#             if rec.decision == 'use_existing' and rec.action_details.codes_to_use:
-#                 print(f"  • Codes to use: {', '.join(rec.action_details.codes_to_use)}")
-#             elif rec.decision == 'modify_existing':
-#                 print(f"  • Code to modify: {rec.action_details.codes_to_modify}")
-#                 print(f"  • Modified code name: {rec.action_details.modified_code_name}")
-#                 print(f"  • Modified definition: {rec.action_details.modified_code_definition}")
-#             elif rec.decision == 'create_new':
-#                 print(f"  • New code name: {rec.action_details.new_code_name}")
-#                 print(f"  • New code definition: {rec.action_details.new_code_definition}")
-        
-#         print(f"\nJustification: \n{rec.justification}")
-        
-#         # Get validation details if they exist
-#         val = validation.get(sampled_id)
-#         if val:
-#             print(f"\nValidation Decision: {val['decision']}")
-#             print(f"Decision Rationale: {val['decision_rationale']}")
-#             # reasoning = val.get('reasoning', {})
-#             # print("Detailed Evaluation:")
-#             # print(f"  Semantic Fit & Coverage: {reasoning.get('semantic_fit_reasoning', 'N/A')}")
-#             # print(f"  Atomicity: {reasoning.get('atomicity_reasoning', 'N/A')}")
-#             # print(f"  Parsimony: {reasoning.get('parsimony_reasoning', 'N/A')}")
-#             # print(f"  Non-redundancy: {reasoning.get('redundancy_reasoning', 'N/A')}")
-#             # print(f"  Justification Alignment: {reasoning.get('justification_reasoning', 'N/A')}")
-       
-#         # Get final validated code if it exists
-#         validated_code = step4.get(sampled_id)
-#         if validated_code:
-#             print("\n✅ Final Validated Code:")
-#             print(f"  • Code: {validated_code['code']}")
-#             print(f"  • Definition: {validated_code['definition']}")
-       
+    # debug 2: Display specific types of clusters
+    #from utils.resultsDisplay import find_clusters_by_decision
+    # new_code_clusters = find_clusters_by_decision(results, 'create_new')
+    # if new_code_clusters:
+    #     print("\n" + "="*80 + "\nEXAMPLE: NEW CODE CREATION\n" + "="*80)
+    #     display_cluster_analysis(results, new_code_clusters[0])
     
+    # modified_clusters = find_clusters_by_decision(results, 'modify_existing')
+    # if modified_clusters:
+    #     print("\n" + "="*80 + "\nEXAMPLE: CODE MODIFICATION\n" + "="*80)
+    #     display_cluster_analysis(results, modified_clusters[0])
+    
+    #debug 3 : Display multiple clusters at once
+    # from utils.resultsDisplay import display_multiple_clusters
+    # print("\n" + "="*80 + "\nMULTIPLE CLUSTER ANALYSIS\n" + "="*80)
+    # display_multiple_clusters(results, max_clusters=3)
+else:
+    print("No results found. Please run the generator first: results = generator.generate()")
+
 
 
 # === STEP 8 ========================================================================================================
@@ -739,7 +682,7 @@ else:
 from utils.themeIdentifier import ThemeIdentifier
 
 FORCE = True
-VERBOSE = True
+VERBOSE = False
 PROMPT_PRINTER  = False
 
 step_name = "theme_identification"
@@ -999,23 +942,23 @@ summarizer.generate_summary(
 #     break
     
 
-# #debug
-# import random
-# sampled_result = random.choice(code_assigned_results)
-# print(f"Respondent ID: {sampled_result.respondent_id}")
-# print(f"Response: {sampled_result.response}")
-# #print(f"Idea count: {sampled_result.idea_count}")
-# #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-# #print("---- Assigned Codes ----")
-# for idea in sampled_result.response_ideas:
-#     print("-" * 40)
-#     print(f"Idea ID: {idea.idea_id}")
-#     print(f"Idea: {idea.idea}")
-#     print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
-#     print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
-#     print(f"Assignment Confidence: {idea.assignment_confidence}")
-#     print(f"Rationale: {idea.assignment_rationale}")
-#     print("-" * 40)
+#debug
+import random
+sampled_result = random.choice(code_assigned_results)
+print(f"Respondent ID: {sampled_result.respondent_id}")
+print(f"Response: {sampled_result.response}")
+#print(f"Idea count: {sampled_result.idea_count}")
+#print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+#print("---- Assigned Codes ----")
+for idea in sampled_result.response_ideas:
+    print("-" * 40)
+    print(f"Idea ID: {idea.idea_id}")
+    print(f"Idea: {idea.idea}")
+    print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+    print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+    print(f"Assignment Confidence: {idea.assignment_confidence}")
+    print(f"Rationale: {idea.assignment_rationale}")
+    print("-" * 40)
 
 
 

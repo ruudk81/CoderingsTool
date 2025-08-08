@@ -363,8 +363,8 @@ class ThemeIdentifier:
         )
         labels = hdb.fit_predict(umap_embeddings)
         
-        #print(f"HDBSCAN labels: {list(labels)}")
-        #print(f"Unique clusters: {sorted(set(labels))}")
+        # print(f"HDBSCAN labels: {list(labels)}")
+        # print(f"Unique clusters: {sorted(set(labels))}")
         
         # Assign cluster labels to codes
         for code_embedding, label in zip(code_embeddings, labels):
@@ -389,12 +389,12 @@ class ThemeIdentifier:
                 clusters[cluster_id] = []
             clusters[cluster_id].append(code)
         
-        #print("Cluster composition:")
-        #for cluster_id, codes in clusters.items():
-        #    print(f"  Cluster {cluster_id}: {len(codes)} codes")
-        #    for code in codes:
-        #        print(f"    - Code {code.code_number}: '{code.code_name}'")
-        #print(f"✅ Step 4 complete: Grouped into {len(clusters)} clusters")
+        print("Cluster composition:")
+        for cluster_id, codes in clusters.items():
+           print(f"  Cluster {cluster_id}: {len(codes)} codes")
+           for code in codes:
+               print(f"    - Code {code.code_number}: '{code.code_name}'")
+        print(f"✅ Step 4 complete: Grouped into {len(clusters)} clusters")
         return clusters
     
     async def _find_nearest_existing_themes(self, cluster_codes: List[CodeEmbedding], 
