@@ -862,6 +862,7 @@ Recommendation:
                 return {
                     'cluster_id': cluster_id,
                     'status': 'no_new_code_needed',
+                    'step2_summary': summaries,
                     'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                     'step4_validated_code': None,
                     'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
@@ -981,6 +982,7 @@ Recommendation:
                                 'original_code': original_code_name,
                                 'code': validated_code.get('code', ''),
                                 'definition': validated_code.get('definition', ''),
+                                'step2_summary': summaries,
                                 'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                                 'step4_validated_code': validated_code,
                                 'validation_details': validation_details,
@@ -1004,6 +1006,7 @@ Recommendation:
                             'status': 'new_code_added' if added else 'code_already_exists',
                             'code': validated_code.get('code', ''),
                             'definition': validated_code.get('definition', ''),
+                            'step2_summary': summaries,
                             'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                             'step4_validated_code': validated_code,
                             'validation_details': validation_details,
@@ -1014,6 +1017,7 @@ Recommendation:
                     return {
                         'cluster_id': cluster_id,
                         'status': 'no_codes_passed_validation',
+                        'step2_summary': summaries,
                         'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                         'step4_validated_code': None,
                         'validation_details': validation_details,
@@ -1027,6 +1031,7 @@ Recommendation:
             return {
                 'cluster_id': cluster_id,
                 'status': 'processed_no_validation_needed',
+                'step2_summary': summaries,
                 'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                 'processing_time': time.time() - start_time
             }
@@ -1039,6 +1044,7 @@ Recommendation:
                 'status': 'Processing_error',
                 'error': str(e),
                 'error_type': type(e).__name__,
+                'step2_summary': summaries if 'summaries' in locals() else None,
                 'candidate_codes': [],
                 'processing_time': time.time() - start_time if 'start_time' in locals() else 0
             }
