@@ -13,7 +13,7 @@ import models
 # === CONFIG ========================================================================================================
 from utils import dataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig
+from config import CacheConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -549,6 +549,9 @@ else:
     )
     starter_codes = starter_generator.generate()
   
+    # Initialize processing config for all branches
+    processing_config = DEFAULT_PROCESSING_CONFIG
+    
     if not starter_codes:
         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
         codebook_model = models.CodebookModel(
@@ -557,6 +560,7 @@ else:
             source_variable=var_name
         )
         codebook = []
+        results = {}  # Empty results for caching check
     else:
         # Phase 2: Inductive code generation
         generator = codeGenerator.InductiveCodeGenerator(
@@ -567,7 +571,8 @@ else:
              verbose=True,
              batch_size=10,
              max_concurrent_requests=5,
-             prompt_printer=prompt_printer  )
+             prompt_printer=prompt_printer,
+             config=processing_config)
         results = generator.generate()
         
         codebook_entries = []
@@ -636,6 +641,30 @@ else:
         )
     
     cache_manager.save_to_cache([codebook_model], filename, step_name, elapsed_time)
+    
+    # Conditionally cache detailed results for debugging
+    if results and (results.get('cache_detailed', False) or processing_config.cache_detailed_step7):
+        from datetime import datetime
+        try:
+            detailed_results = models.Step7DetailedResults(
+                cluster_results=[],  # Could include raw cluster results if needed
+                step2_summaries=results.get('step2_summaries', {}),
+                step3_recommendations=results.get('step3_recommendations', {}),
+                step4_validations=results.get('validation_details', {}),
+                candidate_codes=results.get('candidate_codes_data', {}),
+                stats=results.get('stats', {}),
+                generator_version=results.get('generator_version', ''),
+                var_lab=var_name,
+                total_clusters=len(results.get('cluster_data', {})),
+                total_ideas=sum(len(c.get('ideas', [])) for c in results.get('cluster_data', {}).values()),
+                processing_timestamp=datetime.now().isoformat(),
+                cluster_assignments=results.get('cluster_assignments', {})
+            )
+            cache_manager.save_to_cache([detailed_results], filename, f"{step_name}_detailed", elapsed_time)
+            print(f"✓ Cached detailed Step 7 results for debugging")
+        except Exception as e:
+            print(f"Warning: Failed to cache detailed results: {e}")
+    
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 # #debug 
