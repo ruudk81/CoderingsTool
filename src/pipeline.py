@@ -486,23 +486,23 @@ else:
     
     
 #debug - print all clusters
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas  # This has initial_cluster
-    if response_idea.initial_cluster is not None]))
-for x in range(1, round(len(cluster_ids) / 20) + 1):
-    y = x * 20
-    print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+# cluster_ids = list(set([
+#     response_idea.initial_cluster 
+#     for result in initial_cluster_results 
+#     for response_idea in result.response_ideas  # This has initial_cluster
+#     if response_idea.initial_cluster is not None]))
+# for x in range(1, round(len(cluster_ids) / 20) + 1):
+#     y = x * 20
+#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
 
-    for z in range(y - 20, y):
-        if z < len(cluster_ids):
-            print(f"\nCluster {z}")
-            for item in initial_cluster_results:
-                for subitem in item.response_ideas:
-                    if subitem.initial_cluster == z:
-                        print(subitem.idea)
-    input("\n🔸 Press Enter to continue to the next batch of clusters...")
+#     for z in range(y - 20, y):
+#         if z < len(cluster_ids):
+#             print(f"\nCluster {z}")
+#             for item in initial_cluster_results:
+#                 for subitem in item.response_ideas:
+#                     if subitem.initial_cluster == z:
+#                         print(subitem.idea)
+#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
         
 
 # === STEP 7 ========================================================================================================
@@ -660,10 +660,11 @@ else:
         try:
             codebook_reasoning = models.CodeGeneratorReasoningResults(
                 cluster_results=[],  # Could include raw cluster results if needed
-                step2_summaries=results.get('step2_summaries', {}),
+                step1_summaries=results.get('step1_summaries', {}),
+                step2_analysis=results.get('candidate_codes_data', {}),
                 step3_recommendations=results.get('step3_recommendations', {}),
                 step4_validations=results.get('validation_details', {}),
-                candidate_codes=results.get('candidate_codes_data', {}),
+                step4_validated_codes=results.get('step4_validated_codes', {}),
                 stats=results.get('stats', {}),
                 generator_version=results.get('generator_version', ''),
                 var_lab=var_name,
