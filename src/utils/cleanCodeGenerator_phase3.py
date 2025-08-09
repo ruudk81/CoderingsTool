@@ -16,11 +16,18 @@ from langchain_core.output_parsers import PydanticOutputParser
 # Models and config
 import models
 from config import OPENAI_API_KEY, ModelConfig, DEFAULT_LANGUAGE
+from pydantic import BaseModel, Field, RootModel
+from typing import List
 from prompts import (
     CANDIDATE_CODE_SELECTION_PROMPT,
     CODE_GENERATION_PROMPT,
     VALIDATION_PROMPT
 )
+
+# Pydantic model for Step 2 output (matching original codeGenerator)
+class CodebookAnalysisOutput(RootModel[List[models.CandidateCode]]):
+    """Output from Step 2 - Candidate Code Selection - Direct array of candidate codes"""
+    root: List[models.CandidateCode] = Field(description="Array of selected relevant codes")
 
 # Original SharedCodebook from codeGenerator.py
 @dataclass
@@ -158,7 +165,7 @@ class LangChainPhase3Processor:
         self.step2_chain = (
             step2_prompt
             | self.llm
-            | PydanticOutputParser(pydantic_object=models.CandidateCode)  # TODO: Should be List[CandidateCode]
+            | PydanticOutputParser(pydantic_object=CodebookAnalysisOutput)
         )
         
         # Step 3: Code Generation Chain
@@ -313,9 +320,11 @@ class LangChainPhase3Processor:
             }
             
             try:
-                candidate_code_result = await self.step2_chain.ainvoke(step2_inputs)
+                candidate_codes_output = await self.step2_chain.ainvoke(step2_inputs)
+                # Extract list from RootModel
+                candidate_codes_list = candidate_codes_output.root if candidate_codes_output else []
                 step2_result = {
-                    'candidate_codes': [candidate_code_result] if candidate_code_result else [],
+                    'candidate_codes': candidate_codes_list,
                     'status': 'completed'
                 }
             except Exception as e:
