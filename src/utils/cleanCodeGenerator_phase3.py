@@ -331,6 +331,13 @@ class LangChainPhase3Processor:
                 candidate_codes_output = await self.step2_chain.ainvoke(step2_inputs)
                 # Extract list from RootModel
                 candidate_codes_list = candidate_codes_output.root if candidate_codes_output else []
+                
+                # Debug logging - this should not always be empty!
+                if not candidate_codes_list and len(current_codes) > 0:
+                    self.verbose_reporter.stat_line(f"⚠️  Step 2 found NO candidate codes for cluster {cluster_id} despite {len(current_codes)} existing codes")
+                elif candidate_codes_list:
+                    self.verbose_reporter.stat_line(f"✅ Step 2 found {len(candidate_codes_list)} candidate codes for cluster {cluster_id}")
+                
                 step2_result = {
                     'candidate_codes': candidate_codes_list,
                     'status': 'completed'
