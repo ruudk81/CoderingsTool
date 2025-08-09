@@ -509,7 +509,6 @@ else:
 """Generate codes"""
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
-from utils.cleanCodeGenerator import CleanCodeGenerator
 
 FORCE = True
 VERBOSE = True
@@ -576,15 +575,15 @@ else:
         results = {}  # Empty results for caching check
     else:
         # Phase 2: Inductive code generation
-        # Use new clean 3-phase architecture
-        generator = CleanCodeGenerator(
-             cluster_data=initial_cluster_results,
-             var_lab=var_lab,
-             config=None,  # Will use ModelConfig defaults
-             verbose=True,
-             prompt_printer=prompt_printer,
-             starter_codes=starter_codes)
-        results = asyncio.run(generator.generate())
+        # Use original codeGenerator with proven algorithms
+        generator = codeGenerator.InductiveCodeGenerator(
+            cluster_results=initial_cluster_results,
+            starter_codes=starter_codes, 
+            var_lab=var_lab,
+            verbose=True,
+            prompt_printer=prompt_printer
+        )
+        results = generator.generate()
         
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility

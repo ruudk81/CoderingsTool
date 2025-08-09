@@ -22,7 +22,7 @@ from langchain_core.prompts import PromptTemplate
 import models
 
 # === CONFIG ========================================================================================================
-from prompts import CANDIDATE_CODE_SELECTION_PROMPT, CLUSTER_SUMMARY_PROMPT, CODE_GENERATION_PROMPT, VALIDATION_PROMPT
+from prompts import CODEBOOK_ANALYSIS_PROMPT, RESPONSE_SUMMARY_PROMPT, MATCH_AND_RECOMMEND_PROMPT, VALIDATION_PROMPT
 from config import EmbeddingConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
 
 # === UTILS ========================================================================================================
@@ -409,35 +409,6 @@ class LangChainBatchProcessor:
             logger.info(f"  - Step parallelization: {enable_step_parallelization}")
             logger.info(f"  - Max concurrent steps: {max_concurrent_steps}")
     
-    def _format_cluster_summary_for_prompts(self, cluster_summary):
-        """Format cluster summary JSON into readable text for subsequent prompts (Steps 2-4)"""
-        if isinstance(cluster_summary, str):
-            try:
-                import json
-                summary_data = json.loads(cluster_summary)
-            except (json.JSONDecodeError, TypeError):
-                # If it's already formatted text, return as-is
-                return cluster_summary
-        elif isinstance(cluster_summary, dict):
-            summary_data = cluster_summary
-        else:
-            return str(cluster_summary)
-        
-        # Extract cluster summary text
-        summary_text = summary_data.get('cluster_summary', str(cluster_summary))
-        
-        # Format themes
-        themes = summary_data.get('themes', [])
-        if not themes:
-            return summary_text
-        elif len(themes) == 1:
-            return f"{summary_text}\nTheme: {themes[0]}"
-        else:
-            formatted_themes = []
-            for i, theme in enumerate(themes, 1):
-                formatted_themes.append(f"Theme {i}: {theme}")
-            return f"{summary_text}\n" + "\n".join(formatted_themes)
-    
     def _init_langchain_chain(self):
         """Initialize chains with optimized configurations"""
         
@@ -465,65 +436,65 @@ class LangChainBatchProcessor:
             temperature=0.0
         )
         
-        # Step 1: Cluster Summary Chain
+        # Step 1: Codebook Analysis Chain
+        codebook_prompt = PromptTemplate(
+            template=CODEBOOK_ANALYSIS_PROMPT,
+            input_variables=["language", "survey_question", "cluster_text", "code_text"]
+        )
+        
+        self.codebook_chain = (
+            codebook_prompt 
+            | self.step1_llm 
+            | PydanticOutputParser(pydantic_object=CodebookAnalysisOutput)
+        ).with_config({"max_concurrency": self.max_concurrent_requests})
+        
+        # Step 2: Response Summary Chain
         summary_prompt = PromptTemplate(
-            template=CLUSTER_SUMMARY_PROMPT,
+            template=RESPONSE_SUMMARY_PROMPT,
             input_variables=["language", "survey_question", "cluster_text"]
         )
         
         self.summary_chain = (
             summary_prompt
-            | self.step1_llm
+            | self.step2_llm
             | StrOutputParser()
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
-        # Step 2: Candidate Code Selection Chain
-        candidate_codes_prompt = PromptTemplate(
-            template=CANDIDATE_CODE_SELECTION_PROMPT,
-            input_variables=["language", "survey_question", "cluster_summary", "code_text"]
+        # Step 3: Match and Recommend Chain
+        match_prompt = PromptTemplate(
+            template=MATCH_AND_RECOMMEND_PROMPT,
+            input_variables=["language", "survey_question", "candidate_codes", "clustered_survey_responses", "cluster_summary"]
         )
         
-        self.candidate_codes_chain = (
-            candidate_codes_prompt 
-            | self.step2_llm 
-            | PydanticOutputParser(pydantic_object=CodebookAnalysisOutput)
-        ).with_config({"max_concurrency": self.max_concurrent_requests})
-        
-        # Step 3: Code Generation Chain
-        code_generation_prompt = PromptTemplate(
-            template=CODE_GENERATION_PROMPT,
-            input_variables=["language", "survey_question", "candidate_codes", "cluster_summary"]
-        )
-        
-        self.code_generation_chain = (
-            code_generation_prompt
+        self.match_chain = (
+            match_prompt
             | self.step3_llm
-            | StrOutputParser()
+            | PydanticOutputParser(pydantic_object=MatchRecommendation)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Step 4: Validation Chain
         validation_prompt = PromptTemplate(
             template=VALIDATION_PROMPT,
-            input_variables=["language", "survey_question", "candidate_codes", "cluster_summary", "step3_recommendation"]
+            input_variables=["language", "survey_question", "candidate_codes", "clustered_ideas", "step3_recommendation"]
         )
         
         self.validation_chain = (
             validation_prompt
             | self.step4_llm
-            | StrOutputParser()
+            | PydanticOutputParser(pydantic_object=ValidationResponse)
         ).with_config({"max_concurrency": self.max_concurrent_requests})
         
         # Initialize capture counts and step diversity tracking
         self._capture_counts = {
-            'cluster_summary': 0,
-            'candidate_codes': 0,
-            'code_generation': 0,
+            'codebook': 0,
+            'summary': 0,
+            'match': 0,
             'validation': 0
         }
         
         # Track which steps we've captured at least once (for guaranteed diversity)
         self._captured_steps = set()
-        self._all_steps = {'cluster_summary', 'candidate_codes', 'code_generation', 'validation'}
+        self._all_steps = {'codebook', 'summary', 'match', 'validation'}
         self._diversity_complete = False
 
     def _split_into_sub_batches(self, batch_clusters: List[Tuple[int, Dict]]) -> List[List[Tuple[int, Dict]]]:
@@ -534,63 +505,29 @@ class LangChainBatchProcessor:
             sub_batches.append(sub_batch)
         return sub_batches
 
-    def _format_step3_recommendation(self, recommendation) -> str:
-        """Format Step 3 recommendation for Step 4 (handles both old and new multi-theme format)"""
+    def _format_step3_recommendation(self, recommendation: MatchRecommendation) -> str:
+        """Format prompt 3 for Step 4"""
         if not recommendation:
             return "No recommendation available"
-        
-        # Handle new multi-theme JSON format
-        if isinstance(recommendation, dict) and 'coding_decisions' in recommendation:
-            formatted = "Multi-theme Cluster Analysis:\n"
             
-            # Add cluster analysis if available
-            cluster_analysis = recommendation.get('cluster_analysis', {})
-            num_themes = cluster_analysis.get('number_of_themes', len(recommendation['coding_decisions']))
-            formatted += f"Number of themes identified: {num_themes}\n\n"
-            
-            # Format each coding decision
-            for i, decision in enumerate(recommendation['coding_decisions'], 1):
-                formatted += f"Theme {i}: {decision.get('theme_description', 'Unknown theme')}\n"
-                formatted += f"Decision: {decision.get('decision', 'Unknown').replace('_', ' ').title()}\n"
-                
-                action_details = decision.get('action_details', {})
-                if action_details.get('codes_to_use'):
-                    formatted += f"- Code(s) to use: {', '.join(action_details['codes_to_use'])}\n"
-                if action_details.get('codes_to_modify'):
-                    formatted += f"- Code to modify: {action_details['codes_to_modify']}\n"
-                    formatted += f"- Modified code: {action_details.get('modified_code_name', '')}\n"
-                    formatted += f"- Modified definition: {action_details.get('modified_code_definition', '')}\n"
-                if action_details.get('new_code_name'):
-                    formatted += f"- New code: {action_details['new_code_name']}\n"
-                    formatted += f"- Definition: {action_details.get('new_code_definition', '')}\n"
-                
-                formatted += f"- Justification: {decision.get('justification', '')}\n\n"
-            
-            return formatted.strip()
-        
-        # Handle legacy MatchRecommendation format for backward compatibility
-        elif hasattr(recommendation, 'cluster_core_theme'):
-            formatted = f"""
+        formatted = f"""
 Cluster Theme: {recommendation.cluster_core_theme}
 Recommendation: 
 - {recommendation.decision.replace('_', ' ').title()}
 """
-            if recommendation.action_details.codes_to_use:
-                formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
-            if recommendation.action_details.codes_to_modify:
-                formatted += f"- Code to modify: {recommendation.action_details.codes_to_modify}\n"
-                formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
-                formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
-            if recommendation.action_details.new_code_name:
-                formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
-                formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
+        if recommendation.action_details.codes_to_use:
+            formatted += f"- Code(s) to use: {', '.join(recommendation.action_details.codes_to_use)}\n"
+        if recommendation.action_details.codes_to_modify:
+            formatted += f"- Code to modify: {recommendation.action_details.codes_to_modify}\n"
+            formatted += f"- Modified code: {recommendation.action_details.modified_code_name}\n"
+            formatted += f"- Modified definition: {recommendation.action_details.modified_code_definition}\n"
+        if recommendation.action_details.new_code_name:
+            formatted += f"- New code: {recommendation.action_details.new_code_name}\n"
+            formatted += f"- Definition: {recommendation.action_details.new_code_definition}\n"
 
-            formatted += f"\nJustification: {recommendation.justification}"
-            return formatted.strip()
+        formatted += f"\nJustification: {recommendation.justification}"
         
-        else:
-            # Fallback for unknown format
-            return str(recommendation)
+        return formatted.strip()
 
     def _should_capture_prompt(self, step_type: str, max_per_step: int = 1) -> bool:
         """
@@ -618,9 +555,9 @@ Recommendation:
 
     @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step1_with_retry(self, inputs: Dict) -> Dict:
-        """Process Step 1 (Cluster Summary) with retry logic"""
+        """Process Step 1 (Codebook Analysis) with retry logic"""
         try:
-            return await self.summary_chain.ainvoke(inputs)
+            return await self.codebook_chain.ainvoke(inputs)
         except Exception as e:
             error_type = classify_error(e)
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
@@ -632,9 +569,9 @@ Recommendation:
     
     @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step2_with_retry(self, inputs: Dict) -> Dict:
-        """Process Step 2 (Candidate Code Selection) with retry logic"""
+        """Process Step 2 (Response Summary) with retry logic"""
         try:
-            return await self.candidate_codes_chain.ainvoke(inputs)
+            return await self.summary_chain.ainvoke(inputs)
         except Exception as e:
             error_type = classify_error(e)
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
@@ -646,9 +583,9 @@ Recommendation:
     
     @retry(**FAST_API_RETRY_CONFIG)
     async def _process_step3_with_retry(self, inputs: Dict) -> Dict:
-        """Process Step 3 (Code Generation) with retry logic"""
+        """Process Step 3 (Match & Recommend) with retry logic"""
         try:
-            return await self.code_generation_chain.ainvoke(inputs)
+            return await self.match_chain.ainvoke(inputs)
         except Exception as e:
             error_type = classify_error(e)
             if error_type in [ErrorType.API_RATE_LIMIT, ErrorType.API_TIMEOUT, 
@@ -672,27 +609,66 @@ Recommendation:
             else:
                 raise ProcessingError(f"Step 4 processing error: {str(e)}", error_type)
 
-    async def _process_sequential_steps(self, cluster_id: int, cluster_data: Dict, code_text: str, cluster_text: str) -> Tuple[Any, Any]:
-        """Process Steps 1 and 2 sequentially (Step 2 depends on Step 1 summary)"""
+    async def _process_parallel_steps(self, cluster_id: int, cluster_data: Dict, code_text: str, cluster_text: str) -> Tuple[Any, Any]:
+        """Process Steps 1 and 2 in parallel (independent steps)"""
+        if not self.enable_step_parallelization:
+            # Fallback to sequential processing
+            codebook_input = {
+                "language": DEFAULT_LANGUAGE,
+                "survey_question": self.var_lab,
+                "cluster_text": cluster_text,
+                "code_text": code_text
+            }
+            codebook_analysis = await self._process_step1_with_retry(codebook_input)
+            
+            summary_input = {
+                "language": DEFAULT_LANGUAGE,
+                "survey_question": self.var_lab,
+                "cluster_text": cluster_text
+            }
+            summaries = await self._process_step2_with_retry(summary_input)
+            
+            return codebook_analysis, summaries
         
-        # Step 1: Generate cluster summary with themes
+        # Parallel execution of Steps 1 & 2
+        codebook_input = {
+            "language": DEFAULT_LANGUAGE,
+            "survey_question": self.var_lab,
+            "cluster_text": cluster_text,
+            "code_text": code_text
+        }
+        
         summary_input = {
             "language": DEFAULT_LANGUAGE,
             "survey_question": self.var_lab,
             "cluster_text": cluster_text
         }
-        cluster_summary = await self._process_step1_with_retry(summary_input)
         
-        # Step 2: Select candidate codes based on the summary
-        candidate_codes_input = {
-            "language": DEFAULT_LANGUAGE,
-            "survey_question": self.var_lab,
-            "cluster_summary": self._format_cluster_summary_for_prompts(cluster_summary),
-            "code_text": code_text
-        }
-        candidate_codes = await self._process_step2_with_retry(candidate_codes_input)
+        # Execute Steps 1 & 2 concurrently
+        step1_task = self._process_step1_with_retry(codebook_input)
+        step2_task = self._process_step2_with_retry(summary_input)
         
-        return cluster_summary, candidate_codes
+        try:
+            codebook_analysis, summaries = await asyncio.gather(
+                step1_task, step2_task, return_exceptions=True
+            )
+            
+            # Handle individual step failures
+            if isinstance(codebook_analysis, Exception):
+                logger.error(f"Step 1 failed for cluster {cluster_id}: {str(codebook_analysis)}")
+                codebook_analysis = None  # Return None instead of string to avoid type confusion
+            
+            if isinstance(summaries, Exception):
+                logger.error(f"Step 2 failed for cluster {cluster_id}: {str(summaries)}")
+                summaries = "Analysis failed due to API error after retries."
+            
+            self.stats['parallel_steps_executed'] += 1
+            return codebook_analysis, summaries
+            
+        except Exception as e:
+            logger.error(f"Parallel steps processing error for cluster {cluster_id}: {e}")
+            # Fallback results - return None for Step 1 to avoid type issues
+            return (None, "Analysis failed - parallel processing error")
 
     async def _process_cluster_optimized(self, cluster_id: int, cluster_data: Dict) -> Dict[str, Any]:
         """Process a single cluster with optimized parallel step execution"""
@@ -720,45 +696,46 @@ Recommendation:
             # Prepare cluster text
             cluster_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             
-            # Execute Steps 1 & 2 sequentially (multi-theme architecture)
-            cluster_summary, candidate_codes = await self._process_sequential_steps(
+            # Execute Steps 1 & 2 in parallel  
+            codebook_analysis_result, summaries = await self._process_parallel_steps(
                 cluster_id, cluster_data, code_text, cluster_text
             )
             
-            # Extract candidate codes from Step 2 output
-            candidate_codes_list = []
-            if candidate_codes is None or isinstance(candidate_codes, str):
-                # Step 2 failed
-                logger.warning(f"Step 2 failed for cluster {cluster_id}")
-                candidate_codes_list = []
-            elif hasattr(candidate_codes, 'root'):
+            # Extract candidate codes from Step 1 output
+            candidate_codes = []
+            if codebook_analysis_result is None or isinstance(codebook_analysis_result, str):
+                # Step 1 failed
+                logger.warning(f"Step 1 failed for cluster {cluster_id}")
+                candidate_codes = []
+            elif hasattr(codebook_analysis_result, 'root'):
                 # RootModel structure
-                candidate_codes_list = candidate_codes.root
-            elif isinstance(candidate_codes, list):
+                candidate_codes = codebook_analysis_result.root
+            elif isinstance(codebook_analysis_result, list):
                 # Handle case where result is already a list
-                candidate_codes_list = [CandidateCode(code=c['code'], definition=c['definition']) if isinstance(c, dict) else c for c in candidate_codes]
+                candidate_codes = [CandidateCode(code=c['code'], definition=c['definition']) if isinstance(c, dict) else c for c in codebook_analysis_result]
             
             # Format candidate codes for Step 3 and validation
-            if candidate_codes_list:
+            if candidate_codes:
                 candidate_codes_text = "\n".join([
                     f"- {code.code}: {code.definition}" if hasattr(code, 'code') else f"- {code['code']}: {code['definition']}"
-                    for code in candidate_codes_list
+                    for code in candidate_codes
                 ])
             else:
                 candidate_codes_text = "No candidate codes available"
             
             # Capture prompts if needed (diversity-first logic)
-            if self._should_capture_prompt('cluster_summary'):
-                step1_input = {
+            if self._should_capture_prompt('codebook'):
+                codebook_input = {
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
-                    "cluster_text": cluster_text
+                    "cluster_text": cluster_text,
+                    "code_text": code_text
                 }
                 self.prompt_printer.capture_prompt(
                     step_name="codebook_generation",
                     utility_name="LangChainBatchProcessor",
-                    prompt_content=CLUSTER_SUMMARY_PROMPT.format(**step1_input),
-                    prompt_type="step1_cluster_summary",
+                    prompt_content=CODEBOOK_ANALYSIS_PROMPT.format(**codebook_input),
+                    prompt_type="step1_codebook_analysis",
                     metadata={
                         "model": self.step1_llm.model_name,
                         "var_lab": self.var_lab,
@@ -768,20 +745,19 @@ Recommendation:
                         "parallel_execution": self.enable_step_parallelization
                     }
                 )
-                self._record_capture('cluster_summary')
+                self._record_capture('codebook')
             
-            if self._should_capture_prompt('candidate_codes'):
-                step2_input = {
+            if self._should_capture_prompt('summary'):
+                summary_input = {
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
-                    "cluster_summary": self._format_cluster_summary_for_prompts(cluster_summary),
-                    "code_text": code_text
+                    "cluster_text": cluster_text
                 }
                 self.prompt_printer.capture_prompt(
                     step_name="codebook_generation",
                     utility_name="LangChainBatchProcessor",
-                    prompt_content=CANDIDATE_CODE_SELECTION_PROMPT.format(**step2_input),
-                    prompt_type="step2_candidate_codes",
+                    prompt_content=RESPONSE_SUMMARY_PROMPT.format(**summary_input),
+                    prompt_type="step2_response_summary",
                     metadata={
                         "model": self.step2_llm.model_name,
                         "var_lab": self.var_lab,
@@ -791,36 +767,37 @@ Recommendation:
                         "parallel_execution": self.enable_step_parallelization
                     }
                 )
-                self._record_capture('candidate_codes')
+                self._record_capture('summary')
             
-            # Step 3: Code Generation (uses candidate codes and cluster summary)
-            code_generation_input = {
+            # Step 3: Match and recommend (uses candidate codes from Step 1)
+            match_input = {
                 "language": DEFAULT_LANGUAGE,
                 "survey_question": self.var_lab,
                 "candidate_codes": candidate_codes_text,
-                "cluster_summary": self._format_cluster_summary_for_prompts(cluster_summary)
+                "clustered_survey_responses": cluster_text,
+                "cluster_summary": summaries if isinstance(summaries, str) else str(summaries)
             }
             
             # Capture Step 3 prompt
-            if self._should_capture_prompt('code_generation'):
+            if self._should_capture_prompt('match'):
                 self.prompt_printer.capture_prompt(
                     step_name="codebook_generation",
                     utility_name="LangChainBatchProcessor",
-                    prompt_content=CODE_GENERATION_PROMPT.format(**code_generation_input),
-                    prompt_type="step3_code_generation",
+                    prompt_content=MATCH_AND_RECOMMEND_PROMPT.format(**match_input),
+                    prompt_type="step3_match_recommend",
                     metadata={
                         "model": self.step3_llm.model_name,
                         "var_lab": self.var_lab,
                         "stage": "3/4 - Match & Recommend",
                         "cluster_id": cluster_id,
-                        "cluster_summary_present": bool(cluster_summary),
-                        "candidate_codes_present": bool(candidate_codes)
+                        "codebook_analysis_present": bool(codebook_analysis_result),
+                        "summaries_present": bool(summaries)
                     }
                 )
-                self._record_capture('code_generation')
+                self._record_capture('match')
             
             try:
-                recommendations = await self._process_step3_with_retry(code_generation_input)
+                recommendations = await self._process_step3_with_retry(match_input)
             except (APIError, ProcessingError) as e:
                 logger.error(f"Step 3 failed for cluster {cluster_id} after retries: {str(e)}")
                 recommendations = []
@@ -828,106 +805,80 @@ Recommendation:
                 logger.error(f"Step 3 unexpected error for cluster {cluster_id}: {str(e)}")
                 recommendations = []
             
-            # Extract new code recommendations from multi-theme JSON response
+            # Extract new code recommendations from single MatchRecommendation object
             new_codes_needed = False
             proposed_codes = []
-            parsed_recommendations = None
             
             try:
-                # Parse JSON response from Step 3
-                import json
-                if isinstance(recommendations, str):
-                    parsed_recommendations = json.loads(recommendations)
-                elif hasattr(recommendations, 'dict'):
-                    parsed_recommendations = recommendations.dict()
-                else:
-                    parsed_recommendations = recommendations
-                
-                # Process multiple coding decisions (multi-theme support)
-                if isinstance(parsed_recommendations, dict) and 'coding_decisions' in parsed_recommendations:
-                    coding_decisions = parsed_recommendations['coding_decisions']
+                if hasattr(recommendations, 'decision'):
+                    decision = recommendations.decision.lower()
                     
-                    for decision_obj in coding_decisions:
-                        decision = decision_obj.get('decision', '').lower()
-                        
-                        # Track decision statistics
-                        if 'use_existing' in decision:
-                            self.stats['decisions']['use_existing'] += 1
-                        elif 'modify_existing' in decision:
-                            self.stats['decisions']['modify_existing'] += 1
-                        elif 'create_new' in decision:
-                            self.stats['decisions']['create_new'] += 1
-                        
-                        # Process each decision based on its type
-                        if 'create_new' in decision:
-                            # Access new code details from action_details
-                            action_details = decision_obj.get('action_details', {})
-                            new_code = action_details.get('new_code_name')
-                            new_definition = action_details.get('new_code_definition')
+                    # Track decision statistics
+                    if 'use_existing' in decision:
+                        self.stats['decisions']['use_existing'] += 1
+                    elif 'modify_existing' in decision:
+                        self.stats['decisions']['modify_existing'] += 1
+                    elif 'create_new' in decision:
+                        self.stats['decisions']['create_new'] += 1
+                    
+                    if 'create_new' in decision:
+                        # Access new code details from action_details
+                        if hasattr(recommendations, 'action_details'):
+                            new_code = recommendations.action_details.new_code_name
+                            new_definition = recommendations.action_details.new_code_definition
                             
                             # Only add if we have actual code and definition (not null/empty)
                             if new_code and new_definition and new_code.strip() and new_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'theme_number': decision_obj.get('theme_number', 1),
-                                    'theme_description': decision_obj.get('theme_description', ''),
                                     'code': new_code.strip(),
-                                    'definition': new_definition.strip(),
-                                    'justification': decision_obj.get('justification', '')
+                                    'definition': new_definition.strip()
                                 })
-                        elif 'modify_existing' in decision:
-                            # Trigger Step 4 for modification validation
-                            action_details = decision_obj.get('action_details', {})
-                            original_code = action_details.get('codes_to_modify')
-                            modified_code = action_details.get('modified_code_name')
-                            modified_definition = action_details.get('modified_code_definition')
+                    elif 'modify_existing' in decision:
+                        # Trigger Step 4 for modification validation
+                        if hasattr(recommendations, 'action_details'):
+                            original_code = recommendations.action_details.codes_to_modify
+                            modified_code = recommendations.action_details.modified_code_name
+                            modified_definition = recommendations.action_details.modified_code_definition
                             
                             # Only proceed if we have modification details
                             if original_code and modified_code and modified_definition and modified_code.strip() and modified_definition.strip():
                                 new_codes_needed = True
                                 proposed_codes.append({
-                                    'theme_number': decision_obj.get('theme_number', 1),
-                                    'theme_description': decision_obj.get('theme_description', ''),
                                     'original_code': original_code.strip(),
                                     'modified_code': modified_code.strip(),
-                                    'modified_definition': modified_definition.strip(),
-                                    'justification': decision_obj.get('justification', '')
+                                    'modified_definition': modified_definition.strip()
                                 })
                     
-                    # Store the parsed recommendation for potential Step 4 use
-                    cluster_recommendation = parsed_recommendations
-                else:
-                    logger.warning(f"Unexpected Step 3 response format for cluster {cluster_id}: {type(parsed_recommendations)}")
-                    cluster_recommendation = parsed_recommendations
+                    # Store the full recommendation for potential Step 4 use
+                    cluster_recommendation = recommendations
                     
             except Exception as e:
-                logger.error(f"Error parsing multi-theme recommendations for cluster {cluster_id}: {e}")
+                logger.error(f"Error parsing recommendations for cluster {cluster_id}: {e}")
                 logger.error(f"Recommendations content: {recommendations}")
-                # Fallback to original format for backward compatibility
-                cluster_recommendation = recommendations
             
             if not new_codes_needed:
                 self.stats['no_new_codes_needed'] += 1
                 return {
                     'cluster_id': cluster_id,
                     'status': 'no_new_code_needed',
-                    'step1_cluster_summary': cluster_summary,
+                    'step2_summary': summaries,
                     'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                     'step4_validated_code': None,
-                    'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes_list] if candidate_codes_list else [],
+                    'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                     'processing_time': time.time() - start_time
                 }
             
             # Step 4: Validate if new codes are proposed
             if proposed_codes:
                 # Format Step 3 recommendation for readable context
-                formatted_recommendation = self._format_step3_recommendation(cluster_recommendation)
+                formatted_recommendation = self._format_step3_recommendation(recommendations) if hasattr(recommendations, 'cluster_core_theme') else str(recommendations)
                 
                 validation_input = {
                     "language": DEFAULT_LANGUAGE,
                     "survey_question": self.var_lab,
                     "candidate_codes": candidate_codes_text,
-                    "cluster_summary": self._format_cluster_summary_for_prompts(cluster_summary),
+                    "clustered_ideas": cluster_text,
                     "step3_recommendation": formatted_recommendation
                 }
                 
@@ -958,179 +909,119 @@ Recommendation:
                     logger.error(f"Step 4 unexpected error for cluster {cluster_id}: {str(e)}")
                     validation_results = None
                 
-                # Process validated codes from multi-theme JSON format
-                validated_codes = []
+                # Process validated codes from ValidationResponse format
+                validated_code = None
                 validation_details = None
                 
                 try:
-                    # Parse JSON response from Step 4
-                    parsed_validation = None
-                    if isinstance(validation_results, str):
-                        parsed_validation = json.loads(validation_results)
-                    elif hasattr(validation_results, 'dict'):
-                        parsed_validation = validation_results.dict()
-                    elif hasattr(validation_results, 'decision'):
-                        # Legacy ValidationResponse format - convert to new format
-                        parsed_validation = {
-                            'code_validations': [{
-                                'theme_number': 1,
-                                'theme_description': 'Single theme',
-                                'decision': validation_results.decision,
-                                'decision_rationale': validation_results.decision_rationale,
-                                'validated_code': {
-                                    'code': validation_results.validated_code.code if validation_results.validated_code else '',
-                                    'definition': validation_results.validated_code.definition if validation_results.validated_code else ''
-                                }
-                            }],
-                            'overall_validation': {
-                                'summary': validation_results.decision_rationale
-                            }
-                        }
-                    else:
-                        parsed_validation = validation_results
-                    
-                    # Process multi-theme validation results
-                    if isinstance(parsed_validation, dict) and 'code_validations' in parsed_validation:
+                    if validation_results and hasattr(validation_results, 'decision'):
+                        # ValidationResponse object - store detailed validation info
                         validation_details = {
-                            'overall_summary': parsed_validation.get('overall_validation', {}).get('summary', ''),
-                            'theme_validations': []
+                            'decision': validation_results.decision,
+                            'decision_rationale': validation_results.decision_rationale,
+                            'reasoning': {
+                                'semantic_fit_reasoning': validation_results.evaluation.semantic_fit_reasoning,
+                                'atomicity_reasoning': validation_results.evaluation.atomicity_reasoning,
+                                'parsimony_reasoning': validation_results.evaluation.parsimony_reasoning,
+                                'redundancy_reasoning': validation_results.evaluation.redundancy_reasoning,
+                                'justification_reasoning': validation_results.evaluation.justification_reasoning
+                            }
                         }
                         
-                        # Extract validated codes from each theme validation
-                        for validation in parsed_validation['code_validations']:
-                            theme_validation = {
-                                'theme_number': validation.get('theme_number', 1),
-                                'theme_description': validation.get('theme_description', ''),
-                                'decision': validation.get('decision', ''),
-                                'decision_rationale': validation.get('decision_rationale', ''),
-                                'evaluation': validation.get('evaluation', {})
+                        # Extract validated code for ANY decision (APPROVE, REVISE, or REJECT)
+                        if validation_results.validated_code and validation_results.validated_code.code:
+                            validated_code = {
+                                'code': validation_results.validated_code.code,
+                                'definition': validation_results.validated_code.definition
                             }
-                            validation_details['theme_validations'].append(theme_validation)
-                            
-                            # Extract validated code if present
-                            if validation.get('validated_code') and validation['validated_code'].get('code'):
-                                validated_codes.append({
-                                    'theme_number': validation.get('theme_number', 1),
-                                    'theme_description': validation.get('theme_description', ''),
-                                    'code': validation['validated_code']['code'],
-                                    'definition': validation['validated_code']['definition'],
-                                    'decision': validation.get('decision', ''),
-                                    'decision_rationale': validation.get('decision_rationale', '')
-                                })
-                
                 except Exception as e:
-                    logger.error(f"Error parsing multi-theme validation results for cluster {cluster_id}: {e}")
+                    logger.error(f"Error parsing validation results for cluster {cluster_id}: {e}")
                     logger.error(f"Validation results content: {validation_results}")
-                    # Fallback to single validated code format
-                    validated_codes = []
                 
-                if validated_codes:
-                    # Process multiple validated codes (multi-theme support)
-                    processed_codes = []
-                    codes_added = 0
-                    codes_modified = 0
+                if validated_code:
+                    # Check if this is a modification or new code
+                    is_modification = any(pc.get('original_code') for pc in proposed_codes)
                     
-                    for validated_code in validated_codes:
-                        theme_num = validated_code.get('theme_number', 1)
-                        
-                        # Check if this is a modification by looking for matching proposed code
-                        matching_proposed = next(
-                            (pc for pc in proposed_codes if pc.get('theme_number') == theme_num),
+                    if is_modification:
+                        # Get original code name from proposed_codes
+                        original_code_name = next(
+                            (pc.get('original_code') for pc in proposed_codes if pc.get('original_code')),
                             None
                         )
                         
-                        is_modification = matching_proposed and matching_proposed.get('original_code')
-                        
-                        if is_modification:
-                            original_code_name = matching_proposed.get('original_code')
+                        if original_code_name:
+                            # Get original definition before modification
+                            original_definition = await self.shared_codebook.get_code_definition(original_code_name)
                             
-                            if original_code_name:
-                                # Get original definition before modification
-                                original_definition = await self.shared_codebook.get_code_definition(original_code_name)
-                                
-                                # Replace existing code with modified version
-                                replaced, new_version = await self.shared_codebook.replace_code(
-                                    original_code_name,
-                                    validated_code.get('code', ''),
-                                    validated_code.get('definition', '')
-                                )
-                                
-                                if replaced:
-                                    codes_modified += 1
-                                    if self.verbose:
-                                        new_code_name = validated_code.get('code', '')
-                                        new_definition = validated_code.get('definition', '')
-                                        
-                                        name_changed = original_code_name != new_code_name
-                                        definition_changed = original_definition != new_definition if original_definition else True
-                                        
-                                        if name_changed and definition_changed:
-                                            logger.info(f"Cluster {cluster_id} Theme {theme_num}: Modified code '{original_code_name}' -> '{new_code_name}' + definition updated (v{new_version})")
-                                        elif name_changed:
-                                            logger.info(f"Cluster {cluster_id} Theme {theme_num}: Renamed code '{original_code_name}' -> '{new_code_name}' (v{new_version})")
-                                        elif definition_changed:
-                                            logger.info(f"Cluster {cluster_id} Theme {theme_num}: Updated definition for '{original_code_name}' (v{new_version})")
-                                
-                                processed_codes.append({
-                                    'theme_number': theme_num,
-                                    'theme_description': validated_code.get('theme_description', ''),
-                                    'action': 'modified',
-                                    'original_code': original_code_name,
-                                    'code': validated_code.get('code', ''),
-                                    'definition': validated_code.get('definition', ''),
-                                    'decision': validated_code.get('decision', ''),
-                                    'success': replaced
-                                })
-                        else:
-                            # Standard new code addition (CRITICAL: Real-time update to shared memory)
-                            added, new_version = await self.shared_codebook.add_code_if_new(
+                            # Replace existing code with modified version
+                            replaced, new_version = await self.shared_codebook.replace_code(
+                                original_code_name,
                                 validated_code.get('code', ''),
                                 validated_code.get('definition', '')
                             )
                             
-                            if added:
-                                codes_added += 1
+                            if replaced:
+                                self.stats['codes_modified'] += 1
                                 if self.verbose:
-                                    logger.info(f"Cluster {cluster_id} Theme {theme_num}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                                    new_code_name = validated_code.get('code', '')
+                                    new_definition = validated_code.get('definition', '')
+                                    
+                                    name_changed = original_code_name != new_code_name
+                                    definition_changed = original_definition != new_definition if original_definition else True
+                                    
+                                    if name_changed and definition_changed:
+                                        logger.info(f"Cluster {cluster_id}: Modified code '{original_code_name}' -> '{new_code_name}' + definition updated (v{new_version})")
+                                    elif name_changed:
+                                        logger.info(f"Cluster {cluster_id}: Renamed code '{original_code_name}' -> '{new_code_name}' (v{new_version})")
+                                    elif definition_changed:
+                                        logger.info(f"Cluster {cluster_id}: Updated definition for '{original_code_name}' (v{new_version})")
                             
-                            processed_codes.append({
-                                'theme_number': theme_num,
-                                'theme_description': validated_code.get('theme_description', ''),
-                                'action': 'added',
+                            return {
+                                'cluster_id': cluster_id,
+                                'status': 'code_modified',
+                                'original_code': original_code_name,
                                 'code': validated_code.get('code', ''),
                                 'definition': validated_code.get('definition', ''),
-                                'decision': validated_code.get('decision', ''),
-                                'success': added,
-                                'already_existed': not added
-                            })
-                    
-                    # Update statistics
-                    self.stats['new_codes_added'] += codes_added
-                    self.stats['codes_modified'] += codes_modified
-                    
-                    return {
-                        'cluster_id': cluster_id,
-                        'status': 'multi_theme_codes_processed',
-                        'processed_codes': processed_codes,
-                        'codes_added': codes_added,
-                        'codes_modified': codes_modified,
-                        'total_themes': len(validated_codes),
-                        'step1_cluster_summary': cluster_summary,
-                        'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
-                        'step4_validated_codes': validated_codes,
-                        'validation_details': validation_details,
-                        'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes_list] if candidate_codes_list else [],
-                        'processing_time': time.time() - start_time
-                    }
+                                'step2_summary': summaries,
+                                'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                                'step4_validated_code': validated_code,
+                                'validation_details': validation_details,
+                                'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
+                                'processing_time': time.time() - start_time
+                            }
+                    else:
+                        # Standard new code addition (CRITICAL: Real-time update to shared memory)
+                        added, new_version = await self.shared_codebook.add_code_if_new(
+                            validated_code.get('code', ''),
+                            validated_code.get('definition', '')
+                        )
+                        
+                        if added:
+                            self.stats['new_codes_added'] += 1
+                            if self.verbose:
+                                logger.info(f"Cluster {cluster_id}: Added new code '{validated_code['code']}' (v{new_version}) - NOW AVAILABLE for subsequent clusters")
+                        
+                        return {
+                            'cluster_id': cluster_id,
+                            'status': 'new_code_added' if added else 'code_already_exists',
+                            'code': validated_code.get('code', ''),
+                            'definition': validated_code.get('definition', ''),
+                            'step2_summary': summaries,
+                            'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
+                            'step4_validated_code': validated_code,
+                            'validation_details': validation_details,
+                            'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
+                            'processing_time': time.time() - start_time
+                        }
                 else:
                     return {
                         'cluster_id': cluster_id,
                         'status': 'no_codes_passed_validation',
-                        'step1_cluster_summary': cluster_summary,
+                        'step2_summary': summaries,
                         'step3_recommendation': cluster_recommendation if 'cluster_recommendation' in locals() else None,
                         'step4_validated_code': None,
                         'validation_details': validation_details,
-                        'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes_list] if candidate_codes_list else [],
+                        'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                         'processing_time': time.time() - start_time
                     }
 
@@ -1140,8 +1031,8 @@ Recommendation:
             return {
                 'cluster_id': cluster_id,
                 'status': 'processed_no_validation_needed',
-                'step1_cluster_summary': cluster_summary,
-                'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes_list] if candidate_codes_list else [],
+                'step2_summary': summaries,
+                'candidate_codes': [{'code': code.code, 'definition': code.definition} for code in candidate_codes] if candidate_codes else [],
                 'processing_time': time.time() - start_time
             }
             
@@ -1153,7 +1044,7 @@ Recommendation:
                 'status': 'Processing_error',
                 'error': str(e),
                 'error_type': type(e).__name__,
-                'step1_cluster_summary': cluster_summary if 'cluster_summary' in locals() else None,
+                'step2_summary': summaries if 'summaries' in locals() else None,
                 'candidate_codes': [],
                 'processing_time': time.time() - start_time if 'start_time' in locals() else 0
             }
@@ -1511,6 +1402,7 @@ class InductiveCodeGenerator:
         enable_step_parallelization: bool = True,
         max_concurrent_steps: int = 2,
         max_concurrent_requests: int = 10,
+        config = None,  # For compatibility
         embedded_text: List[models.EmbeddingsModel] = None  # Deprecated - for backward compatibility
     ):
         self.cluster_results = cluster_results
@@ -1668,27 +1560,17 @@ class InductiveCodeGenerator:
         # Process all clusters with hierarchical concurrency
         results = await batch_processor.process_all_clusters_concurrent(clusters)
         
-        # Build cluster assignments and detailed results (multi-theme support)
+        # Build cluster assignments and detailed results
         cluster_to_code = {}
         validation_details = {}
         step3_recommendations = {}
         step4_validated_codes = {}
-        step1_summaries = {}
+        step2_summaries = {}
         candidate_codes_data = {}
         
         for result in results:
             cluster_id = result['cluster_id']
-            
-            # Handle multi-theme results
-            if result['status'] == 'multi_theme_codes_processed':
-                # For multi-theme clusters, create summary of all codes
-                processed_codes = result.get('processed_codes', [])
-                if processed_codes:
-                    code_names = [pc['code'] for pc in processed_codes if pc.get('success', False)]
-                    cluster_to_code[cluster_id] = f"Multi-theme: {', '.join(code_names)}" if code_names else 'Multi-theme: No codes added'
-                else:
-                    cluster_to_code[cluster_id] = result['status']
-            elif result.get('code'):
+            if result.get('code'):
                 cluster_to_code[cluster_id] = result['code']
             else:
                 cluster_to_code[cluster_id] = result['status']
@@ -1701,15 +1583,13 @@ class InductiveCodeGenerator:
             if result.get('step3_recommendation'):
                 step3_recommendations[cluster_id] = result['step3_recommendation']
             
-            # Store Step 4 validated codes if available (handle both formats)
-            if result.get('step4_validated_codes'):  # New multi-theme format
-                step4_validated_codes[cluster_id] = result['step4_validated_codes']
-            elif result.get('step4_validated_code'):  # Legacy single-theme format
-                step4_validated_codes[cluster_id] = [result['step4_validated_code']]  # Wrap in array for consistency
+            # Store Step 4 validated codes if available
+            if result.get('step4_validated_code'):
+                step4_validated_codes[cluster_id] = result['step4_validated_code']
                 
-            # Store Step 1 summaries if available
-            if result.get('step1_cluster_summary'):
-                step1_summaries[cluster_id] = result['step1_cluster_summary']
+            # Store Step 2 summaries if available
+            if result.get('step2_summary'):
+                step2_summaries[cluster_id] = result['step2_summary']
                 
             # Store candidate codes if available
             if result.get('candidate_codes'):
@@ -1769,10 +1649,10 @@ class InductiveCodeGenerator:
             'validation_details': validation_details,
             'step3_recommendations': step3_recommendations,
             'step4_validated_codes': step4_validated_codes,
-            'step1_summaries': step1_summaries,
+            'step2_summaries': step2_summaries,
             'candidate_codes_data': candidate_codes_data,
             'stats': final_stats,
-            'generator_version': 'MULTI_THEME_SEQUENTIAL_PROCESSING'
+            'generator_version': 'HIERARCHICAL_CONCURRENCY_PARALLEL_STEPS'
         }
     
     # def _display_sample_new_codes(self, final_codes: List[Dict], starter_codes: List[Dict], validated_codes: Dict) -> None:
