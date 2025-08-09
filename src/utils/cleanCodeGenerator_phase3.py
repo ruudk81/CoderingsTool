@@ -7,6 +7,7 @@ import asyncio
 import time
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
+from asyncio_throttle import Throttler
 
 # LangChain imports - using the same as original codeGenerator.py
 from langchain_core.prompts import PromptTemplate
@@ -166,7 +167,7 @@ class LangChainPhase3Processor:
             step2_prompt
             | self.llm
             | PydanticOutputParser(pydantic_object=CodebookAnalysisOutput)
-        )
+        ).with_config({"max_concurrency": 10})
         
         # Step 3: Code Generation Chain
         step3_prompt = PromptTemplate(
@@ -177,7 +178,7 @@ class LangChainPhase3Processor:
             step3_prompt
             | self.llm
             | PydanticOutputParser(pydantic_object=models.CodeRecommendation)
-        )
+        ).with_config({"max_concurrency": 10})
         
         # Step 4: Validation Chain
         step4_prompt = PromptTemplate(
@@ -188,7 +189,7 @@ class LangChainPhase3Processor:
             step4_prompt
             | self.llm
             | PydanticOutputParser(pydantic_object=models.ValidationResult)
-        )
+        ).with_config({"max_concurrency": 10})
     
     async def process_clusters_in_batches(self, batch_size: int = 10) -> Dict[str, Any]:
         """Process clusters in batches with real-time codebook updates between batches"""
@@ -204,6 +205,10 @@ class LangChainPhase3Processor:
         total_new_codes = 0
         total_replaced_codes = 0
         
+        # Initialize throttler for optimal API usage (balance speed vs rate limits)
+        # GPT-4 typically allows 500 RPM, so we use ~400 to stay safe
+        throttler = Throttler(rate_limit=6.0, period=1.0)  # ~6 requests per second = 360 RPM
+        
         # Process clusters in batches
         for batch_start in range(0, total_clusters, batch_size):
             batch_end = min(batch_start + batch_size, total_clusters)
@@ -216,12 +221,15 @@ class LangChainPhase3Processor:
             current_codes, version = await self.shared_codebook.get_current_snapshot()
             self.verbose_reporter.stat_line(f"Codebook has {len(current_codes)} codes (version {version})")
             
-            # Process batch concurrently
-            batch_tasks = []
-            for cluster_id in batch_clusters:
-                cluster_ideas = cluster_groups[cluster_id]
-                task = self._process_single_cluster(cluster_id, cluster_ideas, current_codes)
-                batch_tasks.append(task)
+            # Process batch concurrently with throttling
+            async def throttled_process(cluster_id, cluster_ideas, current_codes):
+                async with throttler:
+                    return await self._process_single_cluster(cluster_id, cluster_ideas, current_codes)
+            
+            batch_tasks = [
+                throttled_process(cluster_id, cluster_groups[cluster_id], current_codes)
+                for cluster_id in batch_clusters
+            ]
             
             # Wait for batch to complete
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)

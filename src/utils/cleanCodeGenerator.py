@@ -537,8 +537,8 @@ class CleanCodeGenerator:
             prompt_printer=self.prompt_printer
         )
         
-        # Process clusters in batches (10-15 clusters per batch for balance)
-        batch_size = 12  # Configurable batch size
+        # Process clusters in larger batches for better performance
+        batch_size = 25  # Increased from 12 for faster processing while maintaining code curation
         results = await phase3_processor.process_clusters_in_batches(batch_size=batch_size)
         
         # Get results for compatibility
