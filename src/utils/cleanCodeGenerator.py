@@ -184,7 +184,8 @@ class CleanCodeGenerator:
         var_lab: str = "Survey question",
         config: Optional[ModelConfig] = None,
         verbose: bool = False,
-        prompt_printer = None
+        prompt_printer = None,
+        starter_codes: Optional[List[Dict[str, str]]] = None
     ):
         self.cluster_data = cluster_data
         self.var_lab = var_lab
@@ -201,8 +202,13 @@ class CleanCodeGenerator:
         
         # Initialize shared codebook for real-time updates across all phases
         from .cleanCodeGenerator_phase3 import SharedCodebook
-        starter_codes = []  # TODO: Get from config or parameter  
-        self.shared_codebook = SharedCodebook(initial_codes=starter_codes)
+        initial_codes = starter_codes or []  # Use provided starter codes or empty list
+        self.shared_codebook = SharedCodebook(initial_codes=initial_codes)
+        
+        if initial_codes:
+            self.verbose_reporter.stat_line(f"Initialized with {len(initial_codes)} starter codes")
+        else:
+            self.verbose_reporter.stat_line("Initialized with empty codebook (no starter codes provided)")
         
         # Get the model name for cluster analysis
         self.model_name = self.config.get_model_for_stage("cluster_analysis")

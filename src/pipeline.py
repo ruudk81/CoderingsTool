@@ -509,11 +509,12 @@ else:
 """Generate codes"""
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
+from utils.cleanCodeGenerator import CleanCodeGenerator
 
 FORCE = True
 VERBOSE = True
-PROMPT_PRINTER = True
-CACHE_CODEGENERATOR_REASONING = False  # Cache detailed LLM reasoning for debugging
+PROMPT_PRINTER = False
+CACHE_CODEGENERATOR_REASONING = True  # Cache detailed LLM reasoning for debugging
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -575,16 +576,15 @@ else:
         results = {}  # Empty results for caching check
     else:
         # Phase 2: Inductive code generation
-        generator = codeGenerator.InductiveCodeGenerator(
-             cluster_results=initial_cluster_results,
-             starter_codes=starter_codes,
+        # Use new clean 3-phase architecture
+        generator = CleanCodeGenerator(
+             cluster_data=initial_cluster_results,
              var_lab=var_lab,
-             k=5,
+             config=None,  # Will use ModelConfig defaults
              verbose=True,
-             batch_size=10,
-             max_concurrent_requests=5,
-             prompt_printer=prompt_printer)
-        results = generator.generate()
+             prompt_printer=prompt_printer,
+             starter_codes=starter_codes)
+        results = asyncio.run(generator.generate())
         
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility
@@ -682,13 +682,13 @@ else:
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
-# #debug 
+#debug 
 # idx = 1
 # for entry in codebook:
 #     print(idx)
 #     print(entry.code)
-#     print(entry.definition)
-#     print("\n")
+#     #print(entry.definition)
+#     #print("\n")
 #     idx += 1
 
 from utils.codeGenerator_displayResults import display_cluster_analysis, display_summary_statistics
