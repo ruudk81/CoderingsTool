@@ -199,8 +199,10 @@ class CleanCodeGenerator:
             verbose=verbose
         )
         
-        # TODO: Initialize shared codebook with LangChain implementation in Phase 3
-        self.shared_codebook = None  # Will be replaced with original SharedCodebook
+        # Initialize shared codebook for real-time updates across all phases
+        from .cleanCodeGenerator_phase3 import SharedCodebook
+        starter_codes = []  # TODO: Get from config or parameter  
+        self.shared_codebook = SharedCodebook(initial_codes=starter_codes)
         
         # Get the model name for cluster analysis
         self.model_name = self.config.get_model_for_stage("cluster_analysis")
@@ -521,9 +523,7 @@ class CleanCodeGenerator:
         
         start_time = time.time()
         
-        # Initialize shared codebook with starter codes if available
-        starter_codes = []  # TODO: Get from config or parameter
-        self.shared_codebook = SharedCodebook(initial_codes=starter_codes)
+        # Shared codebook already initialized in __init__ - no need to recreate
         
         # Create Phase 3 processor with LangChain
         phase3_processor = LangChainPhase3Processor(
