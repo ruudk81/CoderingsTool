@@ -227,6 +227,37 @@ class CleanCodeGenerator:
         self.step3_results: Dict[str, Any] = {}
         self.step4_results: Dict[str, Any] = {}
     
+    def _prepare_cluster_text(self) -> Dict[int, Dict]:
+        """Prepare cluster data by grouping individual responses by their actual HDBSCAN cluster_id"""
+        clusters = {}
+        
+        for result in self.cluster_data:
+            ideas_list = result.response_ideas or []
+            
+            for idea in ideas_list:
+                if idea.initial_cluster is not None and idea.initial_cluster != -1:
+                    cluster_id = idea.initial_cluster
+                    
+                    # Initialize cluster if not seen before
+                    if cluster_id not in clusters:
+                        clusters[cluster_id] = {'ideas': [], 'embeddings': []}
+                    
+                    # Add idea to the actual cluster
+                    clusters[cluster_id]['ideas'].append(idea.idea)
+                    
+                    # Add embedding if available
+                    if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                        clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
+        
+        # Filter out empty clusters and log statistics
+        valid_clusters = {cid: cdata for cid, cdata in clusters.items() if len(cdata['ideas']) > 0}
+        
+        total_ideas = sum(len(cluster_data['ideas']) for cluster_data in valid_clusters.values())
+        self.verbose_reporter.stat_line(f"Grouped {len(self.cluster_data)} responses into {len(valid_clusters)} actual HDBSCAN clusters")
+        self.verbose_reporter.stat_line(f"Total ideas across all clusters: {total_ideas}")
+        
+        return valid_clusters
+    
     def _format_cluster_summary_for_prompts(self, cluster_summary_json: str) -> str:
         """Format cluster summary for readable prompt display (remove raw JSON)"""
         try:
@@ -294,8 +325,14 @@ class CleanCodeGenerator:
         """Phase 1: Extract themes from clusters using concurrent instructor calls"""
         start_time = time.time()
         
+        # First, group individual responses by actual HDBSCAN cluster_id (like original codeGenerator)
+        actual_clusters = self._prepare_cluster_text()
+        if not actual_clusters:
+            self.verbose_reporter.error("No valid clusters found to process")
+            return
+        
         # Calculate optimal strategy for concurrent processing
-        total_clusters = len(self.cluster_data)
+        total_clusters = len(actual_clusters)  # Use actual cluster count, not individual responses
         avg_tokens_per_request = 1500  # Estimated based on cluster analysis
         strategy = self.workload_analyzer.calculate_optimal_strategy(total_clusters, avg_tokens_per_request)
         
@@ -306,25 +343,12 @@ class CleanCodeGenerator:
         monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
         throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
         
-        async def process_single_cluster(cluster: models.ClusterModel) -> Tuple[str, Dict[str, Any]]:
-            """Process single cluster to extract themes using instructor"""
+        async def process_single_cluster(cluster_id: int, cluster_data: Dict) -> Tuple[str, Dict[str, Any]]:
+            """Process single actual cluster to extract themes using instructor"""
             async with throttler:
                 try:
-                    # Get cluster_id from the first response_idea's initial_cluster
-                    cluster_id = None
-                    cluster_ideas = []
-                    
-                    if hasattr(cluster, 'response_ideas') and cluster.response_ideas:
-                        for idea in cluster.response_ideas:
-                            if hasattr(idea, 'initial_cluster') and idea.initial_cluster is not None:
-                                if cluster_id is None:
-                                    cluster_id = str(idea.initial_cluster)
-                                cluster_ideas.append(idea.idea)
-                    
-                    if cluster_id is None:
-                        # Fallback: use respondent_id if no cluster_id found
-                        cluster_id = str(cluster.respondent_id)
-                    
+                    # Get ideas from the grouped cluster data
+                    cluster_ideas = cluster_data['ideas']
                     cluster_text = "\n".join([f"- {idea}" for idea in cluster_ideas])
                     
                     # Create prompt following existing pattern
@@ -335,16 +359,7 @@ class CleanCodeGenerator:
                     )
                     
                     # Capture prompt for first cluster if prompt_printer available  
-                    is_first_cluster = False
-                    try:
-                        # Check if this is the first cluster by comparing with first cluster_id
-                        if self.cluster_data and hasattr(self.cluster_data[0], 'response_ideas') and self.cluster_data[0].response_ideas:
-                            first_cluster_id = str(self.cluster_data[0].response_ideas[0].initial_cluster)
-                            is_first_cluster = (cluster_id == first_cluster_id)
-                        else:
-                            is_first_cluster = (cluster_id == str(self.cluster_data[0].respondent_id))
-                    except:
-                        is_first_cluster = False
+                    is_first_cluster = (cluster_id == min(actual_clusters.keys())) if actual_clusters else False
                     
                     if self.prompt_printer and is_first_cluster:
                         self.prompt_printer.capture_prompt(
@@ -381,44 +396,31 @@ class CleanCodeGenerator:
                         'themes': themes,
                         'summary_json': summary_json,
                         'cluster_text': cluster_text,
-                        'cluster_data': cluster.model_dump()
+                        'cluster_data': cluster_data  # Store the grouped cluster data
                     }
                     
                 except Exception as e:
-                    # Try to get cluster_id for error reporting
-                    error_cluster_id = "unknown"
-                    try:
-                        if hasattr(cluster, 'response_ideas') and cluster.response_ideas:
-                            for idea in cluster.response_ideas:
-                                if hasattr(idea, 'initial_cluster') and idea.initial_cluster is not None:
-                                    error_cluster_id = str(idea.initial_cluster)
-                                    break
-                        if error_cluster_id == "unknown":
-                            error_cluster_id = str(cluster.respondent_id)
-                    except:
-                        pass
-                    
-                    self.verbose_reporter.error(f"Failed to process cluster {error_cluster_id}: {str(e)}")
+                    self.verbose_reporter.error(f"Failed to process cluster {cluster_id}: {str(e)}")
                     # Return empty result to continue processing
-                    return error_cluster_id, {
+                    return cluster_id, {
                         'themes': [],
                         'summary_json': '{"themes": []}',
                         'cluster_text': '',
-                        'cluster_data': cluster.model_dump()
+                        'cluster_data': cluster_data  # Store the grouped cluster data even on error
                     }
         
-        # Process all clusters concurrently using asyncio.as_completed for progress
-        tasks = [process_single_cluster(cluster) for cluster in self.cluster_data]
+        # Process all actual clusters concurrently using asyncio.as_completed for progress
+        tasks = [process_single_cluster(cluster_id, cluster_data) for cluster_id, cluster_data in actual_clusters.items()]
         completed = 0
         
         for coro in asyncio.as_completed(tasks):
             cluster_id, result = await coro
-            self.theme_map[cluster_id] = result
+            self.theme_map[str(cluster_id)] = result  # Convert cluster_id to string for consistency
             completed += 1
             
             # Progress reporting every 5 clusters or at end
             if completed % 5 == 0 or completed == len(tasks):
-                self.verbose_reporter.progress_line(completed, len(tasks), "clusters")
+                self.verbose_reporter.progress_line(completed, len(tasks), "actual clusters")
         
         # Final stats
         phase1_time = time.time() - start_time
