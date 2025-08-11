@@ -776,13 +776,14 @@ if FORCE_DEDUP and 'results' in locals() and results:
             )
             
             # Run deduplication
-            deduplicated_codes = await deduplicate_codebook(
+            import asyncio
+            deduplicated_codes = asyncio.run(deduplicate_codebook(
                 codebook=all_final_codes,
                 embedding_manager=embedding_manager,
                 var_lab=var_lab,
                 config=dedup_config,
                 verbose=VERBOSE_DEDUP
-            )
+            ))
             
             print(f"✅ Deduplicated codebook: {len(deduplicated_codes)} codes")
             print(f"🎯 Removed {len(all_final_codes) - len(deduplicated_codes)} duplicate codes")

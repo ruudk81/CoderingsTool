@@ -296,47 +296,66 @@ INPUTS  (XML blocks will be interpolated)
 ────────────────────────────────────────
 GOAL
 ────────────────────────────────────────
-Ideally produce 1 thematic code proposal that best capture the shared response pattern in the cluster, ready for a codebook.
+Ideally produce ONE thematic code proposal that best captures the shared response pattern in the cluster, ready for a codebook.
 
 ────────────────────────────────────────
 QUALITY CRITERIA
 ────────────────────────────────────────
-- ATOMIC: one idea per code (no “and/with/including”).
-- CONCISE NAMES: short phrase that directly address the survey question.
-- OPERATIONAL DEFINITIONS: ≤25 words, observable, precise, no interpretation.
-- PARSIMONIOUS: prefer 1 unified proposal; only split if truly necessary.
-- GROUNDED: use wording present in responses; minimal allowed generalisation by combining/shortening existing phrases only (no new jargon/synonyms).
+- ATOMIC: one idea per code (no "and", "with", "including").
+- CONCISE NAME: short phare (max 10 words) that directly address the survey question.
+- OPERATIONAL SUMMARY: ≤25 words, observable, precise, no interpretation.
+- PARSIMONIOUS: prefer one unified proposal; split only if truly necessary.
+- GROUNDED: use wording present in responses; minimal generalisation by combining/shortening existing phrases only (no new synonyms/jargon).
 
 ────────────────────────────────────────
 PROCESS
 ────────────────────────────────────────
-1) Attempt a single unifying theme covering almost all responses.
-2) If not honest/possible, split into max 2 atomic proposals.
-3) Each proposal must be directly traceable to the literal wording.
-
+1) Coherence gate: first attempt a single unifying theme covering almost all responses.
+2) If a single theme is not honest/possible, output at most TWO atomic proposals.
+   - Only split when there are clearly distinct ideas (avoid splitting for one-off mentions).
+3) Each proposal must be directly traceable to the literal wording in the responses.
 
 ────────────────────────────────────────
-OUTPUT FORMAT (strict JSON, in {language})
+OUTPUT FORMAT (strict JSON array)
 ────────────────────────────────────────
+Return ONLY a valid JSON array in {language}:
+
+One theme example:
 [
   {{
     "theme_id": 1,
-    "theme_name": "<short phrase for the thematic code in {language} that directly addresses the survey question>",
-    "summary": "<≤25 words, operational, precise"
+    "theme_name": "short phrase addressing survey question",
+    "summary": "operational summary under 25 words"
   }}
-  // Continue for each proposal in order
+]
+
+Two themes example:
+[
+  {{
+    "theme_id": 1,
+    "theme_name": "first theme name",
+    "summary": "first theme summary"
+  }},
+  {{
+    "theme_id": 2,
+    "theme_name": "second theme name", 
+    "summary": "second theme summary"
+  }}
 ]
 
 ────────────────────────────────────────
-RULES
+CRITICAL REQUIREMENTS
 ────────────────────────────────────────
-- Output ONLY valid JSON (no extra text).
-- All fields must be in {language}.
-""" 
+- Output ONLY the JSON array - no extra text before or after
+- No comments, no trailing commas
+- All text fields must be in {language}
+- Valid JSON syntax only
+"""
+
 
 CANDIDATE_CODE_SELECTION_PROMPT = """
-You are a {language} qualitative analyst mapping themes to existing codes in a codebook.
-A codebook in this setting is a set of code names and descriptions that can label and describe written survey responses.
+You are a {language} qualitative analyst.
+For each proposed code, find matches in the existing codebook.
 
 ────────────────────────────────────────
 INPUTS  (XML blocks will be interpolated)
@@ -345,33 +364,26 @@ INPUTS  (XML blocks will be interpolated)
 {survey_question}
 </survey_question>
 
-<cluster_summary>
+<code_proposals>
 {cluster_summary}
-</cluster_summary>
+</code_proposals>
 
 <existing_codebook>
 {code_text}
 </existing_codebook>
 
 ────────────────────────────────────────
-CONCEPTUAL FOUNDATION
+MATCHING GUIDANCE
 ────────────────────────────────────────
-Existing codes represent our current understanding.
-Your task: Find best matches.
-Multiple themes require multiple codes.
+1) If more than one proposal is provided, review each separately but return a single, deduplicated list of matching codes.
+2) Match on meaning, scope, and abstraction level in light of the survey question (do not rely on superficial word overlap).
+3) Select only codes that cover the proposal substantially (≈≥60% of its meaning); prefer near-equivalents (≈≥90%) when available.
+4) Be selective: exclude codes unrelated to the proposal; avoid near-duplicates and do not include both a parent and a redundant child code.
+5) Be comprehensive: if a strong match exists, include it. If none exist, return an empty list.
+6) Copy names/definitions EXACTLY as in the codebook (no edits).
 
 ────────────────────────────────────────
-ANALYTIC GUIDANCE
-────────────────────────────────────────
-
-1. For **EACH theme** numbered in the summary, attempt to find matching existing codes
-3. Select the codes, if any, that are relevant in capturing the themes
-4. Be selective: only select suitable codes for our codebook
-5. Be comprehensive: ensure no theme is left uncoded
-6. Present your selection in the JSON array format described below
-
-────────────────────────────────────────
-OUTPUT  (raw JSON, no extra text in {language})
+OUTPUT  (raw JSON, in {language})
 ────────────────────────────────────────
 
 [
@@ -383,23 +395,19 @@ OUTPUT  (raw JSON, no extra text in {language})
     "code": "exact same name of existing code 2",
     "definition": "exact same definition of existing code 2"
   }}
-  // repeat for every theme_id
+  // repeat for every code that matches the proposal
 ]
 
 IMPORTANT:
-- You may select NONE, ONE, or MULTIPLE candidate codes per theme
+- You may select NONE, ONE, or MULTIPLE candidate codes per proposal 
 - Do not create new codes or modify existing ones
-- If a concept has no suitable existing codes, that's acceptable - return what you can find
-- Multi-theme clusters are normal and expected - code each theme appropriately
 - Output ONLY the JSON array - no other text
 
 """
 
 CODE_GENERATION_PROMPT = """
-You are a {language} qualitative data analyst specializing in thematic coding and codebook development.
-You will be given 1 or 2 theme(s) that summarize ideas expressed in written survey responses.
-Your task is to maintain the codebook by deciding whether to use, modify, or create codes that accurately and precisely describe each theme.
-    
+You are a {language} qualitative codebook curator. Decide the final action for each proposed code using codebook matches.
+
 ────────────────────────────────────────
 INPUTS  (XML blocks will be interpolated)
 ────────────────────────────────────────
@@ -407,45 +415,46 @@ INPUTS  (XML blocks will be interpolated)
 {survey_question}
 </survey_question>
 
-<themes_to_code>
+<code_proposals>
 {cluster_summary}
-</themes_to_code>
+</code_proposals>
 
-<existing_codes_in_codebook>
+<existing_codes>
 {candidate_codes}
-</existing_codes_in_codebook>
+</existing_codes>
 
 ────────────────────────────────────────
-PRINCIPLES FOR HIGH QUALITY CODING 
+CONCEPTUAL GUIDANCE
 ────────────────────────────────────────
-- PARSIMONIOUS: only as many codes as needed, no redundancy
-- ATOMIC: each code captures ONE concept only (no “and”, “including”, “with”)
-- PRECISE: clear boundaries enabling reliable coding
-- CONCISE: code names 2–5 words
-- OPERATIONAL: definitions use observable criteria, not interpretations
-- CONSISTENT ABSTRACTION LEVEL: match the theme’s level of abstraction
-- MUTUALLY EXCLUSIVE: minimal overlap between codes
+Each code—existing or proposed—represents a theme expressed in responses to an open-ended survey question.
+A theme is atomic: one coherent idea that cannot be meaningfully reduced.
+First identify the theme each proposal addresses (use the proposal’s wording/level).
 
 ────────────────────────────────────────
-ANALYTIC GUIDANCE
+DECISION RULES
 ────────────────────────────────────────
-Step 1: Review
-- Expect exactly 1 or 2 themes in the provided summary
-- A theme is a single, coherent idea stated in ≤20 words
-
-Step 2: Choose the Appropriate Coding Action for Each Theme
-- `use_existing` → existing code(s) fully capture the theme (≥90% match)
-- `modify_existing` → existing code captures most but not all of the theme (≥60% and <90% match)
-- `create_new` → no existing code captures ≥60% of the theme
-
-When modifying or creating:
-- Name must be 2–5 words
-- Definition must be ≤30 words, precise, and operational
-- Match the theme’s abstraction level
-- Never combine subthemes in names using "and", "with", etc.
+- use_existing → some existing code covers ≥90% of the proposal (meaning & scope).
+- modify_existing → best existing covers 60–89%; refine name/definition to fit both the proposal and existing scope.
+- create_new → no existing code ≥60%.
 
 ────────────────────────────────────────
-OUTPUT  (raw JSON, no extra text, in {language})
+CONSTRAINTS for any final code (modified or new)
+────────────────────────────────────────
+- Name: short phrase (max 10 words), directly addressing the survey question; atomic (no "and/with/including").
+- Definition: ≤30 words, operational, precise, grounded in observed wording/behavior (no interpretation).
+- Abstraction: match the proposal’s level; do not over-generalise.
+- Parsimony & Exclusivity: prefer one code per theme; avoid overlap and redundancy with existing codes.
+- Grounding: prefer minimal generalisation by combining/shortening phrases from the data; avoid new jargon/synonyms.
+
+────────────────────────────────────────
+EDGE CASES
+────────────────────────────────────────
+- If multiple existing codes are ≥0.90, choose the most general, well-scoped one (parsimony).
+- If no suitable existing codes, create exactly one new atomic code per theme.
+- Only use multiple existing codes for one theme when they are non-overlapping and both are strictly necessary (justify).
+
+────────────────────────────────────────
+OUTPUT  (Strict JSON, in {language})
 ────────────────────────────────────────
 {{
   "cluster_analysis": {{
@@ -494,15 +503,16 @@ WEAK DEFINITION EXAMPLES
 - Interpretive: "Underlying [abstract concept] manifesting in different ways"
 
 IMPORTANT:
-- All output fields must be in {language}
-- Output ONLY valid JSON, no other text
+- All output fields must be in {language}.
+- Output ONLY valid JSON (no extra text, no trailing commas, use straight quotes).
 """
 
 
 VALIDATION_PROMPT = """
-You are a {language} qualitative data analyst specializing in codebook development and evaluation. 
+You are a {language} qualitative data analyst specializing in codebook development and evaluation.
 You will assess your colleague's coding recommendations for a cluster that contains 1 or 2 themes summarizing ideas expressed in written survey responses.
-Your task is to maintain a parsimonious codebook with clear code names (no compounding of subthemes!).
+Your task is to maintain a parsimonious codebook with clear, atomic code names (no compounding of subthemes).
+
 
 ────────────────────────────────────────
 INPUTS  (XML blocks will be interpolated)
@@ -526,24 +536,30 @@ INPUTS  (XML blocks will be interpolated)
 ────────────────────────────────────────
 EVALUATION GUIDANCE
 ────────────────────────────────────────
-- Expect exactly 1 or 2 themes in the provided cluster summary.
+- Expect ONE themes in the cluster summary, but be ready for more themes.
 - Assess EACH recommendation using these criteria:
-  a) **Semantic fit** – Does the code accurately capture the theme’s meaning?
-  b) **Atomicity** – Does the code name represent a single theme? No compounding with "and", "with", "including".
-  c) **Parsimony** – Were existing codes considered before creating/modifying?
-  d) **Non-redundancy** – Would this code overlap with others in the codebook?
-  e) **Abstraction level** – Does the code match the theme’s level of abstraction?
+  a) Semantic fit — Does the code accurately capture the theme’s meaning and scope?
+  b) Atomicity — Single idea only; no "and", "with", "including".
+  c) Parsimony — Prefer reuse of existing codes when ≥90% aligned; avoid redundant additions.
+  d) Non-redundancy — Avoid overlap with existing codes and between recommended codes.
+  e) Abstraction level — Match the theme’s level; avoid over-/under-generalisation.
+  f) Grounding — Worded to be operational and observable; ≤30-word definition.
 
 ────────────────────────────────────────
 VALIDATION DECISION RULES
 ────────────────────────────────────────
-For EACH theme/code pair:
-- **APPROVE** – Code is necessary, atomic, correct abstraction level, and well-justified.
-- **REVISE** – Code is generally valid but needs refinement (e.g., shorter name, clearer definition).
-- **REJECT** – Code is unnecessary or redundant; use an existing code instead.
+For EACH theme/code recommendation:
+- APPROVE — Necessary, atomic, correct abstraction level, well-justified, non-overlapping.
+- REVISE — Generally valid but needs refinement (shorter name, clearer ≤30-word operational definition, or tightened scope).
+- REJECT — Unnecessary or redundant; replace with a single best existing code if available.
 
 When REVISE or REJECT:
-- Always propose a final validated code name (2–5 words, atomic) and definition (≤30 words, operational, precise) to replace or substitute the original.
+- Always provide a final validated code (2–5 word atomic name + ≤30-word operational definition).
+- If REJECT due to a better existing code, set validated_code to that existing code’s exact name and definition.
+
+Edge cases:
+- If multiple codes were recommended for one theme, approve at most those that are strictly non-overlapping and necessary; otherwise consolidate to one.
+- Use exact existing names/definitions when approving or substituting existing codes.
 
 ────────────────────────────────────────
 OUTPUT  (raw JSON, no extra text, in {language})
@@ -602,7 +618,8 @@ CRITICAL FORMAT REQUIREMENTS
 ────────────────────────────────────────
 - `validated_code` is always a single object with "code" and "definition".
 - Validate EACH theme/code pair separately.
-- Ensure atomic codes (one theme per code) — no compounding.
+- Names must be short phrases of max words; definitions ≤30 words; no compounding.
+- Use exact existing names/definitions when relevant.
 - Output ONLY valid JSON, no other text.
 - All output fields must be in {language}.
 """

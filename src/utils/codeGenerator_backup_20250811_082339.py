@@ -2130,7 +2130,7 @@ class InductiveCodeGenerator:
         total_ideas = sum(len(cluster_data['ideas']) for cluster_data in clusters.values())
         
         # Display configuration
-        self.verbose_reporter.step_start("Inductive code generation from clusters", emoji=">")
+        self.verbose_reporter.step_start("Inductive code generation from clusters", emoji="🔄")
         self.verbose_reporter.stat_line(f"Input: {len(clusters)} clusters with {total_ideas} ideas")
         self.verbose_reporter.stat_line(f"Starter codes: {len(self.starter_codes)}")
         self.verbose_reporter.stat_line("Configuration:")
@@ -2338,7 +2338,7 @@ class InductiveCodeGenerator:
             error_summary["Successful recoveries"] = batch_processor.stats['successful_recoveries']
         
         # Complete processing
-        self.verbose_reporter.step_complete("Cluster processing completed", emoji="*")
+        self.verbose_reporter.step_complete("Cluster processing completed", emoji="✅")
         
         # Display final totals
         self.verbose_reporter.stat_line("Final totals:")
