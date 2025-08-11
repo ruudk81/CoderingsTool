@@ -36,9 +36,10 @@ var_name = "Q20"
 
 # Pipeline behavior flags
 FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
-FORCE_STEP = "gatos_codebook"  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
+FORCE_STEP = "codebook_generation"  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
+USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
 VERBOSE = False  # Enable verbose output for debugging in Spyder
-PROMPT_PRINTER = False  # Enable prompt printing for LLM calls
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
 
 # Clustering parameters
 LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
@@ -54,6 +55,7 @@ print("=" * 80)
 print(f"Data file: {filename}")
 print(f"Variable: {var_name} - {var_lab}")
 print(f"Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
+print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
 print(f"Verbose mode: {VERBOSE}")
 print(f"Prompt printer: {PROMPT_PRINTER}")
 print("=" * 80)
@@ -396,6 +398,7 @@ if  FORCE:
     FORCE_STEP   = step_name
 
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     embedded_text = cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
@@ -411,7 +414,11 @@ else:
 
 
     embedding_config = EmbeddingConfig()
-    get_embeddings = Embedder(config=embedding_config, verbose=VERBOSE) 
+    get_embeddings = Embedder(
+            config=embedding_config,
+            provider="gemini",
+            embedding_model="gemini-embedding-001",  
+            verbose=VERBOSE)
     input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
     
@@ -503,7 +510,7 @@ else:
 #                     if subitem.initial_cluster == z:
 #                         print(subitem.idea)
 #     input("\n🔸 Press Enter to continue to the next batch of clusters...")
-        
+
 
 # === STEP 7 ========================================================================================================
 """Generate codes"""
@@ -512,8 +519,9 @@ from utils import codeGenerator as codeGenerator
 
 FORCE = True
 VERBOSE = True
-PROMPT_PRINTER = False
-CACHE_CODEGENERATOR_REASONING = True  # Cache detailed LLM reasoning for debugging
+PROMPT_PRINTER = True
+CACHE_CODEGENERATOR_REASONING = True  
+USE_SPECULATIVE_STARTER_CODES = False
 
 step_name = "codebook_generation"
 if  FORCE:
@@ -556,15 +564,20 @@ else:
     verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
     start_time = time.time()
     
-    # Phase 1: Generate starter codes
-    starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-        var_lab=var_lab, 
-        verbose=VERBOSE, 
-        prompt_printer=prompt_printer
-    )
-    starter_codes = starter_generator.generate()
+    # Phase 1: Generate starter codes (optional)
+    if USE_SPECULATIVE_STARTER_CODES:
+        starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+            var_lab=var_lab, 
+            verbose=VERBOSE, 
+            prompt_printer=prompt_printer
+        )
+        starter_codes = starter_generator.generate()
+    else:
+        # Use empty starter codes when speculative generation is disabled
+        starter_codes = []
+        print("Speculative starter codes disabled - proceeding with empty starter codes")
   
-    if not starter_codes:
+    if not starter_codes and USE_SPECULATIVE_STARTER_CODES:
         print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
         codebook_main = models.CodebookModel(
             codes=[],
@@ -576,6 +589,9 @@ else:
     else:
         # Phase 2: Inductive code generation
         # Use original codeGenerator with proven algorithms
+        
+        
+        
         generator = codeGenerator.InductiveCodeGenerator(
             cluster_results=initial_cluster_results,
             starter_codes=starter_codes, 
@@ -659,11 +675,17 @@ else:
         try:
             codebook_reasoning = models.CodeGeneratorReasoningResults(
                 cluster_results=[],  # Could include raw cluster results if needed
+                # Add actual prompt inputs for transparency
+                step1_inputs=results.get('step1_inputs', {}),
+                step2_inputs=results.get('step2_inputs', {}),
+                step3_inputs=results.get('step3_inputs', {}),
+                step4_inputs=results.get('step4_inputs', {}),
+                step3_validation_warnings=results.get('step3_validation_warnings', {}),
+                # Legacy step results
                 step1_summaries=results.get('step1_summaries', {}),
-                step2_analysis=results.get('candidate_codes_data', {}),
+                step2_analysis=results.get('step2_analysis', {}),
                 step3_recommendations=results.get('step3_recommendations', {}),
                 step4_validations=results.get('validation_details', {}),
-                step4_validated_codes=results.get('step4_validated_codes', {}),
                 stats=results.get('stats', {}),
                 generator_version=results.get('generator_version', ''),
                 var_lab=var_name,
@@ -686,39 +708,105 @@ else:
 # for entry in codebook:
 #     print(idx)
 #     print(entry.code)
-#     #print(entry.definition)
-#     #print("\n")
+#     print(entry.definition)
+#     print("\n")
 #     idx += 1
 
-from utils.codeGenerator_displayResults import display_cluster_analysis, display_summary_statistics
-if 'results' in locals():
+#debug : reasoning
+if CACHE_CODEGENERATOR_REASONING: 
+    from utils.codeGenerator_displayResults import display_cluster_analysis #, display_summary_statistics
+    if 'results' in locals():
+        display_cluster_analysis(codebook_reasoning)
+        
+#debug : prompts 
+if CACHE_CODEGENERATOR_REASONING: 
+    from utils import promptTester  # Add this import 
+    tester = promptTester.SimplePromptTester(var_lab=var_lab) 
+    tester.test_all_prompts()  # or test individual prompts
+
+# ===  DEDUPLICATION ========================================================================================================
+"""Deduplicate semantic duplicates from generated codebook"""
+from utils.codeBookDeduplicator import deduplicate_codebook
+
+FORCE_DEDUP = True
+VERBOSE_DEDUP = True
+
+# Deduplication test settings
+DEDUP_SIMILARITY_THRESHOLD = 0.85  # Lower = more aggressive merging (0.70-0.95 range)
+DEDUP_BATCH_SIZE = 10              # Codes per similarity batch
+DEDUP_OVERLAP_SIZE = 3             # Overlap between batches
+
+if FORCE_DEDUP and 'results' in locals() and results:
+    print("\n🔍 Starting codebook deduplication...")
     
-    # display code generations statistics
-    display_summary_statistics(results)
-    
-    # debug 1: Display a random cluster with full details
-    display_cluster_analysis(results)
-    
-    # debug 2: Display specific types of clusters
-    #from utils.resultsDisplay import find_clusters_by_decision
-    # new_code_clusters = find_clusters_by_decision(results, 'create_new')
-    # if new_code_clusters:
-    #     print("\n" + "="*80 + "\nEXAMPLE: NEW CODE CREATION\n" + "="*80)
-    #     display_cluster_analysis(results, new_code_clusters[0])
-    
-    # modified_clusters = find_clusters_by_decision(results, 'modify_existing')
-    # if modified_clusters:
-    #     print("\n" + "="*80 + "\nEXAMPLE: CODE MODIFICATION\n" + "="*80)
-    #     display_cluster_analysis(results, modified_clusters[0])
-    
-    #debug 3 : Display multiple clusters at once
-    # from utils.resultsDisplay import display_multiple_clusters
-    # print("\n" + "="*80 + "\nMULTIPLE CLUSTER ANALYSIS\n" + "="*80)
-    # display_multiple_clusters(results, max_clusters=3)
+    # Extract codebook from results
+    if 'cluster_assignments' in results and results['cluster_assignments']:
+        # Extract all final codes from cluster assignments
+        all_final_codes = []
+        for cluster_result in results['cluster_assignments'].values():
+            if 'codes' in cluster_result:
+                for code_info in cluster_result['codes']:
+                    if 'code' in code_info and 'definition' in code_info:
+                        # Check if code already exists to avoid duplicates
+                        existing_codes = [c.code for c in all_final_codes]
+                        if code_info['code'] not in existing_codes:
+                            codebook_entry = models.Codebook(
+                                code=code_info['code'],
+                                definition=code_info.get('definition', '')
+                            )
+                            all_final_codes.append(codebook_entry)
+        
+        if all_final_codes and len(all_final_codes) >= 5:  # Only deduplicate if we have enough codes
+            print(f"📊 Original codebook: {len(all_final_codes)} codes")
+            
+            # Get the embedding manager from codeGenerator_v2 results
+            # We'll create a fresh one since we need it for deduplication
+            from utils.codeGenerator import OptimizedEmbeddingManager, SharedCodebook
+            
+            # Create shared codebook and embedding manager for deduplication
+            shared_codebook = SharedCodebook([{'code': c.code, 'definition': c.definition} for c in all_final_codes])
+            embedding_manager = OptimizedEmbeddingManager(shared_codebook, verbose=VERBOSE_DEDUP)
+            
+            # Create custom config with test settings
+            from config import DeduplicationConfig
+            dedup_config = DeduplicationConfig(
+                similarity_threshold=DEDUP_SIMILARITY_THRESHOLD,
+                batch_size=DEDUP_BATCH_SIZE,
+                overlap_size=DEDUP_OVERLAP_SIZE
+            )
+            
+            # Run deduplication
+            deduplicated_codes = await deduplicate_codebook(
+                codebook=all_final_codes,
+                embedding_manager=embedding_manager,
+                var_lab=var_lab,
+                config=dedup_config,
+                verbose=VERBOSE_DEDUP
+            )
+            
+            print(f"✅ Deduplicated codebook: {len(deduplicated_codes)} codes")
+            print(f"🎯 Removed {len(all_final_codes) - len(deduplicated_codes)} duplicate codes")
+            
+            # Update the results with deduplicated codebook
+            # For now, we'll store it in a variable for the next step
+            deduplicated_codebook = deduplicated_codes
+        else:
+            print(f"⏭️  Skipping deduplication: only {len(all_final_codes)} codes (minimum: 5)")
+            deduplicated_codebook = all_final_codes
+    else:
+        print("⚠️  No codebook found in results - skipping deduplication")
+        deduplicated_codebook = []
 else:
-    print("No results found. Please run the generator first: results = generator.generate()")
+    print("⏭️  Skipping deduplication (FORCE_DEDUP=False or no results)")
+    deduplicated_codebook = []
 
 
+#debug
+for cb in deduplicated_codebook:
+    #print(f"- {cb.code}: {cb.definition}")
+    print(f"- {cb.code}")
+
+codebook = deduplicated_codebook
 
 # === STEP 8 ========================================================================================================
 """Identify themes"""

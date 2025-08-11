@@ -62,7 +62,7 @@ class SpeculativeStarterCodes:
                 model=self.model_config.get_model_for_stage("speculative_codes"),
                 messages=[{"role": "user", "content": prompt}],
                 response_model=List[models.CodeDefinition],
-                temperature=0.7,
+                temperature=1,
                 max_retries=3)
             
             return response

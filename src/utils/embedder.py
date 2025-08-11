@@ -10,11 +10,19 @@ from dataclasses import dataclass
 import numpy as np
 from openai import AsyncOpenAI
 
+_genai = None
+def _ensure_gemini():
+    global _genai
+    if _genai is None:
+        import google.generativeai as genai
+        _genai = genai
+    return _genai
+
 # === MODELS ========================================================================================================
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, get_embedding_dimensions
+from config import OPENAI_API_KEY, GEMINI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, get_embedding_dimensions
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -40,17 +48,25 @@ class Embedder:
         verbose: bool = False):
         
         self.config = config or DEFAULT_EMBEDDING_CONFIG
-        self.client = client or AsyncOpenAI(api_key=os.getenv(OPENAI_API_KEY))
+        self.provider = provider.lower()
+
+        if self.provider == "openai":
+            self.client = client or AsyncOpenAI(api_key=OPENAI_API_KEY)
+        elif self.provider == "gemini":
+            genai = _ensure_gemini()
+            genai.configure(api_key=GEMINI_API_KEY)
+            self.client = None  # gemini calls go via the module
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
+
         self.embedding_model = embedding_model or self.config.embedding_model
+        
         self.var_lab = var_lab
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.stats = ProcessingStats()
-        
-        # Get embedding dimensions based on model
         self.embedding_dimensions = get_embedding_dimensions(self.embedding_model)
         
-        # Enhanced verbose reporting with model and dimension info
         self.verbose_reporter.stat_line(f"Model: {self.embedding_model} ({self.embedding_dimensions} dimensions)")
     
     def _get_ResponseData(self, data: List[models.IdeasExtractedModel]) -> List[ResponseData]:
@@ -73,8 +89,8 @@ class Embedder:
     async def _generate_question_aware_embeddings(self, response_embeddings: np.ndarray, question: str) -> np.ndarray:
         """Generate question-aware embeddings by combining response and question embeddings"""
         # Generate question embedding
-        question_response = await self.client.embeddings.create(input=[question], model=self.embedding_model)
-        question_embedding = np.array(question_response.data[0].embedding, dtype=np.float32)
+        #question_response = await self.client.embeddings.create(input=[question], model=self.embedding_model)
+        question_embedding = await self._embed_single(question) #was: question_embedding = np.array(question_response.data[0].embedding, dtype=np.float32)
         
         # Create domain anchor (average of all response embeddings)
         domain_anchor = np.mean(response_embeddings, axis=0)
@@ -88,6 +104,121 @@ class Embedder:
             question_aware_embeddings.append(combined)
         
         return np.array(question_aware_embeddings)
+    
+    
+    async def _embed_openai_batch(self, batch_texts: List[str]):
+        # OpenAI is already async-friendly
+        response = await self.client.embeddings.create(
+            input=batch_texts,
+            model=self.embedding_model
+        )
+        return [np.array(item.embedding, dtype=np.float32) for item in response.data]
+    
+    
+    def _gemini_values(self, res) -> np.ndarray:
+        """Normalize google-generativeai embed_content response to a float32 numpy array."""
+        # Case 1: dict form: {"embedding": {"values": [...]}} or {"embedding": [...]}
+        if isinstance(res, dict):
+            emb = res.get("embedding")
+            if isinstance(emb, dict) and "values" in emb:
+                return np.array(emb["values"], dtype=np.float32)
+            elif isinstance(emb, (list, tuple)):
+                # NEW: Handle direct embedding array in dict: {"embedding": [...]}
+                return np.array(emb, dtype=np.float32)
+            # Sometimes a list under "data"
+            data = res.get("data")
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                emb = data[0].get("embedding")
+                if isinstance(emb, dict) and "values" in emb:
+                    return np.array(emb["values"], dtype=np.float32)
+    
+        # Case 2: object with .embedding.values
+        emb = getattr(res, "embedding", None)
+        if emb is not None:
+            vals = getattr(emb, "values", None)
+            if isinstance(vals, (list, tuple)):
+                return np.array(vals, dtype=np.float32)
+    
+        # Case 3: list of one
+        if isinstance(res, list) and res:
+            first = res[0]
+            # Recurse once to handle dict/object inside
+            arr = self._gemini_values(first)
+            if arr is not None:
+                return arr
+    
+        # If we reach here, shape is unexpected
+        raise TypeError(f"Unexpected Gemini embed_content return type: {type(res)} -> {res!r}")
+        
+    async def _embed_gemini_batch(self, batch_texts: List[str]):
+        """
+        GEMINI: Use concurrent processing approach (no true batch API available)
+        
+        PERFORMANCE OPTIMIZATION:
+        - Concurrent processing with rate limiting (~21 seconds for 772 embeddings)
+        - Uses semaphore to control concurrency and respect API rate limits
+        """
+        return await self._embed_gemini_concurrent(batch_texts)
+    
+    
+    async def _embed_gemini_concurrent(self, batch_texts: List[str]):
+        """Optimized concurrent Gemini embeddings processing"""
+        import google.generativeai as genai
+        
+        # Use provider-specific concurrency from config
+        gemini_concurrency = min(self.config.gemini_max_concurrent, len(batch_texts))
+        semaphore = asyncio.Semaphore(gemini_concurrency)
+        
+        async def embed_single_text(text: str, index: int):
+            async with semaphore:
+                # Stagger requests slightly to avoid rate limit spikes
+                if index > 0:
+                    await asyncio.sleep(0.05)  # Reduced from 0.1 for better performance
+                
+                def _embed_single():
+                    return genai.embed_content(
+                        model=self.embedding_model,
+                        content=text
+                    )
+                
+                try:
+                    result = await asyncio.to_thread(_embed_single)
+                    return self._gemini_values(result)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to embed text at index {index}: {str(e)[:100]}...") from e
+        
+        tasks = [embed_single_text(text, i) for i, text in enumerate(batch_texts)]
+        embeddings = await asyncio.gather(*tasks)
+        return embeddings
+   
+    async def _embed_batch(self, batch_texts: List[str]):
+        if self.provider == "openai":
+            return await self._embed_openai_batch(batch_texts)
+        elif self.provider == "gemini":
+            return await self._embed_gemini_batch(batch_texts)
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
+    
+    async def _embed_single(self, text_to_embed: str) -> np.ndarray:
+        if self.provider == "openai":
+            r = await self.client.embeddings.create(input=[text_to_embed], model=self.embedding_model)
+            return np.array(r.data[0].embedding, dtype=np.float32)
+        else:
+            genai = _ensure_gemini()
+            def _call():
+                return genai.embed_content(model=self.embedding_model, content=text_to_embed)
+            r = await asyncio.to_thread(_call)
+            return self._gemini_values(r)
+        
+    async def _with_retries(self, fn, *, retries=3, base=0.8):
+        for i in range(retries):
+            try:
+                return await fn()
+            except:
+                if i == retries - 1:
+                    raise
+                await asyncio.sleep(base * (2 ** i))   
+
 
     async def _process_embeddings_with_id_tracking(self, data: List[models.EmbeddingsModel]) -> List[models.EmbeddingsModel]:
         """Process embeddings with explicit ID tracking"""
@@ -104,7 +235,13 @@ class Embedder:
         self.verbose_reporter.stat_line(f"Processing {len(texts_to_embed)} embeddings with ID tracking")
         
         # Create batches
-        batch_size = self.config.batch_size
+        # Use provider-specific batch size for optimal performance
+        if self.provider == "gemini":
+            batch_size = getattr(self.config, 'gemini_batch_size', 20)
+        elif self.provider == "openai":
+            batch_size = getattr(self.config, 'openai_batch_size', 100)
+        else:
+            batch_size = self.config.batch_size
         batches = []
         batch_identifiers = []
         
@@ -114,23 +251,46 @@ class Embedder:
             batches.append(batch_texts)
             batch_identifiers.append(batch_ids)
         
-        # Process batches concurrently
-        semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
+        # Process batches concurrently with provider-specific limits
+        if self.provider == "gemini":
+            max_concurrent = getattr(self.config, 'gemini_max_concurrent', 3)
+        elif self.provider == "openai":
+            max_concurrent = getattr(self.config, 'openai_max_concurrent', 5)
+        else:
+            max_concurrent = self.config.max_concurrent_requests
         
-        async def process_batch_with_tracking(batch_texts: List[str], batch_ids: List[ResponseData]) -> List[Tuple[ResponseData, np.ndarray]]:
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        
+        async def process_batch_with_tracking(batch_texts: List[str],
+                                      batch_ids: List[ResponseData]) -> List[Tuple[ResponseData, np.ndarray]]:
             async with semaphore:
-                response = await self.client.embeddings.create(
-                    input=batch_texts, 
-                    model=self.embedding_model
-                )
+                vectors = await self._with_retries(lambda: self._embed_batch(batch_texts)) #was: await self._embed_batch(batch_texts)
+        
+                # Defensive check: sizes must match
+                if len(vectors) != len(batch_ids):
+                    raise RuntimeError(f"Provider returned {len(vectors)} vectors for {len(batch_ids)} ids")
+        
+                # Preserve order: providers return embeddings in input order
+                results: List[Tuple[ResponseData, np.ndarray]] = []
+                for identifier, vec in zip(batch_ids, vectors):
+                    results.append((identifier, vec))
+                return results
+
+        # async def process_batch_with_tracking(batch_texts: List[str], batch_ids: List[ResponseData]) -> List[Tuple[ResponseData, np.ndarray]]:
+        #     async with semaphore:
+        #         response = await self.client.embeddings.create(
+        #             input=batch_texts, 
+        #             model=self.embedding_model
+        #         )
                 
                 # Pair embeddings with their identifiers
-                results = []
-                for identifier, embedding_data in zip(batch_ids, response.data):
-                    embedding_array = np.array(embedding_data.embedding, dtype=np.float32)
-                    results.append((identifier, embedding_array))
+                # results = []
+                # for identifier, embedding_data in zip(batch_ids, response.data):
+                #     embedding_array = np.array(embedding_data.embedding, dtype=np.float32)
+                #     results.append((identifier, embedding_array))
                 
-                return results
+        #         return results
         
         # Process all batches
         tasks = [

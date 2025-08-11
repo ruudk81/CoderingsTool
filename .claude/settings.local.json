@@ -20,7 +20,10 @@
       "Bash(del test_cluster_ideas_display.py test_simple_display.py)",
       "Bash(timeout:*)",
       "Bash(git rm:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "WebFetch(domain:googleapis.github.io)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebFetch(domain:wandb.ai)"
     ],
     "deny": []
   }
