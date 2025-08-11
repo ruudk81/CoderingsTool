@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
 # File handling (only keep what's used)
@@ -19,6 +19,9 @@ elif os.path.basename(current_dir) == 'src':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', 'hunspell'))
 elif os.path.basename(current_dir) == 'Coderingstool':
     hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+else:
+    # Default fallback for other directories
+    hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
 
 HUNSPELL_PATH = os.path.join(hunspell_dir, "hunspell.exe")
 DUTCH_DICT_PATH = os.path.join(hunspell_dir, "dict", "nl_NL")
@@ -31,7 +34,8 @@ DEFAULT_LANGUAGE = "Dutch"
 
 # LLM settings (core settings)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEFAULT_MODEL = "gpt-4o-mini"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DEFAULT_MODEL = "gpt-4.1-mini"
 
 # =============================================================================
 # OPENAI RATE LIMITS (Official limits as of 2025)
@@ -46,6 +50,21 @@ class OpenAIRateLimits:
 
 # Rate limits for different models (Tier 4/5 paid accounts)
 OPENAI_RATE_LIMITS = {
+    "gpt-5": OpenAIRateLimits(
+        tokens_per_minute=800_000,
+        requests_per_minute=5_000,
+        tokens_per_day=100_000_000
+    ),
+    "gpt-5-mini": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
+    "gpt-5-nano": OpenAIRateLimits(
+        tokens_per_minute=4_000_000,
+        requests_per_minute=5_000,
+        tokens_per_day=40_000_000
+    ),
     "gpt-4.1": OpenAIRateLimits(
         tokens_per_minute=800_000,
         requests_per_minute=5_000,
@@ -107,15 +126,39 @@ EMBEDDING_MODEL_DIMENSIONS = {
     "text-embedding-3-large": 3072,
     "text-embedding-3-small": 1536,
     "text-embedding-ada-002": 1536,
-}
+    # Gemini
+    "text-embedding-004": 768,
+    "models/text-embedding-004": 768,   
+    # Gemini large
+    "gemini-embedding-001": 3072,              
+    "models/gemini-embedding-001": 3072,       
+    }
 
 def get_embedding_dimensions(model: str) -> int:
     """Get embedding dimensions for a specific OpenAI embedding model"""
-    return EMBEDDING_MODEL_DIMENSIONS.get(model, 1536)  # Default to 1536 if unknown
+    return EMBEDDING_MODEL_DIMENSIONS.get(model)   
 
 @dataclass
 class ModelConfig:
     """Centralized configuration for all models used throughout the pipeline"""
+    
+    # =============================================================================
+    # MODEL TYPE MAPPING
+    # =============================================================================
+    MODEL_TYPES = {
+        # GPT-4 family (chat models)
+        "gpt-4": "chat",
+        "gpt-4o": "chat",
+        "gpt-4o-mini": "chat",
+        "gpt-4.1": "chat",
+        "gpt-4.1-mini": "chat",
+        "gpt-4.1-nano": "chat",
+        
+        # GPT-5 family (reasoning models)
+        "gpt-5": "reasoning",
+        "gpt-5-mini": "reasoning",
+        "gpt-5-nano": "reasoning"
+    }
     
     # =============================================================================
     # STAGE-SPECIFIC MODELS
@@ -132,7 +175,8 @@ class ModelConfig:
     description_model: str = DEFAULT_MODEL         
     
     # Step 4: Embedding model
-    embedding_model: str = "text-embedding-3-large"  
+    #embedding_model: str = "text-embedding-3-large"
+    embedding_model: str = "gemini-embedding-001"
     
     # Step 6: Codebook generation
     speculative_codes_model: str = DEFAULT_MODEL  
@@ -168,6 +212,13 @@ class ModelConfig:
     quality_filter_temperature: float = 0.0
     
     # =============================================================================
+    # GPT-5 SPECIFIC PARAMETERS
+    # =============================================================================
+    
+    gpt5_reasoning_effort: str = "minimal"  # Options: minimal, low, medium, high
+    gpt5_text_verbosity: str = "medium"     # Options: low, medium, high
+    
+    # =============================================================================
     # HELPER METHODS
     # =============================================================================
     
@@ -182,14 +233,22 @@ class ModelConfig:
             'speculative_codes': self.speculative_codes_model,
             'tiktoken': self.token_codebook_generation_model,
             'tiktoken_spellChecker': self.tiktoken_spellChecker,
-            'codes_analysis': self.codebook_analysis_model,
-            'cluster_analysis': self.response_summary_model,
-            'recommend': self.match_and_recommend_model,
-            'review': self.validation_model,
-            'hierarchical_organisation': self.hierarchical_organisation_model,
-            'domain_clustering': self.domain_clustering_model,
-            'theme_synthesis': self.theme_synthesis_model,
-            'code_assignment': self.code_assignment_model
+            'cluster_summarization': self.codebook_analysis_model,
+            'candidate_code_selection': self.response_summary_model,
+            'code_generation_recommendation': self.match_and_recommend_model,
+            'recommendation_validation': self.validation_model
+            
+            # Keep old names for backward compatibility
+            # 'codes_analysis': self.codebook_analysis_model,
+            # 'cluster_analysis': self.response_summary_model,
+            # 'recommend': self.match_and_recommend_model,
+            # 'review': self.validation_model,
+            # 'codebook_analysis': self.codebook_analysis_model,
+            # 'code_validation': self.validation_model,
+            # 'hierarchical_organisation': self.hierarchical_organisation_model,
+            # 'domain_clustering': self.domain_clustering_model,
+            # 'theme_synthesis': self.theme_synthesis_model,
+            # 'code_assignment': self.code_assignment_model
         }
         return stage_models.get(stage, DEFAULT_MODEL)
     
@@ -200,6 +259,30 @@ class ModelConfig:
             'quality_filter': self.quality_filter_temperature,
         }
         return stage_temperatures.get(stage, self.default_temperature)
+    
+    def get_langchain_config_for_stage(self, stage: str) -> Dict[str, Any]:
+        """Get complete LangChain configuration for a stage"""
+        model_name = self.get_model_for_stage(stage)
+        model_type = self.MODEL_TYPES.get(model_name, "chat")
+        
+        config = {
+            "api_key": OPENAI_API_KEY,
+            "model": model_name,
+        }
+        
+        if model_type == "chat":
+            # GPT-4 models: temperature = 0.0
+            config["temperature"] = 0.0
+        else:
+            # GPT-5 models: temperature = 1.0 + reasoning/text params
+            config["temperature"] = 1.0
+            # TODO hopefully soon available in chatCompletion of langChain:
+            # config["model_kwargs"] = {
+            #     "reasoning": {"effort": self.gpt5_reasoning_effort},
+            #     "text": {"verbosity": self.gpt5_text_verbosity}
+            #}
+        
+        return config
     
 # =============================================================================
 # CACHE CONFIGURATION
@@ -354,9 +437,14 @@ class EmbeddingConfig:
     """Configuration for embedding generation step"""
     batch_size: int = 100
     max_concurrent_requests: int = 5
-    # Model configuration - will be overridden by ModelConfig
     embedding_model: str = "text-embedding-3-large"  # Fallback model
     max_sample_responses: int = 3  # For verbose output
+    
+    # Provider-specific optimizations
+    gemini_batch_size: int = 20  # Smaller batches for Gemini (individual API calls)
+    gemini_max_concurrent: int = 10  # Optimized concurrency for Gemini - works well in practice
+    openai_batch_size: int = 100  # Large batches for OpenAI (true batch API)
+    openai_max_concurrent: int = 5  # OpenAI handles higher concurrency
     
     # Question-aware embedding configuration
     use_question_aware: bool = False  # Enable question-aware embeddings
@@ -505,6 +593,25 @@ class ExportConfig:
 
 
 # =============================================================================
+# DEDUPLICATION CONFIGURATION
+# =============================================================================
+
+@dataclass
+class DeduplicationConfig:
+    """Configuration for codebook deduplication step"""
+    batch_size: int = 10
+    overlap_size: int = 5
+    similarity_threshold: float = 0.75
+    temperature: float = 0.0
+    max_tokens: int = 4000
+    retries: int = 3
+    retry_delay: int = 2
+    max_concurrent_requests: int = 5
+    # Model configuration - will be overridden by ModelConfig
+    model: str = "gpt-4.1-mini"  # Fallback model
+    min_codes_for_deduplication: int = 5  # Skip if fewer codes
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -519,5 +626,6 @@ DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
+DEFAULT_DEDUPLICATION_CONFIG = DeduplicationConfig()
 
 

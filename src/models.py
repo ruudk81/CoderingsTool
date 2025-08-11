@@ -68,28 +68,24 @@ class Codebook(BaseModel):
     theme_description: Optional[str] = None   
 
 class CodebookEntry(BaseModel):
-    """Individual code from generated codebook"""
     code: str
     definition: str
     source_clusters: Optional[List[int]] = None  # Which clusters influenced this code
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodebookModel(BaseModel):
-    """Generated codebook from cluster analysis (Step 7)"""
     codes: List[CodebookEntry]
     generation_metadata: Optional[Dict[str, Any]] = None
     source_variable: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ThemeEnrichedCodebookEntry(CodebookEntry):
-    """Code enriched with theme information"""
     theme: Optional[str] = None
     theme_description: Optional[str] = None
     theme_cluster_id: Optional[int] = None
     is_miscellaneous: Optional[bool] = False
 
 class ThemeEnrichedCodebookModel(CodebookModel):
-    """Codebook enriched with themes (Step 8)"""
     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
     themes_summary: Optional[List[Dict[str, Any]]] = None
     code_to_theme_mapping: Optional[Dict[str, str]] = None
@@ -99,12 +95,18 @@ class ThemeEnrichedCodebookModel(CodebookModel):
 # === CODE GENERATOR REASONING RESULTS MODEL ========================================================================================================
 
 class CodeGeneratorReasoningResults(BaseModel):
-    """Detailed LLM reasoning and decisions from code generation process - Multi-theme support"""
     
     # All cluster processing details
     cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
     
-    # Separated by step for easy analysis - Multi-theme JSON structures
+    # ACTUAL prompt inputs for complete transparency
+    step1_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 1 received
+    step2_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 2 received
+    step3_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 3 received
+    step4_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 4 received
+    step3_validation_warnings: Dict[int, List[Dict[str, Any]]] = {}  # Validation warnings
+    
+    # Legacy step results for backward compatibility
     step1_summaries: Dict[int, Dict[str, Any]]  # ClusterThemeAnalysis: {cluster_summary, themes[]}
     step2_analysis: Dict[int, List[Dict[str, str]]]  # List[CandidateCode]: Array of candidate codes
     step3_recommendations: Dict[int, Dict[str, Any]]  # CodeRecommendation: {coding_decisions[]}  
@@ -119,8 +121,8 @@ class CodeGeneratorReasoningResults(BaseModel):
     total_ideas: int
     processing_timestamp: str
     
-    # Cluster assignments for cross-reference
-    cluster_assignments: Dict[int, str]
+    # Cluster assignments for cross-reference (now supports multi-theme structure)
+    cluster_assignments: Dict[int, Dict[str, Any]]
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -201,7 +203,7 @@ class CodeValidation(BaseModel):
     evaluation: CodeEvaluation
     decision: str  # APPROVE | REVISE | REJECT | MERGE | SPLIT
     decision_rationale: str
-    validated_code: ValidatedCode
+    validated_code: Union[ValidatedCode, List[ValidatedCode]]  # Single for APPROVE/REVISE/REJECT, list for SPLIT
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -226,6 +228,24 @@ class ValidationResult(BaseModel):
     theme_assessment: ThemeAssessment
     code_validations: List[CodeValidation]
     overall_validation: OverallValidation
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+# === DEDUPLICATION MODELS ====================================================================================================
+
+class MergeDecision(BaseModel):
+    """Individual merge decision for deduplication"""
+    codes_to_merge: List[str]
+    final_code_name: str
+    final_definition: str
+    justification: str
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class DeduplicationResult(BaseModel):
+    """Deduplication JSON response"""
+    merge_decisions: List[MergeDecision]
+    codes_to_keep_unchanged: List[str]
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
