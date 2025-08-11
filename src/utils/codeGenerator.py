@@ -251,14 +251,16 @@ class SharedCodebook:
     _lock: asyncio.Lock
     _version: int = 0
     _update_log: List[Dict[str, Any]] = None
-    _embedding_cache: Dict[str, np.ndarray] = None
+    _embedding_cache: Dict[int, List[np.ndarray]] = None
+    _max_cached_versions: int = 5  # Keep only recent versions in cache
     
-    def __init__(self, initial_codes: List[Dict[str, str]]):
+    def __init__(self, initial_codes: List[Dict[str, str]], max_cached_versions: int = 5):
         self._codes = initial_codes.copy()
         self._lock = asyncio.Lock()
         self._version = 0
         self._update_log = []
         self._embedding_cache = {}
+        self._max_cached_versions = max_cached_versions
     
     async def get_current_snapshot(self) -> Tuple[List[Dict[str, str]], int]:
         """Get current codes and version atomically"""
@@ -318,9 +320,16 @@ class SharedCodebook:
             return self._embedding_cache.get(version)
     
     async def cache_embeddings(self, version: int, embeddings: List[np.ndarray]):
-        """Cache embeddings for a version"""
+        """Cache embeddings for a version with memory management"""
         async with self._lock:
             self._embedding_cache[version] = embeddings
+            
+            # Memory management: keep only recent versions
+            if len(self._embedding_cache) > self._max_cached_versions:
+                # Find and remove oldest version
+                oldest_version = min(self._embedding_cache.keys())
+                del self._embedding_cache[oldest_version]
+                logger.debug(f"Evicted embedding cache for version {oldest_version} (keeping last {self._max_cached_versions} versions)")
     
     async def get_stats(self) -> Dict[str, Any]:
         """Get codebook statistics"""
@@ -352,19 +361,42 @@ class OptimizedEmbeddingManager:
         self.embedding_config = EmbeddingConfig()
         self.verbose = verbose
         self._individual_cache: Dict[str, np.ndarray] = {}
+        self.cache_stats = {
+            'hits': 0,
+            'misses': 0,
+            'api_calls_saved': 0
+        }
     
     def _get_text_hash(self, text: str) -> str:
         """Generate hash for text"""
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
     async def get_snapshot_embeddings(self, codes: List[Dict[str, str]], version: int) -> Tuple[List[Dict[str, str]], List[np.ndarray]]:
-        """Get embeddings for a codebook snapshot - always fresh, no version caching"""
+        """Get embeddings for a codebook snapshot with version-based caching"""
         if not codes:
             return [], []
         
-        # Generate embeddings fresh each time 
+        # Check if we have cached embeddings for this version
+        cached_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
+        
+        if cached_embeddings is not None:
+            # Cache hit - return cached embeddings
+            self.cache_stats['hits'] += 1
+            self.cache_stats['api_calls_saved'] += len(codes)
+            if self.verbose:
+                logger.info(f"Embedding cache HIT for version {version} ({len(codes)} codes)")
+            return codes, cached_embeddings
+        
+        # Cache miss - generate new embeddings
+        self.cache_stats['misses'] += 1
+        if self.verbose:
+            logger.info(f"Embedding cache MISS for version {version} - generating embeddings for {len(codes)} codes")
+        
         code_texts = [f"{code['code']}: {code['definition']}" for code in codes]
         embeddings = await self._embed_texts_with_retry(code_texts)
+        
+        # Cache the embeddings for this version
+        await self.shared_codebook.cache_embeddings(version, embeddings)
         
         return codes, embeddings
     
@@ -454,6 +486,9 @@ class LangChainBatchProcessor:
             'successful_recoveries': 0,   
             'llm_time': 0.0,
             'embedding_time': 0.0,
+            'embedding_cache_hits': 0,
+            'embedding_cache_misses': 0,
+            'embedding_api_calls_saved': 0,
             'parallel_steps_executed': 0,
             'sub_batches_processed': 0,
             'concurrent_batches': 0,
@@ -2271,9 +2306,19 @@ class InductiveCodeGenerator:
         
         # Combine stats
         processing_time = time.time() - start_time
+        
+        # Add embedding cache statistics
+        embedding_cache_stats = {
+            'embedding_cache_hits': embedding_manager.cache_stats['hits'],
+            'embedding_cache_misses': embedding_manager.cache_stats['misses'],
+            'embedding_api_calls_saved': embedding_manager.cache_stats['api_calls_saved'],
+            'embedding_cache_hit_rate': f"{(embedding_manager.cache_stats['hits'] / (embedding_manager.cache_stats['hits'] + embedding_manager.cache_stats['misses']) * 100):.1f}%" if (embedding_manager.cache_stats['hits'] + embedding_manager.cache_stats['misses']) > 0 else "0%"
+        }
+        
         final_stats = {
             **batch_processor.stats,
             **codebook_stats,
+            **embedding_cache_stats,
             'processing_time': processing_time,
             'initial_codes': len(self.starter_codes),
             'final_codes': len(final_codes),
@@ -2303,6 +2348,14 @@ class InductiveCodeGenerator:
         
         # Display codebook evolution
         self.verbose_reporter.stat_line(f"Codebook evolution: {len(self.starter_codes)} → {len(final_codes)} codes")
+        
+        # Display embedding cache statistics
+        if embedding_manager.cache_stats['hits'] + embedding_manager.cache_stats['misses'] > 0:
+            self.verbose_reporter.stat_line("Embedding cache performance:")
+            self.verbose_reporter.stat_line(f"Cache hits: {embedding_manager.cache_stats['hits']}", indent=1)
+            self.verbose_reporter.stat_line(f"Cache misses: {embedding_manager.cache_stats['misses']}", indent=1)
+            self.verbose_reporter.stat_line(f"Hit rate: {embedding_cache_stats['embedding_cache_hit_rate']}", indent=1)
+            self.verbose_reporter.stat_line(f"API calls saved: {embedding_manager.cache_stats['api_calls_saved']}", indent=1)
         
         # # Display sample new codes
         # if batch_processor.stats['new_codes_added'] > 0 and self.verbose:

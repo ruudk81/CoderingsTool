@@ -280,7 +280,7 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a {language} qualitative analyst who treats survey data as interconnected narratives. 
+You are a {language} qualitative analyst. Convert a cluster of responses into atomic, code-ready proposals.
 
 ────────────────────────────────────────
 INPUTS  (XML blocks will be interpolated)
@@ -294,32 +294,26 @@ INPUTS  (XML blocks will be interpolated)
 </cluster_text>
 
 ────────────────────────────────────────
-DEFINITIONS
+GOAL
 ────────────────────────────────────────
-- "“Semantically coherent”: the responses can truthfully be summarised by one short phrase that is either explicitly present in the responses or can be formed by combining more general wording from the responses with any included specifics.
-- "Mixed cluster": the responses contain multiple, distinct ideas that cannot honestly be captured under one phrase without adding new words or interpretations.
+Ideally produce 1 thematic code proposal that best capture the shared response pattern in the cluster, ready for a codebook.
 
 ────────────────────────────────────────
-ANALYTIC GUIDANCE (Scenario 1 → Scenario 2)
+QUALITY CRITERIA
 ────────────────────────────────────────
-1) Read every response as if it were a line in a short story.
+- ATOMIC: one idea per code (no “and/with/including”).
+- CONCISE NAMES: short phrase that directly address the survey question.
+- OPERATIONAL DEFINITIONS: ≤25 words, observable, precise, no interpretation.
+- PARSIMONIOUS: prefer 1 unified proposal; only split if truly necessary.
+- GROUNDED: use wording present in responses; minimal allowed generalisation by combining/shortening existing phrases only (no new jargon/synonyms).
 
-2) Coherence check (gatekeeper):
-   - ALWAYS first attempt to produce one single, unified, atomic theme that covers all/allmost all responses.
-   - When some responses mention a specific example of a broader concept present in other responses, treat the specific as part of that broader concept if doing so produces a truthful unifying theme.
-   - Allowed generalisation = only by:
-     • combining/reordering/shortening existing words/phrases from the responses,
-     • choosing the most general formulation that literally appears in the data.
-   - NOT allowed: synonyms or terms not literally in the responses, implicit assumptions, or background knowledge.
+────────────────────────────────────────
+PROCESS
+────────────────────────────────────────
+1) Attempt a single unifying theme covering almost all responses.
+2) If not honest/possible, split into max 2 atomic proposals.
+3) Each proposal must be directly traceable to the literal wording.
 
-3) If one unified theme is honestly not possible (mixed cluster):
-   a) Identify sub-themes that are explicitly supported by at least 2 responses each, and output them as separate atomic themes.
-   b) Any remaining single responses (1-off ideas) become separate atomic themes.
-
-4) Summaries:
-   - Maximum 25 words.
-   - Must reflect both the survey question and the cluster content.
-   - Must be strictly grounded in the literal wording of the responses (no new terms).
 
 ────────────────────────────────────────
 OUTPUT FORMAT (strict JSON, in {language})
@@ -327,19 +321,17 @@ OUTPUT FORMAT (strict JSON, in {language})
 [
   {{
     "theme_id": 1,
-    "theme_name": "<short phrase in {language} clarifying the theme in light of the survey question>",
-    "summary": "<≤25 words describing the contents of the cluster in {language}, directly derivable from the cluster text and fitting the theme>"
+    "theme_name": "<short phrase for the thematic code in {language} that directly addresses the survey question>",
+    "summary": "<≤25 words, operational, precise"
   }}
-  // Continue for each (sub)theme in order
+  // Continue for each proposal in order
 ]
 
 ────────────────────────────────────────
-CRITICAL RULES
+RULES
 ────────────────────────────────────────
-- All output must be in {language}.
-- Output only valid JSON (no extra text).
-- Always attempt one unified theme first (Scenario 1). Only use multiple themes if this is genuinely impossible (Scenario 2).
-- Sub-themes only when ≥2 explicit, similar responses; ignore singletons in your output.
+- Output ONLY valid JSON (no extra text).
+- All fields must be in {language}.
 """ 
 
 CANDIDATE_CODE_SELECTION_PROMPT = """
@@ -615,10 +607,12 @@ CRITICAL FORMAT REQUIREMENTS
 - All output fields must be in {language}.
 """
 
-
+# # =============================================================================
+# # STEP 7:  CODEBOOK GENERATION : old 4 promt chain
+# # =============================================================================
 
 # CLUSTER_SUMMARY_PROMPT = """
-# You are a {language} qualitative analyst who treats survey data as stories waiting to be told.
+# You are a {language} qualitative analyst who treats survey data as interconnected narratives. 
 
 # ────────────────────────────────────────
 # INPUTS  (XML blocks will be interpolated)
@@ -632,88 +626,57 @@ CRITICAL FORMAT REQUIREMENTS
 # </cluster_text>
 
 # ────────────────────────────────────────
-# CONCEPTUAL FOUNDATION
+# DEFINITIONS
 # ────────────────────────────────────────
-# A "theme" is an atomic, shared concept that:
-# • Represents ONE indivisible idea (cannot be split further)
-# • Meaningfully answers the survey question
-# • Has explanatory power for why these responses matter
-# • Appears in a significant portion of responses
-
-# Mathematical similarity (via embeddings) ≠ conceptual unity.
-# Clusters may contain: unified theme | multiple themes | noise
+# - "“Semantically coherent”: the responses can truthfully be summarised by one short phrase that is either explicitly present in the responses or can be formed by combining more general wording from the responses with any included specifics.
+# - "Mixed cluster": the responses contain multiple, distinct ideas that cannot honestly be captured under one phrase without adding new words or interpretations.
 
 # ────────────────────────────────────────
-# ANALYTIC GUIDANCE
+# ANALYTIC GUIDANCE (Scenario 1 → Scenario 2)
 # ────────────────────────────────────────
-# 1. **Immerse yourself** in the cluster
-#    Read every response completely before identifying patterns.
+# 1) Read every response as if it were a line in a short story.
 
-# 2. **Active theme construction using decision tree:**
-#    ```
-#    IF one concept appears in ≥75% of responses:
-#        → Single unified theme
-#    ELIF multiple distinct concepts each appear in ≥30%:
-#        → Multiple separate themes  
-#    ELSE:
-#        → Noise (no coherent theme)
-#    ```
+# 2) Coherence check (gatekeeper):
+#    - ALWAYS first attempt to produce one single, unified, atomic theme that covers all/allmost all responses.
+#    - When some responses mention a specific example of a broader concept present in other responses, treat the specific as part of that broader concept if doing so produces a truthful unifying theme.
+#    - Allowed generalisation = only by:
+#      • combining/reordering/shortening existing words/phrases from the responses,
+#      • choosing the most general formulation that literally appears in the data.
+#    - NOT allowed: synonyms or terms not literally in the responses, implicit assumptions, or background knowledge.
 
-# 3. **Seek unity before fragmentation**
-#    ▸ Ask: "What overarching narrative connects these voices?"
-#    ▸ Look for latent meaning beneath surface wording
-#    ▸ Connect dots between seemingly unrelated responses
-#    ▸ Only fragment when distinct ideas truly cannot unite
+# 3) If one unified theme is honestly not possible (mixed cluster):
+#    a) Identify sub-themes that are explicitly supported by at least 2 responses each, and output them as separate atomic themes.
+#    b) Any remaining single responses (1-off ideas) become separate atomic themes.
 
-# 4. **Reflection checkpoint**
-#    - Before finalising, internally decide whether the cluster is unified or fragmented, based on the data's coherence.
-
-# 5. **Verify atomicity**
-#    ✗ Compound concepts: "cost and accessibility"
-#    ✗ Nested ideas: "quality including customer service"  
-#    ✓ Single concept: "affordability" or "product quality"
-
-# 6. **Calculate coverage precisely**
-#    Count responses expressing theme ÷ total responses × 100
-#    Round to nearest 5% for clarity
+# 4) Summaries:
+#    - Maximum 25 words.
+#    - Must reflect both the survey question and the cluster content.
+#    - Must be strictly grounded in the literal wording of the responses (no new terms).
 
 # ────────────────────────────────────────
 # OUTPUT FORMAT (strict JSON, in {language})
 # ────────────────────────────────────────
-
-# **Single theme:**
-# {{
-#   "themes": [
-#     "This theme covers [≤25-word synopsis capturing the cluster's gist]\\nThe responses mention [brief list of explicit mentions, using exact words from the data]."
-#   ]
-# }}
-
-# **Multiple themes:**
-# {{
-#   "themes": [
-#     "Theme 1: This theme covers [≤25-word synopsis capturing the cluster's gist]\\nThe responses mention [brief list of explicit mentions, using exact words from the data].",
-#     "Theme 2: This theme covers [≤25-word synopsis capturing the cluster's gist]\\nThe responses mention [brief list of explicit mentions, using exact words from the data]."
-#     // Continue for each theme
-#   ]
-# }}
-
-# **If classified as noise:**
-# {{
-#   "themes": []
-# }}
+# [
+#   {{
+#     "theme_id": 1,
+#     "theme_name": "<short phrase in {language} clarifying the theme in light of the survey question>",
+#     "summary": "<≤25 words describing the contents of the cluster in {language}, directly derivable from the cluster text and fitting the theme>"
+#   }}
+#   // Continue for each (sub)theme in order
+# ]
 
 # ────────────────────────────────────────
-# CRITICAL OUTPUT RULES:
+# CRITICAL RULES
 # ────────────────────────────────────────
-# - All text must be in {language}.
-# - Output ONLY valid JSON (no markdown, no extra text).
-# - Keep summaries faithful to the provided cluster_text; do not paraphrase beyond clarity.
-# - Use only explicit mentions found in the data for the "responses mention" section.
-
-# """
+# - All output must be in {language}.
+# - Output only valid JSON (no extra text).
+# - Always attempt one unified theme first (Scenario 1). Only use multiple themes if this is genuinely impossible (Scenario 2).
+# - Sub-themes only when ≥2 explicit, similar responses; ignore singletons in your output.
+# """ 
 
 # CANDIDATE_CODE_SELECTION_PROMPT = """
-# You are a {language} qualitative analyst mapping themes to existing codes.
+# You are a {language} qualitative analyst mapping themes to existing codes in a codebook.
+# A codebook in this setting is a set of code names and descriptions that can label and describe written survey responses.
 
 # ────────────────────────────────────────
 # INPUTS  (XML blocks will be interpolated)
@@ -734,42 +697,18 @@ CRITICAL FORMAT REQUIREMENTS
 # CONCEPTUAL FOUNDATION
 # ────────────────────────────────────────
 # Existing codes represent our current understanding.
-# Your task: Find best matches while identifying gaps.
-# Remember: Multiple themes require multiple codes (atomicity).
+# Your task: Find best matches.
+# Multiple themes require multiple codes.
 
 # ────────────────────────────────────────
 # ANALYTIC GUIDANCE
 # ────────────────────────────────────────
-# 1. **Work theme-by-theme**
-#    For each theme_id, grasp its core atomic concept.
 
-# 2. **Score semantic overlap systematically**
-   
-#    | Score Range | Classification | Action |
-#    |-------------|---------------|---------|
-#    | 90-100% | Strong match | Definitely use |
-#    | 70-89% | Good match | Use if gap is trivial |
-#    | 40-69% | Partial match | Only if combines with others |
-#    | 0-39% | Weak match | Ignore |
-
-# 3. **Apply selection logic**
-#    ```
-#    IF any single code scores ≥90%:
-#        → Select that code alone
-#    ELIF single code scores 70-89% AND gap is minor:
-#        → Select with documented gap
-#    ELIF 2 codes together score ≥90%:
-#        → Select both (max 2 per theme)
-#    ELSE:
-#        → Mark for new code creation
-#    ```
-
-# 4. **Document uncovered aspects**
-#    List what remains uncoded in 3-7 words.
-
-# 5. **Maintain abstraction consistency**
-#    Selected codes should match the specificity level
-#    of the existing codebook.
+# 1. For **EACH theme** numbered in the summary, attempt to find matching existing codes
+# 3. Select the codes, if any, that are relevant in capturing the themes
+# 4. Be selective: only select suitable codes for our codebook
+# 5. Be comprehensive: ensure no theme is left uncoded
+# 6. Present your selection in the JSON array format described below
 
 # ────────────────────────────────────────
 # OUTPUT  (raw JSON, no extra text in {language})
@@ -797,9 +736,10 @@ CRITICAL FORMAT REQUIREMENTS
 # """
 
 # CODE_GENERATION_PROMPT = """
-# You are a {language} coding-scheme designer ensuring every theme gets exactly 
-# one atomic, non-redundant code.
-
+# You are a {language} qualitative data analyst specializing in thematic coding and codebook development.
+# You will be given 1 or 2 theme(s) that summarize ideas expressed in written survey responses.
+# Your task is to maintain the codebook by deciding whether to use, modify, or create codes that accurately and precisely describe each theme.
+    
 # ────────────────────────────────────────
 # INPUTS  (XML blocks will be interpolated)
 # ────────────────────────────────────────
@@ -807,114 +747,102 @@ CRITICAL FORMAT REQUIREMENTS
 # {survey_question}
 # </survey_question>
 
-# <cluster_summary>
+# <themes_to_code>
 # {cluster_summary}
-# </cluster_summary>
+# </themes_to_code>
 
-# <code_selection>
+# <existing_codes_in_codebook>
 # {candidate_codes}
-# </code_selection>
+# </existing_codes_in_codebook>
 
 # ────────────────────────────────────────
-# CONCEPTUAL FOUNDATION
+# PRINCIPLES FOR HIGH QUALITY CODING 
 # ────────────────────────────────────────
-# Parsimony: Minimum codes for maximum explanatory power
-# Atomicity: Each code = one indivisible concept
-# Consistency: Same abstraction level across codebook
-# Non-redundancy: No overlapping or duplicate codes
-
-# ────────────────────────────────────────
-# DECISION FRAMEWORK
-# ────────────────────────────────────────
-# For each theme, choose exactly ONE operation:
-
-# ┌─────────────────┬────────────────────────────────────┬──────────────────┐
-# │ Operation       │ When to Choose                     │ Threshold        │
-# ├─────────────────┼────────────────────────────────────┼──────────────────┤
-# │ use_existing    │ Single code fully captures theme   │ ≥95% overlap     │
-# │ modify_existing │ Code needs minor adjustment        │ 80-94% overlap   │
-# │ create_new      │ No adequate existing code          │ <80% overlap     │
-# └─────────────────┴────────────────────────────────────┴──────────────────┘
-
-# CRITICAL PARSIMONY CHECKS:
-# ✗ Never create if existing code has ≥95% overlap
-# ✗ Never modify to become broader (violates atomicity)
-# ✗ Never use compound concepts ("and", "with", "plus")
-# ✓ Always prefer reuse over creation
-# ✓ Keep modifications minimal and specific
-# ✓ Ensure new codes fill genuine gaps
+# - PARSIMONIOUS: only as many codes as needed, no redundancy
+# - ATOMIC: each code captures ONE concept only (no “and”, “including”, “with”)
+# - PRECISE: clear boundaries enabling reliable coding
+# - CONCISE: code names 2–5 words
+# - OPERATIONAL: definitions use observable criteria, not interpretations
+# - CONSISTENT ABSTRACTION LEVEL: match the theme’s level of abstraction
+# - MUTUALLY EXCLUSIVE: minimal overlap between codes
 
 # ────────────────────────────────────────
 # ANALYTIC GUIDANCE
 # ────────────────────────────────────────
-# 1. **Review theme-by-theme**
-#    Examine matches, overlap scores, and uncovered concepts.
+# Step 1: Review
+# - Expect exactly 1 or 2 themes in the provided summary
+# - A theme is a single, coherent idea stated in ≤20 words
 
-# 2. **Check for redundancy first**
-#    Before creating: Could ANY existing code work with 
-#    minor modification? Check entire codebook, not just matches.
-#    Remember: Only use existing codes if they achieve ≥95% semantic overlap.
+# Step 2: Choose the Appropriate Coding Action for Each Theme
+# - `use_existing` → existing code(s) fully capture the theme (≥90% match)
+# - `modify_existing` → existing code captures most but not all of the theme (≥60% and <90% match)
+# - `create_new` → no existing code captures ≥60% of the theme
 
-# 3. **Maintain abstraction level**
-#    New/modified codes must match existing codebook's:
-#    - Specificity (broad vs narrow)
-#    - Scope (single behavior vs category)
-#    - Phrasing style (noun vs verb phrases)
-
-# 4. **Write atomic definitions**
-#    Definition = 1-2 sentences, one testable concept
-#    No examples in definition (keep it conceptual)
-
-# 5. **Document decision rationale**
-#    Explain why this preserves parsimony and atomicity.
+# When modifying or creating:
+# - Name must be 2–5 words
+# - Definition must be ≤30 words, precise, and operational
+# - Match the theme’s abstraction level
+# - Never combine subthemes in names using "and", "with", etc.
 
 # ────────────────────────────────────────
 # OUTPUT  (raw JSON, no extra text, in {language})
 # ────────────────────────────────────────
 # {{
 #   "cluster_analysis": {{
-#     "number_of_themes": "integer (1, 2, or more)",
+#     "number_of_themes": integer,
 #     "theme_descriptions": [
 #       "Brief description of theme 1",
-#       "Brief description of theme 2 (if applicable)"
+#       "Brief description of theme 2 (if present)"
 #     ]
 #   }},
 #   "coding_decisions": [
 #     {{
 #       "theme_number": 1,
-#       "theme_description": "what this theme is about",
+#       "theme_description": "short description of this theme",
 #       "decision": "use_existing | modify_existing | create_new",
 #       "action_details": {{
-#         "codes_to_use": ["exact code names"],
-#         "codes_to_modify": "single exact code name or null",
+#         "codes_to_use": ["exact existing code names"],
+#         "codes_to_modify": "exact existing code name or null",
 #         "modified_code_name": "new name if modifying, else null",
-#         "modified_code_definition": "1-2 sentence definition if modifying, else null",
+#         "modified_code_definition": "max 30 words if modifying, else null",
 #         "new_code_name": "name if creating new, else null",
-#         "new_code_definition": "1-2 sentence definition if creating new, else null"
+#         "new_code_definition": "max 30 words if creating new, else null"
 #       }},
-#       "justification": "why this action is appropriate for this specific theme"
+#       "justification": "brief reason for this decision"
 #     }},
 #     {{
 #       "theme_number": 2,
-#       "theme_description": "what this second theme is about",
-#       "decision": "use_existing | modify_existing | create_new",
-#       "action_details": {{...}},
+#       "theme_description": "...",
+#       "decision": "...",
+#       "action_details": {{ ... }},
 #       "justification": "..."
 #     }}
-#     // repeat for every theme_id
 #   ],
-#   "overall_justification": "why treating these as separate themes preserves atomicity and improves codebook quality"
+#   "overall_justification": "why these codes preserve atomicity and improve codebook quality"
 # }}
 
+# ────────────────────────────────────────
+# GOOD DEFINITION EXAMPLES
+# ────────────────────────────────────────
+# - "References to [specific limitation or constraint] affecting [process or outcome]."
+# - "Mentions of [positive or negative] changes in [behavior or practice]."
+# - "Expressions of [emotion or attitude] regarding [situation or process]."
+
+# WEAK DEFINITION EXAMPLES
+# - Compound: "References to [issue A] including [aspect 1], [aspect 2], and [aspect 3]"
+# - Vague: "Mentions of various [things] related to [topic]"
+# - Interpretive: "Underlying [abstract concept] manifesting in different ways"
+
 # IMPORTANT:
-# - Process EACH distinct theme separately in the coding_decisions array
-# - Never merge distinct themes into a single code
 # - All output fields must be in {language}
 # - Output ONLY valid JSON, no other text
 # """
 
+
 # VALIDATION_PROMPT = """
-# You are a {language} QA auditor ensuring codebook rigor and parsimony.
+# You are a {language} qualitative data analyst specializing in codebook development and evaluation. 
+# You will assess your colleague's coding recommendations for a cluster that contains 1 or 2 themes summarizing ideas expressed in written survey responses.
+# Your task is to maintain a parsimonious codebook with clear code names (no compounding of subthemes!).
 
 # ────────────────────────────────────────
 # INPUTS  (XML blocks will be interpolated)
@@ -923,79 +851,47 @@ CRITICAL FORMAT REQUIREMENTS
 # {survey_question}
 # </survey_question>
 
-# <cluster_summary>
+# <themes_to_code>
 # {cluster_summary}
-# </cluster_summary>
+# </themes_to_code>
 
-# <code_selection>
+# <existing_codes_in_codebook>
 # {candidate_codes}
-# </code_selection>
+# </existing_codes_in_codebook>
 
-# <coding_decisions>
+# <coding_recommendation>
 # {step3_recommendation}
-# </coding_decisions>
+# </coding_recommendation>
 
 # ────────────────────────────────────────
-# EVALUATION RUBRIC
+# EVALUATION GUIDANCE
 # ────────────────────────────────────────
-# Assess each decision on five dimensions (provide brief text assessment):
-
-# a) **Theme Separation** 
-#    Are themes truly independent concepts?
-#    Could any be merged without loss of meaning?
-
-# b) **Semantic Fit**  
-#    Does the code capture the theme's full meaning?
-#    Any important aspects missing?
-
-# c) **Atomicity** 
-#    Is this truly ONE concept?
-#    Any hidden "and" or "with" relationships?
-
-# d) **Parsimony** 
-#    Is this the minimum intervention needed?
-#    Could existing codes work instead?
-
-# e) **Redundancy** 
-#    Does this duplicate any existing codes?
-#    Clear boundaries with other codes?
+# - Expect exactly 1 or 2 themes in the provided cluster summary.
+# - Assess EACH recommendation using these criteria:
+#   a) **Semantic fit** – Does the code accurately capture the theme’s meaning?
+#   b) **Atomicity** – Does the code name represent a single theme? No compounding with "and", "with", "including".
+#   c) **Parsimony** – Were existing codes considered before creating/modifying?
+#   d) **Non-redundancy** – Would this code overlap with others in the codebook?
+#   e) **Abstraction level** – Does the code match the theme’s level of abstraction?
 
 # ────────────────────────────────────────
-# VALIDATION DECISION TREE
+# VALIDATION DECISION RULES
 # ────────────────────────────────────────
-# For each coding decision:
-# ```
-# IF all dimensions are satisfactory:
-#     → APPROVE as proposed
-# ELIF major atomicity or redundancy issues:
-#     → REJECT or SPLIT (fundamental issue)
-# ELIF semantic fit or parsimony issues:
-#     → REVISE (adjust name/definition)
-# ELIF better existing code available:
-#     → REPLACE with existing
-# ELSE:
-#     → APPROVE with noted concerns
-# ```
+# For EACH theme/code pair:
+# - **APPROVE** – Code is necessary, atomic, correct abstraction level, and well-justified.
+# - **REVISE** – Code is generally valid but needs refinement (e.g., shorter name, clearer definition).
+# - **REJECT** – Code is unnecessary or redundant; use an existing code instead.
 
-# ────────────────────────────────────────
-# VALIDATION ACTIONS
-# ────────────────────────────────────────
-# | Verdict | When | Result |
-# |---------|------|--------|
-# | APPROVE | Meets all criteria | Implement as is |
-# | REVISE | Minor adjustments needed | Provide improved version |
-# | REPLACE | Better option exists | Suggest alternative |
-# | REJECT | Redundant/unnecessary | Use existing code |
-# | SPLIT | Violates atomicity | Divide into multiple codes |
-# | MERGE | Themes not distinct | Combine into single code |
+# When REVISE or REJECT:
+# - Always propose a final validated code name (2–5 words, atomic) and definition (≤30 words, operational, precise) to replace or substitute the original.
 
 # ────────────────────────────────────────
 # OUTPUT  (raw JSON, no extra text, in {language})
 # ────────────────────────────────────────
 # {{
 #   "theme_assessment": {{
-#     "number_of_themes_identified": "integer",
-#     "theme_separation_valid": "true/false",
+#     "number_of_themes_identified": integer,
+#     "theme_separation_valid": true/false,
 #     "theme_separation_reasoning": "are the themes truly distinct or should they be merged/split?"
 #   }},
 #   "code_validations": [
@@ -1004,12 +900,12 @@ CRITICAL FORMAT REQUIREMENTS
 #       "theme_description": "what theme is being coded",
 #       "original_recommendation": "what was proposed",
 #       "evaluation": {{
-#         "semantic_fit": "assessment",
-#         "atomicity": "assessment",
-#         "parsimony": "assessment",
-#         "redundancy": "assessment"
+#         "semantic_fit": "assessment of how well the code captures the theme's meaning",
+#         "atomicity": "assessment of whether code represents single concept",
+#         "parsimony": "assessment of whether existing codes were properly considered",
+#         "redundancy": "assessment of whether code overlaps with existing codes"
 #       }},
-#       "decision": "APPROVE | REVISE | REJECT | MERGE | SPLIT",
+#       "decision": "APPROVE | REVISE | REJECT",
 #       "decision_rationale": "explanation",
 #       "validated_code": {{
 #         "code": "final code name",
@@ -1020,32 +916,36 @@ CRITICAL FORMAT REQUIREMENTS
 #       "theme_number": 2,
 #       "theme_description": "...",
 #       "original_recommendation": "...",
-#       "evaluation": {{...}},
+#       "evaluation": {{
+#         "semantic_fit": "...",
+#         "atomicity": "...",
+#         "parsimony": "...",
+#         "redundancy": "..."
+#       }},
 #       "decision": "...",
 #       "decision_rationale": "...",
-#       "validated_code": {{...}}
+#       "validated_code": {{
+#         "code": "...",
+#         "definition": "..."
+#       }}
 #     }}
 #   ],
 #   "overall_validation": {{
-#     "all_themes_coded": "true/false",
-#     "final_code_count": "integer",
+#     "all_themes_coded": true/false,
+#     "final_code_count": integer,
 #     "summary": "brief summary of the validation outcome"
 #   }}
 # }}
 
-# IMPORTANT FORMAT NOTES:
-# - For SPLIT decisions: "validated_code" should be an ARRAY of code objects: [{{\"code\": \"name1\", \"definition\": \"def1\"}}, {{\"code\": \"name2\", \"definition\": \"def2\"}}]
-# - For all other decisions (APPROVE/REVISE/REJECT/MERGE): "validated_code" should be a SINGLE object: {{\"code\": \"name\", \"definition\": \"definition\"}}
-
-# Strict rules:
-# - Validate EACH theme/code pair separately
-# - Ensure atomic codes (one theme per code)
-# - Don't force unrelated themes into single codes
-# - Allow multiple codes when multiple distinct themes exist
-# - Output ONLY valid JSON, no other text
-# - All output fields must be in {language}
+# ────────────────────────────────────────
+# CRITICAL FORMAT REQUIREMENTS
+# ────────────────────────────────────────
+# - `validated_code` is always a single object with "code" and "definition".
+# - Validate EACH theme/code pair separately.
+# - Ensure atomic codes (one theme per code) — no compounding.
+# - Output ONLY valid JSON, no other text.
+# - All output fields must be in {language}.
 # """
-
 
 # =============================================================================
 # STEP 8: THEME IDENTIFICATION  
