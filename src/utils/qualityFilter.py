@@ -74,32 +74,37 @@ class WorkloadAnalyzer:
         
         return statistics.mean(token_counts) if token_counts else 1500
     
-    def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float, sub_batches_per_batch: int) -> OptimalStrategy:
-        """Calculate mathematically optimal processing strategy"""
+    def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float, sub_batches_per_batch: int = 1) -> OptimalStrategy:
+        """Calculate evidence-based strategy with rate smoothing"""
         # Get API limits from config
         rate_limits = get_openai_rate_limits(self.model_name)
         
-        # Calculate total resource requirements
-        total_requests = total_batches * sub_batches_per_batch
+        # Calculate total resource requirements - NO MULTIPLIER for sequential steps
+        # For codeGenerator: sub_batches_per_batch should be 1 (sequential steps don't multiply load)
+        total_requests = total_batches  # Each cluster = 1 request active at a time
         total_tokens = total_requests * avg_tokens_per_batch
         
-        # Calculate minimum time based on constraints
-        time_by_requests = total_requests / rate_limits.requests_per_minute * 60
-        time_by_tokens = total_tokens / rate_limits.tokens_per_minute * 60
+        # Calculate optimal sustained rate (what we can maintain)
+        optimal_sustained_rate = rate_limits.requests_per_minute / 60  # req/sec
+        optimal_sustained_tokens = rate_limits.tokens_per_minute / 60  # tokens/sec
         
-        # Find bottleneck and minimum time
+        # Find bottleneck for sustained rate
+        time_by_requests = total_requests / optimal_sustained_rate
+        time_by_tokens = total_tokens / optimal_sustained_tokens
+        
+        # Use evidence-based approach: plan for sustained rate
         bottleneck_time = max(time_by_requests, time_by_tokens)
         bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
         
-        # Apply safety factor (use 85% of capacity for quality filter due to batch complexity)
-        safety_factor = 0.85
+        # Apply aggressive utilization (95% for Phase 1)
+        safety_factor = 0.95
         target_time = bottleneck_time / safety_factor
         
-        # Calculate optimal launch rate
+        # Calculate aggressive launch rate
         optimal_launch_rate = total_requests / target_time
         
-        # Calculate concurrent request limit (5 seconds of buffer for quality filter)
-        concurrent_limit = int(optimal_launch_rate * 5)
+        # Aggressive concurrent limit (3-second burst capacity instead of 5)
+        concurrent_limit = int(optimal_launch_rate * 3)
         
         return OptimalStrategy(
             target_time_seconds=target_time,
@@ -121,7 +126,8 @@ class SlidingWindowMonitor:
         self.tpm_limit = tpm_limit
         self.window_seconds = window_seconds
         
-        # Sliding windows for tracking usage
+        # Thread-safe tracking across all concurrent operations
+        self._lock = asyncio.Lock()
         self.requests_window = deque()  # timestamps
         self.tokens_window = deque()    # (timestamp, token_count) tuples
         
@@ -142,35 +148,52 @@ class SlidingWindowMonitor:
         while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
             self.tokens_window.popleft()
     
-    def record_request(self, tokens_used: int):
-        """Record a completed API request"""
-        now = time.time()
-        self.requests_window.append(now)
-        self.tokens_window.append((now, tokens_used))
-        
-        self.total_requests += 1
-        self.total_tokens += tokens_used
-        
-        self._cleanup_windows()
+    async def can_proceed(self, estimated_tokens: int = 0) -> bool:
+        """Check if we can make request within 99% of 60-second limits (Phase 3 maximum aggression)"""
+        async with self._lock:
+            self._cleanup_windows()
+            
+            # Calculate current usage in 60-second window
+            current_rpm = len(self.requests_window)
+            current_tpm = sum(tokens for _, tokens in self.tokens_window)
+            
+            # Maximum aggression: use 99% of limits (Phase 3)
+            would_exceed_rpm = (current_rpm + 1) > (self.rpm_limit * 0.99)
+            would_exceed_tpm = (current_tpm + estimated_tokens) > (self.tpm_limit * 0.99)
+            
+            return not (would_exceed_rpm or would_exceed_tpm)
     
-    def get_current_utilization(self) -> Dict:
-        """Get current resource utilization"""
-        self._cleanup_windows()
-        
-        current_rpm = len(self.requests_window)
-        current_tpm = sum(tokens for _, tokens in self.tokens_window)
-        
-        return {
-            'current_rpm': current_rpm,
-            'current_tpm': current_tpm,
-            'rpm_utilization': current_rpm / self.rpm_limit,
-            'tpm_utilization': current_tpm / self.tpm_limit,
-            'rpm_remaining': self.rpm_limit - current_rpm,
-            'tpm_remaining': self.tpm_limit - current_tpm,
-            'total_requests': self.total_requests,
-            'total_tokens': self.total_tokens,
-            'elapsed_time': time.time() - self.start_time
-        }
+    async def record_request(self, tokens_used: int):
+        """Record a completed API request (async for thread safety)"""
+        async with self._lock:
+            now = time.time()
+            self.requests_window.append(now)
+            self.tokens_window.append((now, tokens_used))
+            
+            self.total_requests += 1
+            self.total_tokens += tokens_used
+            
+            self._cleanup_windows()
+    
+    async def get_current_utilization(self) -> Dict:
+        """Get current resource utilization (async for thread safety)"""
+        async with self._lock:
+            self._cleanup_windows()
+            
+            current_rpm = len(self.requests_window)
+            current_tpm = sum(tokens for _, tokens in self.tokens_window)
+            
+            return {
+                'current_rpm': current_rpm,
+                'current_tpm': current_tpm,
+                'rpm_utilization': current_rpm / self.rpm_limit,
+                'tpm_utilization': current_tpm / self.tpm_limit,
+                'rpm_remaining': self.rpm_limit - current_rpm,
+                'tpm_remaining': self.tpm_limit - current_tpm,
+                'total_requests': self.total_requests,
+                'total_tokens': self.total_tokens,
+                'elapsed_time': time.time() - self.start_time
+            }
 
 
 class SmartAPIClient:

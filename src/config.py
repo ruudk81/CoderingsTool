@@ -175,8 +175,8 @@ class ModelConfig:
     description_model: str = DEFAULT_MODEL         
     
     # Step 4: Embedding model
-    #embedding_model: str = "text-embedding-3-large"
-    embedding_model: str = "gemini-embedding-001"
+    embedding_model: str = "text-embedding-3-large"
+    #embedding_model: str = "gemini-embedding-001"
     
     # Step 6: Codebook generation
     speculative_codes_model: str = DEFAULT_MODEL  
@@ -460,8 +460,8 @@ class EmbeddingConfig:
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 10  # Higher for better semantic relationships
-    n_components: int = 5  # More dimensions to preserve semantic nuances
+    n_neighbors: int = 15  # Higher for better semantic relationships
+    n_components: int = 10    # More dimensions to preserve semantic nuances
     min_dist: float = 0.0  # Slight separation for better cluster distinction
     metric: str = "cosine"  # Consistent with HDBSCAN for semantic similarity
     random_state: int = 42
@@ -473,13 +473,19 @@ class UMAPConfig:
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = None  # Smaller clusters for better semantic coherence
+    min_cluster_size: Optional[int] = 2  # Smaller clusters for better semantic coherence
     min_samples: Optional[int] = None # Lower threshold for more selective clustering
+    cluster_selection_epsilon: Optional[float] = 0.0  
+    alpha: Optional[float] = 1.0  # Default stability weighting as requested
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
     approx_min_span_tree: bool = False
     gen_min_span_tree: bool = True
+
+
+# Default HDBSCAN configuration instance
+DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
 
 
 @dataclass
@@ -612,6 +618,86 @@ class DeduplicationConfig:
     min_codes_for_deduplication: int = 5  # Skip if fewer codes
 
 # =============================================================================
+# SMART PHASE PROCESSING CONFIGURATION
+# =============================================================================
+
+@dataclass
+class SmartPhaseConfig:
+    """Configuration for smart phase processing optimization"""
+    
+    # Feature flag - DISABLED by default for safety
+    enable_smart_phase_processing: bool = True
+    
+    # Fallback behavior
+    enable_automatic_fallback: bool = True
+    fallback_timeout_seconds: int = 120  # Fallback if phase 1 takes too long (increased from 30s)
+    
+    # Phase 1: Theme extraction settings
+    theme_extraction_concurrency: int = 20  # Reduced concurrency to avoid API rate limits
+    theme_extraction_batch_size: int = 20  # Batch size for theme extraction API calls
+    
+    # Phase 2: Batch formation settings  
+    similarity_threshold: float = 0.7  # Cosine similarity threshold for theme grouping
+    target_batch_size: int = 10  # Target clusters per batch (optimized for 50-100 total)
+    min_batch_size: int = 5  # Minimum clusters per batch
+    max_batch_size: int = 15  # Maximum clusters per batch
+    
+    # Phase 3: Sequential processing settings
+    enable_inter_batch_optimization: bool = True  # Use updated codebook between batches
+    batch_progress_reporting: bool = True  # Report progress between batches
+    
+    # Performance monitoring
+    enable_performance_comparison: bool = True  # Compare performance with current system
+    enable_timing_details: bool = False  # Detailed timing breakdowns (verbose only)
+    
+    # Memory management
+    cache_theme_embeddings: bool = True  # Cache theme embeddings for reuse
+    max_cached_theme_embeddings: int = 1000  # Limit cache size
+    clear_cache_between_runs: bool = True  # Clear theme cache between runs
+    
+    # Testing and validation
+    enable_output_validation: bool = True  # Compare outputs between systems (test mode)
+    validation_sample_size: int = 10  # Number of clusters to validate in test mode
+    enable_test_mode: bool = False  # Run both systems and compare (for testing)
+
+# =============================================================================
+# CODEDESIGNER CONFIGURATION
+# =============================================================================
+
+@dataclass
+class CodeDesignerConfig:
+    """Configuration for the new CodeDesigner system"""
+    
+    # Model configuration
+    model: str = DEFAULT_MODEL
+    temperature: float = 0.1
+    max_tokens: int = 4000
+    seed: Optional[int] = 42
+    
+    # Theme-based similarity batching
+    similarity_threshold: float = 0.7  # Cosine similarity threshold for dissimilarity batching
+    max_sub_batch_size: int = 10  # Maximum clusters per sub-batch
+    
+    # Rate limiting and performance
+    batch_size: int = 20  # Base batch size for API calls
+    max_concurrent_requests: int = 15  # Maximum concurrent API requests
+    enable_aggressive_parallelism: bool = True  # Enable concurrent processing within batches
+    
+    # Processing strategy
+    enable_sequential_batch_processing: bool = True  # Process dissimilarity batches sequentially
+    enable_sub_batch_processing: bool = True  # Split large batches into sub-batches
+    
+    # Monitoring and reporting
+    enable_similarity_distribution_analysis: bool = True  # Report similarity statistics
+    enable_batch_analytics: bool = True  # Report batch formation statistics
+    enable_performance_monitoring: bool = True  # Monitor processing performance
+    
+    # SharedCodebook settings
+    enable_version_tracking: bool = True  # Track codebook versions
+    enable_embedding_cache: bool = True  # Cache code embeddings per version
+    max_cached_versions: int = 5  # Maximum cached codebook versions
+
+# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -627,5 +713,7 @@ DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
 DEFAULT_DEDUPLICATION_CONFIG = DeduplicationConfig()
+DEFAULT_SMART_PHASE_CONFIG = SmartPhaseConfig()
+DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
 
 

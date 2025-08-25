@@ -189,6 +189,12 @@ class CodeRecommendation(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class SimplifiedCodeRecommendation(BaseModel):
+    """Simplified Step 3 JSON response: Only coding decisions (flattened format)"""
+    coding_decisions: List[CodingDecision]
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class CodeEvaluation(BaseModel):
     """Evaluation criteria for Step 4 validation"""
     semantic_fit: str

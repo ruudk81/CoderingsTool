@@ -17,7 +17,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
 import models
-from models import ClusterSummaryOutput, CodeRecommendation, SimplifiedCodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem, OriginalRecommendation #CandidateCodeSelectionOutput
+from models import ClusterSummaryOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem #CandidateCodeSelectionOutput
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -244,7 +244,7 @@ class SimilarityEngine:
         
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
-        theme_names = [themes[cid].theme_name for cid in cluster_ids]  # Keep backward compatibility
+        theme_names = [themes[cid].theme_name for cid in cluster_ids]
         
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
         batch_size = 100
@@ -271,7 +271,7 @@ class SimilarityEngine:
             
             for cluster_id, theme in themes.items():
                 try:
-                    embedding = await self._get_embedding(theme.theme_name)  # Keep backward compatibility
+                    embedding = await self._get_embedding(theme.theme_name)
                     theme_embeddings[cluster_id] = embedding
                 except Exception as individual_error:
                     self.verbose_reporter.error(f"Failed to embed theme for cluster {cluster_id}: {individual_error}")
@@ -727,8 +727,8 @@ class InductiveCodeGenerator:
                         # Use first theme for backward compatibility
                         first_theme = themes_list[0] if themes_list else None
                         if first_theme:
-                            self.theme_name = first_theme.theme_statement  # Updated field name
-                            self.theme_description = first_theme.theme_statement  # Map theme_statement to theme_description
+                            self.theme_name = first_theme.theme_name
+                            self.theme_description = first_theme.summary  # Map summary to theme_description
                         else:
                             self.theme_name = "Unknown"
                             self.theme_description = "No theme extracted"
@@ -742,10 +742,10 @@ class InductiveCodeGenerator:
                 
                 # Capture theme extraction results for transparency
                 self.step1_summaries[cluster_id] = {
-                    'cluster_summary': f"{theme_item.theme_statement}",  # Updated field name
-                    'themes': [item.theme_statement for item in response],  # All themes from array
-                    'theme_name': theme_item.theme_statement,  # Backward compatibility
-                    'theme_description': theme_item.theme_statement  # Updated field name
+                    'cluster_summary': f"{theme_item.theme_name}: {theme_item.summary}",
+                    'themes': [item.theme_name for item in response],  # All themes from array
+                    'theme_name': theme_item.theme_name,
+                    'theme_description': theme_item.summary
                 }
                 
                 return result
@@ -1110,7 +1110,7 @@ class InductiveCodeGenerator:
             # Extract final code/definition from complex validation structure
             final_code = None
             final_definition = None
-            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
+            if validation and validation.code_validations:
                 # Get the first validated code (for now - could aggregate multiple)
                 first_validation = validation.code_validations[0]
                 if first_validation.validated_code:
@@ -1497,7 +1497,7 @@ class InductiveCodeGenerator:
             # Extract final code/definition from complex validation structure
             final_code = None
             final_definition = None
-            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
+            if validation and validation.code_validations:
                 # Get the first validated code (for now - could aggregate multiple)
                 first_validation = validation.code_validations[0]
                 if first_validation.validated_code:
@@ -1565,11 +1565,11 @@ class InductiveCodeGenerator:
         """Get embedding for a specific theme item"""
         try:
             # Generate embedding for this specific theme
-            theme_text = theme_item.theme_name  # Keep backward compatibility
+            theme_text = theme_item.theme_name
             embedding = await self._get_embedding(theme_text)
             return embedding
         except Exception as e:
-            self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_name}' for cluster {cluster_id}: {e}")  # Keep backward compatibility
+            self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_name}' for cluster {cluster_id}: {e}")
             return None
     
     async def _get_nearest_codes_by_embedding(self, theme_embedding: np.ndarray, 
@@ -1682,7 +1682,7 @@ class InductiveCodeGenerator:
             return None
     
     async def _generate_code(self, cluster_id: int, cluster_data: Dict, theme_data,
-                           candidate_selection: Optional[List[CandidateCode]]) -> Optional[SimplifiedCodeRecommendation]:
+                           candidate_selection: Optional[List[CandidateCode]]) -> Optional[CodeRecommendation]:
         """Step 4b: Generate code decision"""
         
         if candidate_selection is None:
@@ -1741,28 +1741,26 @@ class InductiveCodeGenerator:
         try:
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
-                response_model=SimplifiedCodeRecommendation,
+                response_model=CodeRecommendation,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
                 seed=self.config.seed
             )
             
             # Capture code generation results for transparency
-            if hasattr(response, 'coding_decisions') and response.coding_decisions:
-                self.step3_recommendations[cluster_id] = {
-                    'coding_decisions': [
-                        {
-                            'theme_number': decision.theme_number,
-                            'decision': decision.decision,
-                            'final_code_label': decision.final_code_label,
-                            'final_code_description': decision.final_code_description,
-                            'source_code': decision.source_code,
-                            'justification': decision.justification
-                        } for decision in response.coding_decisions
-                    ]
-                }
-            else:
-                self.verbose_reporter.error(f"Code generation response for cluster {cluster_id} missing coding_decisions field")
+            self.step3_recommendations[cluster_id] = {
+                'coding_decisions': [
+                    {
+                        'theme_number': i + 1,
+                        'theme_description': decision.theme_description,
+                        'decision': decision.decision,
+                        'justification': decision.justification,
+                        'action_details': decision.action_details.model_dump() if decision.action_details else None
+                    } for i, decision in enumerate(response.coding_decisions)
+                ],
+                'overall_justification': response.overall_justification,
+                'cluster_analysis': response.cluster_analysis.model_dump() if response.cluster_analysis else None
+            }
             
             return response
             
@@ -1770,7 +1768,7 @@ class InductiveCodeGenerator:
             self.verbose_reporter.error(f"Code generation failed: {e}")
             return None
     
-    async def _validate_and_update_codebook(self, cluster_id: int, cluster_data: Dict, theme_data, code_generation: Optional[SimplifiedCodeRecommendation]) -> Optional[ValidationResult]:
+    async def _validate_and_update_codebook(self, cluster_id: int, cluster_data: Dict, theme_data, code_generation: Optional[CodeRecommendation]) -> Optional[ValidationResult]:
         """Step 4c: Validate code and update SharedCodebook"""
         
         if not code_generation:
@@ -1814,12 +1812,6 @@ class InductiveCodeGenerator:
             )
         
         try:
-            # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Starting validation and codebook update API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Current codebook codes: {len(current_codes)}")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Has code_generation: {code_generation is not None}")
-            
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
                 response_model=ValidationResult,
@@ -1827,15 +1819,6 @@ class InductiveCodeGenerator:
                 temperature=self.config.temperature,
                 seed=self.config.seed
             )
-            
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP4 - API returned None response")
-                return None
-            elif not hasattr(response, 'code_validations') or not response.code_validations:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - API returned response with no validations")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - API returned {len(response.code_validations)} validations")
             
             # Show validation results for original complex structured output
             if response and response.code_validations:
@@ -1852,9 +1835,7 @@ class InductiveCodeGenerator:
                 # Process each validation decision
                 for i, validation in enumerate(response.code_validations):
                     # Get corresponding coding decision
-                    if (hasattr(code_generation, 'coding_decisions') and 
-                        code_generation.coding_decisions and 
-                        i < len(code_generation.coding_decisions)):
+                    if i < len(code_generation.coding_decisions):
                         coding_decision = code_generation.coding_decisions[i]
                         
                         # Show prompt 3 validation decision
@@ -1869,12 +1850,12 @@ class InductiveCodeGenerator:
                                 if added:
                                     self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                     codebook_updated = True
-                            elif coding_decision.decision == "modify" and coding_decision.source_code:
+                            elif coding_decision.decision == "modify" and coding_decision.action_details.codes_to_modify:
                                 replaced, new_version = await self.shared_codebook.replace_code(
-                                    coding_decision.source_code, 
+                                    coding_decision.action_details.codes_to_modify, 
                                     validation.validated_code.code, validation.validated_code.definition
                                 )
-                                #self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY - replaced={replaced}, v{new_version}, '{coding_decision.source_code}' -> '{validation.validated_code.code}'")
+                                #self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY - replaced={replaced}, v{new_version}, '{coding_decision.action_details.codes_to_modify}' -> '{validation.validated_code.code}'")
                                 if replaced:
                                     self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                     codebook_updated = True
@@ -1923,18 +1904,15 @@ class InductiveCodeGenerator:
                 self.step4_validations[cluster_id] = {
                     'code_validations': [
                         {
-                            'theme_number': validation.theme_number,
-                            'original_recommendation': {
-                                'code': validation.original_recommendation.code,
-                                'definition': validation.original_recommendation.definition
-                            },
+                            'theme_number': validation.theme_number if hasattr(validation, 'theme_number') else i + 1,
+                            'theme_description': validation.theme_description if hasattr(validation, 'theme_description') else f"Theme {i + 1}",
                             'decision': validation.decision,
-                            'decision_rationale': validation.decision_rationale,
+                            'decision_rationale': validation.decision_rationale if hasattr(validation, 'decision_rationale') else "No rationale provided",
                             'validated_code': {
                                 'code': validation.validated_code.code,
                                 'definition': validation.validated_code.definition
-                            }
-                        } for validation in response.code_validations
+                            } if validation.validated_code else None
+                        } for i, validation in enumerate(response.code_validations)
                     ] if response.code_validations else [],
                     'theme_assessment': response.theme_assessment.model_dump() if response.theme_assessment else None,
                     'overall_validation': response.overall_validation.model_dump() if response.overall_validation else None
@@ -1970,13 +1948,7 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP4 - Validation and codebook update failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP4 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP4 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP4 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
+            self.verbose_reporter.error(f"Validation failed: {e}")
             return None
     
     async def design(self) -> List[Dict[str, Any]]:
@@ -2296,10 +2268,16 @@ class InductiveCodeGenerator:
                     'coding_decisions': [
                         {
                             'theme_number': decision.theme_number,
+                            'theme_description': decision.theme_description,
                             'decision': decision.decision,
-                            'final_code_label': decision.final_code_label,
-                            'final_code_description': decision.final_code_description,
-                            'source_code': decision.source_code,
+                            'action_details': {
+                                'codes_to_use': getattr(decision.action_details, 'codes_to_use', None),
+                                'codes_to_modify': getattr(decision.action_details, 'codes_to_modify', None),
+                                'modified_code_name': getattr(decision.action_details, 'modified_code_name', None),
+                                'modified_code_definition': getattr(decision.action_details, 'modified_code_definition', None),
+                                'new_code_name': getattr(decision.action_details, 'new_code_name', None),
+                                'new_code_definition': getattr(decision.action_details, 'new_code_definition', None)
+                            },
                             'justification': decision.justification
                         } for decision in code_generation.coding_decisions
                     ]
@@ -2311,16 +2289,20 @@ class InductiveCodeGenerator:
                     'code_validations': [
                         {
                             'theme_number': val.theme_number,
-                            'original_recommendation': {
-                                'code': val.original_recommendation.code,
-                                'definition': val.original_recommendation.definition
+                            'theme_description': val.theme_description,
+                            'original_recommendation': val.original_recommendation,
+                            'evaluation': {
+                                'semantic_fit': getattr(val.evaluation, 'semantic_fit', 'Not evaluated'),
+                                'atomicity': getattr(val.evaluation, 'atomicity', 'Not evaluated'),
+                                'parsimony': getattr(val.evaluation, 'parsimony', 'Not evaluated'),
+                                'redundancy': getattr(val.evaluation, 'redundancy', 'Not evaluated')
                             },
                             'decision': val.decision,
                             'decision_rationale': val.decision_rationale,
                             'validated_code': {
                                 'code': val.validated_code.code,
                                 'definition': val.validated_code.definition
-                            }
+                            } if val.validated_code and hasattr(val.validated_code, 'code') else None
                         } for val in validation.code_validations
                     ]
                 }
@@ -2463,55 +2445,14 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step2", **params)
             
-            # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
-            
-            # Pure API call - maximum speed with raw response capture
-            try:
-                # Make raw API call first to capture the response
-                raw_response = await self.async_client.chat.completions.create(
-                    model=self.config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    seed=self.config.seed
-                )
-                
-                # Log raw response details
-                if raw_response and raw_response.choices:
-                    raw_content = raw_response.choices[0].message.content
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Raw response length: {len(raw_content) if raw_content else 0}")
-                    if not raw_content or raw_content.strip() == '':
-                        self.verbose_reporter.error(f"C{cluster_id}: STEP1 - RAW RESPONSE IS EMPTY OR WHITESPACE")
-                        return []
-                    if raw_content.strip() == '\n':
-                        self.verbose_reporter.error(f"C{cluster_id}: STEP1 - RAW RESPONSE IS JUST NEWLINE")
-                        return []
-                else:
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - No choices in raw response")
-                    return []
-                    
-                # Now make the structured call with instructor
-                response = await self.async_client.chat.completions.create(
-                    model=self.config.model,
-                    response_model=List[CandidateCode],
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    seed=self.config.seed
-                )
-            except Exception as api_error:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Raw API call failed: {api_error}")
-                raise
-            
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
-                return []
-            elif len(response) == 0:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
+            # Pure API call - maximum speed
+            response = await self.async_client.chat.completions.create(
+                model=self.config.model,
+                response_model=List[CandidateCode],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                seed=self.config.seed
+            )
             
             # Capture step2_analysis - the actual candidate codes used in pipeline
             if response:
@@ -2523,13 +2464,7 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Candidate selection failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
+            self.verbose_reporter.error(f"Candidate selection failed: {e}")
             return []
     
     async def _generate_code_unlimited(self, cluster_id: int, cluster_data: Dict, theme_data, candidate_selection):
@@ -2557,28 +2492,15 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step3", **params)
             
-            # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
             # Pure API call - maximum speed
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
-                response_model=SimplifiedCodeRecommendation,  # Use simplified model for flattened JSON
+                response_model=CodeRecommendation,  # Changed from List to single
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
                 seed=self.config.seed
             )
-            
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
-                return None
-            elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
             
             # Capture step3_recommendations (code generation results)
             if response and hasattr(response, 'coding_decisions'):
@@ -2586,26 +2508,28 @@ class InductiveCodeGenerator:
                     'coding_decisions': [
                         {
                             'theme_number': decision.theme_number,
+                            'theme_description': decision.theme_description,
                             'decision': decision.decision,
-                            'final_code_label': decision.final_code_label,
-                            'final_code_description': decision.final_code_description,
-                            'source_code': decision.source_code,
+                            'action_details': {
+                                'codes_to_use': getattr(decision.action_details, 'codes_to_use', None),
+                                'codes_to_modify': getattr(decision.action_details, 'codes_to_modify', None),
+                                'modified_code_name': getattr(decision.action_details, 'modified_code_name', None),
+                                'modified_code_definition': getattr(decision.action_details, 'modified_code_definition', None),
+                                'new_code_name': getattr(decision.action_details, 'new_code_name', None),
+                                'new_code_definition': getattr(decision.action_details, 'new_code_definition', None)
+                            },
                             'justification': decision.justification
                         } for decision in response.coding_decisions
-                    ]
+                    ],
+                    'overall_justification': getattr(response, 'overall_justification', ''),
+                    'cluster_analysis': getattr(response, 'cluster_analysis', {})
                 }
             
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Code generation failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP2 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
-            return None
+            self.verbose_reporter.error(f"Code generation failed: {e}")
+            return []
     
     async def _validate_code_unlimited(self, cluster_id: int, cluster_data: Dict, theme_data, 
                                        code_generation, codebook_snapshot: List[Dict]):
@@ -2633,12 +2557,6 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step4", **params)
             
-            # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Codebook codes: {len(codebook_snapshot)}")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
-            
             # Pure API call - maximum speed
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
@@ -2648,31 +2566,18 @@ class InductiveCodeGenerator:
                 seed=self.config.seed
             )
             
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
-                return None
-            elif not hasattr(response, 'code_validations') or not response.code_validations:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
-            
             # Capture step4_validations
             if response and hasattr(response, 'code_validations'):
                 self.step4_validations[cluster_id] = {
                     'code_validations': [
                         {
                             'theme_number': validation.theme_number,
-                            'original_recommendation': {
-                                'code': validation.original_recommendation.code,
-                                'definition': validation.original_recommendation.definition
-                            },
+                            'theme_description': validation.theme_description,
+                            'original_recommendation': validation.original_recommendation,
                             'decision': validation.decision,
                             'decision_rationale': validation.decision_rationale,
-                            'validated_code': {
-                                'code': validation.validated_code.code,
-                                'definition': validation.validated_code.definition
-                            }
+                            'evaluation': validation.evaluation.dict() if hasattr(validation, 'evaluation') and validation.evaluation else {},
+                            'validated_code': validation.validated_code.dict() if hasattr(validation, 'validated_code') and validation.validated_code else None
                         } for validation in response.code_validations
                     ]
                 }
@@ -2680,13 +2585,7 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
-            error_msg = str(e).strip()
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Code validation failed")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Error type: {type(e).__name__}")
-            self.verbose_reporter.error(f"C{cluster_id}: STEP3 - Error message: '{error_msg}' (length: {len(error_msg)})")
-            if error_msg == '\n' or error_msg == '':
-                self.verbose_reporter.error(f"C{cluster_id}: STEP3 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
+            self.verbose_reporter.error(f"Validation failed: {e}")
             return None
     
     # ============================================================================

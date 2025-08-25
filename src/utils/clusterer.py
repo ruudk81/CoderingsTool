@@ -1,12 +1,15 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 from umap import UMAP
 import hdbscan
 import random
+
+if TYPE_CHECKING:
+    from config import HDBSCANConfig
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
@@ -34,14 +37,21 @@ class Clusterer:
                  variance_threshold: float = 0.9,
                  umap_n_components: int = 10,
                  umap_n_neighbors: int = 5,
-                 hdbscan_min_cluster_size: int = 2,
+                 hdbscan_config: Optional['HDBSCANConfig'] = None,
                  verbose: bool = False):
 
         self.verbose_reporter = verboseReporter.VerboseReporter(verbose, capture_logging=True)
         self.variance_threshold = variance_threshold
         self.umap_n_components = umap_n_components
         self.umap_n_neighbors = umap_n_neighbors
-        self.hdbscan_min_cluster_size = hdbscan_min_cluster_size
+        
+        # Handle HDBSCAN configuration
+        if hdbscan_config is not None:
+            self.hdbscan_config = hdbscan_config
+        else:
+            # Import here to avoid circular import
+            from config import DEFAULT_HDBSCAN_CONFIG
+            self.hdbscan_config = DEFAULT_HDBSCAN_CONFIG
 
         self._original_input_list = input_list
         self.output_list: List[ResultMapper] = []
@@ -73,7 +83,7 @@ class Clusterer:
         
         self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
         self.verbose_reporter.stat_line(f"UMAP configuration: {self.umap_n_neighbors} neighbors, {self.umap_n_components} components, cosine metric")
-        self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_cluster_size={self.hdbscan_min_cluster_size}, euclidean metric")
+        self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_cluster_size={self.hdbscan_config.min_cluster_size}, epsilon={self.hdbscan_config.cluster_selection_epsilon}, alpha={self.hdbscan_config.alpha}, {self.hdbscan_config.metric} metric")
         
         #from sklearn.decomposition import PCA
         #from sklearn.preprocessing import StandardScaler
@@ -126,13 +136,15 @@ class Clusterer:
         self.verbose_reporter.stat_line("Clustering with HDBSCAN...")
         
         hdb = hdbscan.HDBSCAN(
-            min_cluster_size= self.hdbscan_min_cluster_size,  # Smallest clusters for best semantic coherence; with min clusters = 1, no noise
-            min_samples= None, # Lower threshold for more selective clustering
-            metric= "euclidean",   
-            cluster_selection_method = "eom",
-            prediction_data= True,
-            approx_min_span_tree= False,
-            gen_min_span_tree= True,
+            min_cluster_size=self.hdbscan_config.min_cluster_size,
+            min_samples=self.hdbscan_config.min_samples,
+            cluster_selection_epsilon=self.hdbscan_config.cluster_selection_epsilon,
+            alpha=self.hdbscan_config.alpha,
+            metric=self.hdbscan_config.metric,
+            cluster_selection_method=self.hdbscan_config.cluster_selection_method,
+            prediction_data=self.hdbscan_config.prediction_data,
+            approx_min_span_tree=self.hdbscan_config.approx_min_span_tree,
+            gen_min_span_tree=self.hdbscan_config.gen_min_span_tree,
         )
         labels = hdb.fit_predict(umap_embeddings)
 
