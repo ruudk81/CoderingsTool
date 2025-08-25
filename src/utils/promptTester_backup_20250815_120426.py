@@ -14,7 +14,6 @@ from typing import List, Dict, Any, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from config import CacheConfig, DEFAULT_LANGUAGE
-import models
 from prompts import (
     CLUSTER_SUMMARY_PROMPT,
     CANDIDATE_CODE_SELECTION_PROMPT,
@@ -46,13 +45,7 @@ class SimplePromptTester:
         # Sample a random cluster ID to use throughout
         self.cluster_id = self._sample_cluster_id()
         print(f"TARGET: Using cluster ID: {self.cluster_id}")
-        available_steps = []
-        for step in ['step1', 'step2', 'step3', 'step4']:
-            field_name = f'{step}_summaries' if step == 'step1' else f'{step}_analysis' if step == 'step2' else f'{step}_recommendations' if step == 'step3' else f'{step}_validations'
-            field_data = getattr(self.codebook_reasoning, field_name, {})
-            if self.cluster_id in field_data:
-                available_steps.append(step)
-        print(f"   Available steps for this cluster: {available_steps}")
+        print(f"   Available steps for this cluster: {[step for step in ['step1', 'step2', 'step3', 'step4'] if self.cluster_id in self.codebook_reasoning.get(f'{step}_summaries' if step == 'step1' else f'{step}_analysis' if step == 'step2' else f'{step}_recommendations' if step == 'step3' else f'{step}_validations', {})]}")
     
     def _load_cluster_results(self):
         """Load initial_cluster_results from cache"""
@@ -75,7 +68,7 @@ class SimplePromptTester:
             return None
     
     def _load_codebook_reasoning(self):
-        """Load codebook reasoning from cache and reconstruct Pydantic model"""
+        """Load codebook reasoning from cache"""
         cache_dir = self.cache_config.cache_dir
         reasoning_files = list(cache_dir.glob("999_codebook_generation_reasoning_*.pkl"))
         
@@ -92,17 +85,9 @@ class SimplePromptTester:
             
             # Handle list format (extract first element)
             if isinstance(data, list) and len(data) > 0:
-                dict_data = data[0]
+                return data[0]
             else:
-                dict_data = data
-            
-            # Convert dictionary back to Pydantic model
-            if isinstance(dict_data, dict):
-                return models.CodeGeneratorReasoningResults.model_validate(dict_data)
-            else:
-                # Already a Pydantic model
-                return dict_data
-                
+                return data
         except Exception as e:
             print(f"ERROR: Error loading codebook reasoning: {e}")
             return None
@@ -119,16 +104,16 @@ class SimplePromptTester:
         # Filter to only clusters that have data in all 4 steps
         complete_clusters = []
         for cluster_id in all_cluster_ids:
-            if (cluster_id in self.codebook_reasoning.step1_summaries and
-                cluster_id in self.codebook_reasoning.step2_analysis and
-                cluster_id in self.codebook_reasoning.step3_recommendations and
-                cluster_id in getattr(self.codebook_reasoning, 'step4_validations', {})):
+            if (cluster_id in self.codebook_reasoning['step1_summaries'] and
+                cluster_id in self.codebook_reasoning['step2_analysis'] and
+                cluster_id in self.codebook_reasoning['step3_recommendations'] and
+                cluster_id in self.codebook_reasoning.get('step4_validations', {})):
                 complete_clusters.append(cluster_id)
         
         if not complete_clusters:
             print("WARNING:  Warning: No clusters found with complete 4-step data, using any cluster with step1 data")
             # Fallback to any cluster with step1 data
-            step1_clusters = list(self.codebook_reasoning.step1_summaries.keys())
+            step1_clusters = list(self.codebook_reasoning['step1_summaries'].keys())
             return random.choice(step1_clusters) if step1_clusters else all_cluster_ids[0]
         
         return random.sample(complete_clusters, 1)[0]
@@ -151,7 +136,7 @@ class SimplePromptTester:
         print("="*80)
         
         # Use EXACT same inputs as actual pipeline
-        step1_inputs = getattr(self.codebook_reasoning, 'step1_inputs', {})
+        step1_inputs = self.codebook_reasoning.get('step1_inputs', {})
         if self.cluster_id in step1_inputs:
             step1_input = step1_inputs[self.cluster_id]
             print(f"\n[USING ACTUAL PIPELINE INPUTS]\n")
@@ -184,7 +169,7 @@ class SimplePromptTester:
         print("="*80)
         
         # Use EXACT same inputs as actual pipeline
-        step2_inputs = getattr(self.codebook_reasoning, 'step2_inputs', {})
+        step2_inputs = self.codebook_reasoning.get('step2_inputs', {})
         if self.cluster_id in step2_inputs:
             step2_input = step2_inputs[self.cluster_id]
             print(f"\n[USING ACTUAL PIPELINE INPUTS]\n")
@@ -214,7 +199,7 @@ class SimplePromptTester:
         print("="*80)
         
         # Use EXACT same inputs as actual pipeline
-        step3_inputs = getattr(self.codebook_reasoning, 'step3_inputs', {})
+        step3_inputs = self.codebook_reasoning.get('step3_inputs', {})
         if self.cluster_id in step3_inputs:
             step3_input = step3_inputs[self.cluster_id]
             print(f"\n[USING ACTUAL PIPELINE INPUTS]\n")
@@ -244,7 +229,7 @@ class SimplePromptTester:
         print("="*80)
         
         # Use EXACT same inputs as actual pipeline
-        step4_inputs = getattr(self.codebook_reasoning, 'step4_inputs', {})
+        step4_inputs = self.codebook_reasoning.get('step4_inputs', {})
         if self.cluster_id in step4_inputs:
             step4_input = step4_inputs[self.cluster_id]
             print(f"\n[USING ACTUAL PIPELINE INPUTS]\n")

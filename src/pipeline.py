@@ -277,6 +277,7 @@ from utils import qualityFilter
 
 FORCE = False
 VERBOSE = True
+PROMPT_PRINTER = False
 
 step_name        = "quality_filter"
 if  FORCE:
@@ -342,6 +343,7 @@ from utils import ideaExtractor
 
 FORCE = False
 VERBOSE = True
+PROMPT_PRINTER = True
 
 step_name        = "extracted_ideas"
 if  FORCE:
@@ -418,6 +420,8 @@ else:
             config=embedding_config,
             provider="gemini",
             embedding_model="gemini-embedding-001",  
+            # provider="openai",
+            # embedding_model="text-embedding-3-large",  
             verbose=VERBOSE)
     input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
@@ -450,6 +454,9 @@ if  FORCE:
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
+CLUSTERING_ALPHA = None  # 1 is default, 1.5 would give more weight to size of clusters over distance. But advice is not to play around with this param too much/not at all.
+CLUSTERING_EPSILON = 0.5  # Embeddings from OpenAI/Gemini are L2-normalized by default. After UMAP (10D, metric="cosine") and Euclidean HDBSCAN clustering, an epsilon of 0.5 typically corresponds to ~0.875–0.9 cosine similarity in the original embedding space. This prevents splitting clusters that are semantically very close.
+
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
     cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
@@ -464,7 +471,23 @@ else:
     verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
     start_time = time.time()
     
-    clusterer = Clusterer(embedded_text, verbose=VERBOSE)
+    # Create custom HDBSCAN config if overrides specified
+    hdbscan_config = None
+    if CLUSTERING_ALPHA is not None or CLUSTERING_EPSILON is not None:
+        from config import DEFAULT_HDBSCAN_CONFIG, HDBSCANConfig
+        hdbscan_config = HDBSCANConfig(
+            min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
+            min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
+            cluster_selection_epsilon=CLUSTERING_EPSILON or DEFAULT_HDBSCAN_CONFIG.cluster_selection_epsilon,
+            alpha=CLUSTERING_ALPHA or DEFAULT_HDBSCAN_CONFIG.alpha,
+            metric=DEFAULT_HDBSCAN_CONFIG.metric,
+            cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
+            prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
+            approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
+            gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
+        )
+    
+    clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=VERBOSE)
     clusterer.run()
     initial_cluster_results = clusterer.to_cluster_model()
     
@@ -498,11 +521,11 @@ else:
 #     for result in initial_cluster_results 
 #     for response_idea in result.response_ideas  # This has initial_cluster
 #     if response_idea.initial_cluster is not None]))
-# for x in range(1, round(len(cluster_ids) / 20) + 1):
-#     y = x * 20
-#     print(f"\n=== Showing clusters {y-20} to {min(y, len(cluster_ids)-1)} ===\n")
+# for x in range(1, round(len(cluster_ids) / 1) + 1):
+#     y = x * 1
+#     print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
 
-#     for z in range(y - 20, y):
+#     for z in range(y - 1, y):
 #         if z < len(cluster_ids):
 #             print(f"\nCluster {z}")
 #             for item in initial_cluster_results:
@@ -519,7 +542,7 @@ from utils import codeGenerator as codeGenerator
 
 FORCE = True
 VERBOSE = True
-PROMPT_PRINTER = True
+PROMPT_PRINTER = False
 CACHE_CODEGENERATOR_REASONING = True  
 USE_SPECULATIVE_STARTER_CODES = False
 
@@ -589,9 +612,6 @@ else:
     else:
         # Phase 2: Inductive code generation
         # Use original codeGenerator with proven algorithms
-        
-        
-        
         generator = codeGenerator.InductiveCodeGenerator(
             cluster_results=initial_cluster_results,
             starter_codes=starter_codes, 
@@ -604,42 +624,44 @@ else:
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility
         
-        if results and isinstance(results, dict):
+        if results and isinstance(results, models.CodeGeneratorReasoningResults):
+            # Use the deduplicated codebook directly from results
+            final_codebook = results.codebook
+            
             # Display final codebook summary
-            if VERBOSE and 'codebook' in results:
+            if VERBOSE and final_codebook:
                 verbose_reporter.empty_line()
                 print("📊 FINAL CODEBOOK SUMMARY")
-                verbose_reporter.stat_line(f"Total codes: {len(results['codebook'])}")
+                verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
                 
                 # Show sample codes (first 10)
                 verbose_reporter.empty_line()
                 print("📋 Complete codebook:")
                 
             idx = 1
-            for key, value in results.items():
-                if key == 'codebook':
-                    for item in value:
-                        if VERBOSE:
-                            definition = item['definition']
-                            if len(definition) > 100:
-                                definition = definition[:97] + "..."
-                            print(f"  {idx}. \"{item['code']}\" - {definition}")
-                        
-                        codebook_entry = models.CodebookEntry(
-                            code=item['code'],
-                            definition=item['definition'],
-                            source_clusters=None  
-                        )
-                        codebook_entries.append(codebook_entry)
-                        
-                        legacy_entry = models.Codebook(
-                            code=item['code'],
-                            definition=item['definition'],
-                            topic=None,
-                            theme=None
-                        )
-                        codebook.append(legacy_entry)
-                        idx += 1
+            # Process the extracted final codebook
+            for item in final_codebook:
+                if VERBOSE:
+                    definition = item['definition']
+                    if len(definition) > 100:
+                        definition = definition[:97] + "..."
+                    print(f"  {idx}. \"{item['code']}\" - {definition}")
+                
+                codebook_entry = models.CodebookEntry(
+                    code=item['code'],
+                    definition=item['definition'],
+                    source_clusters=None  
+                )
+                codebook_entries.append(codebook_entry)
+                
+                legacy_entry = models.Codebook(
+                    code=item['code'],
+                    definition=item['definition'],
+                    topic=None,
+                    theme=None
+                )
+                codebook.append(legacy_entry)
+                idx += 1
         else:
             print("Warning: Codebook generator returned no results")
         
@@ -671,29 +693,11 @@ else:
     
     # Conditionally cache reasoning results for debugging
     if CACHE_CODEGENERATOR_REASONING and results:
-        from datetime import datetime
         try:
-            codebook_reasoning = models.CodeGeneratorReasoningResults(
-                cluster_results=[],  # Could include raw cluster results if needed
-                # Add actual prompt inputs for transparency
-                step1_inputs=results.get('step1_inputs', {}),
-                step2_inputs=results.get('step2_inputs', {}),
-                step3_inputs=results.get('step3_inputs', {}),
-                step4_inputs=results.get('step4_inputs', {}),
-                step3_validation_warnings=results.get('step3_validation_warnings', {}),
-                # Legacy step results
-                step1_summaries=results.get('step1_summaries', {}),
-                step2_analysis=results.get('step2_analysis', {}),
-                step3_recommendations=results.get('step3_recommendations', {}),
-                step4_validations=results.get('validation_details', {}),
-                stats=results.get('stats', {}),
-                generator_version=results.get('generator_version', ''),
-                var_lab=var_name,
-                total_clusters=len(results.get('cluster_data', {})),
-                total_ideas=sum(len(c.get('ideas', [])) for c in results.get('cluster_data', {}).values()),
-                processing_timestamp=datetime.now().isoformat(),
-                cluster_assignments=results.get('cluster_assignments', {})
-            )
+            # Use the results object directly - it's already a proper Pydantic model
+            codebook_reasoning = results
+            
+            # Cache the CodeGeneratorReasoningResults model directly
             cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", elapsed_time)
             print("✓ Cached codebook reasoning for debugging")
         except Exception as e:
@@ -703,20 +707,15 @@ else:
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
-#debug 
-# idx = 1
-# for entry in codebook:
-#     print(idx)
-#     print(entry.code)
-#     print(entry.definition)
-#     print("\n")
-#     idx += 1
+#hier
 
 #debug : reasoning
 if CACHE_CODEGENERATOR_REASONING: 
     from utils.codeGenerator_displayResults import display_cluster_analysis #, display_summary_statistics
-    if 'results' in locals():
-        display_cluster_analysis(codebook_reasoning)
+    if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+            display_cluster_analysis(codebook_reasoning)
+    else:
+        print("Note: codebook_reasoning not available for display")
         
 #debug : prompts 
 if CACHE_CODEGENERATOR_REASONING: 
@@ -740,10 +739,10 @@ if FORCE_DEDUP and 'results' in locals() and results:
     print("\n🔍 Starting codebook deduplication...")
     
     # Extract codebook from results
-    if 'cluster_assignments' in results and results['cluster_assignments']:
+    if results and results.cluster_assignments:
         # Extract all final codes from cluster assignments
         all_final_codes = []
-        for cluster_result in results['cluster_assignments'].values():
+        for cluster_result in results.cluster_assignments.values():
             if 'codes' in cluster_result:
                 for code_info in cluster_result['codes']:
                     if 'code' in code_info and 'definition' in code_info:
@@ -957,6 +956,8 @@ else:
     # Cache the structured theme-enriched codebook (wrap in list as cache manager expects List[T])
     cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, elapsed_time)
     print(f"\n'Hierarchical theme identification' completed in {elapsed_time:.2f} seconds.\n")
+
+
 
 # Update the main codebook with enriched data (for backward compatibility)
 if enriched_codebook:

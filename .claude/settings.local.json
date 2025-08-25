@@ -23,7 +23,9 @@
       "Bash(git checkout:*)",
       "WebFetch(domain:googleapis.github.io)",
       "WebFetch(domain:ai.google.dev)",
-      "WebFetch(domain:wandb.ai)"
+      "WebFetch(domain:wandb.ai)",
+      "Bash(sed:*)",
+      "Bash(copy codeGenerator.py codeGenerator_backup_20250814_171500.py)"
     ],
     "deny": []
   }
