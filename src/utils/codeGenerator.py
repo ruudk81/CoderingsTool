@@ -17,7 +17,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
 import models
-from models import ClusterSummaryOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem, OriginalRecommendation #CandidateCodeSelectionOutput
+from models import ClusterSummaryOutput, CodeRecommendation, SimplifiedCodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem, OriginalRecommendation #CandidateCodeSelectionOutput
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -1110,7 +1110,7 @@ class InductiveCodeGenerator:
             # Extract final code/definition from complex validation structure
             final_code = None
             final_definition = None
-            if validation and validation.code_validations:
+            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
                 # Get the first validated code (for now - could aggregate multiple)
                 first_validation = validation.code_validations[0]
                 if first_validation.validated_code:
@@ -1497,7 +1497,7 @@ class InductiveCodeGenerator:
             # Extract final code/definition from complex validation structure
             final_code = None
             final_definition = None
-            if validation and validation.code_validations:
+            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
                 # Get the first validated code (for now - could aggregate multiple)
                 first_validation = validation.code_validations[0]
                 if first_validation.validated_code:
@@ -1682,7 +1682,7 @@ class InductiveCodeGenerator:
             return None
     
     async def _generate_code(self, cluster_id: int, cluster_data: Dict, theme_data,
-                           candidate_selection: Optional[List[CandidateCode]]) -> Optional[CodeRecommendation]:
+                           candidate_selection: Optional[List[CandidateCode]]) -> Optional[SimplifiedCodeRecommendation]:
         """Step 4b: Generate code decision"""
         
         if candidate_selection is None:
@@ -1741,25 +1741,28 @@ class InductiveCodeGenerator:
         try:
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
-                response_model=CodeRecommendation,
+                response_model=SimplifiedCodeRecommendation,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
                 seed=self.config.seed
             )
             
             # Capture code generation results for transparency
-            self.step3_recommendations[cluster_id] = {
-                'coding_decisions': [
-                    {
-                        'theme_number': decision.theme_number,
-                        'decision': decision.decision,
-                        'final_code_label': decision.final_code_label,
-                        'final_code_description': decision.final_code_description,
-                        'source_code': decision.source_code,
-                        'justification': decision.justification
-                    } for decision in response.coding_decisions
-                ]
-            }
+            if hasattr(response, 'coding_decisions') and response.coding_decisions:
+                self.step3_recommendations[cluster_id] = {
+                    'coding_decisions': [
+                        {
+                            'theme_number': decision.theme_number,
+                            'decision': decision.decision,
+                            'final_code_label': decision.final_code_label,
+                            'final_code_description': decision.final_code_description,
+                            'source_code': decision.source_code,
+                            'justification': decision.justification
+                        } for decision in response.coding_decisions
+                    ]
+                }
+            else:
+                self.verbose_reporter.error(f"Code generation response for cluster {cluster_id} missing coding_decisions field")
             
             return response
             
@@ -1767,7 +1770,7 @@ class InductiveCodeGenerator:
             self.verbose_reporter.error(f"Code generation failed: {e}")
             return None
     
-    async def _validate_and_update_codebook(self, cluster_id: int, cluster_data: Dict, theme_data, code_generation: Optional[CodeRecommendation]) -> Optional[ValidationResult]:
+    async def _validate_and_update_codebook(self, cluster_id: int, cluster_data: Dict, theme_data, code_generation: Optional[SimplifiedCodeRecommendation]) -> Optional[ValidationResult]:
         """Step 4c: Validate code and update SharedCodebook"""
         
         if not code_generation:
@@ -1834,7 +1837,9 @@ class InductiveCodeGenerator:
                 # Process each validation decision
                 for i, validation in enumerate(response.code_validations):
                     # Get corresponding coding decision
-                    if i < len(code_generation.coding_decisions):
+                    if (hasattr(code_generation, 'coding_decisions') and 
+                        code_generation.coding_decisions and 
+                        i < len(code_generation.coding_decisions)):
                         coding_decision = code_generation.coding_decisions[i]
                         
                         # Show prompt 3 validation decision
@@ -2488,7 +2493,7 @@ class InductiveCodeGenerator:
             # Pure API call - maximum speed
             response = await self.async_client.chat.completions.create(
                 model=self.config.model,
-                response_model=CodeRecommendation,  # Changed from List to single
+                response_model=SimplifiedCodeRecommendation,  # Use simplified model for flattened JSON
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
                 seed=self.config.seed
