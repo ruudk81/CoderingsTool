@@ -1,5 +1,5 @@
 from typing import List, Any, Optional, Type, Union, Dict
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 import numpy as np
 import numpy.typing as npt
 
@@ -124,7 +124,16 @@ class CodeGeneratorReasoningResults(BaseModel):
     # Cluster assignments for cross-reference (now supports multi-theme structure)
     cluster_assignments: Dict[int, Dict[str, Any]]
     
+    # New fields for alignment with old codeGenerator
+    codebook: List[Dict[str, str]]  # Final deduplicated codebook from SharedCodebook
+    cluster_data: Dict[int, Dict[str, Any]]  # Raw cluster data for stats calculations
+    validation_details: Optional[Dict[int, Any]] = None  # Detailed validation results (maps to step4_validations)
+    
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    def get(self, key: str, default=None):
+        """Dictionary-style access for promptTester compatibility"""
+        return getattr(self, key, default)
 
 
 # === MULTI-THEME JSON RESPONSE MODELS ========================================================================================================
@@ -155,11 +164,12 @@ class ActionDetails(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodingDecision(BaseModel):
-    """Individual coding decision for a theme from Step 3"""
+    """Individual coding decision for a theme from Step 3 - flattened structure"""
     theme_number: int
-    theme_description: str
-    decision: str  # use_existing | modify_existing | create_new
-    action_details: ActionDetails
+    decision: str  # use | modify | create
+    final_code_label: str
+    final_code_description: str
+    source_code: Optional[str] = None  # name of reused/modified existing code, or null if new
     justification: str
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -195,15 +205,20 @@ class ValidatedCode(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class OriginalRecommendation(BaseModel):
+    """Original recommendation structure for Step 4"""
+    code: str
+    definition: str
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class CodeValidation(BaseModel):
-    """Individual code validation from Step 4"""
+    """Individual code validation from Step 4 - simplified structure"""
     theme_number: int
-    theme_description: str
-    original_recommendation: str
-    evaluation: CodeEvaluation
-    decision: str  # APPROVE | REVISE | REJECT | MERGE | SPLIT
+    original_recommendation: OriginalRecommendation
+    decision: str  # APPROVE | REJECT
     decision_rationale: str
-    validated_code: Union[ValidatedCode, List[ValidatedCode]]  # Single for APPROVE/REVISE/REJECT, list for SPLIT
+    validated_code: ValidatedCode
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -249,23 +264,150 @@ class DeduplicationResult(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+# === CODE GENERATOR OUTPUT MODELS ====================================================================================================
 
-# class SuggestedTheme(BaseModel):
-#     theme_name: str
-#     concept: str
-#     codes: List[str]
-#     relationship: str
+class CodeGenerationOutput(BaseModel):
+    """Step 3 JSON response: Multi-theme code recommendations"""
+    cluster_analysis: ClusterAnalysis
+    coding_decisions: List[CodingDecision]
+    overall_justification: str
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-# class Reflection(BaseModel):
-#     broad_or_narrow_themes: Optional[str] = None
-#     contradictions_or_unexpected_patterns: Optional[str] = None
-#     potential_subthemes: Optional[str] = None
-#     unclassified_codes: Optional[List[str]] = None
+class ValidationOutput(BaseModel):
+    """Step 4 JSON response: Multi-theme validation results"""
+    theme_assessment: ThemeAssessment
+    code_validations: List[CodeValidation]
+    overall_validation: OverallValidation
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-# class ThemeAnalysis(BaseModel):
-#     initial_observations: List[str]
-#     suggested_themes: List[SuggestedTheme]
-#     reflection: Reflection
+# === SMART PHASE PROCESSING MODELS ========================================================================================================
+
+class ExtractedTheme(BaseModel):
+    """Individual theme extracted from cluster in Phase 1"""
+    cluster_id: int
+    theme_id: str  # Format: cluster_{cluster_id}_theme_{index}
+    theme_text: str
+    theme_embedding: Optional[npt.NDArray[np.float32]] = None
+    extraction_confidence: Optional[float] = None
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ClusterThemeExtraction(BaseModel):
+    """All themes extracted from a single cluster"""
+    cluster_id: int
+    cluster_data: Dict[str, Any]  # Original cluster data
+    extracted_themes: List[ExtractedTheme]
+    extraction_status: str  # "success", "partial", "failed"
+    extraction_error: Optional[str] = None
+    processing_time: float
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ThemeSimilarity(BaseModel):
+    """Similarity between two themes"""
+    theme_1_id: str
+    theme_2_id: str
+    similarity_score: float
+    distance_metric: str = "cosine"
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class SimilarityBatch(BaseModel):
+    """Batch of clusters formed by theme similarity"""
+    batch_id: int
+    cluster_ids: List[int]
+    representative_themes: List[str]  # Most representative themes for this batch
+    avg_inter_theme_similarity: float  # Average similarity within batch
+    batch_size: int
+    formation_rationale: str
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class SmartPhaseStats(BaseModel):
+    """Performance and timing statistics for smart phase processing"""
+    total_clusters: int
+    phase_1_duration: float  # Theme extraction time
+    phase_2_duration: float  # Batch formation time  
+    phase_3_duration: float  # Sequential processing time
+    total_duration: float
+    
+    themes_extracted: int
+    batches_formed: int
+    avg_themes_per_cluster: float
+    avg_similarity_per_batch: float
+    
+    fallback_triggered: bool = False
+    fallback_reason: Optional[str] = None
+    
+    # Performance comparison with current system
+    current_system_duration: Optional[float] = None
+    performance_improvement: Optional[float] = None  # Percentage improvement
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class SmartPhaseResult(BaseModel):
+    """Complete result from smart phase processing"""
+    codebook: List[Dict[str, str]]
+    cluster_assignments: Dict[int, Any]
+    stats: SmartPhaseStats
+    theme_extractions: List[ClusterThemeExtraction]
+    similarity_batches: List[SimilarityBatch]
+    
+    # Validation results (if enabled)
+    output_validation: Optional[Dict[str, Any]] = None
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+# === CODEDESIGNER MODELS (INSTRUCTOR-COMPATIBLE) ========================================================================================================
+
+# Individual theme item as specified in CLUSTER_SUMMARY_PROMPT
+class ClusterThemeItem(BaseModel):
+    """Individual theme item from CLUSTER_SUMMARY_PROMPT output"""
+    theme_id: int = Field(description="Theme identifier (1, 2, etc.)")
+    theme_statement: str = Field(description="≤25 words, atomic, grounded, operational theme statement")
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+# Wrapper model for the array output from CLUSTER_SUMMARY_PROMPT that's instructor-compatible
+class ClusterSummaryOutput(BaseModel):
+    """Array output from CLUSTER_SUMMARY_PROMPT - instructor compatible"""
+    themes: List[ClusterThemeItem] = Field(description="Array of themes extracted from cluster")
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    @property
+    def root(self):
+        """Backward compatibility property to mimic RootModel behavior"""
+        return self.themes
+
+# Root model for the array output from CANDIDATE_CODE_SELECTION_PROMPT
+class CandidateCodeSelectionOutput(RootModel):
+    """Array output from CANDIDATE_CODE_SELECTION_PROMPT - matches prompt exactly"""
+    root: List[CandidateCode]
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodeDesignerGenerationOutput(BaseModel):
+    """Stage 4b: Code generation decision and details"""
+    decision: str = Field(description="Action: 'create', 'modify', or 'use'")
+    code: str = Field(description="Final code to use")
+    definition: str = Field(description="Code definition")
+    original_code: Optional[str] = Field(None, description="Original code if modifying")
+    reasoning: str = Field(description="Justification for the decision")
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodeDesignerValidationOutput(BaseModel):
+    """Stage 4c: Validation of code assignment"""
+    is_valid: bool = Field(description="Whether the code assignment is valid")
+    final_code: str = Field(description="Validated final code")
+    final_definition: str = Field(description="Validated definition")
+    validation_notes: str = Field(description="Validation reasoning")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Confidence in assignment")
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 

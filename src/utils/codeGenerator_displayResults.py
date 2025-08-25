@@ -11,12 +11,12 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
     step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})  
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
     step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
-    cluster_assignments = getattr(codebook_reasoning, 'cluster_assignments', {})
+    #cluster_assignments = getattr(codebook_reasoning, 'cluster_assignments', {})
     
     #  inputs 
     step1_inputs = getattr(codebook_reasoning, 'step1_inputs', {})
-    step2_inputs = getattr(codebook_reasoning, 'step2_inputs', {})
-    step3_inputs = getattr(codebook_reasoning, 'step3_inputs', {})
+    #step2_inputs = getattr(codebook_reasoning, 'step2_inputs', {})
+    #step3_inputs = getattr(codebook_reasoning, 'step3_inputs', {})
     #step4_inputs = getattr(codebook_reasoning, 'step4_inputs', {})
     
     # Select cluster to display
@@ -61,7 +61,7 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
     
     # 2. CLUSTER IDEAS (from step1_inputs, like promptTester does)
     if step1_inputs and cluster_id in step1_inputs:
-        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')
+        cluster_text = step1_inputs[cluster_id].get('cluster_ideas', '')  # Changed from cluster_text to cluster_ideas
         if cluster_text:
             # Parse cluster_text the same way as promptTester
             ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
@@ -77,34 +77,38 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
     else:
         print("\n💡 CLUSTER IDEAS: [Not available]")
     
-    # 3. CANDIDATE CODES (check step3_inputs first, then step2_inputs)
-    candidate_codes_text = ""
-    if step3_inputs and cluster_id in step3_inputs:
-        candidate_codes_text = step3_inputs[cluster_id].get('candidate_codes', '')
-    elif step2_inputs and cluster_id in step2_inputs:
-        candidate_codes_text = step2_inputs[cluster_id].get('code_text', '')
-    
-    if candidate_codes_text:
-        # Parse the candidate codes text
-        code_lines = [line.strip() for line in candidate_codes_text.split('\n') if line.strip() and line.strip().startswith('-')]
-        print(f"\n🔍  CANDIDATE CODES ({len(code_lines)} found):")
-        for i, line in enumerate(code_lines, 1):
-            # Extract code name and definition from "- Code: Definition" format
-            if ':' in line:
-                code_part = line[2:]  # Remove "- "
-                code_name = code_part.split(':')[0].strip()
-                definition = ':'.join(code_part.split(':')[1:]).strip()
-                print(f"   {i}. {code_name}")
-                if show_detailed_reasoning:
-                    print(f"      Definition: {definition}")
-            else:
-                print(f"   {i}. {line[2:] if line.startswith('-') else line}")
-            
-            if i >= 10 and len(code_lines) > 10:
-                print(f"   ... and {len(code_lines) - 10} more candidate codes")
-                break
+    # 3. CANDIDATE CODES (from step2_analysis)
+    if step2_analysis:
+        # Try to find candidate codes for this cluster
+        candidate_codes = None
+        
+        if cluster_id in step2_analysis:
+            candidate_codes = step2_analysis[cluster_id]
+        elif 0 in step2_analysis:
+            # Fallback: use data from cluster 0 (seems to contain all candidate codes)
+            candidate_codes = step2_analysis[0]
+        
+        if candidate_codes:
+            print(f"\n🔍 CANDIDATE CODES ({len(candidate_codes)} found):")
+            for i, code_data in enumerate(candidate_codes, 1):
+                if isinstance(code_data, dict):
+                    code_name = code_data.get('code', 'Unknown')
+                    definition = code_data.get('definition', 'No definition')
+                    print(f"   {i}. {code_name}")
+                    if show_detailed_reasoning:
+                        print(f"      Definition: {definition}")
+                else:
+                    print(f"   {i}. {str(code_data)}")
+                
+                if i >= 10 and len(candidate_codes) > 10:
+                    print(f"   ... and {len(candidate_codes) - 10} more candidate codes")
+                    break
+        else:
+            # Debug: Show available cluster IDs
+            available_ids = list(step2_analysis.keys())
+            print(f"\n🔍 CANDIDATE CODES: [No candidate codes found. Available IDs: {available_ids[:5]}{'...' if len(available_ids) > 5 else ''}]")
     else:
-        print("\n🔍 CANDIDATE CODES: [Not found in step2 or step3 inputs]")
+        print("\n🔍 CANDIDATE CODES: [step2_analysis is empty]")
     
     # 4. RECOMMENDED CHANGES TO CODEBOOK
     if step3_recommendations and cluster_id in step3_recommendations:
@@ -114,32 +118,21 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
         if 'coding_decisions' in gen_result:
             for i, decision in enumerate(gen_result['coding_decisions'], 1):
                 decision_type = decision.get('decision', 'Unknown')
-                #theme_desc = decision.get('theme_description', 'Unknown theme')
+                theme_number = decision.get('theme_number', i)
+                final_code_label = decision.get('final_code_label', 'Unknown')
+                final_code_description = decision.get('final_code_description', 'Unknown')
+                source_code = decision.get('source_code', None)
                 justification = decision.get('justification', 'No justification provided')
                 
-                #print(f"\nDecision ({i}): {decision_type.upper()}")
+                print(f"\nDecision {theme_number}: {decision_type.upper()}")
+                print(f"Final code: {final_code_label}")
                 
-                # Show action details based on decision type
-                action_details = decision.get('action_details', {})
-                if decision_type == 'use_existing' and action_details.get('codes_to_use'):
-                    codes = ', '.join(action_details['codes_to_use'])
-                    print(f"Existing codes to use: {codes}")
-                elif decision_type == 'modify_existing':
-                    original = action_details.get('codes_to_modify', 'Unknown')
-                    new_name = action_details.get('modified_code_name', 'Unknown')
-                    new_def = action_details.get('modified_code_definition', 'Unknown')
-                    print(f"Code to modify: {original}")
-                    print(f"New name: {new_name}")
-                    if show_detailed_reasoning:
-                        print(f"New definition: {new_def}")
-                elif decision_type == 'create_new':
-                    new_name = action_details.get('new_code_name', 'Unknown')
-                    new_def = action_details.get('new_code_definition', 'Unknown')
-                    print(f"New code: {new_name}")
-                    if show_detailed_reasoning:
-                        print(f"\nDefinition: {new_def}")
+                if show_detailed_reasoning:
+                    print(f"Definition: {final_code_description}")
+                    if source_code:
+                        print(f"Source code: {source_code}")
                 
-                print(f"\nReasoning: {justification}")
+                print(f"Reasoning: {justification}")
         else:
             print("   [No coding decisions found]")
     else:
@@ -163,13 +156,11 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
                 print(f"Reasoning: {rationale}")
                 
                 if show_detailed_reasoning:
-                    evaluation = validation.get('evaluation', {})
-                    if evaluation:
-                        print("   Detailed evaluation:")
-                        print(f"     - Semantic fit: {evaluation.get('semantic_fit', 'Not evaluated')}")
-                        print(f"     - Atomicity: {evaluation.get('atomicity', 'Not evaluated')}")
-                        print(f"     - Parsimony: {evaluation.get('parsimony', 'Not evaluated')}")
-                        print(f"     - Redundancy: {evaluation.get('redundancy', 'Not evaluated')}")
+                    # Show original recommendation
+                    orig_rec = validation.get('original_recommendation', {})
+                    if orig_rec:
+                        print(f"   Original recommendation: {orig_rec.get('code', 'Unknown')}")
+                        print(f"   Original definition: {orig_rec.get('definition', 'Unknown')}")
                 
                 # Show final validated code
                 validated_code = validation.get('validated_code')
@@ -189,32 +180,43 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
     else:
         print("\n✅ VALIDATION: [Not available]")
     
-    # Final Validated Codes (from cluster assignments)
-    if cluster_assignments and cluster_id in cluster_assignments:
-        assignment = cluster_assignments[cluster_id]
-        final_codes = assignment.get('codes', [])
-        
-        if final_codes:
-            print(f"\n📌 Final Validated Codes ({len(final_codes)}):")
-            for i, code_info in enumerate(final_codes, 1):
-                print(f"{i}. {code_info['code']}")
-                #print(f"Definition: {code_info['definition']}")
-                #print(f"Decision type: {code_info['decision']}")
+    # Final Validated Codes (from step4_validations)
+    if step4_validations and cluster_id in step4_validations:
+        val_result = step4_validations[cluster_id]
+        if 'code_validations' in val_result:
+            all_codes = []
+            for validation in val_result['code_validations']:
+                validated_code = validation.get('validated_code')
+                if validated_code:
+                    if isinstance(validated_code, list):
+                        # Multiple codes (SPLIT case)
+                        for code in validated_code:
+                            if isinstance(code, dict):
+                                all_codes.append(code)
+                    elif isinstance(validated_code, dict):
+                        # Single code
+                        all_codes.append(validated_code)
+            
+            if all_codes:
+                print(f"\n📌 Final Validated Codes ({len(all_codes)}):")
+                for i, code_info in enumerate(all_codes, 1):
+                    code_name = code_info.get('code', 'Unknown')
+                    definition = code_info.get('definition', 'No definition')
+                    print(f"   {i}. {code_name}")
+                    if show_detailed_reasoning:
+                        print(f"      Definition: {definition}")
+            else:
+                print("\n📌 Final Validated Codes: [No validated codes found]")
         else:
-            print(f"\n📌 Final Validated Codes: [None - Status: {assignment.get('status', 'unknown')}]")
+            print("\n📌 Final Validated Codes: [No code_validations found]")
     else:
-        print("\n📌 Final Validated Codes: [Not available]")
+        print("\n📌 Final Validated Codes: [Not available in step4_validations]")
     
     print("\n" + "="*80)
 
 
 def display_summary_statistics(codebook_reasoning) -> None:
-    """
-    Display summary statistics for the entire pipeline run
-    
-    Args:
-        codebook_reasoning: The codebook_reasoning object
-    """
+   
     # Access data directly from codebook_reasoning object
     stats = codebook_reasoning.stats
     step3_recommendations = codebook_reasoning.step3_recommendations
@@ -278,14 +280,7 @@ def display_summary_statistics(codebook_reasoning) -> None:
 
 def display_multiple_clusters(codebook_reasoning, cluster_ids: List[int] = None, 
                             max_clusters: int = 5, debug_mode: bool = False) -> None:
-    """
-    Display analysis for multiple clusters
-    
-    Args:
-        codebook_reasoning: The codebook_reasoning object
-        cluster_ids: List of specific cluster IDs to display (None for random selection)
-        max_clusters: Maximum number of clusters to display
-    """
+  
     step3_recommendations = codebook_reasoning.step3_recommendations
     
     if cluster_ids is None:
@@ -302,16 +297,7 @@ def display_multiple_clusters(codebook_reasoning, cluster_ids: List[int] = None,
 
 
 def find_clusters_by_decision(codebook_reasoning, decision_type: str) -> List[int]:
-    """
-    Find all clusters with a specific decision type
-    
-    Args:
-        codebook_reasoning: The codebook_reasoning object
-        decision_type: 'create_new', 'modify_existing', or 'use_existing'
-    
-    Returns:
-        List of cluster IDs that have at least one decision matching the decision type
-    """
+   
     matching_clusters = []
     step3_recommendations = codebook_reasoning.step3_recommendations
     
