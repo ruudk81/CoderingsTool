@@ -718,7 +718,7 @@ if CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
         
 #debug : prompts 
-if CACHE_CODEGENERATOR_REASONING: 
+if False:  # Temporarily disabled to test main pipeline
     from utils import promptTester  # Add this import 
     tester = promptTester.SimplePromptTester(var_lab=var_lab) 
     tester.test_all_prompts()  # or test individual prompts
@@ -736,7 +736,7 @@ DEDUP_BATCH_SIZE = 10              # Codes per similarity batch
 DEDUP_OVERLAP_SIZE = 3             # Overlap between batches
 
 if FORCE_DEDUP and 'results' in locals() and results:
-    print("\n🔍 Starting codebook deduplication...")
+    print("\n[DEDUP] Starting codebook deduplication...")
     
     # Extract codebook from results
     if results and results.cluster_assignments:

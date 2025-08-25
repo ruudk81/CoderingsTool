@@ -85,14 +85,14 @@ class VerboseReporter:
         print(f"\n{emoji} {title.upper()}")
         print("=" * (len(title) + 4))
     
-    def step_start(self, step_name: str, emoji: str = "🔄") -> None:
+    def step_start(self, step_name: str, emoji: str = "[START]") -> None:
         """Start timing a processing step."""
         if not self.enabled:
             return
         print(f"\n{emoji} {step_name}")
         self.start_time = time.time()
     
-    def step_complete(self, message: str = "", emoji: str = "✅") -> None:
+    def step_complete(self, message: str = "", emoji: str = "[DONE]") -> None:
         """Complete a step with timing info."""
         if not self.enabled:
             return
@@ -100,7 +100,7 @@ class VerboseReporter:
         timing = f" ({elapsed:.1f}s)" if elapsed > 0.1 else ""
         print(f"{emoji} {message}{timing}")
     
-    def stat_line(self, message: str, bullet: str = "•", indent: int = 0) -> None:
+    def stat_line(self, message: str, bullet: str = "-", indent: int = 0) -> None:
         """Print a statistics line with bullet point and optional indentation."""
         if not self.enabled:
             return
@@ -112,21 +112,21 @@ class VerboseReporter:
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"⚠️  {source_text}{message}")
+        print(f"[WARNING] {source_text}{message}")
     
     def error(self, message: str, source: Optional[str] = None) -> None:
         """Print an error message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"❌ {source_text}{message}")
+        print(f"[ERROR] {source_text}{message}")
     
     def info(self, message: str, source: Optional[str] = None) -> None:
         """Print an info message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"ℹ️  {source_text}{message}")
+        print(f"[INFO] {source_text}{message}")
     
     def debug(self, message: str, source: Optional[str] = None) -> None:
         """Print a debug message."""

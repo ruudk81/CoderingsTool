@@ -509,26 +509,26 @@ EDGE CASES
 ────────────────────────────────────────
 OUTPUT  (Strict JSON, in {language})
 ────────────────────────────────────────
-{
+{{
   "coding_decisions": [
-    {
+    {{
       "theme_number": 1,
       "decision": "use | modify | create",
       "final_code_label": "label of the code to be used/modified/created",
       "final_code_description": "≤25 words, operational definition",
       "source_code": "name of reused/modified existing code, or null if new",
       "justification": "brief explanation of why this decision was made"
-    },
-    {
+    }},
+    {{
       "theme_number": 2,
       "decision": "...",
       "final_code_label": "...",
       "final_code_description": "...",
       "source_code": "...",
       "justification": "..."
-    }
+    }}
   ]
-}
+}}
 
 ────────────────────────────────────────
 GOOD DEFINITION EXAMPLES
@@ -627,36 +627,36 @@ Edge cases:
 ────────────────────────────────────────
 OUTPUT  (strict JSON, in {language})
 ────────────────────────────────────────
-{
+{{
   "code_validations": [
-    {
+    {{
       "theme_number": 1,
-      "original_recommendation": {
+      "original_recommendation": {{
         "code": "label originally proposed",
         "definition": "definition originally proposed"
-      },
+      }},
       "decision": "APPROVE | REJECT",
       "decision_rationale": "short explanation of decision; if REJECT, specify substitution or refinement and how",
-      "validated_code": {
+      "validated_code": {{
         "code": "final validated label (atomic, rule-compliant, ≤10 words)",
         "definition": "final validated definition (≤25 words, operational, grounded)"
-      }
-    },
-    {
+      }}
+    }},
+    {{
       "theme_number": 2,
-      "original_recommendation": {
+      "original_recommendation": {{
         "code": "...",
         "definition": "..."
-      },
+      }},
       "decision": "...",
       "decision_rationale": "...",
-      "validated_code": {
+      "validated_code": {{
         "code": "...",
         "definition": "..."
-      }
-    }
+      }}
+    }}
   ]
-}
+}}
 
 ────────────────────────────────────────
 CRITICAL FORMAT REQUIREMENTS

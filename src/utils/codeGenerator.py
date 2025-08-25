@@ -701,12 +701,13 @@ class InductiveCodeGenerator:
         
         try:
             # Use List[ClusterThemeItem] directly since your prompt returns an array
-            response = await self.async_client.chat.completions.create(
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=List[ClusterThemeItem],
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: THEME_EXTRACT"
             )
             
             # Handle List[ClusterThemeItem] response from CLUSTER_SUMMARY_PROMPT
@@ -1659,12 +1660,13 @@ class InductiveCodeGenerator:
         
         try:
             # Use List[CandidateCode] directly since your prompt returns an array
-            response = await self.async_client.chat.completions.create(
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=List[CandidateCode],
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: OLD_CANDIDATE_SELECT"
             )
             
             # Capture step2_analysis - the actual candidate codes used in pipeline
@@ -1739,12 +1741,13 @@ class InductiveCodeGenerator:
             )
         
         try:
-            response = await self.async_client.chat.completions.create(
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=SimplifiedCodeRecommendation,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: OLD_CODE_GEN"
             )
             
             # Capture code generation results for transparency
@@ -1820,12 +1823,13 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Current codebook codes: {len(current_codes)}")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Has code_generation: {code_generation is not None}")
             
-            response = await self.async_client.chat.completions.create(
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=ValidationResult,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: STEP4"
             )
             
             # Detailed response logging
@@ -2081,7 +2085,19 @@ class InductiveCodeGenerator:
                 self._processing_stats['clusters_processed'] = len(all_results)
                 
             except Exception as e:
-                self.verbose_reporter.error(f"Critical failure in batch processing: {e}")
+                # Enhanced error logging to identify exact failure point
+                error_msg = str(e).strip()
+                self.verbose_reporter.error(f"Critical failure in batch processing: {repr(error_msg)}")
+                self.verbose_reporter.error(f"Error type: {type(e).__name__}")
+                self.verbose_reporter.error(f"Error length: {len(error_msg)}")
+                
+                # Print the full stack trace to understand where exactly this is failing
+                import traceback
+                self.verbose_reporter.error(f"Full traceback:")
+                for line in traceback.format_exc().split('\n'):
+                    if line.strip():
+                        self.verbose_reporter.error(f"  {line}")
+                        
                 all_results = []
                 
             self._processing_stats['stage_times']['batch_processing'] = time.time() - stage_start
@@ -2468,41 +2484,15 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
-            # Pure API call - maximum speed with raw response capture
-            try:
-                # Make raw API call first to capture the response
-                raw_response = await self.async_client.chat.completions.create(
-                    model=self.config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    seed=self.config.seed
-                )
-                
-                # Log raw response details
-                if raw_response and raw_response.choices:
-                    raw_content = raw_response.choices[0].message.content
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Raw response length: {len(raw_content) if raw_content else 0}")
-                    if not raw_content or raw_content.strip() == '':
-                        self.verbose_reporter.error(f"C{cluster_id}: STEP1 - RAW RESPONSE IS EMPTY OR WHITESPACE")
-                        return []
-                    if raw_content.strip() == '\n':
-                        self.verbose_reporter.error(f"C{cluster_id}: STEP1 - RAW RESPONSE IS JUST NEWLINE")
-                        return []
-                else:
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - No choices in raw response")
-                    return []
-                    
-                # Now make the structured call with instructor
-                response = await self.async_client.chat.completions.create(
-                    model=self.config.model,
-                    response_model=List[CandidateCode],
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    seed=self.config.seed
-                )
-            except Exception as api_error:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Raw API call failed: {api_error}")
-                raise
+            # API call with enhanced error handling and response cleaning
+            response = await self._make_instructor_call_with_cleanup(
+                model=self.config.model,
+                response_model=List[CandidateCode],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.config.temperature,
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: STEP1"
+            )
             
             # Detailed response logging
             if response is None:
@@ -2562,13 +2552,14 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
-            # Pure API call - maximum speed
-            response = await self.async_client.chat.completions.create(
+            # API call with enhanced error handling and response cleaning
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=SimplifiedCodeRecommendation,  # Use simplified model for flattened JSON
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: STEP2"
             )
             
             # Detailed response logging
@@ -2607,6 +2598,111 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP2 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return None
     
+    async def _make_instructor_call_with_cleanup(self, **kwargs):
+        """Make instructor API call with automatic response cleanup on parsing failures"""
+        context_info = kwargs.pop('context_info', 'API_CALL')
+        
+        try:
+            # First attempt with instructor
+            response = await self.async_client.chat.completions.create(**kwargs)
+            return response
+        except Exception as instructor_error:
+            # Check if this looks like a JSON/whitespace parsing issue
+            error_str = str(instructor_error).strip()
+            
+            # Look for common patterns in instructor parsing errors
+            is_parsing_error = (
+                '\n' in error_str or 
+                'json' in error_str.lower() or
+                'coding_decisions' in error_str or
+                'validation' in error_str or
+                'parse' in error_str.lower() or
+                'decode' in error_str.lower()
+            )
+            
+            if is_parsing_error:
+                self.verbose_reporter.stat_line(f"{context_info} - Detected parsing error, attempting response cleanup")
+                self.verbose_reporter.stat_line(f"{context_info} - Error: {repr(error_str[:150])}")
+                
+                try:
+                    # Make raw API call to get response content
+                    raw_kwargs = dict(kwargs)
+                    raw_kwargs.pop('response_model', None)  # Remove instructor's response_model
+                    
+                    raw_response = await self.async_client.chat.completions.create(**raw_kwargs)
+                    
+                    if raw_response and raw_response.choices and raw_response.choices[0].message.content:
+                        raw_content = raw_response.choices[0].message.content
+                        cleaned_content = raw_content.strip()
+                        
+                        if cleaned_content != raw_content:
+                            self.verbose_reporter.stat_line(f"{context_info} - Found whitespace issue, cleaned response")
+                            self.verbose_reporter.stat_line(f"{context_info} - Original: {repr(raw_content[:50])}...")
+                            self.verbose_reporter.stat_line(f"{context_info} - Cleaned: {repr(cleaned_content[:50])}...")
+                            
+                            # Try manual JSON parsing to validate the cleaned content
+                            try:
+                                import json
+                                parsed_json = json.loads(cleaned_content)
+                                self.verbose_reporter.stat_line(f"{context_info} - Cleaned content is valid JSON, creating response object")
+                                
+                                # Use instructor to parse the valid JSON content
+                                # Create a synthetic message with cleaned content
+                                from openai.types.chat import ChatCompletion, ChatCompletionMessage, Choice
+                                
+                                # Create new response with cleaned content
+                                clean_message = ChatCompletionMessage(
+                                    role="assistant",
+                                    content=cleaned_content
+                                )
+                                clean_choice = Choice(
+                                    index=0,
+                                    message=clean_message,
+                                    finish_reason=raw_response.choices[0].finish_reason
+                                )
+                                clean_response = ChatCompletion(
+                                    id=raw_response.id,
+                                    choices=[clean_choice],
+                                    created=raw_response.created,
+                                    model=raw_response.model,
+                                    object=raw_response.object
+                                )
+                                
+                                # Now use instructor to parse this cleaned response
+                                response_model = kwargs.get('response_model')
+                                if response_model:
+                                    # Convert the JSON to the expected Pydantic model
+                                    if hasattr(response_model, '__origin__') and response_model.__origin__ is list:
+                                        # Handle List[Model] types
+                                        item_model = response_model.__args__[0]
+                                        if isinstance(parsed_json, list):
+                                            return [item_model(**item) for item in parsed_json]
+                                        else:
+                                            return [item_model(**parsed_json)]
+                                    else:
+                                        # Handle single model types
+                                        return response_model(**parsed_json)
+                                
+                                return parsed_json
+                            except json.JSONDecodeError as json_error:
+                                self.verbose_reporter.error(f"{context_info} - Cleaned content is still not valid JSON: {json_error}")
+                                raise instructor_error
+                            except Exception as parsing_error:
+                                self.verbose_reporter.error(f"{context_info} - Failed to create response object: {parsing_error}")
+                                raise instructor_error
+                        else:
+                            self.verbose_reporter.stat_line(f"{context_info} - No whitespace found, original error not whitespace-related")
+                            raise instructor_error
+                    else:
+                        self.verbose_reporter.error(f"{context_info} - No content in raw response")
+                        raise instructor_error
+                except Exception as cleanup_error:
+                    self.verbose_reporter.error(f"{context_info} - Response cleanup failed: {cleanup_error}")
+                    raise instructor_error
+            else:
+                # Not a parsing error, re-raise original
+                raise instructor_error
+
     async def _validate_code_unlimited(self, cluster_id: int, cluster_data: Dict, theme_data, 
                                        code_generation, codebook_snapshot: List[Dict]):
         """Validate code with unlimited concurrency - pure API call"""
@@ -2639,13 +2735,14 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Codebook codes: {len(codebook_snapshot)}")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
-            # Pure API call - maximum speed
-            response = await self.async_client.chat.completions.create(
+            # API call with enhanced error handling and response cleaning
+            response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
                 response_model=ValidationResult,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                seed=self.config.seed
+                seed=self.config.seed,
+                context_info=f"C{cluster_id}: STEP3"
             )
             
             # Detailed response logging
