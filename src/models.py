@@ -63,7 +63,6 @@ class CodeDefinition(BaseModel):
 class Codebook(BaseModel):
     code: str
     definition: str    
-    topic: Optional[str] = None   
     theme: Optional[str] = None
     theme_description: Optional[str] = None   
 
@@ -79,17 +78,17 @@ class CodebookModel(BaseModel):
     source_variable: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-class ThemeEnrichedCodebookEntry(CodebookEntry):
-    theme: Optional[str] = None
-    theme_description: Optional[str] = None
-    theme_cluster_id: Optional[int] = None
-    is_miscellaneous: Optional[bool] = False
+# class ThemeEnrichedCodebookEntry(CodebookEntry):
+#     theme: Optional[str] = None
+#     theme_description: Optional[str] = None
+#     theme_cluster_id: Optional[int] = None
+#     is_miscellaneous: Optional[bool] = False
 
-class ThemeEnrichedCodebookModel(CodebookModel):
-    codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
-    themes_summary: Optional[List[Dict[str, Any]]] = None
-    code_to_theme_mapping: Optional[Dict[str, str]] = None
-    theme_methodology: Optional[str] = None
+# class ThemeEnrichedCodebookModel(CodebookModel):
+#     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
+#     themes_summary: Optional[List[Dict[str, Any]]] = None
+#     code_to_theme_mapping: Optional[Dict[str, str]] = None
+#     theme_methodology: Optional[str] = None
 
     
 # === CODE GENERATOR REASONING RESULTS MODEL ========================================================================================================
