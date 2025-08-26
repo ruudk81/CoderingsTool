@@ -399,7 +399,7 @@ class SimilarityEngine:
                 f"avg_sim={avg_sim:.3f}, max_sim={max_sim:.3f}"
             )
         
-        # DEBUG: Final batch assignments summary
+        # VERBOSE: Final batch assignments summary
         self.verbose_reporter.stat_line("\n=== FINAL BATCH ASSIGNMENTS ===")
         for batch_idx, batch_cluster_ids in enumerate(batches):
             theme_labels = []
@@ -409,7 +409,9 @@ class SimilarityEngine:
             else:
                 theme_labels = [f"C{cid}" for cid in batch_cluster_ids]
             
-            self.verbose_reporter.stat_line(f"Batch {batch_idx + 1}: {', '.join(theme_labels)}")
+            #self.verbose_reporter.stat_line(f"Batch {batch_idx + 1}: {', '.join(theme_labels)}")
+            self.verbose_reporter.stat_line(f"Batch {batch_idx + 1}:\n" + "\n".join(theme_labels))
+            
         
         # Final reporting
         self._report_batch_quality(batches, similarity_matrix, cluster_ids)
@@ -1792,9 +1794,9 @@ class InductiveCodeGenerator:
         
         try:
             # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Starting validation and codebook update API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Has code_generation: {code_generation is not None}")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Starting validation and codebook update API call")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Prompt length: {len(prompt)} chars")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Has code_generation: {code_generation is not None}")
             
             response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
@@ -2452,7 +2454,8 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step2", **params)
             
-            # Detailed logging for API call debugging
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
@@ -2467,16 +2470,17 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP1"
             )
             
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
-                return []
-            elif len(response) == 0:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
+            # if response is None:
+            #     self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
+            #     return []
+            # elif len(response) == 0:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
+            # else:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
             
-            # Capture step2_analysis - the actual candidate codes used in pipeline
+            # # Capture step2_analysis - the actual candidate codes used in pipeline
             if response:
                 self.step2_analysis[cluster_id] = [
                     {"code": code.code, "definition": code.definition} 
@@ -2486,7 +2490,7 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
+            # Error logging with context
             error_msg = str(e).strip()
             self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Candidate selection failed")
             self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error type: {type(e).__name__}")
@@ -2520,7 +2524,8 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step3", **params)
             
-            # Detailed logging for API call debugging
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
@@ -2535,14 +2540,15 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP2"
             )
             
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
-                return None
-            elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
+            # if response is None:
+            #     self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
+            #     return None
+            # elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
+            # else:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
             
             # Capture step3_recommendations (code generation results)
             if response and hasattr(response, 'coding_decisions'):
@@ -2562,7 +2568,7 @@ class InductiveCodeGenerator:
             return response
             
         except Exception as e:
-            # Enhanced error logging with context
+            # Error logging with context
             error_msg = str(e).strip()
             self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Code generation failed")
             self.verbose_reporter.error(f"C{cluster_id}: STEP2 - Error type: {type(e).__name__}")
@@ -2709,7 +2715,8 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step4", **params)
             
-            # Detailed logging for API call debugging
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
             # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
@@ -2725,14 +2732,15 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP3"
             )
             
-            # Detailed response logging
-            if response is None:
-                self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
-                return None
-            elif not hasattr(response, 'code_validations') or not response.code_validations:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
-            else:
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
+            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
+            # if VERBOSE_DETAILED: 
+            # if response is None:
+            #     self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
+            #     return None
+            # elif not hasattr(response, 'code_validations') or not response.code_validations:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
+            # else:
+            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
             
             # Capture step4_validations
             if response and hasattr(response, 'code_validations'):
