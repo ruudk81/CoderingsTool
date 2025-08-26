@@ -2754,6 +2754,63 @@ class InductiveCodeGenerator:
                     ]
                 }
             
+            # Update SharedCodebook based on validation decisions (same logic as rate-limited version)
+            if response and response.code_validations:
+                codebook_updated = False
+                new_version = None
+                
+                # Process each validation decision
+                for i, validation in enumerate(response.code_validations):
+                    # Get corresponding coding decision
+                    if (hasattr(code_generation, 'coding_decisions') and 
+                        code_generation.coding_decisions and 
+                        i < len(code_generation.coding_decisions)):
+                        coding_decision = code_generation.coding_decisions[i]
+                        
+                        if validation.decision == "APPROVE" and validation.validated_code:
+                            if coding_decision.decision == "create":
+                                added, new_version = await self.shared_codebook.add_code_if_new(
+                                    validation.validated_code.code, validation.validated_code.definition
+                                )
+                                if added:
+                                    self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
+                                    codebook_updated = True
+                                    self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE - Added new code '{validation.validated_code.code}'")
+                            elif coding_decision.decision == "modify" and coding_decision.source_code:
+                                replaced, new_version = await self.shared_codebook.replace_code(
+                                    coding_decision.source_code, 
+                                    validation.validated_code.code, validation.validated_code.definition
+                                )
+                                if replaced:
+                                    self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
+                                    codebook_updated = True
+                                    self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}'")
+                            elif coding_decision.decision == "use":
+                                self.verbose_reporter.stat_line(f"C{cluster_id}: USE - No codebook update needed")
+                        elif validation.decision == "REVISE" and validation.validated_code:
+                            # Validation revised the decision - use the revised code
+                            added, new_version = await self.shared_codebook.add_code_if_new(
+                                validation.validated_code.code, validation.validated_code.definition
+                            )
+                            if added:
+                                self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
+                                codebook_updated = True
+                                self.verbose_reporter.stat_line(f"C{cluster_id}: REVISE - Added revised code '{validation.validated_code.code}'")
+                        elif validation.decision == "REJECT":
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: REJECT - No codebook update")
+                        else:
+                            self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}'")
+                
+                # Generate embeddings for new/modified codes
+                if codebook_updated and new_version is not None:
+                    # Get updated codebook
+                    codebook_snapshot, _ = await self.shared_codebook.get_current_snapshot()
+                    if codebook_snapshot:
+                        # Generate embeddings for the updated codebook
+                        embeddings = await self.similarity_engine.embed_codes(codebook_snapshot)
+                        await self.shared_codebook.cache_embeddings(new_version, embeddings)
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
+            
             return response
             
         except Exception as e:
