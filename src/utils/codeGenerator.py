@@ -1593,68 +1593,7 @@ class InductiveCodeGenerator:
         #     self.verbose_reporter.stat_line(f"Similarities: {similarity_values}")
         return nearest_codes
 
-    async def _select_candidate_codes(self, cluster_id: int, cluster_data: Dict, theme_data, 
-                                    current_codes: List[Dict[str, str]]) -> Optional[List[CandidateCode]]:
-        """Step 4a: Select candidate codes from current codebook using cosine similarity"""
-        
-        # Find 5 nearest codes by cosine similarity
-        nearest_codes = await self._find_nearest_codes_by_theme(
-            cluster_id,  # Use explicit cluster_id parameter
-            theme_data,
-            current_codes,
-            k=5
-        )
-        
-        # Format nearest codes for prompt
-        if nearest_codes:
-            codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
-                                   for code in nearest_codes])
-        else:
-            # Fallback if no codes found - use first few codes
-            codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
-                                   for code in current_codes[:5]])
-        
-        ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-        
-        cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}"
-        
-        # Prepare exact parameters for prompt
-        params = {
-            "survey_question": self.var_lab,
-            "language": DEFAULT_LANGUAGE,
-            "cluster_summary": cluster_summary,
-            "code_text": codes_text
-        }
-        
-        prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(**params)
-        
-        # Capture exact parameters used in prompt construction
-        self._capture_prompt_params(cluster_id, "step2", **params)
-        
-        try:
-            # Use List[CandidateCode] directly since your prompt returns an array
-            response = await self._make_instructor_call_with_cleanup(
-                model=self.config.model,
-                response_model=List[CandidateCode],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.config.seed,
-                context_info=f"C{cluster_id}: OLD_CANDIDATE_SELECT"
-            )
-            
-            # Capture step2_analysis - the actual candidate codes used in pipeline
-            if response:
-                self.step2_analysis[cluster_id] = [
-                    {"code": code.code, "definition": code.definition} 
-                    for code in response
-                ]
-            
-            # Return the List[CandidateCode] directly
-            return response
-            
-        except Exception as e:
-            self.verbose_reporter.error(f"Candidate selection failed: {e}")
-            return None
+    # Removed rate-limited _select_candidate_codes - using unlimited version only
     
     async def _generate_code(self, cluster_id: int, cluster_data: Dict, theme_data,
                            candidate_selection: Optional[List[CandidateCode]]) -> Optional[SimplifiedCodeRecommendation]:
