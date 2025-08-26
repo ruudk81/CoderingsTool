@@ -384,7 +384,7 @@ class SimilarityEngine:
             )
         
         # DEBUG: Final batch assignments summary
-        self.verbose_reporter.stat_line(f"\n=== FINAL BATCH ASSIGNMENTS ===")
+        self.verbose_reporter.stat_line("\n=== FINAL BATCH ASSIGNMENTS ===")
         for batch_idx, batch_cluster_ids in enumerate(batches):
             theme_labels = []
             if themes:
@@ -407,7 +407,7 @@ class SimilarityEngine:
         
         self.verbose_reporter.stat_line(f"Analyzing similarity distribution for {n_clusters} themes:")
         
-        thresholds = [0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
+        thresholds = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
         for threshold in thresholds:
             count = np.sum(similarities < threshold)
             percentage = count / len(similarities) * 100 if len(similarities) > 0 else 0
@@ -2338,7 +2338,7 @@ class InductiveCodeGenerator:
             # Step 3: Validation - pure unlimited call
             step3_start = time.time()
             validation = await self._validate_code_unlimited(
-                cluster_id, cluster_data, theme_data, code_generation, codebook_snapshot
+                cluster_id, cluster_data, theme_data, code_generation, candidate_selection
             )
             step3_duration = time.time() - step3_start
             
@@ -2663,13 +2663,20 @@ class InductiveCodeGenerator:
                 raise instructor_error
 
     async def _validate_code_unlimited(self, cluster_id: int, cluster_data: Dict, theme_data, 
-                                       code_generation, codebook_snapshot: List[Dict]):
+                                       code_generation, candidate_selection):
         """Validate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
             ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-            validation_codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
-                                              for code in codebook_snapshot[:15]])
+            
+            # Use candidate_selection instead of full codebook (consistent with rate-limited version)
+            if candidate_selection and len(candidate_selection) > 0:
+                validation_codes_text = "\n".join([
+                    f"Code: {code.code}\nDefinition: {code.definition}\n" 
+                    for code in candidate_selection
+                ])
+            else:
+                validation_codes_text = "No existing codes available."
             
             cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}"
             step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
