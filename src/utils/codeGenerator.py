@@ -521,6 +521,7 @@ class InductiveCodeGenerator:
         starter_codes: List[Dict[str, str]], 
         var_lab: str,
         verbose: bool = False,
+        verbose_detailed: bool = False,
         prompt_printer = None,
         config = None,
         **kwargs  # For backward compatibility
@@ -529,6 +530,7 @@ class InductiveCodeGenerator:
         self.starter_codes = starter_codes
         self.var_lab = var_lab
         self.verbose = verbose
+        self.verbose_detailed = verbose_detailed
         self.prompt_printer = prompt_printer
         self.config = config or DEFAULT_CODEDESIGNER_CONFIG
         
@@ -1007,27 +1009,7 @@ class InductiveCodeGenerator:
         # Apply stagger delay for smooth distribution
         if stagger_delay > 0:
             await asyncio.sleep(stagger_delay)
-        
-        # Calculate optimal strategy for this sub-batch
-        avg_tokens = (
-            self.code_gen_token_measurements.get('candidate_selection', 1200) +
-            self.code_gen_token_measurements.get('code_generation', 1000) +
-            self.code_gen_token_measurements.get('validation', 900)
-        )
-        
-        strategy = self.workload_analyzer.calculate_optimal_strategy(
-            total_batches=len(sub_batch),
-            avg_tokens_per_batch=avg_tokens,
-            sub_batches_per_batch=1
-        )
-        
-        # Create throttler for this sub-batch
-        throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
-        api_client = CodeDesignerAPIClient(
-            throttler, self.global_monitor, self.config, self.encoding,
-            self.model_config, self.verbose_reporter, self.async_client
-        )
-        
+      
         # Process all clusters in sub-batch with unlimited concurrency
         # Get current codebook snapshot for consistent processing
         codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
@@ -1050,108 +1032,6 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"Cluster processing failed: {e}")
         
         return results
-    
-    async def _process_single_cluster_with_monitoring(self, cluster_id: int, 
-                                                    clusters: Dict, themes: Dict,
-                                                    api_client=None) -> Optional[Dict[str, Any]]:
-        """3-step pipeline for single cluster with accurate token tracking"""
-        
-        if cluster_id not in themes or cluster_id not in clusters:
-            return None
-        
-        cluster_data = clusters[cluster_id]
-        theme_data = themes[cluster_id]
-        
-        try:
-            # Step 4a: Candidate Selection with token tracking
-            current_codes, version = await self.shared_codebook.get_current_snapshot()
-            
-            # Build actual prompt for token tracking
-            codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
-                                   for code in current_codes[:20]])
-            ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-            candidate_prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(
-                survey_question=self.var_lab,
-                language=DEFAULT_LANGUAGE,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}",
-                code_text=codes_text
-            )
-            
-            # Aggressive parallelism - direct unlimited call
-            candidate_selection = await self._select_candidate_codes(
-                cluster_id, cluster_data, theme_data, current_codes[:20]
-            )
-            
-            # Check pipeline steps
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: CandSel={candidate_selection is not None}, Codes={len(candidate_selection) if candidate_selection else 0}")
-            
-            # Step 4b: Code Generation with token tracking
-            if candidate_selection is not None:  # Allow empty lists - should create new codes
-                if len(candidate_selection) > 0:
-                    candidate_codes_text = "\n".join([
-                        f"Code: {code.code}\nDefinition: {code.definition}\n" 
-                        for code in candidate_selection
-                    ])
-                else:
-                    # Empty candidate list - prompt should create new codes
-                    candidate_codes_text = "No existing codes available."
-                    
-                code_gen_prompt = CODE_GENERATION_PROMPT.format( #TODO not used
-                    language=DEFAULT_LANGUAGE,
-                    survey_question=self.var_lab,
-                    cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}",
-                    candidate_codes=candidate_codes_text
-                )
-                
-                # Aggressive parallelism - direct unlimited call
-                code_generation = await self._generate_code(cluster_id, cluster_data, theme_data, candidate_selection)
-                
-                # # Debug: Check if code generation succeeded
-                # if code_generation:
-                #     # self.verbose_reporter.stat_line(f"C{cluster_id}: CodeGen success")
-                #     # Show prompt 2 decisions
-                #     if code_generation.coding_decisions:
-                #         for i, decision in enumerate(code_generation.coding_decisions):
-                #             self.verbose_reporter.stat_line(f"C{cluster_id}: Decision{i+1}={decision.decision}")
-                # else:
-                #     # self.verbose_reporter.stat_line(f"C{cluster_id}: CodeGen failed")
-                #     pass
-            else:
-                # self.verbose_reporter.stat_line(f"C{cluster_id}: CandSel returned None - API error")
-                code_generation = None
-            
-            # Step 4c: Validation & SharedCodebook Update with token tracking
-            if code_generation:
-                validation_task = self._validate_and_update_codebook(cluster_id, cluster_data, theme_data, code_generation, candidate_selection)
-                validation = await api_client.make_request(validation_task, f"validation_{cluster_id}")
-            else:
-                validation = None
-            
-            # Extract final code/definition from complex validation structure  
-            final_code = None
-            final_definition = None
-            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
-                # Get the first validated code (for now - could aggregate multiple)
-                first_validation = validation.code_validations[0]
-                if first_validation.validated_code:
-                    final_code = first_validation.validated_code.code
-                    final_definition = first_validation.validated_code.definition
-            
-            return {
-                'cluster_id': cluster_id,
-                'theme_name': self._get_theme_statement(theme_data),
-                'theme_description': self._get_theme_description(theme_data),
-                'ideas_count': len(cluster_data['ideas']),
-                'candidate_selection': candidate_selection,
-                'code_generation': code_generation,
-                'validation': validation,
-                'final_code': final_code,
-                'final_definition': final_definition
-            }
-            
-        except Exception as e:
-            self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
-            return None
     
     async def _process_single_cluster_pipeline(self, cluster_id: int, 
                                              clusters: Dict, themes: Dict) -> Optional[Dict[str, Any]]:
@@ -1295,18 +1175,19 @@ class InductiveCodeGenerator:
         # Get top k indices
         top_k_indices = np.argsort(similarities)[-k:][::-1]
         
-        # Return the nearest codes
+        # Filter by similarity threshold and return the nearest codes
         nearest_codes = []
+        min_similarity_threshold = 0.3  # Only consider codes with at least 30% similarity
         for idx in top_k_indices:
-            if idx < len(current_codes):
+            if idx < len(current_codes) and similarities[idx] >= min_similarity_threshold:
                 nearest_codes.append(current_codes[idx])
         
-        # Debug : similarity score nearest codes to theme embeddingg
-        # if nearest_codes:
-        #     # Convert numpy similarities to properly rounded list
-        #     similarity_values = [round(float(similarities[idx]), 3) for idx in top_k_indices]
-        #     self.verbose_reporter.stat_line(f"Found {len(nearest_codes)} nearest codes for theme '{self._get_theme_statement(theme_data)}'")
-        #     self.verbose_reporter.stat_line(f"Similarities: {similarity_values}")
+        # Debug : similarity score nearest codes to theme embedding
+        if nearest_codes:
+            # Convert numpy similarities to properly rounded list
+            similarity_values = [round(float(similarities[idx]), 3) for idx in top_k_indices]
+            codes_with_scores = [f"{code['code']} ({score})" for code, score in zip(nearest_codes, similarity_values)]
+            self.verbose_reporter.stat_line(f"Found {len(nearest_codes)} nearest codes with similarities: {codes_with_scores}")
         return nearest_codes
 
     # Removed rate-limited _select_candidate_codes - using unlimited version only
@@ -1421,7 +1302,7 @@ class InductiveCodeGenerator:
                 
                 # Print the full stack trace to understand where exactly this is failing
                 import traceback
-                self.verbose_reporter.error(f"Full traceback:")
+                self.verbose_reporter.error("Full traceback:")
                 for line in traceback.format_exc().split('\n'):
                     if line.strip():
                         self.verbose_reporter.error(f"  {line}")
@@ -1606,9 +1487,10 @@ class InductiveCodeGenerator:
         theme_data = themes[cluster_id]
         
         try:
-            # Step 1: Candidate selection using snapshot (no locks needed!)
-            nearest_codes = self._find_nearest_in_snapshot(
-                cluster_id, theme_data, codebook_snapshot
+            # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
+            current_codes, _ = await self.shared_codebook.get_current_snapshot()
+            nearest_codes = await self._find_nearest_codes_by_theme(
+                cluster_id, theme_data, current_codes, k=5
             )
             
             # Step 1: Candidate selection - pure unlimited call
@@ -1685,25 +1567,6 @@ class InductiveCodeGenerator:
         if all_new_codes:
             await self.shared_codebook.batch_update(all_new_codes, base_version)
     
-    def _find_nearest_in_snapshot(self, cluster_id: int, theme_data, codebook_snapshot: List[Dict]) -> List[Dict]:
-        """Find nearest codes using codebook snapshot (no locking needed)"""
-        if not codebook_snapshot or not hasattr(self, '_theme_embeddings_cache'):
-            return []
-        
-        try:
-            # Use existing similarity calculation logic but with snapshot
-            theme_embedding = self._theme_embeddings_cache.get(cluster_id)
-            if theme_embedding is None:
-                return []
-            
-            # Simple nearest neighbor search in snapshot
-            similarities = []
-            for code in codebook_snapshot[:20]:  # Limit to top 20 like original
-                similarities.append(code)
-            
-            return similarities[:5]  # Return top 5
-        except Exception:
-            return []
     
     async def _select_candidate_codes(self, cluster_id: int, cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
         """Select candidate codes with unlimited concurrency - pure API call"""
@@ -1728,11 +1591,10 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step2", **params)
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
+            if self.verbose_detailed: 
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
@@ -1744,15 +1606,14 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP1"
             )
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # if response is None:
-            #     self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
-            #     return []
-            # elif len(response) == 0:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
-            # else:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
+            if self.verbose_detailed: 
+                if response is None:
+                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
+                    return []
+                elif len(response) == 0:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
+                else:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
             
             # # Capture step2_analysis - the actual candidate codes used in pipeline
             if response:
@@ -1798,11 +1659,10 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step3", **params)
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
+            if self.verbose_detailed: 
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
@@ -1814,15 +1674,14 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP2"
             )
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # if response is None:
-            #     self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
-            #     return None
-            # elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
-            # else:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
+            if self.verbose_detailed: 
+                if response is None:
+                    self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
+                    return None
+                elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
+                else:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
             
             # Capture step3_recommendations (code generation results)
             if response and hasattr(response, 'coding_decisions'):
@@ -1899,27 +1758,7 @@ class InductiveCodeGenerator:
                                 parsed_json = json.loads(cleaned_content)
                                 self.verbose_reporter.stat_line(f"{context_info} - Cleaned content is valid JSON, creating response object")
                                 
-                                # Use instructor to parse the valid JSON content
-                                # Create a synthetic message with cleaned content
-                                from openai.types.chat import ChatCompletion, ChatCompletionMessage, Choice
-                                
-                                # Create new response with cleaned content
-                                clean_message = ChatCompletionMessage(
-                                    role="assistant",
-                                    content=cleaned_content
-                                )
-                                clean_choice = Choice(
-                                    index=0,
-                                    message=clean_message,
-                                    finish_reason=raw_response.choices[0].finish_reason
-                                )
-                                clean_response = ChatCompletion(
-                                    id=raw_response.id,
-                                    choices=[clean_choice],
-                                    created=raw_response.created,
-                                    model=raw_response.model,
-                                    object=raw_response.object
-                                )
+                                # Parse the valid JSON content directly
                                 
                                 # Now use instructor to parse this cleaned response
                                 response_model = kwargs.get('response_model')
@@ -1989,12 +1828,11 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step4", **params)
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
-            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
+            if self.verbose_detailed: 
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
@@ -2006,15 +1844,14 @@ class InductiveCodeGenerator:
                 context_info=f"C{cluster_id}: STEP3"
             )
             
-            # TODO: we need to add the following boolean parameter: VERBOSE_DETAILED (see line 545 in pipeline.py). And only print the (very) detailed verbose if true   
-            # if VERBOSE_DETAILED: 
-            # if response is None:
-            #     self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
-            #     return None
-            # elif not hasattr(response, 'code_validations') or not response.code_validations:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
-            # else:
-            #     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
+            if self.verbose_detailed: 
+                if response is None:
+                    self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
+                    return None
+                elif not hasattr(response, 'code_validations') or not response.code_validations:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
+                else:
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
             
             # Capture step4_validations
             if response and hasattr(response, 'code_validations'):
@@ -2049,7 +1886,11 @@ class InductiveCodeGenerator:
                         i < len(code_generation.coding_decisions)):
                         coding_decision = code_generation.coding_decisions[i]
                         
-                        if validation.decision == "APPROVE" and validation.validated_code:
+                        # Complete decision matrix: Both APPROVE and REJECT are actionable
+                        if validation.decision in ["APPROVE", "REJECT"] and validation.validated_code:
+                            action_source = "ORIGINAL" if validation.decision == "APPROVE" else "VALIDATED"
+                            
+                            # Handle create decisions (both APPROVE and REJECT add new codes)
                             if coding_decision.decision == "create":
                                 added, new_version = await self.shared_codebook.add_code_if_new(
                                     validation.validated_code.code, validation.validated_code.definition
@@ -2057,7 +1898,9 @@ class InductiveCodeGenerator:
                                 if added:
                                     self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                     codebook_updated = True
-                                    self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE - Added new code '{validation.validated_code.code}'")
+                                    self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE+{validation.decision} - Added new code '{validation.validated_code.code}' ({action_source})")
+                            
+                            # Handle modify decisions (both APPROVE and REJECT replace original)
                             elif coding_decision.decision == "modify" and coding_decision.source_code:
                                 replaced, new_version = await self.shared_codebook.replace_code(
                                     coding_decision.source_code, 
@@ -2066,9 +1909,35 @@ class InductiveCodeGenerator:
                                 if replaced:
                                     self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                     codebook_updated = True
-                                    self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}'")
+                                    self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY+{validation.decision} - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' ({action_source})")
+                            
+                            # Handle use decisions
                             elif coding_decision.decision == "use":
-                                self.verbose_reporter.stat_line(f"C{cluster_id}: USE - No codebook update needed")
+                                if validation.decision == "APPROVE":
+                                    # use + APPROVE = no update (existing code stays as-is)
+                                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE+APPROVE - No codebook update needed")
+                                elif validation.decision == "REJECT":
+                                    # use + REJECT = replace existing with validated_code
+                                    # Need to get the original code name that was being used
+                                    if hasattr(coding_decision, 'source_code') and coding_decision.source_code:
+                                        replaced, new_version = await self.shared_codebook.replace_code(
+                                            coding_decision.source_code,
+                                            validation.validated_code.code, validation.validated_code.definition
+                                        )
+                                        if replaced:
+                                            self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
+                                            codebook_updated = True
+                                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' (VALIDATED)")
+                                    else:
+                                        # Fallback: add as new code if we can't identify original
+                                        added, new_version = await self.shared_codebook.add_code_if_new(
+                                            validation.validated_code.code, validation.validated_code.definition
+                                        )
+                                        if added:
+                                            self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
+                                            codebook_updated = True
+                                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
+                        
                         elif validation.decision == "REVISE" and validation.validated_code:
                             # Validation revised the decision - use the revised code
                             added, new_version = await self.shared_codebook.add_code_if_new(
@@ -2078,10 +1947,9 @@ class InductiveCodeGenerator:
                                 self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                 codebook_updated = True
                                 self.verbose_reporter.stat_line(f"C{cluster_id}: REVISE - Added revised code '{validation.validated_code.code}'")
-                        elif validation.decision == "REJECT":
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: REJECT - No codebook update")
+                        
                         else:
-                            self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}'")
+                            self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}' or missing validated_code")
                 
                 # Generate embeddings for new/modified codes
                 if codebook_updated and new_version is not None:

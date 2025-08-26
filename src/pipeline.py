@@ -618,6 +618,7 @@ else:
             starter_codes=starter_codes, 
             var_lab=var_lab,
             verbose=True,
+            verbose_detailed=VERBOSE_DETAILED,
             prompt_printer=prompt_printer
         )
         results = generator.generate()
@@ -708,111 +709,24 @@ else:
 
 #HIER
 
+cluster_id = 37
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
     if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
-            display_cluster_analysis(codebook_reasoning)
+            display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
     else:
         print("Note: codebook_reasoning not available for display")
 
 #debug : prompts 
-cluster_id = 8
+cluster_id = 9
 if True:  
     from utils import codegenPromptTester    
     codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
-    
-    
     #tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
     #tester.test_all_prompts()   
     #tester.test_prompt_4()
-    
-
-# ===  DEDUPLICATION ========================================================================================================
-"""Deduplicate semantic duplicates from generated codebook"""
-# from utils.codeBookDeduplicator import deduplicate_codebook
-
-# FORCE_DEDUP = True
-# VERBOSE_DEDUP = True
-
-# # Deduplication test settings
-# DEDUP_SIMILARITY_THRESHOLD = 0.85  # Lower = more aggressive merging (0.70-0.95 range)
-# DEDUP_BATCH_SIZE = 10              # Codes per similarity batch
-# DEDUP_OVERLAP_SIZE = 3             # Overlap between batches
-
-# if FORCE_DEDUP and 'results' in locals() and results:
-#     print("\n[DEDUP] Starting codebook deduplication...")
-    
-#     # Extract codebook from results
-#     if results and results.cluster_assignments:
-#         # Extract all final codes from cluster assignments
-#         all_final_codes = []
-#         for cluster_result in results.cluster_assignments.values():
-#             if 'codes' in cluster_result:
-#                 for code_info in cluster_result['codes']:
-#                     if 'code' in code_info and 'definition' in code_info:
-#                         # Check if code already exists to avoid duplicates
-#                         existing_codes = [c.code for c in all_final_codes]
-#                         if code_info['code'] not in existing_codes:
-#                             codebook_entry = models.Codebook(
-#                                 code=code_info['code'],
-#                                 definition=code_info.get('definition', '')
-#                             )
-#                             all_final_codes.append(codebook_entry)
-        
-#         if all_final_codes and len(all_final_codes) >= 5:  # Only deduplicate if we have enough codes
-#             print(f"📊 Original codebook: {len(all_final_codes)} codes")
-            
-#             # Get the embedding manager from codeGenerator_v2 results
-#             # We'll create a fresh one since we need it for deduplication
-#             from utils.codeGenerator import OptimizedEmbeddingManager, SharedCodebook
-            
-#             # Create shared codebook and embedding manager for deduplication
-#             shared_codebook = SharedCodebook([{'code': c.code, 'definition': c.definition} for c in all_final_codes])
-#             embedding_manager = OptimizedEmbeddingManager(shared_codebook, verbose=VERBOSE_DEDUP)
-            
-#             # Create custom config with test settings
-#             from config import DeduplicationConfig
-#             dedup_config = DeduplicationConfig(
-#                 similarity_threshold=DEDUP_SIMILARITY_THRESHOLD,
-#                 batch_size=DEDUP_BATCH_SIZE,
-#                 overlap_size=DEDUP_OVERLAP_SIZE
-#             )
-            
-#             # Run deduplication
-#             import asyncio
-#             deduplicated_codes = asyncio.run(deduplicate_codebook(
-#                 codebook=all_final_codes,
-#                 embedding_manager=embedding_manager,
-#                 var_lab=var_lab,
-#                 config=dedup_config,
-#                 verbose=VERBOSE_DEDUP
-#             ))
-            
-#             print(f"✅ Deduplicated codebook: {len(deduplicated_codes)} codes")
-#             print(f"🎯 Removed {len(all_final_codes) - len(deduplicated_codes)} duplicate codes")
-            
-#             # Update the results with deduplicated codebook
-#             # For now, we'll store it in a variable for the next step
-#             deduplicated_codebook = deduplicated_codes
-#         else:
-#             print(f"⏭️  Skipping deduplication: only {len(all_final_codes)} codes (minimum: 5)")
-#             deduplicated_codebook = all_final_codes
-#     else:
-#         print("⚠️  No codebook found in results - skipping deduplication")
-#         deduplicated_codebook = []
-# else:
-#     print("⏭️  Skipping deduplication (FORCE_DEDUP=False or no results)")
-#     deduplicated_codebook = []
-
-
-# #debug
-# for cb in deduplicated_codebook:
-#     #print(f"- {cb.code}: {cb.definition}")
-#     print(f"- {cb.code}")
-
-# codebook = deduplicated_codebook
-
+ 
 # === STEP 8 ========================================================================================================
 """Identify themes"""
 from utils.themeIdentifier import ThemeIdentifier
@@ -895,16 +809,10 @@ else:
             cluster_id = theme.get('cluster_id', -1)
             is_misc = theme.get('is_miscellaneous', False)
             
-            print(f"\n🟣 Theme: {theme_name}")
-            print(f"  definition {theme_desc}")
-            print(f"   Cluster ID: {cluster_id}")
-            print("   Codes:")
-            
             for code_info in theme['codes']:
                 code_name = code_info['code_name']
                 code_to_theme_mapping[code_name] = theme_name
-                print(f"     - Code {code_info['code_number']}: {code_name}")
-        
+                
         # Enrich codebook entries with theme information
         for entry in codebook_main.codes:
             theme_name = code_to_theme_mapping.get(entry.code)
@@ -921,11 +829,7 @@ else:
                         theme_cluster_id = theme.get('cluster_id', -1)
                         is_misc = theme.get('is_miscellaneous', False)
                         break
-                
-                # Log if theme not found
-                if theme_info is None:
-                    print(f"Warning: Theme '{theme_name}' not found in themes list for code '{entry.code}'")
-            
+
             enriched_entry = models.ThemeEnrichedCodebookEntry(
                 code=entry.code,
                 definition=entry.definition,

@@ -628,6 +628,11 @@ Edge cases:
 OUTPUT  (strict JSON, in {language})
 ────────────────────────────────────────
 {{
+  "theme_assessment": {{
+    "number_of_themes_identified": 1,
+    "theme_separation_valid": true,
+    "theme_separation_reasoning": "brief explanation of theme distinctiveness"
+  }},
   "code_validations": [
     {{
       "theme_number": 1,
@@ -655,7 +660,12 @@ OUTPUT  (strict JSON, in {language})
         "definition": "..."
       }}
     }}
-  ]
+  ],
+  "overall_validation": {{
+    "all_themes_coded": true,
+    "final_code_count": 1,
+    "summary": "brief summary of validation outcome"
+  }}
 }}
 
 ────────────────────────────────────────
