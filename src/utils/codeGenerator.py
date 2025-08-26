@@ -44,9 +44,7 @@ async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 class CodeDesignerAPIClient:
     """API client with intelligent retry logic and precise rate limiting"""
     
-    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, 
-                 config, encoding, model_config: ModelConfig, 
-                 verbose_reporter: VerboseReporter, async_client):
+    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config, encoding, model_config: ModelConfig, verbose_reporter: VerboseReporter, async_client):
         self.throttler = throttler
         self.monitor = monitor
         self.config = config
@@ -328,8 +326,8 @@ class SimilarityEngine:
         self._report_similarity_distribution(similarity_matrix)
         
         # Report hierarchical dissimilarity batching strategy  
-        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching: {' → '.join(map(str, progressive_thresholds))} → all remaining")
+        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching with max 0.85 similarity: {' → '.join(map(str, progressive_thresholds))}")
         
         # Hierarchical Dissimilarity Batching
         # Create batches in order of increasing similarity tolerance
@@ -357,11 +355,29 @@ class SimilarityEngine:
             else:
                 self.verbose_reporter.stat_line(f"Batch {batch_num + 1} (threshold < {threshold}): 0 themes (skipped)")
         
-        # Final batch: all remaining themes (no similarity constraint)
+        # Handle any remaining themes that couldn't be batched within 0.85 similarity constraint
         if unassigned_indices:
-            final_batch_cluster_ids = [cluster_ids[i] for i in unassigned_indices]
-            batches.append(final_batch_cluster_ids)
-            self.verbose_reporter.stat_line(f"Final batch (no constraint): {len(unassigned_indices)} themes")
+            # Try to create final batches still respecting max 0.85 similarity
+            remaining_themes = list(unassigned_indices)
+            while remaining_themes:
+                # Extract one more batch at 0.85 threshold
+                final_batch_indices = self._extract_similarity_constrained_batch(
+                    similarity_matrix, remaining_themes, 0.85
+                )
+                if final_batch_indices:
+                    final_batch_cluster_ids = [cluster_ids[i] for i in final_batch_indices]
+                    batches.append(final_batch_cluster_ids)
+                    # Remove assigned themes
+                    for idx in final_batch_indices:
+                        remaining_themes.remove(idx)
+                    self.verbose_reporter.stat_line(f"Additional batch (max 0.85): {len(final_batch_indices)} themes")
+                else:
+                    # Force remaining themes into singletons if they can't be grouped at 0.85
+                    for idx in remaining_themes:
+                        singleton_cluster_id = [cluster_ids[idx]]
+                        batches.append(singleton_cluster_id)
+                        self.verbose_reporter.stat_line(f"Singleton batch: {cluster_ids[idx]} (couldn't group at 0.85)")
+                    break
         
         # Report final batch statistics
         for batch_idx, batch_cluster_ids in enumerate(batches):
@@ -423,7 +439,7 @@ class SimilarityEngine:
         
         # Check if any high-similarity pairs ended up in same batch
         violations = 0
-        conflict_threshold = 0.8
+        conflict_threshold = 0.9
         
         for batch_idx, batch in enumerate(batches):
             batch_indices = [cluster_ids.index(cid) for cid in batch]
@@ -1770,8 +1786,7 @@ class InductiveCodeGenerator:
                 prompt_type="validation_result",
                 metadata={
                     "cluster_id": cluster_id,
-                    "model": self.config.model,
-                    "current_codes_count": len(current_codes)
+                    "model": self.config.model
                 }
             )
         
@@ -1779,7 +1794,6 @@ class InductiveCodeGenerator:
             # Detailed logging for API call debugging
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Starting validation and codebook update API call")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Current codebook codes: {len(current_codes)}")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP4 - Has code_generation: {code_generation is not None}")
             
             response = await self._make_instructor_call_with_cleanup(
@@ -2439,9 +2453,9 @@ class InductiveCodeGenerator:
             self._capture_prompt_params(cluster_id, "step2", **params)
             
             # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
@@ -2507,9 +2521,9 @@ class InductiveCodeGenerator:
             self._capture_prompt_params(cluster_id, "step3", **params)
             
             # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
@@ -2696,10 +2710,10 @@ class InductiveCodeGenerator:
             self._capture_prompt_params(cluster_id, "step4", **params)
             
             # Detailed logging for API call debugging
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
+            # self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
