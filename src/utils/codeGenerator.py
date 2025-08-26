@@ -328,7 +328,7 @@ class SimilarityEngine:
         self._report_similarity_distribution(similarity_matrix)
         
         # Report hierarchical dissimilarity batching strategy  
-        progressive_thresholds = [0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
+        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
         self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching: {' → '.join(map(str, progressive_thresholds))} → all remaining")
         
         # Hierarchical Dissimilarity Batching
@@ -2698,7 +2698,7 @@ class InductiveCodeGenerator:
             # Detailed logging for API call debugging
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Starting validation API call")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Prompt length: {len(prompt)} chars")
-            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Codebook codes: {len(codebook_snapshot)}")
+            self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
             # API call with enhanced error handling and response cleaning
