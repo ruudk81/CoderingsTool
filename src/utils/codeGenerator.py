@@ -2086,12 +2086,20 @@ class InductiveCodeGenerator:
                 # Generate embeddings for new/modified codes
                 if codebook_updated and new_version is not None:
                     # Get updated codebook
-                    codebook_snapshot, _ = await self.shared_codebook.get_current_snapshot()
-                    if codebook_snapshot:
-                        # Generate embeddings for the updated codebook
-                        embeddings = await self.similarity_engine.embed_codes(codebook_snapshot)
-                        await self.shared_codebook.cache_embeddings(new_version, embeddings)
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
+                    updated_codes, _ = await self.shared_codebook.get_current_snapshot()
+                    
+                    # Check if we need to regenerate embeddings (cache invalidated)
+                    cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
+                    if cached_embeddings is None:
+                        # Generate embeddings for all codes
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
+                        code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
+                        try:
+                            code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
+                            await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
+                        except Exception as e:
+                            self.verbose_reporter.error(f"C{cluster_id}: Failed to generate embeddings for new codes: {e}")
             
             return response
             
