@@ -327,37 +327,41 @@ class SimilarityEngine:
         # Report similarity distribution (keep for comparison)
         self._report_similarity_distribution(similarity_matrix)
         
-        # Report corrected progressive threshold strategy  
-        self.verbose_reporter.stat_line(f"Using maximum similarity constraint: allow similarities < threshold {' → '.join(map(str, [0.8, 0.7, 0.6, 0.5, 0.4]))}")
+        # Report hierarchical dissimilarity batching strategy  
+        progressive_thresholds = [0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
+        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching: {' → '.join(map(str, progressive_thresholds))} → all remaining")
         
-        # Progressive Maximum Similarity System
-        # Try each threshold - keep largest batches where max similarity < threshold
-        progressive_thresholds = [0.8, 0.7, 0.6, 0.5, 0.4]
+        # Hierarchical Dissimilarity Batching
+        # Create batches in order of increasing similarity tolerance
+        batches = []
+        unassigned_indices = set(range(len(cluster_ids)))
         
-        best_batches = None
-        best_batch_count = float('inf')
-        
-        for threshold in progressive_thresholds:
-            # Try greedy batching with this maximum similarity constraint
-            batches = self._create_similarity_constrained_batches(similarity_matrix, cluster_ids, threshold)
-            
-            batch_count = len(batches)
-            avg_batch_size = len(cluster_ids) / batch_count if batch_count > 0 else 0
-            
-            self.verbose_reporter.stat_line(f"Threshold {threshold}: {batch_count} batches, avg size {avg_batch_size:.1f}")
-            
-            # Keep the result that produces fewer batches (larger batches)
-            if batch_count < best_batch_count:
-                best_batches = batches
-                best_batch_count = batch_count
-                self.verbose_reporter.stat_line(f"  → New best: {batch_count} batches")
-            
-            # If we achieved reasonable batching, we can stop
-            # (Don't go to unnecessarily restrictive thresholds)
-            if avg_batch_size >= 2.0:  # Average at least 2 themes per batch
+        for batch_num, threshold in enumerate(progressive_thresholds):
+            if not unassigned_indices:
                 break
+                
+            # Create batch with themes having max similarity < threshold
+            batch_indices = self._extract_similarity_constrained_batch(
+                similarity_matrix, list(unassigned_indices), threshold
+            )
+            
+            if batch_indices:
+                # Convert to cluster_ids and add to batches
+                batch_cluster_ids = [cluster_ids[i] for i in batch_indices]
+                batches.append(batch_cluster_ids)
+                
+                # Remove assigned themes
+                unassigned_indices -= set(batch_indices)
+                
+                self.verbose_reporter.stat_line(f"Batch {batch_num + 1} (threshold < {threshold}): {len(batch_indices)} themes")
+            else:
+                self.verbose_reporter.stat_line(f"Batch {batch_num + 1} (threshold < {threshold}): 0 themes (skipped)")
         
-        batches = best_batches or [[cluster_ids[i]] for i in range(len(cluster_ids))]
+        # Final batch: all remaining themes (no similarity constraint)
+        if unassigned_indices:
+            final_batch_cluster_ids = [cluster_ids[i] for i in unassigned_indices]
+            batches.append(final_batch_cluster_ids)
+            self.verbose_reporter.stat_line(f"Final batch (no constraint): {len(unassigned_indices)} themes")
         
         # Report final batch statistics
         for batch_idx, batch_cluster_ids in enumerate(batches):
@@ -454,42 +458,36 @@ class SimilarityEngine:
         
         return sub_batches
     
-    def _create_similarity_constrained_batches(self, similarity_matrix: np.ndarray, cluster_ids: List[int], max_similarity_threshold: float) -> List[List[int]]:
-        """Create batches where no pair within batch exceeds max_similarity_threshold"""
-        n_themes = len(cluster_ids)
-        batches = []
-        unassigned = set(range(n_themes))
+    def _extract_similarity_constrained_batch(self, similarity_matrix: np.ndarray, available_indices: List[int], max_similarity_threshold: float) -> List[int]:
+        """Extract single largest batch from available indices where max similarity < threshold"""
+        if not available_indices:
+            return []
         
-        while unassigned:
-            # Start new batch with first unassigned theme
-            current_batch = [next(iter(unassigned))]
-            unassigned.remove(current_batch[0])
+        # Greedy approach: start with first theme, add compatible themes
+        batch_indices = [available_indices[0]]
+        remaining = set(available_indices[1:])
+        
+        # Keep adding themes that don't violate similarity constraint
+        added_theme = True
+        while added_theme and remaining:
+            added_theme = False
             
-            # Greedily add themes that don't violate similarity constraint
-            added_to_batch = True
-            while added_to_batch and unassigned:
-                added_to_batch = False
+            # Try each remaining theme
+            for candidate_idx in list(remaining):
+                # Check if candidate is compatible with all themes in current batch
+                can_add = True
+                for batch_member_idx in batch_indices:
+                    if similarity_matrix[candidate_idx, batch_member_idx] >= max_similarity_threshold:
+                        can_add = False
+                        break
                 
-                # Try each remaining theme
-                for candidate_idx in list(unassigned):
-                    # Check if candidate can be added without violating constraint
-                    can_add = True
-                    for batch_member_idx in current_batch:
-                        if similarity_matrix[candidate_idx, batch_member_idx] >= max_similarity_threshold:
-                            can_add = False
-                            break
-                    
-                    if can_add:
-                        current_batch.append(candidate_idx)
-                        unassigned.remove(candidate_idx)
-                        added_to_batch = True
-                        break  # Start over with remaining themes
-            
-            # Convert indices to cluster_ids for this batch
-            batch_cluster_ids = [cluster_ids[i] for i in current_batch]
-            batches.append(batch_cluster_ids)
+                if can_add:
+                    batch_indices.append(candidate_idx)
+                    remaining.remove(candidate_idx)
+                    added_theme = True
+                    break  # Start over to find next compatible theme
         
-        return batches
+        return batch_indices
 
 
 # ============================================================================
