@@ -327,53 +327,42 @@ class SimilarityEngine:
         # Report similarity distribution (keep for comparison)
         self._report_similarity_distribution(similarity_matrix)
         
-        # Report corrected progressive threshold strategy
-        self.verbose_reporter.stat_line(f"Using corrected progressive threshold system: start with all themes, split conflicts at {' → '.join(map(str, [0.8, 0.7, 0.6, 0.5, 0.4]))}")
+        # Report corrected progressive threshold strategy  
+        self.verbose_reporter.stat_line(f"Using maximum similarity constraint: allow similarities < threshold {' → '.join(map(str, [0.8, 0.7, 0.6, 0.5, 0.4]))}")
         
-        # Corrected Progressive Threshold System
-        # Start with all themes in one batch, then progressively split conflicts
+        # Progressive Maximum Similarity System
+        # Try each threshold - keep largest batches where max similarity < threshold
         progressive_thresholds = [0.8, 0.7, 0.6, 0.5, 0.4]
         
-        # Initialize with all themes in one batch
-        batches = [list(range(len(cluster_ids)))]
+        best_batches = None
+        best_batch_count = float('inf')
         
-        # Apply progressive thresholds to split conflicts
         for threshold in progressive_thresholds:
-            new_batches = []
-            conflicts_found = False
+            # Try greedy batching with this maximum similarity constraint
+            batches = self._create_similarity_constrained_batches(similarity_matrix, cluster_ids, threshold)
             
-            for batch_indices in batches:
-                if len(batch_indices) <= 1:
-                    # Single theme batches can't have conflicts
-                    new_batches.append(batch_indices)
-                    continue
-                
-                # Check for conflicts within this batch
-                conflicts = self._find_conflicts_in_batch(batch_indices, similarity_matrix, threshold)
-                
-                if not conflicts:
-                    # No conflicts, keep batch as-is
-                    new_batches.append(batch_indices)
-                else:
-                    # Split batch to resolve conflicts
-                    conflicts_found = True
-                    split_batches = self._split_batch_by_conflicts(batch_indices, conflicts, similarity_matrix, threshold)
-                    new_batches.extend(split_batches)
+            batch_count = len(batches)
+            avg_batch_size = len(cluster_ids) / batch_count if batch_count > 0 else 0
             
-            batches = new_batches
+            self.verbose_reporter.stat_line(f"Threshold {threshold}: {batch_count} batches, avg size {avg_batch_size:.1f}")
             
-            # Report progress
-            self.verbose_reporter.stat_line(f"After threshold {threshold}: {len(batches)} batches" + (f" (split conflicts)" if conflicts_found else " (no conflicts)"))
+            # Keep the result that produces fewer batches (larger batches)
+            if batch_count < best_batch_count:
+                best_batches = batches
+                best_batch_count = batch_count
+                self.verbose_reporter.stat_line(f"  → New best: {batch_count} batches")
             
-            # If no conflicts found, we can stop early
-            if not conflicts_found:
+            # If we achieved reasonable batching, we can stop
+            # (Don't go to unnecessarily restrictive thresholds)
+            if avg_batch_size >= 2.0:  # Average at least 2 themes per batch
                 break
         
-        # Convert batches from indices to cluster_ids and report final statistics
-        final_batches = []
-        for batch_idx, batch_indices in enumerate(batches):
-            batch_cluster_ids = [cluster_ids[i] for i in batch_indices]
-            final_batches.append(batch_cluster_ids)
+        batches = best_batches or [[cluster_ids[i]] for i in range(len(cluster_ids))]
+        
+        # Report final batch statistics
+        for batch_idx, batch_cluster_ids in enumerate(batches):
+            # Convert cluster_ids back to indices for similarity calculation
+            batch_indices = [cluster_ids.index(cid) for cid in batch_cluster_ids]
             
             # Calculate batch statistics
             batch_similarities = []
@@ -389,8 +378,6 @@ class SimilarityEngine:
                 f"Final Batch {batch_idx + 1}: {len(batch_cluster_ids)} themes, "
                 f"avg_sim={avg_sim:.3f}, max_sim={max_sim:.3f}"
             )
-        
-        batches = final_batches
         
         # DEBUG: Final batch assignments summary
         self.verbose_reporter.stat_line(f"\n=== FINAL BATCH ASSIGNMENTS ===")
@@ -467,58 +454,42 @@ class SimilarityEngine:
         
         return sub_batches
     
-    def _find_conflicts_in_batch(self, batch_indices: List[int], similarity_matrix: np.ndarray, threshold: float) -> List[tuple]:
-        """Find pairs of themes in batch that exceed similarity threshold"""
-        conflicts = []
-        for i in range(len(batch_indices)):
-            for j in range(i + 1, len(batch_indices)):
-                idx_i, idx_j = batch_indices[i], batch_indices[j]
-                if similarity_matrix[idx_i, idx_j] >= threshold:
-                    conflicts.append((idx_i, idx_j, similarity_matrix[idx_i, idx_j]))
-        return conflicts
-    
-    def _split_batch_by_conflicts(self, batch_indices: List[int], conflicts: List[tuple], similarity_matrix: np.ndarray, threshold: float) -> List[List[int]]:
-        """Split batch into sub-batches to resolve conflicts using greedy coloring approach"""
-        if not conflicts:
-            return [batch_indices]
-        
-        # Build conflict graph (adjacency set for each theme)
-        conflict_graph = {idx: set() for idx in batch_indices}
-        for idx_i, idx_j, _ in conflicts:
-            conflict_graph[idx_i].add(idx_j)
-            conflict_graph[idx_j].add(idx_i)
-        
-        # Greedy coloring algorithm: assign themes to batches such that no conflicts within batch
-        sub_batches = []
-        unassigned = set(batch_indices)
+    def _create_similarity_constrained_batches(self, similarity_matrix: np.ndarray, cluster_ids: List[int], max_similarity_threshold: float) -> List[List[int]]:
+        """Create batches where no pair within batch exceeds max_similarity_threshold"""
+        n_themes = len(cluster_ids)
+        batches = []
+        unassigned = set(range(n_themes))
         
         while unassigned:
-            current_batch = []
-            assigned_to_batch = set()
+            # Start new batch with first unassigned theme
+            current_batch = [next(iter(unassigned))]
+            unassigned.remove(current_batch[0])
             
-            # Sort by number of conflicts (most constrained first)
-            candidates = sorted(unassigned, key=lambda x: len(conflict_graph[x] & unassigned), reverse=True)
-            
-            for candidate in candidates:
-                if candidate in assigned_to_batch:
-                    continue
+            # Greedily add themes that don't violate similarity constraint
+            added_to_batch = True
+            while added_to_batch and unassigned:
+                added_to_batch = False
                 
-                # Check if candidate conflicts with any theme already in current batch
-                conflicts_with_batch = conflict_graph[candidate] & assigned_to_batch
-                if not conflicts_with_batch:
-                    current_batch.append(candidate)
-                    assigned_to_batch.add(candidate)
-                    unassigned.discard(candidate)
+                # Try each remaining theme
+                for candidate_idx in list(unassigned):
+                    # Check if candidate can be added without violating constraint
+                    can_add = True
+                    for batch_member_idx in current_batch:
+                        if similarity_matrix[candidate_idx, batch_member_idx] >= max_similarity_threshold:
+                            can_add = False
+                            break
+                    
+                    if can_add:
+                        current_batch.append(candidate_idx)
+                        unassigned.remove(candidate_idx)
+                        added_to_batch = True
+                        break  # Start over with remaining themes
             
-            if current_batch:
-                sub_batches.append(current_batch)
-            else:
-                # Failsafe: if no themes can be added, force add one to prevent infinite loop
-                if unassigned:
-                    forced_theme = unassigned.pop()
-                    sub_batches.append([forced_theme])
+            # Convert indices to cluster_ids for this batch
+            batch_cluster_ids = [cluster_ids[i] for i in current_batch]
+            batches.append(batch_cluster_ids)
         
-        return sub_batches
+        return batches
 
 
 # ============================================================================
