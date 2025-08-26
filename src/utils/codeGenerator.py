@@ -327,32 +327,22 @@ class SimilarityEngine:
         # Report similarity distribution (keep for comparison)
         self._report_similarity_distribution(similarity_matrix)
         
-        # Step 1: Build conflict sets (themes with >0.8 similarity)
-        conflict_threshold = 0.8
-        conflict_sets = {}
-        high_sim_pairs = 0
+        # Report progressive threshold strategy
+        self.verbose_reporter.stat_line(f"Using single progressive threshold system: {' → '.join(map(str, [0.8, 0.7, 0.6, 0.5, 0.4]))}")
         
-        for i in range(len(cluster_ids)):
-            conflicts = []
-            for j in range(len(cluster_ids)):
-                if i != j and similarity_matrix[i, j] > conflict_threshold:
-                    conflicts.append(j)
-                    if i < j:  # Count each pair once
-                        high_sim_pairs += 1
-            conflict_sets[i] = set(conflicts)
-        
-        self.verbose_reporter.stat_line(f"Found {high_sim_pairs} high-similarity pairs (>{conflict_threshold}) to separate")
-        
-        # Step 2: Progressive batching with conflict avoidance
+        # Single Progressive Threshold System: 0.8 → 0.7 → 0.6 → 0.5 → 0.4
         batches = []
         unassigned = set(range(len(cluster_ids)))
         batch_num = 0
-        base_threshold = 0.4
-        threshold_increment = 0.1
+        progressive_thresholds = [0.8, 0.7, 0.6, 0.5, 0.4]
         
         while unassigned:
-            # Progressive threshold: 0.4, 0.5, 0.6, 0.7 (capped at 0.7)
-            current_threshold = min(0.7, base_threshold + (batch_num * threshold_increment))
+            # Get current threshold from progression
+            if batch_num < len(progressive_thresholds):
+                current_threshold = progressive_thresholds[batch_num]
+            else:
+                # If we need more batches than thresholds, use the lowest threshold
+                current_threshold = progressive_thresholds[-1]
             
             # Prevent infinite loop: if we've tried many batches at max threshold, force assignment
             if batch_num > 50 and current_threshold >= 0.7:
@@ -365,26 +355,11 @@ class SimilarityEngine:
             # self.verbose_reporter.stat_line(f"\n=== BATCH {batch_num + 1} DEBUG (threshold={current_threshold:.1f}) ===")
             # self.verbose_reporter.stat_line(f"Unassigned themes: {len(unassigned)} remaining")
             
-            # Priority: Start with themes that have most conflicts (hardest to place)
-            candidates_by_conflict_count = sorted(
-                list(unassigned), 
-                key=lambda x: len(conflict_sets[x] & unassigned),
-                reverse=True
-            )
-            
-            # DEBUG: Show top candidates and their conflict counts with theme info
-            # for i, candidate_idx in enumerate(candidates_by_conflict_count[:5]):
-            #     cluster_id = cluster_ids[candidate_idx]
-                # conflict_count = len(conflict_sets[candidate_idx] & unassigned)
-                # theme_info = ""
-                # # if themes and cluster_id in themes:
-                # #     theme_info = f" - '{themes[cluster_id].themes[0].theme_statement if themes[cluster_id].themes else 'unknown'}'" 
-                # #self.verbose_reporter.stat_line(f"Candidate {i+1}: C{cluster_id} (conflicts: {conflict_count}){theme_info}")
-            
+            # Simple greedy approach: try all unassigned themes
+            unassigned_list = list(unassigned)
             batch_indices = []
-            batch_conflicts = set()  # All themes that conflict with current batch
             
-            for candidate_idx in candidates_by_conflict_count:
+            for candidate_idx in unassigned_list:
                 cluster_id = cluster_ids[candidate_idx]
                 
                 # Get theme info for better debugging
@@ -392,11 +367,6 @@ class SimilarityEngine:
                 if themes and cluster_id in themes:
                     theme_statement = themes[cluster_id].themes[0].theme_statement if themes[cluster_id].themes else "Unknown"
                     theme_info = f" ('{theme_statement}')"
-                
-                # Skip if candidate conflicts with anything already in batch
-                if candidate_idx in batch_conflicts:
-                    #self.verbose_reporter.stat_line(f"  C{cluster_id}{theme_info}: SKIPPED - conflicts with batch")
-                    continue
                 
                 # Check if candidate meets threshold requirement with all batch members
                 can_add = True
@@ -416,7 +386,6 @@ class SimilarityEngine:
                 
                 if can_add:
                     batch_indices.append(candidate_idx)
-                    batch_conflicts.update(conflict_sets[candidate_idx])
                     unassigned.remove(candidate_idx)
                     # self.verbose_reporter.stat_line(f"  C{cluster_id}{theme_info}: ADDED to batch {batch_num + 1}")
                 # else:
