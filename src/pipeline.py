@@ -542,6 +542,7 @@ from utils import codeGenerator as codeGenerator
 
 FORCE = True
 VERBOSE = True
+VERBOSE_DETAILED = False
 PROMPT_PRINTER = False
 CACHE_CODEGENERATOR_REASONING = True  
 USE_SPECULATIVE_STARTER_CODES = False
@@ -645,7 +646,7 @@ else:
             idx = 1
             # Process the extracted final codebook
             for item in final_codebook:
-                print(item)
+                #print(item)
                 if VERBOSE:
                     definition = item['definition']
                     if len(definition) > 100:
@@ -705,6 +706,7 @@ else:
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
+#HIER
 
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
@@ -715,10 +717,12 @@ if True and CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
 
 #debug : prompts 
-cluster_id = 27
+cluster_id = 8
 if True:  
     from utils import codegenPromptTester    
     codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
+    
+    
     #tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
     #tester.test_all_prompts()   
     #tester.test_prompt_4()
