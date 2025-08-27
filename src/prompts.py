@@ -294,17 +294,18 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a **{language} qualitative analyst**, specialized in thematic analysis.
-Your task is to identify a theme — i.e. a coherent pattern of shared meaning in responses, organized around one central concept, idea, or thought (not just a topic label).
+You are a **{language} qualitative analyst**, specialized in thematic analysis.  
+Your goal is to identify and state the dominant theme(s) in clustered survey responses — i.e. coherent patterns of shared meaning organized around one central concept, idea, or thought (not just a topic label).
 
 ────────────────────────────────────────
 CONCEPTUAL GUIDANCE
 ────────────────────────────────────────
 - Pattern of shared meaning = multiple data extracts cohere because they express the same underlying idea, concept, or thought (Braun & Clarke).
+- CRITICAL: A single mention is never a theme. A theme must be supported by **repeated expressions across multiple responses**.
 - Central organising concept: you can state the “essence” of the theme in one clear sentence; if you can’t, it’s probably a topic summary, not a theme (Braun & Clarke).
 
 ────────────────────────────────────────
-INPUTS  (XML blocks will be interpolated)
+INPUTS (XML blocks will be interpolated)
 ────────────────────────────────────────
 <survey_question>
 {survey_question}
@@ -315,16 +316,17 @@ INPUTS  (XML blocks will be interpolated)
 </clustered_responses>
 
 ────────────────────────────────────────
-GOAL
+PROCESS
 ────────────────────────────────────────
-Identify the **dominant pattern(s) of shared meaning** expressed in the cluster.
-
-Return multiple theme_statements only if:
-- The cluster contains two or more distinct central organising concepts,
-- The themes are **clearly distinct** (cannot be merged without compounding), AND
-- Each theme is **supported by repeated patterns across multiple respondents**.
-
-Ignore one-off mentions or weak signals.
+1) Identify the dominant pattern(s) of shared meaning in the cluster.  
+   • Ignore one-off or weak mentions.  
+   • Focus only on patterns expressed repeatedly across multiple responses.  
+   • If one pattern clearly dominates → return ONE theme_statement.  
+   • If multiple distinct patterns are well supported → return multiple theme_statements.
+2) For each pattern of shared meaning:  
+   • Write a theme_statement (≤25 words) that captures the central organising concept, ensuring it is atomic, grounded, concise, and operational.  
+3) Check each theme_statement for atomicity, word length, and clarity.  
+   • If non-compliant, rewrite until it satisfies all criteria.  
 
 ────────────────────────────────────────
 QUALITY CRITERIA
@@ -335,17 +337,6 @@ QUALITY CRITERIA
     • Do not speculate on motives or infer intentions not clearly expressed.  
 - **CONCISE**: Each theme_statement must be ≤25 words. Rewrite if necessary.  
 - **OPERATIONAL**: Each theme_statement must describe clear conceptual boundaries suitable for consistent use in coding.  
-
-────────────────────────────────────────
-PROCESS
-────────────────────────────────────────
-1) Identify the dominant pattern(s) of shared meaning in the cluster.  
-   • If one pattern clearly dominates → return ONE theme_statement.  
-   • If multiple distinct patterns are well supported → return multiple theme_statements.
-2) For each pattern of shared meaning:  
-   • Write a theme_statement (≤25 words) that captures the central organising concept, ensuring it is atomic, grounded, concise, and operational.  
-3) Check each theme_statement for atomicity, word length, and clarity.  
-   • If non-compliant, rewrite until it satisfies all criteria.  
 
 ────────────────────────────────────────
 OUTPUT FORMAT (strict JSON, in {language})
@@ -370,11 +361,13 @@ CRITICAL REQUIREMENTS
 - Output must be valid JSON.  
 - Start numbering theme_id at **1** for each new cluster.
 """
+
 CANDIDATE_CODE_SELECTION_PROMPT = """
-You are a **{language} qualitative analyst**, specialized in matching descriptive codes from a codebook to theme_statements identified in response patterns to an open-ended survey question.
+You are a **{language} qualitative analyst**, specialized in matching descriptive codes from a codebook to theme_statements identified in response patterns to an open-ended survey question.  
+Your goal is to return all existing codes from the codebook that meaningfully correspond to the presented theme_statement(s).
 
 ────────────────────────────────────────
-INPUTS  (XML blocks will be interpolated)
+INPUTS (XML blocks will be interpolated)
 ────────────────────────────────────────
 <survey_question>
 {survey_question}
@@ -387,11 +380,6 @@ INPUTS  (XML blocks will be interpolated)
 <existing_codebook>
 {code_text}
 </existing_codebook>
-
-────────────────────────────────────────
-GOAL
-────────────────────────────────────────
-Return **all existing codes** from the codebook that meaningfully correspond to the presented theme_statement(s).
 
 ────────────────────────────────────────
 MATCHING GUIDANCE
@@ -432,13 +420,13 @@ CRITICAL REQUIREMENTS
 - Each object must include ONLY the fields: "code" and "definition".  
 """
 
+
 CODE_GENERATION_PROMPT = """
 You are a **{language} qualitative codebook curator**.  
-Your task is to decide, for each theme_statement, whether to USE an existing code, MODIFY an existing code, or CREATE a new code.  
-This step integrates new insights into the codebook in a parsimonious and consistent way.
+Your goal is to decide, for each theme_statement, whether to USE an existing code, MODIFY an existing code, or CREATE a new code, integrating new insights into the codebook in a parsimonious and consistent way.
 
 ────────────────────────────────────────
-INPUTS  (XML blocks will be interpolated)
+INPUTS (XML blocks will be interpolated)
 ────────────────────────────────────────
 <survey_question>
 {survey_question}
@@ -453,7 +441,7 @@ INPUTS  (XML blocks will be interpolated)
 </existing_codes>
 
 ────────────────────────────────────────
-DECISION RULES
+PROCESS
 ────────────────────────────────────────
 Step 1: Abstraction alignment  
 - If the theme_statement is at the **same abstraction level** as an existing code → apply USE, MODIFY, or CREATE depending on coverage threshold.  
@@ -463,18 +451,17 @@ Step 1: Abstraction alignment
 Step 2: Coverage thresholds  
 - USE if an existing code covers ≥90% of the theme’s meaning.  
 - MODIFY if an existing code covers 60–89%.  
-- CREATE if no existing code covers ≥59%.  
+- CREATE if no existing code covers ≥60%.  
 
-────────────────────────────────────────
-EDGE CASES
-────────────────────────────────────────
+Step 3: Edge cases  
 - If multiple existing codes qualify as ≥90%, choose the most general, well-scoped one.  
 - Only generate multiple codes for one theme if they are distinct, non-overlapping, and strictly necessary.  
 - If creating new codes, generate exactly one per distinct theme.  
 
 ────────────────────────────────────────
-CONSTRAINTS for code labels
+CRITERIA for coding outputs
 ────────────────────────────────────────
+Code labels  
 - Short phrase ≤10 words, atomic, no compound structures.  
   • Avoid “and,” “or,” “with,” “including,” “/,” “&,” “,,” “;,” “:,” “-,” “–.”  
 - Must NOT repeat the canonical subject from the survey question or the actor expected to act.  
@@ -483,9 +470,7 @@ CONSTRAINTS for code labels
   • Imperative verb + object: <verb> <object>  
   • Infinitive form: <infinitive verb> + <object>  
 
-────────────────────────────────────────
-CONSTRAINTS for code definitions
-────────────────────────────────────────
+Code definitions  
 - ≤25 words, operational, observable, grounded in actual responses.  
 - Must avoid vagueness, compound structures, or interpretive abstractions.  
 
@@ -533,13 +518,14 @@ CRITICAL REQUIREMENTS
 - Every theme_statement must map to exactly one decision.  
 """
 
+
 VALIDATION_PROMPT = """
 You are a **{language} qualitative data analyst** specializing in codebook validation.  
-You will review your colleague’s coding recommendations for a cluster containing one or more themes derived from survey responses.  
-Your task is to finalize consistent, atomic, parsimonious codes for integration into the codebook.
+Your goal is to review coding recommendations for a cluster of theme_statements and finalize consistent, atomic, parsimonious codes for integration into the codebook.  
+All finalized/validated codes must fully comply with the validation criteria.
 
 ────────────────────────────────────────
-INPUTS  (XML blocks will be interpolated)
+INPUTS (XML blocks will be interpolated)
 ────────────────────────────────────────
 <survey_question>
 {survey_question}
@@ -554,41 +540,39 @@ INPUTS  (XML blocks will be interpolated)
 </coding_recommendation>
 
 ────────────────────────────────────────
-REVIEW CRITERIA
+PROCESS
 ────────────────────────────────────────
-Evaluate EACH theme/code recommendation against the following:
-
-1) **Semantic fit**  
-   • Does the code capture the theme’s meaning and scope?  
-
-2) **Atomicity**  
-   • The code and definition must capture exactly one idea — no compound sub-ideas or merged themes.  
-   • Code names must not contain coordinating conjunctions or list markers.  
-   • Forbidden punctuation: "/", "&", ",", ";", ":", "-", "–" (hyphens allowed only in lexicalized words).  
-   • At most ONE main action (verb).  
-
-3) **Naming rules**  
-   • Labels must NOT contain the canonical subject (the main product/service/topic in the survey question) or the actor expected to act.  
-   • Allowed syntactic forms:  
-     – Noun phrase: <adjective(s)> <noun>  
-     – Imperative verb + object: <verb> <object>  
-     – Infinitive form: <infinitive verb> + <object>  
-
-4) **Definition rules**  
-   • ≤25 words, operational, observable, and grounded in actual responses.  
-   • Avoid vagueness, compound formulations, or interpretive abstractions.  
+Step 1: Review each theme/code recommendation against the rules of semantic fit, atomicity, naming, and definition.  
+Step 2: Decide outcome:  
+- **APPROVE** — Recommendation is atomic, scoped correctly, and rule-compliant.  
+- **REJECT** — Recommendation is not acceptable as-is. Refine the code (atomicity, naming, scope, or definition) and provide a corrected validated_code.  
+Step 3: For both APPROVE and REJECT, return a validated_code object. If REJECT, include explicit decision_rationale (why, and how it was refined).  
+Step 4: Before finalizing, check that **every validated_code in your output also complies with the validation criteria**.
 
 ────────────────────────────────────────
-DECISION TYPES
+CRITERIA for validation
 ────────────────────────────────────────
-- **APPROVE** — The recommendation is atomic, correctly scoped, and rule-compliant. It can be added to the codebook without change.  
-- **REJECT** — The recommendation is not acceptable as-is. Refine the code (atomicity, naming, scope, or definition) and provide a corrected validated_code.  
+Semantic fit  
+- Code must capture the theme’s meaning and scope.  
 
-For both APPPROVE and REJECT, always return a final validated_code object.  
-When REJECT, the decision_rationale must explicitly explain why and how the refinement was made.  
+Atomicity  
+- Code and definition must express one idea only — no compounds or merged themes.  
+- Forbidden punctuation: "/", "&", ",", ";", ":", "-", "–" (except in lexicalized words).  
+- At most ONE main action (verb).  
+
+Naming rules  
+- ≤10 words, no canonical subject from the survey question, no actor expected to act.  
+- Allowed syntactic forms:  
+  • Noun phrase: <adjective(s)> <noun>  
+  • Imperative verb + object: <verb> <object>  
+  • Infinitive form: <infinitive verb> + <object>  
+
+Definition rules  
+- ≤25 words, operational, observable, grounded in responses.  
+- No vagueness, compound structures, or interpretive abstractions.  
 
 ────────────────────────────────────────
-OUTPUT FORMAT (strict JSON, in {language})
+OUTPUT FORMAT (strict JSON, in {language} — all validation criteria must be applied)
 ────────────────────────────────────────
 {{
   "code_validations": [
@@ -622,15 +606,18 @@ OUTPUT FORMAT (strict JSON, in {language})
 }}
 
 ────────────────────────────────────────
-CRITICAL FORMAT REQUIREMENTS
+CRITICAL REQUIREMENTS
 ────────────────────────────────────────
+- Validation criteria must be applied to BOTH the input recommendations and your generated validated_code outputs.  
 - Always return a validated_code object for every theme_number, regardless of decision.  
-- Names must be ≤10 words; definitions ≤25 words.  
-- If substituting with an existing code, copy the name/definition exactly.  
+- Names ≤10 words; definitions ≤25 words.  
+- If substituting with an existing code, copy name/definition exactly.  
 - Schema must contain ONLY: theme_number, original_recommendation, decision, decision_rationale, validated_code.  
 - Output ONLY valid JSON — no other text.  
 - All fields must be in {language}.  
 """
+
+
 
 
 # =============================================================================
