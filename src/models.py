@@ -233,18 +233,18 @@ class ValidationResult(BaseModel):
 class CodeGeneratorReasoningResults(BaseModel):
     cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
     
-    # ACTUAL prompt inputs for complete transparency
-    step1_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 1 received
-    step2_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 2 received
-    step3_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 3 received
-    step4_inputs: Dict[int, Dict[str, Any]] = {}  # What Prompt 4 received
-    step3_validation_warnings: Dict[int, List[Dict[str, Any]]] = {}  # Validation warnings
+    # ACTUAL prompt inputs for complete transparency (now supports string cluster IDs for sub-clusters)
+    step1_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 1 received
+    step2_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 2 received
+    step3_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 3 received
+    step4_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 4 received
+    step3_validation_warnings: Dict[Union[int, str], List[Dict[str, Any]]] = {}  # Validation warnings
     
-    step1_summaries: Dict[int, Dict[str, Any]]  # ClusterThemeAnalysis: {cluster_summary, themes[]}
-    step2_analysis: Dict[int, List[Dict[str, str]]]  # List[CandidateCode]: Array of candidate codes
-    step3_recommendations: Dict[int, Dict[str, Any]]  # CodeRecommendation: {coding_decisions[]}  
-    step4_validations: Dict[int, Dict[str, Any]]  # ValidationResult: {code_validations[]}
-    step4_validated_codes: Dict[int, Dict[str, Any]] = {}  # Final validated codes from Step 4
+    step1_summaries: Dict[Union[int, str], Dict[str, Any]]  # ClusterThemeAnalysis: {cluster_summary, themes[]}
+    step2_analysis: Dict[Union[int, str], List[Dict[str, str]]]  # List[CandidateCode]: Array of candidate codes
+    step3_recommendations: Dict[Union[int, str], Dict[str, Any]]  # CodeRecommendation: {coding_decisions[]}  
+    step4_validations: Dict[Union[int, str], Dict[str, Any]]  # ValidationResult: {code_validations[]}
+    step4_validated_codes: Dict[Union[int, str], Dict[str, Any]] = {}  # Final validated codes from Step 4
     
     stats: Dict[str, Any]
     generator_version: str
@@ -253,7 +253,7 @@ class CodeGeneratorReasoningResults(BaseModel):
     total_ideas: int
     processing_timestamp: str
     
-    cluster_assignments: Dict[int, Dict[str, Any]]
+    cluster_assignments: Dict[Union[int, str], Dict[str, Any]]
     
     codebook: List[Dict[str, str]]  # Final deduplicated codebook from SharedCodebook
     cluster_data: Dict[int, Dict[str, Any]]  # Raw cluster data for stats calculations

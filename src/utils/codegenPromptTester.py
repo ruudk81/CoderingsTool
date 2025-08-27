@@ -8,7 +8,7 @@ import sys
 import random
 import pickle
 #from pathlib import Path
-#from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -20,7 +20,7 @@ from prompts import CLUSTER_SUMMARY_PROMPT, CANDIDATE_CODE_SELECTION_PROMPT, COD
 class SimplePromptTester:
     """Simple prompt tester for Step 7 codeGenerator prompts"""
     
-    def __init__(self, cluster_id: int, var_lab: str, language: str = DEFAULT_LANGUAGE):
+    def __init__(self, cluster_id: Union[int, str], var_lab: str, language: str = DEFAULT_LANGUAGE):
         self.var_lab = var_lab
         self.language = language
         self.cache_config = CacheConfig()
@@ -41,7 +41,11 @@ class SimplePromptTester:
             self.cluster_id = self._sample_cluster_id()
             print(f"TARGET: Using cluster ID: {self.cluster_id}")
         else:
-            self.cluster_id = cluster_id
+            # Handle both string and int cluster IDs - try to convert if numeric
+            if isinstance(cluster_id, str) and cluster_id.isdigit():
+                self.cluster_id = int(cluster_id)
+            else:
+                self.cluster_id = cluster_id
         
         available_steps = []
         for step in ['step1', 'step2', 'step3', 'step4']:
@@ -342,7 +346,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Test CodeGenerator prompts')
-    parser.add_argument('--cluster-id', type=int, help='Specific cluster ID (default: random selection)')
+    parser.add_argument('--cluster-id', help='Specific cluster ID (default: random selection, supports sub-cluster format like "12-1")')
     parser.add_argument('--var-lab', help='Survey question (default: prompt user)')
     
     args = parser.parse_args()
