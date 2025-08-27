@@ -20,7 +20,7 @@ from prompts import CLUSTER_SUMMARY_PROMPT, CANDIDATE_CODE_SELECTION_PROMPT, COD
 class SimplePromptTester:
     """Simple prompt tester for Step 7 codeGenerator prompts"""
     
-    def __init__(self, cluster_id: Union[int, str], var_lab: str, language: str = DEFAULT_LANGUAGE):
+    def __init__(self, cluster_id: Optional[Union[int, str]], var_lab: str, language: str = DEFAULT_LANGUAGE):
         self.var_lab = var_lab
         self.language = language
         self.cache_config = CacheConfig()
@@ -41,9 +41,9 @@ class SimplePromptTester:
             self.cluster_id = self._sample_cluster_id()
             print(f"TARGET: Using cluster ID: {self.cluster_id}")
         else:
-            # Handle both string and int cluster IDs - try to convert if numeric
-            if isinstance(cluster_id, str) and cluster_id.isdigit():
-                self.cluster_id = int(cluster_id)
+            # Keep cluster IDs as strings to match data structure keys
+            if isinstance(cluster_id, int):
+                self.cluster_id = str(cluster_id)
             else:
                 self.cluster_id = cluster_id
         
