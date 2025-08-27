@@ -17,7 +17,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
 import models
-from models import ClusterSummaryOutput, SimplifiedCodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem #CandidateCodeSelectionOutput
+from models import ClusterSummaryOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem 
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -42,7 +42,6 @@ async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 # ============================================================================
 
 class CodeDesignerAPIClient:
-    """API client with intelligent retry logic and precise rate limiting"""
     
     def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config, encoding, model_config: ModelConfig, verbose_reporter: VerboseReporter, async_client):
         self.throttler = throttler
@@ -1031,6 +1030,24 @@ class InductiveCodeGenerator:
             except Exception as e:
                 self.verbose_reporter.error(f"Cluster processing failed: {e}")
         
+        # Update SharedCodebook with any new codes from this sub-batch
+        if results:
+            await self._merge_codebook_updates(results, base_version)
+            
+            # Generate embeddings for any new codes added to SharedCodebook
+            updated_codes, new_version = await self.shared_codebook.get_current_snapshot()
+            if new_version > base_version:
+                # Codebook was updated, generate embeddings for the new version
+                cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
+                if cached_embeddings is None:
+                    # Generate embeddings for all codes in the updated codebook
+                    code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
+                    try:
+                        code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
+                        await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
+                    except Exception as e:
+                        self.verbose_reporter.error(f"Failed to generate embeddings for updated codebook (version {new_version}): {e}")
+        
         return results
     
     async def _process_single_cluster_pipeline(self, cluster_id: int, 
@@ -1044,14 +1061,15 @@ class InductiveCodeGenerator:
         theme_data = themes[cluster_id]
         
         try:
-            # Step 4a: Candidate Selection
-            current_codes, version = await self.shared_codebook.get_current_snapshot()
-            # DEBUG: Check codebook state
-            #self.verbose_reporter.stat_line(f"C{cluster_id}: CurrentCodes={len(current_codes)}, Version={version}")
+            # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
+            current_codes, _ = await self.shared_codebook.get_current_snapshot()
+            nearest_codes = await self._find_nearest_codes_by_theme(
+                cluster_id, theme_data, current_codes, k=5
+            )
             
-            # Aggressive parallelism - unlimited calls  
+            # Step 1: Candidate selection - pure unlimited call
             candidate_selection = await self._select_candidate_codes(
-                cluster_id, cluster_data, theme_data, current_codes[:20]
+                cluster_id, cluster_data, theme_data, nearest_codes
             )
             
             # Step 4b: Code Generation - unlimited
@@ -1059,8 +1077,8 @@ class InductiveCodeGenerator:
                 cluster_id, cluster_data, theme_data, candidate_selection
             )
             
-            # Step 4c: Validation & SharedCodebook Update
-            validation = await self._validate_and_update_codebook(
+            # Step 4c: Validation
+            validation = await self._validate_code(
                 cluster_id, cluster_data, theme_data, code_generation, candidate_selection
             )
             
@@ -1136,7 +1154,7 @@ class InductiveCodeGenerator:
         try:
             # Generate embedding for this specific theme
             theme_text = theme_item.theme_statement
-            embedding = await self._get_embedding(theme_text)
+            embedding = await self.similarity_engine._get_embedding(theme_text)
             return embedding
         except Exception as e:
             self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_statement}' for cluster {cluster_id}: {e}")
@@ -1182,15 +1200,15 @@ class InductiveCodeGenerator:
             if idx < len(current_codes) and similarities[idx] >= min_similarity_threshold:
                 nearest_codes.append(current_codes[idx])
         
-        # Debug : similarity score nearest codes to theme embedding
-        if nearest_codes:
-            # Convert numpy similarities to properly rounded list
+        # Detailed verbodse: similarity score nearest codes to theme embedding
+        if self.verbose_detailed and nearest_codes:
             similarity_values = [round(float(similarities[idx]), 3) for idx in top_k_indices]
             codes_with_scores = [f"{code['code']} ({score})" for code, score in zip(nearest_codes, similarity_values)]
             self.verbose_reporter.stat_line(f"Found {len(nearest_codes)} nearest codes with similarities: {codes_with_scores}")
+        
+        
         return nearest_codes
 
-    # Removed rate-limited _select_candidate_codes - using unlimited version only
     
     async def design(self) -> List[Dict[str, Any]]:
         """Main method: Run complete 4-stage CodeDesigner pipeline with comprehensive error handling"""
@@ -1554,18 +1572,39 @@ class InductiveCodeGenerator:
         # Collect all new codes from the sub-batch results
         all_new_codes = []
         for result in results:
-            if result and result.get('validation') and hasattr(result['validation'], 'code_validations'):
-                for code_validation in result['validation'].code_validations:
-                    if code_validation.validated_code:
-                        all_new_codes.append({
-                            'code': code_validation.validated_code.code,
-                            'definition': code_validation.validated_code.definition,
-                            'cluster_id': result['cluster_id']
-                        })
+            cluster_id = result.get('cluster_id', 'unknown')
+            
+            # Debug: Check result structure
+            if not result:
+                self.verbose_reporter.error(f"C{cluster_id}: Empty result in merge_codebook_updates")
+                continue
+                
+            if not result.get('validation'):
+                self.verbose_reporter.error(f"C{cluster_id}: No validation in result")
+                continue
+                
+            if not hasattr(result['validation'], 'code_validations'):
+                self.verbose_reporter.error(f"C{cluster_id}: No code_validations in validation")
+                continue
+            
+            # Process each code validation
+            for i, code_validation in enumerate(result['validation'].code_validations):
+                if code_validation.validated_code:
+                    all_new_codes.append({
+                        'code': code_validation.validated_code.code,
+                        'definition': code_validation.validated_code.definition,
+                        'cluster_id': cluster_id
+                    })
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: Found validated_code '{code_validation.validated_code.code}' - adding to batch")
+                else:
+                    self.verbose_reporter.error(f"C{cluster_id}: code_validation[{i}] has no validated_code")
         
         # Single atomic update to SharedCodebook if there are new codes
         if all_new_codes:
+            self.verbose_reporter.stat_line(f"Batch updating SharedCodebook with {len(all_new_codes)} new codes")
             await self.shared_codebook.batch_update(all_new_codes, base_version)
+        else:
+            self.verbose_reporter.stat_line("No new codes to add to SharedCodebook from this sub-batch")
     
     
     async def _select_candidate_codes(self, cluster_id: int, cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
@@ -1574,9 +1613,8 @@ class InductiveCodeGenerator:
             # Build prompt directly
             codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
                                    for code in nearest_codes[:20]])
-            ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}"
+            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
             
             # Prepare exact parameters for prompt
             params = {
@@ -1638,13 +1676,12 @@ class InductiveCodeGenerator:
         """Generate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
-            ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             candidate_codes_text = ""
             if candidate_selection and len(candidate_selection) > 0:
                 candidate_codes_text = "\n\n".join([f"Code: {code.code}\nDefinition: {code.definition}" 
                                                    for code in candidate_selection])
                 
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}"
+            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
             
             # Prepare exact parameters for prompt
             params = {
@@ -1667,7 +1704,7 @@ class InductiveCodeGenerator:
             # API call with enhanced error handling and response cleaning
             response = await self._make_instructor_call_with_cleanup(
                 model=self.config.model,
-                response_model=SimplifiedCodeRecommendation,  # Use simplified model for flattened JSON
+                response_model=CodeRecommendation,   
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
                 seed=self.config.seed,
@@ -1691,7 +1728,7 @@ class InductiveCodeGenerator:
                             'theme_number': decision.theme_number,
                             'decision': decision.decision,
                             'final_code_label': decision.final_code_label,
-                            'final_code_description': decision.final_code_description,
+                            'final_code_definition': decision.final_code_definition,
                             'source_code': decision.source_code,
                             'justification': decision.justification
                         } for decision in response.coding_decisions
@@ -1800,8 +1837,6 @@ class InductiveCodeGenerator:
         """Validate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
-            ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
-            
             # Use candidate_selection instead of full codebook (consistent with rate-limited version)
             if candidate_selection and len(candidate_selection) > 0:
                 validation_codes_text = "\n".join([
@@ -1811,7 +1846,7 @@ class InductiveCodeGenerator:
             else:
                 validation_codes_text = "No existing codes available."
             
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}"
+            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
             step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
             
             # Prepare exact parameters for prompt
@@ -1819,7 +1854,7 @@ class InductiveCodeGenerator:
                 'language': DEFAULT_LANGUAGE,
                 'survey_question': self.var_lab,
                 'cluster_summary': cluster_summary,
-                'candidate_codes': validation_codes_text,
+                #'candidate_codes': validation_codes_text,
                 'step3_recommendation': step3_recommendation_text
             }
             
@@ -1888,7 +1923,7 @@ class InductiveCodeGenerator:
                         
                         # Complete decision matrix: Both APPROVE and REJECT are actionable
                         if validation.decision in ["APPROVE", "REJECT"] and validation.validated_code:
-                            action_source = "ORIGINAL" if validation.decision == "APPROVE" else "VALIDATED"
+                            #action_source = "ORIGINAL" if validation.decision == "APPROVE" else "VALIDATED"
                             
                             # Handle create decisions (both APPROVE and REJECT add new codes)
                             if coding_decision.decision == "create":
@@ -1898,7 +1933,7 @@ class InductiveCodeGenerator:
                                 if added:
                                     self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                     codebook_updated = True
-                                    self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE+{validation.decision} - Added new code '{validation.validated_code.code}' ({action_source})")
+                                    #self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE+{validation.decision} - Added new code '{validation.validated_code.code}' ({action_source})")
                             
                             # Handle modify decisions (both APPROVE and REJECT replace original)
                             elif coding_decision.decision == "modify" and coding_decision.source_code:
@@ -1909,14 +1944,14 @@ class InductiveCodeGenerator:
                                 if replaced:
                                     self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                     codebook_updated = True
-                                    self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY+{validation.decision} - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' ({action_source})")
+                                    #self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY+{validation.decision} - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' ({action_source})")
                             
                             # Handle use decisions
                             elif coding_decision.decision == "use":
-                                if validation.decision == "APPROVE":
+                                #if validation.decision == "APPROVE":
                                     # use + APPROVE = no update (existing code stays as-is)
-                                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE+APPROVE - No codebook update needed")
-                                elif validation.decision == "REJECT":
+                                    # self.verbose_reporter.stat_line(f"C{cluster_id}: USE+APPROVE - No codebook update needed")
+                                if validation.decision == "REJECT":
                                     # use + REJECT = replace existing with validated_code
                                     # Need to get the original code name that was being used
                                     if hasattr(coding_decision, 'source_code') and coding_decision.source_code:
@@ -1927,7 +1962,7 @@ class InductiveCodeGenerator:
                                         if replaced:
                                             self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                             codebook_updated = True
-                                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' (VALIDATED)")
+                                            #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' (VALIDATED)")
                                     else:
                                         # Fallback: add as new code if we can't identify original
                                         added, new_version = await self.shared_codebook.add_code_if_new(
@@ -1936,7 +1971,7 @@ class InductiveCodeGenerator:
                                         if added:
                                             self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                             codebook_updated = True
-                                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
+                                            #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
                         
                         elif validation.decision == "REVISE" and validation.validated_code:
                             # Validation revised the decision - use the revised code
@@ -1946,7 +1981,7 @@ class InductiveCodeGenerator:
                             if added:
                                 self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                 codebook_updated = True
-                                self.verbose_reporter.stat_line(f"C{cluster_id}: REVISE - Added revised code '{validation.validated_code.code}'")
+                                #self.verbose_reporter.stat_line(f"C{cluster_id}: REVISE - Added revised code '{validation.validated_code.code}'")
                         
                         else:
                             self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}' or missing validated_code")
@@ -1960,12 +1995,14 @@ class InductiveCodeGenerator:
                     cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
                     if cached_embeddings is None:
                         # Generate embeddings for all codes
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
+                        
+                        
+                        #self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
                         code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
                         try:
                             code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
                             await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
+                            #self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
                         except Exception as e:
                             self.verbose_reporter.error(f"C{cluster_id}: Failed to generate embeddings for new codes: {e}")
             
