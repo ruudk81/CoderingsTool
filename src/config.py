@@ -186,7 +186,13 @@ class ModelConfig:
     codebook_analysis_model: str = DEFAULT_MODEL     
     response_summary_model: str = DEFAULT_MODEL     
     match_and_recommend_model: str = DEFAULT_MODEL     
-    validation_model: str = DEFAULT_MODEL      
+    validation_model: str = DEFAULT_MODEL     
+    
+    # Step 7: Codebook generation
+    cluster_summary_model: str = "gpt-5-nano"   
+    candidate_selection_model: str = "gpt-4.1-mini"      
+    code_generation_model: str ="gpt-5-mini"    
+    validation_model: str = "gpt-5-nano" 
     
     # Step 8: Hierarchical organisation of codebook
     hierarchical_organisation_model: str = DEFAULT_MODEL
