@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI, RateLimitError
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, wait_exponential, retry_if_exception_type
+from pydantic import ValidationError
 from asyncio_throttle import Throttler
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -43,6 +44,69 @@ class RetryableError(Exception):
     """Retryable API errors for tenacity"""
     pass
 
+class JSONValidationError(Exception):
+    """JSON validation errors that should trigger retries with enhanced prompts"""
+    pass
+
+async def async_responses_create_with_json_retry(
+    model: str, 
+    prompt: str, 
+    response_model, 
+    reasoning_effort: str = "minimal", 
+    text_verbosity: str = "low", 
+    semaphore = None,
+    max_retries: int = 3
+):
+    """Async wrapper with JSON validation retry logic"""
+    
+    base_prompt = prompt
+    
+    for attempt in range(max_retries):
+        try:
+            # Get raw response
+            resp = await async_responses_create_with_semaphore(
+                model=model,
+                prompt=prompt,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
+                semaphore=semaphore
+            )
+            
+            # Try to parse JSON
+            if hasattr(response_model, 'model_validate_json'):
+                response = response_model.model_validate_json(resp.output_text)
+                if hasattr(response, 'root'):
+                    return response.root
+                return response
+            else:
+                # Fallback for models without model_validate_json
+                return response_model(resp.output_text)
+                
+        except ValidationError as e:
+            error_msg = str(e)
+            
+            # Check if this is a retryable JSON error
+            if attempt < max_retries - 1:  # Don't retry on last attempt
+                if "control character" in error_msg.lower() or "invalid json" in error_msg.lower():
+                    # Enhance prompt for retry based on error type
+                    if "control character" in error_msg.lower():
+                        prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON only. Use standard ASCII characters. Avoid any control characters or special Unicode symbols in your response."
+                    elif "expected" in error_msg.lower() and ("," in error_msg or "}" in error_msg):
+                        prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON with proper syntax. Ensure all objects have correct comma placement and closing braces."
+                    else:
+                        prompt = base_prompt + "\n\nIMPORTANT: Return only valid, well-formed JSON. Check your syntax carefully."
+                    
+                    continue  # Retry with enhanced prompt
+            
+            # Re-raise if not retryable or max retries reached
+            raise e
+        except Exception as e:
+            # Non-JSON errors should not be retried here
+            raise e
+    
+    # Should never reach here, but just in case
+    raise JSONValidationError(f"Failed to get valid JSON after {max_retries} attempts")
+
 @retry(
     reraise=True,
     stop=stop_after_attempt(6),
@@ -52,12 +116,25 @@ class RetryableError(Exception):
 def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
     """Sync wrapper for responses.create with retry logic"""
     try:
-        return client.responses.create(
-            model=model,
-            input=[{"role": "user", "content": prompt}],
-            text={"verbosity": text_verbosity},
-            reasoning={"effort": reasoning_effort},
-        )
+        # Import ModelConfig here to avoid circular imports
+        from config import ModelConfig
+        
+        # Check if this is a GPT-5 reasoning model
+        model_config = ModelConfig()
+        model_type = model_config.MODEL_TYPES.get(model, "chat")
+        
+        # Build request parameters based on model type
+        request_params = {
+            "model": model,
+            "input": [{"role": "user", "content": prompt}]
+        }
+        
+        # Only add reasoning parameters for GPT-5 models
+        if model_type == "reasoning":
+            request_params["text"] = {"verbosity": text_verbosity}
+            request_params["reasoning"] = {"effort": reasoning_effort}
+        
+        return client.responses.create(**request_params)
     except Exception as e:
         # Map rate limits and server errors to retryable errors
         if "429" in str(e) or "5" in str(e)[:1]:  # 5xx errors
@@ -805,15 +882,15 @@ class InductiveCodeGenerator:
             )
         
         try:
-            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
-            resp = await async_responses_create_with_semaphore(
+            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
+                response_model=ClusterSummaryOutput,
                 reasoning_effort=self.model_config.gpt5_reasoning_effort,
                 text_verbosity=self.model_config.gpt5_text_verbosity,
                 semaphore=self.concurrency_semaphore
             )
-            response = ClusterSummaryOutput.model_validate_json(resp.output_text).root
             
             # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
             # Debug: Check response type
@@ -1338,10 +1415,6 @@ class InductiveCodeGenerator:
         start_time = time.time()
         
         try:
-            self.verbose_reporter.step_start("CodeDesigner Pipeline")
-            self.verbose_reporter.stat_line(f"Model: {self.config.model}")
-            self.verbose_reporter.stat_line(f"Similarity threshold: {self.config.similarity_threshold}")
-            
             # Initialize processing statistics
             self._processing_stats = {
                 'start_time': start_time,
@@ -1758,15 +1831,15 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
-            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
-            resp = await async_responses_create_with_semaphore(
+            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('candidate_selection'),
                 prompt=prompt,
+                response_model=CandidateCodeSelectionOutput,
                 reasoning_effort=self.model_config.gpt5_reasoning_effort,
                 text_verbosity=self.model_config.gpt5_text_verbosity,
                 semaphore=self.concurrency_semaphore
             )
-            response = CandidateCodeSelectionOutput.model_validate_json(resp.output_text).root
             
             if self.verbose_detailed: 
                 if response is None:
@@ -1825,15 +1898,15 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
-            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
-            resp = await async_responses_create_with_semaphore(
+            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('code_recommendation'),
                 prompt=prompt,
+                response_model=CodeRecommendation,
                 reasoning_effort=self.model_config.gpt5_reasoning_effort,
                 text_verbosity=self.model_config.gpt5_text_verbosity,
                 semaphore=self.concurrency_semaphore
             )
-            response = CodeRecommendation.model_validate_json(resp.output_text)
             
             if self.verbose_detailed: 
                 if response is None:
@@ -1910,15 +1983,15 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
-            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
-            resp = await async_responses_create_with_semaphore(
+            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('recommendation_validation'),
                 prompt=prompt,
+                response_model=ValidationResult,
                 reasoning_effort=self.model_config.gpt5_reasoning_effort,
                 text_verbosity=self.model_config.gpt5_text_verbosity,
                 semaphore=self.concurrency_semaphore
             )
-            response = ValidationResult.model_validate_json(resp.output_text)
             
             if self.verbose_detailed: 
                 if response is None:
