@@ -1052,6 +1052,19 @@ class InductiveCodeGenerator:
         # Get current codebook snapshot for consistent processing
         codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
         
+        # PRE-COMPUTE: Ensure codebook embeddings exist for this version before cluster processing
+        # This prevents multiple clusters from generating the same embeddings simultaneously
+        cached_embeddings = await self.shared_codebook.get_embeddings_for_version(base_version)
+        if cached_embeddings is None and codebook_snapshot:
+            self.verbose_reporter.stat_line(f"Pre-computing embeddings for {len(codebook_snapshot)} codes (version {base_version})")
+            code_texts = [f"{code['code']}: {code['definition']}" for code in codebook_snapshot]
+            try:
+                code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
+                await self.shared_codebook.cache_embeddings(base_version, code_embeddings)
+                self.verbose_reporter.stat_line(f"Cached embeddings for version {base_version}")
+            except Exception as e:
+                self.verbose_reporter.error(f"Failed to pre-compute embeddings for version {base_version}: {e}")
+        
         cluster_tasks = []
         for cluster_id in sub_batch:
             task = self._process_single_cluster(
@@ -1073,17 +1086,19 @@ class InductiveCodeGenerator:
         if results:
             await self._merge_codebook_updates(results, base_version)
             
-            # Generate embeddings for any new codes added to SharedCodebook
+            # POST-PROCESS: Generate embeddings for any new codes added during batch processing
             updated_codes, new_version = await self.shared_codebook.get_current_snapshot()
             if new_version > base_version:
-                # Codebook was updated, generate embeddings for the new version
+                # Codebook was updated during processing, ensure embeddings exist for new version
                 cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
                 if cached_embeddings is None:
                     # Generate embeddings for all codes in the updated codebook
+                    self.verbose_reporter.stat_line(f"Post-processing: Generating embeddings for updated codebook (version {new_version})")
                     code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
                     try:
                         code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
                         await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
+                        self.verbose_reporter.stat_line(f"Cached embeddings for updated version {new_version}")
                     except Exception as e:
                         self.verbose_reporter.error(f"Failed to generate embeddings for updated codebook (version {new_version}): {e}")
         
@@ -2039,7 +2054,7 @@ class InductiveCodeGenerator:
                         # Generate embeddings for all codes
                         
                         
-                        #self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
                         code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
                         try:
                             code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
