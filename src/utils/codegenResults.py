@@ -1,8 +1,8 @@
 import random
-from typing import Optional, List
+from typing import Optional, List, Union
 
 
-def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = None, show_detailed_reasoning: bool = False, debug_mode: bool = False) -> None:
+def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str]] = None, show_detailed_reasoning: bool = False, debug_mode: bool = False) -> None:
     
     #debug
     #codebook_reasoning=codebook_reasoning 
@@ -25,13 +25,52 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[int] = Non
             print("No clusters with recommendations found.")
             return
     
-    # Verify cluster exists
-    if cluster_id not in step3_recommendations:
-        print(f"Cluster {cluster_id} not found in results.")
-        return
+    # Handle integer cluster IDs that may have been expanded into sub-clusters
+    target_cluster_ids = []
+    if isinstance(cluster_id, int):
+        # Look for exact match first
+        if cluster_id in step3_recommendations:
+            target_cluster_ids = [cluster_id]
+        else:
+            # Look for sub-clusters like "12-1", "12-2" when user requests 12
+            cluster_str = str(cluster_id)
+            sub_clusters = [cid for cid in step3_recommendations.keys() 
+                          if isinstance(cid, str) and cid.startswith(f"{cluster_str}-")]
+            if sub_clusters:
+                target_cluster_ids = sorted(sub_clusters)  # Sort to show "12-1" before "12-2"
+                print(f"\n📋 Found {len(sub_clusters)} sub-clusters for cluster {cluster_id}: {', '.join(sub_clusters)}")
+            else:
+                print(f"Cluster {cluster_id} not found in results (no exact match or sub-clusters).")
+                return
+    else:
+        # String cluster ID - direct lookup
+        if cluster_id in step3_recommendations:
+            target_cluster_ids = [cluster_id]
+        else:
+            print(f"Cluster {cluster_id} not found in results.")
+            return
     
-    print(f"\n📋 Cluster Analysis (ID: {cluster_id})")
-    print("-" * 40)
+    # Display all matching clusters
+    for idx, current_cluster_id in enumerate(target_cluster_ids):
+        if len(target_cluster_ids) > 1:
+            print(f"\n{'='*60}")
+            print(f"SUB-CLUSTER {idx + 1}/{len(target_cluster_ids)}: {current_cluster_id}")
+            print(f"{'='*60}")
+        else:
+            print(f"\n📋 Cluster Analysis (ID: {current_cluster_id})")
+            print("-" * 40)
+        
+        _display_single_cluster(codebook_reasoning, current_cluster_id, show_detailed_reasoning, debug_mode)
+
+
+def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], show_detailed_reasoning: bool, debug_mode: bool) -> None:
+    """Display analysis for a single cluster (helper function)"""
+    step1_inputs = getattr(codebook_reasoning, 'step1_inputs', {})
+    step1_summaries = getattr(codebook_reasoning, 'step1_summaries', {})
+    step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})  
+    step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+    step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
+    
     
     # 1. CLUSTER THEME(S)
     if step1_summaries and cluster_id in step1_summaries:
@@ -229,7 +268,7 @@ def display_summary_statistics(codebook_reasoning) -> None:
         print(f"• Total validations: {len(all_val_decisions)}")
 
 
-def display_multiple_clusters(codebook_reasoning, cluster_ids: List[int] = None, max_clusters: int = 5, debug_mode: bool = False) -> None:
+def display_multiple_clusters(codebook_reasoning, cluster_ids: List[Union[int, str]] = None, max_clusters: int = 5, debug_mode: bool = False) -> None:
   
     #debug_mode = True
     step3_recommendations = codebook_reasoning.step3_recommendations
@@ -247,7 +286,7 @@ def display_multiple_clusters(codebook_reasoning, cluster_ids: List[int] = None,
         display_cluster_analysis(codebook_reasoning, cluster_id, show_detailed_reasoning=False, debug_mode=debug_mode)
 
 
-def find_clusters_by_decision(codebook_reasoning, decision_type: str) -> List[int]:
+def find_clusters_by_decision(codebook_reasoning, decision_type: str) -> List[Union[int, str]]:
     """step 3 only: create; modify and use"""
    
     matching_clusters = []
