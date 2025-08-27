@@ -28,19 +28,19 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int,
     # Handle integer cluster IDs that may have been expanded into sub-clusters
     target_cluster_ids = []
     if isinstance(cluster_id, int):
-        # Look for exact match first
-        if cluster_id in step3_recommendations:
-            target_cluster_ids = [cluster_id]
+        cluster_str = str(cluster_id)
+        # First check if it exists as string (single-theme cluster)
+        if cluster_str in step3_recommendations:
+            target_cluster_ids = [cluster_str]
         else:
             # Look for sub-clusters like "12-1", "12-2" when user requests 12
-            cluster_str = str(cluster_id)
             sub_clusters = [cid for cid in step3_recommendations.keys() 
                           if isinstance(cid, str) and cid.startswith(f"{cluster_str}-")]
             if sub_clusters:
                 target_cluster_ids = sorted(sub_clusters)  # Sort to show "12-1" before "12-2"
                 print(f"\n📋 Found {len(sub_clusters)} sub-clusters for cluster {cluster_id}: {', '.join(sub_clusters)}")
             else:
-                print(f"Cluster {cluster_id} not found in results (no exact match or sub-clusters).")
+                print(f"Cluster {cluster_id} not found in results (searched for '{cluster_str}' and '{cluster_str}-*' patterns).")
                 return
     else:
         # String cluster ID - direct lookup
