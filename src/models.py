@@ -256,8 +256,8 @@ class CodeGeneratorReasoningResults(BaseModel):
     cluster_assignments: Dict[Union[int, str], Dict[str, Any]]
     
     codebook: List[Dict[str, str]]  # Final deduplicated codebook from SharedCodebook
-    cluster_data: Dict[int, Dict[str, Any]]  # Raw cluster data for stats calculations
-    validation_details: Optional[Dict[int, Any]] = None  # Detailed validation results (maps to step4_validations)
+    cluster_data: Dict[Union[int, str], Dict[str, Any]]  # Raw cluster data for stats calculations (supports sub-clusters)
+    validation_details: Optional[Dict[Union[int, str], Any]] = None  # Detailed validation results (maps to step4_validations)
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
