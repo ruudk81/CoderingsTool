@@ -4,19 +4,8 @@ from typing import Optional, List, Union
 
 def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str]] = None, show_detailed_reasoning: bool = False, debug_mode: bool = False) -> None:
     
-    #debug
-    #codebook_reasoning=codebook_reasoning 
-    #show_detailed_reasoning = True
-    
-    print("\n" + "="*80 + "\nCLUSTER REASONING ANALYSIS\n" + "="*80)
-    
-    step1_inputs = getattr(codebook_reasoning, 'step1_inputs', {})
-    step1_summaries = getattr(codebook_reasoning, 'step1_summaries', {})
-    step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})  
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
-    step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
-  
-    # Select random cluster id to display
+   
     if cluster_id is None:
         if step3_recommendations:
             available_ids = list(step3_recommendations.keys())
@@ -24,45 +13,14 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int,
         else:
             print("No clusters with recommendations found.")
             return
-    
-    # Handle integer cluster IDs that may have been expanded into sub-clusters
-    target_cluster_ids = []
-    if isinstance(cluster_id, int):
-        cluster_str = str(cluster_id)
-        # First check if it exists as string (single-theme cluster)
-        if cluster_str in step3_recommendations:
-            target_cluster_ids = [cluster_str]
-        else:
-            # Look for sub-clusters like "12-1", "12-2" when user requests 12
-            sub_clusters = [cid for cid in step3_recommendations.keys() 
-                          if isinstance(cid, str) and cid.startswith(f"{cluster_str}-")]
-            if sub_clusters:
-                target_cluster_ids = sorted(sub_clusters)  # Sort to show "12-1" before "12-2"
-                print(f"\n📋 Found {len(sub_clusters)} sub-clusters for cluster {cluster_id}: {', '.join(sub_clusters)}")
-            else:
-                print(f"Cluster {cluster_id} not found in results (searched for '{cluster_str}' and '{cluster_str}-*' patterns).")
-                return
     else:
-        # String cluster ID - direct lookup
-        if cluster_id in step3_recommendations:
-            target_cluster_ids = [cluster_id]
-        else:
-            print(f"Cluster {cluster_id} not found in results.")
-            return
+        cluster_id = cluster_id
     
-    # Display all matching clusters
-    for idx, current_cluster_id in enumerate(target_cluster_ids):
-        if len(target_cluster_ids) > 1:
-            print(f"\n{'='*60}")
-            print(f"SUB-CLUSTER {idx + 1}/{len(target_cluster_ids)}: {current_cluster_id}")
-            print(f"{'='*60}")
-        else:
-            print(f"\n📋 Cluster Analysis (ID: {current_cluster_id})")
-            print("-" * 40)
+    print("\n" + "="*80 + f"\nCLUSTER REASONING ANALYSIS (cluster: {cluster_id})\n" + "="*80)
+    
+    
+    _display_single_cluster(codebook_reasoning, cluster_id, show_detailed_reasoning, debug_mode)
         
-        _display_single_cluster(codebook_reasoning, current_cluster_id, show_detailed_reasoning, debug_mode)
-
-
 def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], show_detailed_reasoning: bool, debug_mode: bool) -> None:
     """Display analysis for a single cluster (helper function)"""
     step1_inputs = getattr(codebook_reasoning, 'step1_inputs', {})
@@ -71,6 +29,8 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
     step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
     
+    #debug 
+    #cluster_id = "32-2"
     
     # 1. CLUSTER THEME(S)
     if step1_summaries and cluster_id in step1_summaries:
@@ -87,19 +47,16 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         else:
             print("[No themes identified]")
 
-        
-        # if len(themes) > 1: 
-        #     for i, theme in enumerate(themes, 1):
-        # elif len(themes) == 1:
-        #     print(f"{str(themes)}")
-        # else:
-        #     print("[No themes identified]")
     else:
         print("\n📝 1. CLUSTER THEME(S): [Not available]")
+
+    #debug 
+    #cluster_id = "35"
     
-    # 2. CLUSTER IDEAS (from step1_inputs, like promptTester does)
-    if step1_inputs and cluster_id in step1_inputs:
-        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')  
+    parent_cluster = cluster_id.split('-')[0]
+    
+    if step1_inputs and parent_cluster in step1_inputs:
+        cluster_text = step1_inputs[parent_cluster].get('cluster_text', '')  
         if cluster_text:
             ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
             clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]

@@ -674,6 +674,9 @@ class InductiveCodeGenerator:
         expanded_themes = {}
         expanded_clusters = {}
         
+        # Also expand step1_summaries to match the new sub-cluster structure
+        expanded_step1_summaries = {}
+        
         for cluster_id, theme_data in themes.items():
             if len(theme_data.themes) > 1:
                 # Multi-theme cluster: create sub-clusters
@@ -690,6 +693,13 @@ class InductiveCodeGenerator:
                     if cluster_id in clusters:
                         expanded_clusters[sub_cluster_id] = clusters[cluster_id].copy()
                     
+                    # Create step1_summary for this sub-cluster with only its single theme
+                    if cluster_id in self.step1_summaries:
+                        expanded_step1_summaries[sub_cluster_id] = {
+                            'cluster_summary': theme_item.theme_statement,
+                            'themes': [theme_item.theme_statement]  # Single theme only
+                        }
+                    
             else:
                 # Single-theme cluster: keep as-is but convert to string ID for consistency
                 string_cluster_id = str(cluster_id)
@@ -697,6 +707,13 @@ class InductiveCodeGenerator:
                 
                 if cluster_id in clusters:
                     expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
+                
+                # Also convert step1_summaries to string ID
+                if cluster_id in self.step1_summaries:
+                    expanded_step1_summaries[string_cluster_id] = self.step1_summaries[cluster_id]
+        
+        # Replace the original step1_summaries with the expanded version
+        self.step1_summaries = expanded_step1_summaries
         
         self.verbose_reporter.stat_line(f"Expanded {len(themes)} clusters into {len(expanded_themes)} processing units")
         self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
@@ -1009,12 +1026,10 @@ class InductiveCodeGenerator:
             
             # Create Level 2 sub-batches
             if len(dissimilarity_batch) > self.config.max_sub_batch_size:
-                sub_batches = self.similarity_engine.create_sub_batches(
-                    dissimilarity_batch, self.config.max_sub_batch_size
-                )
+                sub_batches = self.similarity_engine.create_sub_batches(dissimilarity_batch, self.config.max_sub_batch_size)
             else:
                 sub_batches = [dissimilarity_batch]  # Single sub-batch
-            
+             
             # Process Level 2 sub-batches concurrently with staggering
             sub_batch_tasks = []
             for i, sub_batch in enumerate(sub_batches):
@@ -1056,7 +1071,6 @@ class InductiveCodeGenerator:
         # This prevents multiple clusters from generating the same embeddings simultaneously
         cached_embeddings = await self.shared_codebook.get_embeddings_for_version(base_version)
         if cached_embeddings is None and codebook_snapshot:
-            self.verbose_reporter.stat_line(f"Pre-computing embeddings for {len(codebook_snapshot)} codes (version {base_version})")
             code_texts = [f"{code['code']}: {code['definition']}" for code in codebook_snapshot]
             try:
                 code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
@@ -1093,7 +1107,8 @@ class InductiveCodeGenerator:
                 cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
                 if cached_embeddings is None:
                     # Generate embeddings for all codes in the updated codebook
-                    self.verbose_reporter.stat_line(f"Post-processing: Generating embeddings for updated codebook (version {new_version})")
+                    if self.verbose_detailed: 
+                        self.verbose_reporter.stat_line(f"Post-processing: Generating embeddings for updated codebook (version {new_version})")
                     code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
                     try:
                         code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
@@ -1486,15 +1501,13 @@ class InductiveCodeGenerator:
             # Raw cluster results
             cluster_results=results,
             
-            # Prompt transparency - ACTUAL inputs to each step
             step1_inputs=self.step1_inputs,
-            step2_inputs=self.step2_inputs,  # Not used in current architecture
+            step2_inputs=self.step2_inputs,   
             step3_inputs=self.step3_inputs,
             step4_inputs=self.step4_inputs,
             
-            # Step results for backward compatibility
             step1_summaries=self.step1_summaries,
-            step2_analysis=self.step2_analysis,  # Not used in current architecture
+            step2_analysis=self.step2_analysis,  
             step3_recommendations=self.step3_recommendations,
             step4_validations=self.step4_validations,
             step4_validated_codes=self.step4_validated_codes,
@@ -1652,7 +1665,7 @@ class InductiveCodeGenerator:
                         'definition': code_validation.validated_code.definition,
                         'cluster_id': cluster_id
                     })
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: Found validated_code '{code_validation.validated_code.code}' - adding to batch")
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: Validated_code '{code_validation.validated_code.code}' - codebook updated")
                 else:
                     self.verbose_reporter.error(f"C{cluster_id}: code_validation[{i}] has no validated_code")
         
@@ -2052,9 +2065,8 @@ class InductiveCodeGenerator:
                     cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
                     if cached_embeddings is None:
                         # Generate embeddings for all codes
-                        
-                        
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
+                        if self.verbose_detailed: 
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
                         code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
                         try:
                             code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
