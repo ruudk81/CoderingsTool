@@ -4,7 +4,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import asyncio
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 # from dataclasses import dataclass
 # from collections import deque
 
@@ -234,14 +234,14 @@ class SimilarityEngine:
         self.similarity_threshold = similarity_threshold
         self.verbose_reporter = verbose_reporter or VerboseReporter(False)
     
-    async def embed_themes(self, themes: Dict[int, ClusterSummaryOutput]) -> Dict[int, np.ndarray]:
+    async def embed_themes(self, themes: Dict[str, ClusterSummaryOutput]) -> Dict[str, np.ndarray]:
         """Generate embeddings for all theme names using efficient batch processing (like embedder.py)"""
         self.verbose_reporter.step_start("Theme Embedding")
         self.verbose_reporter.stat_line(f"Processing {len(themes)} theme names in batches")
         
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
-        theme_statements = [themes[cid].themes[0].theme_statement for cid in cluster_ids]  # Use first theme's statement
+        theme_statements = [themes[cid].themes[0].theme_statement for cid in cluster_ids]  # Each sub-cluster has only one theme now
         
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
         batch_size = 100
@@ -311,7 +311,7 @@ class SimilarityEngine:
         )
         return np.array(response.data[0].embedding)
     
-    def create_dissimilarity_batches(self, theme_embeddings: Dict[int, np.ndarray], themes: Dict = None) -> List[List[int]]:
+    def create_dissimilarity_batches(self, theme_embeddings: Dict[str, np.ndarray], themes: Dict = None) -> List[List[str]]:
         """Create batches using Progressive Dispersion with Conflict Set Tracking"""
         self.verbose_reporter.step_start("Progressive Dispersion Batching")
         
@@ -597,16 +597,18 @@ class InductiveCodeGenerator:
         self.step4_validated_codes = {}  # Final validated codes
         self.cluster_assignments = {}  # Cluster-to-code mappings
     
-    def _capture_prompt_params(self, cluster_id: int, step: str, **kwargs):
+    def _capture_prompt_params(self, cluster_id: Union[int, str], step: str, **kwargs):
         """Capture exact parameters used in prompt.format() for debugging/testing"""
+        # Convert cluster_id to string for consistent dict key format
+        key = str(cluster_id)
         if step == "step1":
-            self.step1_inputs[cluster_id] = kwargs
+            self.step1_inputs[key] = kwargs
         elif step == "step2":
-            self.step2_inputs[cluster_id] = kwargs
+            self.step2_inputs[key] = kwargs
         elif step == "step3":
-            self.step3_inputs[cluster_id] = kwargs
+            self.step3_inputs[key] = kwargs
         elif step == "step4":
-            self.step4_inputs[cluster_id] = kwargs
+            self.step4_inputs[key] = kwargs
     
     def _get_theme_statement(self, theme_data) -> str:
         """Safely get theme statement from theme data"""
@@ -664,7 +666,44 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_complete("Theme Extraction")
         return theme_results
     
-    async def _extract_single_theme(self, cluster_id: int, ideas: List[str]):
+    def expand_multi_theme_clusters(self, themes: Dict[int, ClusterSummaryOutput], 
+                                   clusters: Dict[int, Dict[str, Any]]) -> Tuple[Dict[str, ClusterSummaryOutput], Dict[str, Dict[str, Any]]]:
+        """Expand multi-theme clusters into sub-clusters for independent processing"""
+        self.verbose_reporter.step_start("Multi-Theme Cluster Expansion")
+        
+        expanded_themes = {}
+        expanded_clusters = {}
+        
+        for cluster_id, theme_data in themes.items():
+            if len(theme_data.themes) > 1:
+                # Multi-theme cluster: create sub-clusters
+                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.themes)} sub-clusters")
+                
+                for i, theme_item in enumerate(theme_data.themes, 1):
+                    sub_cluster_id = f"{cluster_id}-{i}"
+                    
+                    # Create single-theme ClusterSummaryOutput for sub-cluster
+                    single_theme_data = ClusterSummaryOutput(themes=[theme_item])
+                    expanded_themes[sub_cluster_id] = single_theme_data
+                    
+                    # Duplicate cluster data for sub-cluster
+                    if cluster_id in clusters:
+                        expanded_clusters[sub_cluster_id] = clusters[cluster_id].copy()
+                    
+            else:
+                # Single-theme cluster: keep as-is but convert to string ID for consistency
+                string_cluster_id = str(cluster_id)
+                expanded_themes[string_cluster_id] = theme_data
+                
+                if cluster_id in clusters:
+                    expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
+        
+        self.verbose_reporter.stat_line(f"Expanded {len(themes)} clusters into {len(expanded_themes)} processing units")
+        self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
+        
+        return expanded_themes, expanded_clusters
+    
+    async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str]):
         """Extract theme for single cluster using instructor"""
         ideas_text = "\n".join([f"- {idea}" for idea in ideas])
         
@@ -880,7 +919,7 @@ class InductiveCodeGenerator:
                 continue
                 
             theme_data = themes[cluster_id]
-            ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
+            #ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             
             # Step 4a: Candidate Selection prompt
             codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
@@ -889,7 +928,7 @@ class InductiveCodeGenerator:
             candidate_prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(
                 survey_question=self.var_lab,
                 language=DEFAULT_LANGUAGE,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}",
+                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
                 code_text=codes_text
             )
             candidate_tokens = len(self.encoding.encode(candidate_prompt)) + 200  # + completion estimate
@@ -901,7 +940,7 @@ class InductiveCodeGenerator:
             code_gen_prompt = CODE_GENERATION_PROMPT.format(
                 language=DEFAULT_LANGUAGE,
                 survey_question=self.var_lab,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}",
+                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
                 candidate_codes=candidate_codes_text
             )
             code_gen_tokens = len(self.encoding.encode(code_gen_prompt)) + 150  # + completion estimate
@@ -914,7 +953,7 @@ class InductiveCodeGenerator:
             validation_prompt = VALIDATION_PROMPT.format(
                 language=DEFAULT_LANGUAGE,
                 survey_question=self.var_lab,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}\nIdeas:\n{ideas_text}",
+                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
                 candidate_codes=validation_codes_text,
                 step3_recommendation='{"coding_decisions": [{"decision": "create_new", "justification": "Example reasoning"}]}'
             )
@@ -937,7 +976,7 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_complete("Code Generation Token Measurement")
         return measured_averages
     
-    async def process_batches_sequentially(self, dissimilarity_batches: List[List[int]], 
+    async def process_batches_sequentially(self, dissimilarity_batches: List[List[str]], 
                                          clusters: Dict, themes: Dict, 
                                          theme_embeddings: Dict) -> List[Dict[str, Any]]:
         """Process Level 1 batches sequentially, Level 2 batches concurrently with staggering"""
@@ -1001,7 +1040,7 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_complete("Two-Level Batch Processing")
         return all_results
     
-    async def _process_sub_batch_with_stagger(self, sub_batch: List[int], clusters: Dict, themes: Dict, 
+    async def _process_sub_batch_with_stagger(self, sub_batch: List[str], clusters: Dict, themes: Dict, 
                                             stagger_delay: float) -> List[Dict[str, Any]]:
         """Process sub-batch with initial stagger delay and rate limiting"""
         
@@ -1050,65 +1089,65 @@ class InductiveCodeGenerator:
         
         return results
     
-    async def _process_single_cluster_pipeline(self, cluster_id: int, 
-                                             clusters: Dict, themes: Dict) -> Optional[Dict[str, Any]]:
-        """3-step pipeline for single cluster"""
+    # async def _process_single_cluster_pipeline(self, cluster_id: int, 
+    #                                          clusters: Dict, themes: Dict) -> Optional[Dict[str, Any]]:
+    #     """3-step pipeline for single cluster"""
         
-        if cluster_id not in themes or cluster_id not in clusters:
-            return None
+    #     if cluster_id not in themes or cluster_id not in clusters:
+    #         return None
         
-        cluster_data = clusters[cluster_id]
-        theme_data = themes[cluster_id]
+    #     cluster_data = clusters[cluster_id]
+    #     theme_data = themes[cluster_id]
         
-        try:
-            # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
-            current_codes, _ = await self.shared_codebook.get_current_snapshot()
-            nearest_codes = await self._find_nearest_codes_by_theme(
-                cluster_id, theme_data, current_codes, k=5
-            )
+    #     try:
+    #         # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
+    #         current_codes, _ = await self.shared_codebook.get_current_snapshot()
+    #         nearest_codes = await self._find_nearest_codes_by_theme(
+    #             cluster_id, theme_data, current_codes, k=5
+    #         )
             
-            # Step 1: Candidate selection - pure unlimited call
-            candidate_selection = await self._select_candidate_codes(
-                cluster_id, cluster_data, theme_data, nearest_codes
-            )
+    #         # Step 1: Candidate selection - pure unlimited call
+    #         candidate_selection = await self._select_candidate_codes(
+    #             cluster_id, cluster_data, theme_data, nearest_codes
+    #         )
             
-            # Step 4b: Code Generation - unlimited
-            code_generation = await self._generate_code(
-                cluster_id, cluster_data, theme_data, candidate_selection
-            )
+    #         # Step 4b: Code Generation - unlimited
+    #         code_generation = await self._generate_code(
+    #             cluster_id, cluster_data, theme_data, candidate_selection
+    #         )
             
-            # Step 4c: Validation
-            validation = await self._validate_code(
-                cluster_id, cluster_data, theme_data, code_generation, candidate_selection
-            )
+    #         # Step 4c: Validation
+    #         validation = await self._validate_code(
+    #             cluster_id, cluster_data, theme_data, code_generation, candidate_selection
+    #         )
             
-            # Extract final code/definition from complex validation structure
-            final_code = None
-            final_definition = None
-            if validation and hasattr(validation, 'code_validations') and validation.code_validations:
-                # Get the first validated code (for now - could aggregate multiple)
-                first_validation = validation.code_validations[0]
-                if first_validation.validated_code:
-                    final_code = first_validation.validated_code.code
-                    final_definition = first_validation.validated_code.definition
+    #         # Extract final code/definition from complex validation structure
+    #         final_code = None
+    #         final_definition = None
+    #         if validation and hasattr(validation, 'code_validations') and validation.code_validations:
+    #             # Get the first validated code (for now - could aggregate multiple)
+    #             first_validation = validation.code_validations[0]
+    #             if first_validation.validated_code:
+    #                 final_code = first_validation.validated_code.code
+    #                 final_definition = first_validation.validated_code.definition
             
-            return {
-                'cluster_id': cluster_id,
-                'theme_name': self._get_theme_statement(theme_data),
-                'theme_description': self._get_theme_description(theme_data),
-                'ideas_count': len(cluster_data['ideas']),
-                'candidate_selection': candidate_selection,
-                'code_generation': code_generation,
-                'validation': validation,
-                'final_code': final_code,
-                'final_definition': final_definition
-            }
+    #         return {
+    #             'cluster_id': cluster_id,
+    #             'theme_name': self._get_theme_statement(theme_data),
+    #             'theme_description': self._get_theme_description(theme_data),
+    #             'ideas_count': len(cluster_data['ideas']),
+    #             'candidate_selection': candidate_selection,
+    #             'code_generation': code_generation,
+    #             'validation': validation,
+    #             'final_code': final_code,
+    #             'final_definition': final_definition
+    #         }
             
-        except Exception as e:
-            self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
-            return None
+    #     except Exception as e:
+    #         self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
+    #         return None
     
-    async def _find_nearest_codes_by_theme(self, cluster_id: int, theme_data, 
+    async def _find_nearest_codes_by_theme(self, cluster_id: Union[int, str], theme_data, 
                                           current_codes: List[Dict[str, str]], k: int = 5) -> List[Dict[str, str]]:
         """Find k nearest codes to themes using cosine similarity - handles multiple themes per cluster"""
         if not current_codes:
@@ -1149,7 +1188,7 @@ class InductiveCodeGenerator:
         
         return deduplicated_codes
     
-    async def _get_theme_embedding_for_item(self, cluster_id: int, theme_item) -> Optional[np.ndarray]:
+    async def _get_theme_embedding_for_item(self, cluster_id: Union[int, str], theme_item) -> Optional[np.ndarray]:
         """Get embedding for a specific theme item"""
         try:
             # Generate embedding for this specific theme
@@ -1268,6 +1307,9 @@ class InductiveCodeGenerator:
                 themes = {}
                 
             self._processing_stats['stage_times']['theme_extraction'] = time.time() - stage_start
+            
+            # Stage 1.5: Expand multi-theme clusters into sub-clusters
+            themes, clusters = self.expand_multi_theme_clusters(themes, clusters)
             
             # Stage 2: Theme Embedding with fallback handling
             stage_start = time.time()
@@ -1494,7 +1536,7 @@ class InductiveCodeGenerator:
     
     # ============================================================================
     # PHASE 3: UNLIMITED PARALLELISM WITH VERSION-BASED CODEBOOK UPDATES
-    async def _process_single_cluster(self, cluster_id: int, clusters: Dict, themes: Dict,
+    async def _process_single_cluster(self, cluster_id: str, clusters: Dict, themes: Dict,
                                                codebook_snapshot: List[Dict], base_version: int) -> Optional[Dict[str, Any]]:
         """Process single cluster with unlimited concurrency - no artificial limits (Phase 3)"""
         
@@ -1607,7 +1649,7 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line("No new codes to add to SharedCodebook from this sub-batch")
     
     
-    async def _select_candidate_codes(self, cluster_id: int, cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
+    async def _select_candidate_codes(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
         """Select candidate codes with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
@@ -1672,7 +1714,7 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return []
     
-    async def _generate_code(self, cluster_id: int, cluster_data: Dict, theme_data, candidate_selection):
+    async def _generate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, candidate_selection):
         """Generate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
@@ -1832,19 +1874,19 @@ class InductiveCodeGenerator:
                 # Not a parsing error, re-raise original
                 raise instructor_error
 
-    async def _validate_code(self, cluster_id: int, cluster_data: Dict, theme_data, 
+    async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, 
                                        code_generation, candidate_selection):
         """Validate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
             # Use candidate_selection instead of full codebook (consistent with rate-limited version)
-            if candidate_selection and len(candidate_selection) > 0:
-                validation_codes_text = "\n".join([
-                    f"Code: {code.code}\nDefinition: {code.definition}\n" 
-                    for code in candidate_selection
-                ])
-            else:
-                validation_codes_text = "No existing codes available."
+            # if candidate_selection and len(candidate_selection) > 0:
+            #     validation_codes_text = "\n".join([
+            #         f"Code: {code.code}\nDefinition: {code.definition}\n" 
+            #         for code in candidate_selection
+            #     ])
+            # else:
+            #     validation_codes_text = "No existing codes available."
             
             cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
             step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
