@@ -68,12 +68,21 @@ async def async_responses_create(model: str, prompt: str, reasoning_effort: str 
     """Async wrapper using asyncio.to_thread for true concurrency"""
     return await asyncio.to_thread(_sync_responses_create, model, prompt, reasoning_effort, text_verbosity)
 
-# Global semaphore for concurrency control (start conservative)
-_concurrency_semaphore = asyncio.Semaphore(16)
+# Global semaphore for concurrency control - will be replaced with config-based approach
+_concurrency_semaphore = None
 
-async def async_responses_create_with_semaphore(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
+def _get_concurrency_semaphore():
+    """Get or create semaphore with default value - to be replaced by config-based approach"""
+    global _concurrency_semaphore
+    if _concurrency_semaphore is None:
+        _concurrency_semaphore = asyncio.Semaphore(16)  # Default fallback
+    return _concurrency_semaphore
+
+async def async_responses_create_with_semaphore(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", semaphore: asyncio.Semaphore = None):
     """Async wrapper with semaphore-based concurrency control"""
-    async with _concurrency_semaphore:
+    if semaphore is None:
+        semaphore = _get_concurrency_semaphore()
+    async with semaphore:
         return await async_responses_create(model, prompt, reasoning_effort, text_verbosity)
 
 
@@ -91,6 +100,8 @@ class CodeDesignerAPIClient:
         self.model_config = model_config
         self.encoding = encoding
         self.verbose_reporter = verbose_reporter
+        # Initialize config-aware concurrency control
+        self.concurrency_semaphore = asyncio.Semaphore(getattr(config, 'async_concurrency_limit', 16))
     
     @retry(
         retry=retry_if_exception_type(RateLimitError),
@@ -577,6 +588,9 @@ class InductiveCodeGenerator:
         self.model_config = ModelConfig()
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
+        # Initialize config-aware concurrency control
+        self.concurrency_semaphore = asyncio.Semaphore(self.config.async_concurrency_limit)
+        
         # Initialize async client and rate limiting
         self.async_client = client  # Use global client
         self.embedding_client = OpenAI()
@@ -793,10 +807,11 @@ class InductiveCodeGenerator:
         try:
             # Use async wrapper for true concurrency with GPT-5 reasoning parameters
             resp = await async_responses_create_with_semaphore(
-                model="gpt-5-nano",
+                model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
-                reasoning_effort="minimal",
-                text_verbosity="low"
+                reasoning_effort=self.model_config.gpt5_reasoning_effort,
+                text_verbosity=self.model_config.gpt5_text_verbosity,
+                semaphore=self.concurrency_semaphore
             )
             response = ClusterSummaryOutput.model_validate_json(resp.output_text).root
             
@@ -1745,10 +1760,11 @@ class InductiveCodeGenerator:
             
             # Use async wrapper for true concurrency with GPT-5 reasoning parameters
             resp = await async_responses_create_with_semaphore(
-                model="gpt-5-nano",
+                model=self.model_config.get_model_for_stage('candidate_selection'),
                 prompt=prompt,
-                reasoning_effort="minimal",
-                text_verbosity="low"
+                reasoning_effort=self.model_config.gpt5_reasoning_effort,
+                text_verbosity=self.model_config.gpt5_text_verbosity,
+                semaphore=self.concurrency_semaphore
             )
             response = CandidateCodeSelectionOutput.model_validate_json(resp.output_text).root
             
@@ -1811,10 +1827,11 @@ class InductiveCodeGenerator:
             
             # Use async wrapper for true concurrency with GPT-5 reasoning parameters
             resp = await async_responses_create_with_semaphore(
-                model="gpt-5-nano",
+                model=self.model_config.get_model_for_stage('code_recommendation'),
                 prompt=prompt,
-                reasoning_effort="minimal",
-                text_verbosity="low"
+                reasoning_effort=self.model_config.gpt5_reasoning_effort,
+                text_verbosity=self.model_config.gpt5_text_verbosity,
+                semaphore=self.concurrency_semaphore
             )
             response = CodeRecommendation.model_validate_json(resp.output_text)
             
@@ -1895,10 +1912,11 @@ class InductiveCodeGenerator:
             
             # Use async wrapper for true concurrency with GPT-5 reasoning parameters
             resp = await async_responses_create_with_semaphore(
-                model="gpt-5-nano",
+                model=self.model_config.get_model_for_stage('recommendation_validation'),
                 prompt=prompt,
-                reasoning_effort="minimal",
-                text_verbosity="low"
+                reasoning_effort=self.model_config.gpt5_reasoning_effort,
+                text_verbosity=self.model_config.gpt5_text_verbosity,
+                semaphore=self.concurrency_semaphore
             )
             response = ValidationResult.model_validate_json(resp.output_text)
             

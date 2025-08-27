@@ -234,7 +234,7 @@ class ModelConfig:
             'tiktoken': self.token_codebook_generation_model,
             'tiktoken_spellChecker': self.tiktoken_spellChecker,
             'theme_extraction': self.thematic_summary_model,
-            'canditate_selection': self.candidate_selection_model,
+            'candidate_selection': self.candidate_selection_model,
             'code_recommendation': self.code_generation_model,
             'recommendation_validation': self.validation_model
             }
@@ -669,6 +669,7 @@ class CodeDesignerConfig:
     # Rate limiting and performance
     batch_size: int = 20  # Base batch size for API calls
     max_concurrent_requests: int = 15  # Maximum concurrent API requests
+    async_concurrency_limit: int = 16  # Async concurrency limit for codeGenerator
     enable_aggressive_parallelism: bool = True  # Enable concurrent processing within batches
     
     # Processing strategy
