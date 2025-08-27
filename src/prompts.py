@@ -546,8 +546,16 @@ Step 1: Review each theme/code recommendation against the rules of semantic fit,
 Step 2: Decide outcome:  
 - **APPROVE** — Recommendation is atomic, scoped correctly, and rule-compliant.  
 - **REJECT** — Recommendation is not acceptable as-is. Refine the code (atomicity, naming, scope, or definition) and provide a corrected validated_code.  
-Step 3: For both APPROVE and REJECT, return a validated_code object. If REJECT, include explicit decision_rationale (why, and how it was refined).  
-Step 4: Before finalizing, check that **every validated_code in your output also complies with the validation criteria**.
+Step 3: Produce a draft validated_code.  
+Step 4: **Self-audit & repair (mandatory before output)** — Apply the Atomicity Enforcement Checklist to your draft. If any item FAILS, **rewrite** the label/definition until **all** checklist items PASS.  
+Step 5: For both APPROVE and REJECT, return a validated_code object. If REJECT, include explicit decision_rationale (why, and how it was refined).  
+
+Atomicity Enforcement Checklist (apply to your own output)  
+- Conjunctions: label contains **no** coordinating conjunctions (e.g., "and", "or", "en", "of", "met", "en/of").  
+- List markers & punctuation: label contains **none** of "/", "&", "+", ",", ";", ":", " - ", " – " (hyphens allowed only in lexicalized words).  
+- Single idea: label and definition each express **one** idea (no compounds or merged themes).  
+- Single action: definition contains at most **one** main action (verb).  
+- Length: label ≤10 words; definition ≤25 words.  
 
 ────────────────────────────────────────
 CRITERIA for validation
@@ -583,7 +591,7 @@ OUTPUT FORMAT (strict JSON, in {language} — all validation criteria must be ap
         "definition": "definition originally proposed"
       }},
       "decision": "APPROVE | REJECT",
-      "decision_rationale": "short explanation; if REJECT, specify why and describe substitution or refinement",
+      "decision_rationale": "Include a brief explanation AND the self-audit summary in this format: Conjunctions=PASS/FAIL; Punctuation=PASS/FAIL; SingleIdea=PASS/FAIL; SingleAction=PASS/FAIL; NameLen=PASS/FAIL; DefLen=PASS/FAIL.",
       "validated_code": {{
         "code": "final validated label (atomic, rule-compliant, ≤10 words)",
         "definition": "final validated definition (≤25 words, operational, grounded)"
@@ -608,7 +616,8 @@ OUTPUT FORMAT (strict JSON, in {language} — all validation criteria must be ap
 ────────────────────────────────────────
 CRITICAL REQUIREMENTS
 ────────────────────────────────────────
-- Validation criteria must be applied to BOTH the input recommendations and your generated validated_code outputs.  
+- Validation criteria apply to BOTH the input recommendations and your generated validated_code outputs.  
+- The **self-audit summary is mandatory** inside decision_rationale; all items must be PASS in the final output.  
 - Always return a validated_code object for every theme_number, regardless of decision.  
 - Names ≤10 words; definitions ≤25 words.  
 - If substituting with an existing code, copy name/definition exactly.  
@@ -616,8 +625,6 @@ CRITICAL REQUIREMENTS
 - Output ONLY valid JSON — no other text.  
 - All fields must be in {language}.  
 """
-
-
 
 
 # =============================================================================

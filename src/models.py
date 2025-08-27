@@ -100,23 +100,10 @@ class ClusterThemeItem(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-class ClusterSummaryOutput(BaseModel):
-    """Array output from CLUSTER_SUMMARY_PROMPT - instructor compatible"""
-    themes: List[ClusterThemeItem] = Field(description="Array of themes extracted from cluster")
+class ClusterSummaryOutput(RootModel[List[ClusterThemeItem]]):
+    """Array output from CLUSTER_SUMMARY_PROMPT - matches prompt exactly"""
+    root: List[ClusterThemeItem]
     
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    # @property
-    # def root(self):
-    #     """Backward compatibility property to mimic RootModel behavior"""
-    #     return self.themes
-
-# class ClusterThemeAnalysis(BaseModel):
-#     """Step 1 JSON response: Cluster summary with themes array"""
-#     cluster_summary: str
-#     themes: List[str]  # Array of theme statements with rationales
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CandidateCode(BaseModel):
     """Individual candidate code from Step 2"""  
@@ -125,16 +112,9 @@ class CandidateCode(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-# class ActionDetails(BaseModel):
-#     """Action details for coding decisions in Step 3"""
-#     codes_to_use: Optional[List[str]] = None
-#     codes_to_modify: Optional[str] = None
-#     modified_code_name: Optional[str] = None
-#     modified_code_definition: Optional[str] = None
-#     new_code_name: Optional[str] = None
-#     new_code_definition: Optional[str] = None
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
+class CandidateCodeSelectionOutput(RootModel[List[CandidateCode]]):
+    """Array output from CANDIDATE_CODE_SELECTION_PROMPT - matches prompt exactly"""
+    root: List[CandidateCode]
 
 class CodingDecision(BaseModel):
     """Individual coding decision for a theme from Step 3 - flattened structure"""
@@ -152,32 +132,6 @@ class CodeRecommendation(BaseModel):
     coding_decisions: List[CodingDecision]
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-# class ClusterAnalysis(BaseModel):
-#     """Cluster analysis metadata from Step 3"""
-#     number_of_themes: int
-#     theme_descriptions: List[str]
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-# class CodeRecommendation(BaseModel):
-#     """Step 3 JSON response: Multi-theme code recommendations"""
-#     cluster_analysis: ClusterAnalysis
-#     coding_decisions: List[CodingDecision]
-#     overall_justification: str
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-# class CodeEvaluation(BaseModel):
-#     """Evaluation criteria for Step 4 validation"""
-#     semantic_fit: str
-#     atomicity: str
-#     parsimony: str
-#     redundancy: str
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ValidatedCode(BaseModel):
     """Final validated code from Step 4"""
@@ -203,7 +157,6 @@ class CodeValidation(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-
 class ValidationResult(BaseModel):
     """Step 4 JSON response: Multi-theme validation results"""
     # theme_assessment: ThemeAssessment
@@ -211,25 +164,7 @@ class ValidationResult(BaseModel):
     # overall_validation: OverallValidation
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    
-# class ThemeAssessment(BaseModel):
-#     """Theme assessment from Step 4"""
-#     number_of_themes_identified: int
-#     theme_separation_valid: bool
-#     theme_separation_reasoning: str
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-# class OverallValidation(BaseModel):
-#     """Overall validation summary from Step 4"""
-#     all_themes_coded: bool
-#     final_code_count: int
-#     summary: str
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
+ 
 class CodeGeneratorReasoningResults(BaseModel):
     cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
     
@@ -382,12 +317,6 @@ class CodeGeneratorReasoningResults(BaseModel):
 
 # # === CODEDESIGNER MODELS (INSTRUCTOR-COMPATIBLE) ========================================================================================================
 
-
-# class CandidateCodeSelectionOutput(RootModel):
-#     """Array output from CANDIDATE_CODE_SELECTION_PROMPT - matches prompt exactly"""
-#     root: List[CandidateCode]
-    
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 # class CodeDesignerGenerationOutput(BaseModel):
 #     """Stage 4b: Code generation decision and details"""

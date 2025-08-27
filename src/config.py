@@ -183,16 +183,10 @@ class ModelConfig:
 
     # Step 7: Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
-    codebook_analysis_model: str = DEFAULT_MODEL     
-    response_summary_model: str = DEFAULT_MODEL     
-    match_and_recommend_model: str = DEFAULT_MODEL     
-    validation_model: str = DEFAULT_MODEL     
-    
-    # Step 7: Codebook generation
-    cluster_summary_model: str = "gpt-5-nano"   
-    candidate_selection_model: str = "gpt-4.1-mini"      
-    code_generation_model: str ="gpt-5-mini"    
-    validation_model: str = "gpt-5-nano" 
+    thematic_summary_model: str = "gpt-5-nano"              #prompt 1
+    candidate_selection_model: str = "gpt-4.1-mini"         #prompt 2
+    code_generation_model: str = "gpt-5-nano"               #prompt 3
+    validation_model: str = "gpt-5-nano"                    #prompt 4
     
     # Step 8: Hierarchical organisation of codebook
     hierarchical_organisation_model: str = DEFAULT_MODEL
@@ -239,23 +233,11 @@ class ModelConfig:
             'speculative_codes': self.speculative_codes_model,
             'tiktoken': self.token_codebook_generation_model,
             'tiktoken_spellChecker': self.tiktoken_spellChecker,
-            'cluster_summarization': self.codebook_analysis_model,
-            'candidate_code_selection': self.response_summary_model,
-            'code_generation_recommendation': self.match_and_recommend_model,
+            'theme_extraction': self.thematic_summary_model,
+            'canditate_selection': self.candidate_selection_model,
+            'code_recommendation': self.code_generation_model,
             'recommendation_validation': self.validation_model
-            
-            # Keep old names for backward compatibility
-            # 'codes_analysis': self.codebook_analysis_model,
-            # 'cluster_analysis': self.response_summary_model,
-            # 'recommend': self.match_and_recommend_model,
-            # 'review': self.validation_model,
-            # 'codebook_analysis': self.codebook_analysis_model,
-            # 'code_validation': self.validation_model,
-            # 'hierarchical_organisation': self.hierarchical_organisation_model,
-            # 'domain_clustering': self.domain_clustering_model,
-            # 'theme_synthesis': self.theme_synthesis_model,
-            # 'code_assignment': self.code_assignment_model
-        }
+            }
         return stage_models.get(stage, DEFAULT_MODEL)
     
     def get_temperature_for_stage(self, stage: str) -> float:

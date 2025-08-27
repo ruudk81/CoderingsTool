@@ -133,3 +133,6 @@ The code generation uses a sophisticated 4-chain prompt system:
 - Extensive backup system in place (check src/utils/old for history)
 - Web interface available via Streamlit for interactive testing
 - Configuration changes invalidate relevant cache entries automatically
+
+### Prompt Processing Considerations
+- Prompts are leading. So pydantic models and processing prompted responses from LLMs down the pipeline in codeGenerator need to facilitate prompts/instructed outputs

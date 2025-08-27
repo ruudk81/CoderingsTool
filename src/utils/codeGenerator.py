@@ -8,16 +8,15 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 # from dataclasses import dataclass
 # from collections import deque
 
-import instructor
-from openai import AsyncOpenAI, RateLimitError
+from openai import OpenAI, RateLimitError
 import tiktoken
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
 import models
-from models import ClusterSummaryOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem 
+from models import ClusterSummaryOutput, CandidateCodeSelectionOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem 
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -33,8 +32,49 @@ try:
 except ImportError:
     pass
 
-# Initialize async client with instructor
-async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+# Initialize client
+client = OpenAI()
+
+# ============================================================================
+# ASYNC WRAPPERS FOR TRUE CONCURRENCY
+# ============================================================================
+
+class RetryableError(Exception):
+    """Retryable API errors for tenacity"""
+    pass
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(6),
+    wait=wait_exponential_jitter(initial=0.5, max=8),
+    retry=retry_if_exception_type(RetryableError)
+)
+def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
+    """Sync wrapper for responses.create with retry logic"""
+    try:
+        return client.responses.create(
+            model=model,
+            input=[{"role": "user", "content": prompt}],
+            text={"verbosity": text_verbosity},
+            reasoning={"effort": reasoning_effort},
+        )
+    except Exception as e:
+        # Map rate limits and server errors to retryable errors
+        if "429" in str(e) or "5" in str(e)[:1]:  # 5xx errors
+            raise RetryableError(str(e)) from e
+        raise  # Re-raise non-retryable errors immediately
+
+async def async_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
+    """Async wrapper using asyncio.to_thread for true concurrency"""
+    return await asyncio.to_thread(_sync_responses_create, model, prompt, reasoning_effort, text_verbosity)
+
+# Global semaphore for concurrency control (start conservative)
+_concurrency_semaphore = asyncio.Semaphore(16)
+
+async def async_responses_create_with_semaphore(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
+    """Async wrapper with semaphore-based concurrency control"""
+    async with _concurrency_semaphore:
+        return await async_responses_create(model, prompt, reasoning_effort, text_verbosity)
 
 
 # ============================================================================
@@ -241,7 +281,7 @@ class SimilarityEngine:
         
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
-        theme_statements = [themes[cid].themes[0].theme_statement for cid in cluster_ids]  # Each sub-cluster has only one theme now
+        theme_statements = [themes[cid].root[0].theme_statement for cid in cluster_ids]  # Each sub-cluster has only one theme now
         
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
         batch_size = 100
@@ -269,7 +309,7 @@ class SimilarityEngine:
             for cluster_id, theme in themes.items():
                 try:
                     # Use first theme's statement
-                    theme_statement = theme.themes[0].theme_statement if theme.themes else "Unknown"
+                    theme_statement = theme.root[0].theme_statement if theme.root else "Unknown"
                     embedding = await self._get_embedding(theme_statement)
                     theme_embeddings[cluster_id] = embedding
                 except Exception as individual_error:
@@ -283,12 +323,12 @@ class SimilarityEngine:
     
     async def _embed_openai_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
         """Efficient batch embedding using OpenAI API (adapted from embedder.py) with retry logic"""
-        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
         # Retry logic similar to embedder.py
         for attempt in range(3):
             try:
-                response = await client.embeddings.create(
+                response = client.embeddings.create(
                     input=batch_texts,
                     model="text-embedding-3-small"
                 )
@@ -304,8 +344,8 @@ class SimilarityEngine:
 
     async def _get_embedding(self, text: str) -> np.ndarray:
         """Get embedding for single text using OpenAI embeddings API (fallback method)"""
-        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        response = await client.embeddings.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.embeddings.create(
             model="text-embedding-3-small",
             input=text
         )
@@ -403,7 +443,7 @@ class SimilarityEngine:
         for batch_idx, batch_cluster_ids in enumerate(batches):
             theme_labels = []
             if themes:
-                theme_labels = [f"C{cid}: '{themes[cid].themes[0].theme_statement if themes[cid].themes else 'unknown'}'" if cid in themes else f"C{cid}: unknown" 
+                theme_labels = [f"C{cid}: '{themes[cid].root[0].theme_statement if themes[cid].root else 'unknown'}'" if cid in themes else f"C{cid}: unknown" 
                               for cid in batch_cluster_ids]
             else:
                 theme_labels = [f"C{cid}" for cid in batch_cluster_ids]
@@ -538,8 +578,8 @@ class InductiveCodeGenerator:
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         # Initialize async client and rate limiting
-        self.async_client = async_client
-        self.embedding_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        self.async_client = client  # Use global client
+        self.embedding_client = OpenAI()
         
         # Initialize tokenizer with proper model mapping
         try:
@@ -612,8 +652,8 @@ class InductiveCodeGenerator:
     
     def _get_theme_statement(self, theme_data) -> str:
         """Safely get theme statement from theme data"""
-        if hasattr(theme_data, 'themes') and theme_data.themes:
-            return theme_data.themes[0].theme_statement
+        if hasattr(theme_data, 'root') and theme_data.root:
+            return theme_data.root[0].theme_statement
         return "Unknown theme"
     
     def _get_theme_description(self, theme_data) -> str:
@@ -678,15 +718,15 @@ class InductiveCodeGenerator:
         expanded_step1_summaries = {}
         
         for cluster_id, theme_data in themes.items():
-            if len(theme_data.themes) > 1:
+            if len(theme_data.root) > 1:
                 # Multi-theme cluster: create sub-clusters
-                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.themes)} sub-clusters")
+                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.root)} sub-clusters")
                 
-                for i, theme_item in enumerate(theme_data.themes, 1):
+                for i, theme_item in enumerate(theme_data.root, 1):
                     sub_cluster_id = f"{cluster_id}-{i}"
                     
                     # Create single-theme ClusterSummaryOutput for sub-cluster
-                    single_theme_data = ClusterSummaryOutput(themes=[theme_item])
+                    single_theme_data = ClusterSummaryOutput([theme_item])
                     expanded_themes[sub_cluster_id] = single_theme_data
                     
                     # Duplicate cluster data for sub-cluster
@@ -751,17 +791,16 @@ class InductiveCodeGenerator:
             )
         
         try:
-            # Use List[ClusterThemeItem] directly since your prompt returns an array
-            response = await self._make_instructor_call_with_cleanup(
-                model=self.config.model,
-                response_model=List[ClusterThemeItem],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.config.seed,
-                context_info=f"C{cluster_id}: THEME_EXTRACT"
+            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
+            resp = await async_responses_create_with_semaphore(
+                model="gpt-5-nano",
+                prompt=prompt,
+                reasoning_effort="minimal",
+                text_verbosity="low"
             )
+            response = ClusterSummaryOutput.model_validate_json(resp.output_text).root
             
-            # Handle List[ClusterThemeItem] response from CLUSTER_SUMMARY_PROMPT
+            # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
             # Debug: Check response type
             if hasattr(response, '__await__'):
                 self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
@@ -1187,9 +1226,9 @@ class InductiveCodeGenerator:
         all_nearest_codes = []
         
         # Check if theme_data has multiple themes
-        if hasattr(theme_data, 'themes') and isinstance(theme_data.themes, list) and len(theme_data.themes) > 1:
+        if hasattr(theme_data, 'root') and isinstance(theme_data.root, list) and len(theme_data.root) > 1:
             # Multiple themes: get k codes for each theme and aggregate
-            for theme_item in theme_data.themes:
+            for theme_item in theme_data.root:
                 theme_embedding = await self._get_theme_embedding_for_item(cluster_id, theme_item)
                 if theme_embedding is not None:
                     nearest_codes = await self._get_nearest_codes_by_embedding(theme_embedding, current_codes, k)
@@ -1704,15 +1743,14 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
-            # API call with enhanced error handling and response cleaning
-            response = await self._make_instructor_call_with_cleanup(
-                model=self.config.model,
-                response_model=List[CandidateCode],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.config.seed,
-                context_info=f"C{cluster_id}: STEP1"
+            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
+            resp = await async_responses_create_with_semaphore(
+                model="gpt-5-nano",
+                prompt=prompt,
+                reasoning_effort="minimal",
+                text_verbosity="low"
             )
+            response = CandidateCodeSelectionOutput.model_validate_json(resp.output_text).root
             
             if self.verbose_detailed: 
                 if response is None:
@@ -1771,15 +1809,14 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
-            # API call with enhanced error handling and response cleaning
-            response = await self._make_instructor_call_with_cleanup(
-                model=self.config.model,
-                response_model=CodeRecommendation,   
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.config.seed,
-                context_info=f"C{cluster_id}: STEP2"
+            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
+            resp = await async_responses_create_with_semaphore(
+                model="gpt-5-nano",
+                prompt=prompt,
+                reasoning_effort="minimal",
+                text_verbosity="low"
             )
+            response = CodeRecommendation.model_validate_json(resp.output_text)
             
             if self.verbose_detailed: 
                 if response is None:
@@ -1817,90 +1854,7 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP2 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return None
     
-    async def _make_instructor_call_with_cleanup(self, **kwargs):
-        """Make instructor API call with automatic response cleanup on parsing failures"""
-        context_info = kwargs.pop('context_info', 'API_CALL')
-        
-        try:
-            # First attempt with instructor
-            response = await self.async_client.chat.completions.create(**kwargs)
-            return response
-        except Exception as instructor_error:
-            # Check if this looks like a JSON/whitespace parsing issue
-            error_str = str(instructor_error).strip()
-            
-            # Look for common patterns in instructor parsing errors
-            is_parsing_error = (
-                '\n' in error_str or 
-                'json' in error_str.lower() or
-                'coding_decisions' in error_str or
-                'validation' in error_str or
-                'parse' in error_str.lower() or
-                'decode' in error_str.lower()
-            )
-            
-            if is_parsing_error:
-                self.verbose_reporter.stat_line(f"{context_info} - Detected parsing error, attempting response cleanup")
-                self.verbose_reporter.stat_line(f"{context_info} - Error: {repr(error_str[:150])}")
-                
-                try:
-                    # Make raw API call to get response content
-                    raw_kwargs = dict(kwargs)
-                    raw_kwargs.pop('response_model', None)  # Remove instructor's response_model
-                    
-                    raw_response = await self.async_client.chat.completions.create(**raw_kwargs)
-                    
-                    if raw_response and raw_response.choices and raw_response.choices[0].message.content:
-                        raw_content = raw_response.choices[0].message.content
-                        cleaned_content = raw_content.strip()
-                        
-                        if cleaned_content != raw_content:
-                            self.verbose_reporter.stat_line(f"{context_info} - Found whitespace issue, cleaned response")
-                            self.verbose_reporter.stat_line(f"{context_info} - Original: {repr(raw_content[:50])}...")
-                            self.verbose_reporter.stat_line(f"{context_info} - Cleaned: {repr(cleaned_content[:50])}...")
-                            
-                            # Try manual JSON parsing to validate the cleaned content
-                            try:
-                                import json
-                                parsed_json = json.loads(cleaned_content)
-                                self.verbose_reporter.stat_line(f"{context_info} - Cleaned content is valid JSON, creating response object")
-                                
-                                # Parse the valid JSON content directly
-                                
-                                # Now use instructor to parse this cleaned response
-                                response_model = kwargs.get('response_model')
-                                if response_model:
-                                    # Convert the JSON to the expected Pydantic model
-                                    if hasattr(response_model, '__origin__') and response_model.__origin__ is list:
-                                        # Handle List[Model] types
-                                        item_model = response_model.__args__[0]
-                                        if isinstance(parsed_json, list):
-                                            return [item_model(**item) for item in parsed_json]
-                                        else:
-                                            return [item_model(**parsed_json)]
-                                    else:
-                                        # Handle single model types
-                                        return response_model(**parsed_json)
-                                
-                                return parsed_json
-                            except json.JSONDecodeError as json_error:
-                                self.verbose_reporter.error(f"{context_info} - Cleaned content is still not valid JSON: {json_error}")
-                                raise instructor_error
-                            except Exception as parsing_error:
-                                self.verbose_reporter.error(f"{context_info} - Failed to create response object: {parsing_error}")
-                                raise instructor_error
-                        else:
-                            self.verbose_reporter.stat_line(f"{context_info} - No whitespace found, original error not whitespace-related")
-                            raise instructor_error
-                    else:
-                        self.verbose_reporter.error(f"{context_info} - No content in raw response")
-                        raise instructor_error
-                except Exception as cleanup_error:
-                    self.verbose_reporter.error(f"{context_info} - Response cleanup failed: {cleanup_error}")
-                    raise instructor_error
-            else:
-                # Not a parsing error, re-raise original
-                raise instructor_error
+    # Removed _make_instructor_call_with_cleanup - using responses.create directly now
 
     async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, 
                                        code_generation, candidate_selection):
@@ -1939,15 +1893,14 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
-            # API call with enhanced error handling and response cleaning
-            response = await self._make_instructor_call_with_cleanup(
-                model=self.config.model,
-                response_model=ValidationResult,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.config.seed,
-                context_info=f"C{cluster_id}: STEP3"
+            # Use async wrapper for true concurrency with GPT-5 reasoning parameters
+            resp = await async_responses_create_with_semaphore(
+                model="gpt-5-nano",
+                prompt=prompt,
+                reasoning_effort="minimal",
+                text_verbosity="low"
             )
+            response = ValidationResult.model_validate_json(resp.output_text)
             
             if self.verbose_detailed: 
                 if response is None:
