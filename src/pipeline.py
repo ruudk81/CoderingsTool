@@ -718,7 +718,7 @@ if True and CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
 
 
-cluster_id = "35"
+cluster_id = "26"
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
@@ -727,7 +727,6 @@ if True and CACHE_CODEGENERATOR_REASONING:
     else:
         print("Note: codebook_reasoning not available for display")
 
-cluster_id = 35
 #debug : prompts 
 if True:  
     from utils import codegenPromptTester    

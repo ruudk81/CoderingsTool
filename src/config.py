@@ -183,10 +183,10 @@ class ModelConfig:
 
     # Step 7: Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-5-nano"              #prompt 1
-    candidate_selection_model: str = "gpt-4.1-mini"         #prompt 2
-    code_generation_model: str = "gpt-5-nano"               #prompt 3
-    validation_model: str = "gpt-5-nano"                    #prompt 4
+    thematic_summary_model: str = "gpt-5-mini"              
+    candidate_selection_model: str = "gpt-5-nano"           
+    code_generation_model: str ="gpt-5-mini"               
+    validation_model: str = "gpt-5-mini"                  
     
     # Step 8: Hierarchical organisation of codebook
     hierarchical_organisation_model: str = DEFAULT_MODEL
@@ -212,11 +212,28 @@ class ModelConfig:
     quality_filter_temperature: float = 0.0
     
     # =============================================================================
-    # GPT-5 SPECIFIC PARAMETERS
+    # GPT-5 SPECIFIC PARAMETERS - STAGE-SPECIFIC
     # =============================================================================
     
-    gpt5_reasoning_effort: str = "minimal"  # Options: minimal, low, medium, high
-    gpt5_text_verbosity: str = "medium"     # Options: low, medium, high
+    # Theme Extraction (Step 1 - Cluster Summary)
+    theme_extraction_reasoning_effort: str = "low"       
+    theme_extraction_text_verbosity: str = "medium"      
+
+    # Candidate Selection (Step 2 - Code Selection)  
+    candidate_selection_reasoning_effort: str = "minimal"   
+    candidate_selection_text_verbosity: str = "medium"        
+
+    # Code Generation (Step 3 - Code Recommendation)
+    code_generation_reasoning_effort: str = "low"      
+    code_generation_text_verbosity: str = "medium"     
+
+    # Validation (Step 4 - Code Validation)
+    validation_reasoning_effort: str = "low"         
+    validation_text_verbosity: str = "medium"         
+
+    # Keep global defaults as fallback
+    gpt5_reasoning_effort: str = "low"      # Global default
+    gpt5_text_verbosity: str = "medium"     # Global default
     
     # =============================================================================
     # HELPER METHODS
@@ -247,6 +264,26 @@ class ModelConfig:
             'quality_filter': self.quality_filter_temperature,
         }
         return stage_temperatures.get(stage, self.default_temperature)
+    
+    def get_reasoning_effort_for_stage(self, stage: str) -> str:
+        """Get GPT-5 reasoning effort for specific stage"""
+        stage_efforts = {
+            'theme_extraction': self.theme_extraction_reasoning_effort,
+            'candidate_selection': self.candidate_selection_reasoning_effort,
+            'code_recommendation': self.code_generation_reasoning_effort,
+            'recommendation_validation': self.validation_reasoning_effort
+        }
+        return stage_efforts.get(stage, self.gpt5_reasoning_effort)
+
+    def get_text_verbosity_for_stage(self, stage: str) -> str:
+        """Get GPT-5 text verbosity for specific stage"""
+        stage_verbosities = {
+            'theme_extraction': self.theme_extraction_text_verbosity,
+            'candidate_selection': self.candidate_selection_text_verbosity,
+            'code_recommendation': self.code_generation_text_verbosity,
+            'recommendation_validation': self.validation_text_verbosity
+        }
+        return stage_verbosities.get(stage, self.gpt5_text_verbosity)
     
     def get_langchain_config_for_stage(self, stage: str) -> Dict[str, Any]:
         """Get complete LangChain configuration for a stage"""

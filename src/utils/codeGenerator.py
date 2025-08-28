@@ -17,7 +17,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
 import models
-from models import ClusterSummaryOutput, CandidateCodeSelectionOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, CandidateCode, ClusterThemeItem 
+from models import ClusterSummaryOutput, CandidateCodeSelectionOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, ClusterThemeItem 
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -418,7 +418,7 @@ class SimilarityEngine:
             try:
                 response = client.embeddings.create(
                     input=batch_texts,
-                    model="text-embedding-3-small"
+                    model="text-embedding-3-large"
                 )
                 return [np.array(item.embedding, dtype=np.float32) for item in response.data]
                 
@@ -434,7 +434,7 @@ class SimilarityEngine:
         """Get embedding for single text using OpenAI embeddings API (fallback method)"""
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=text
         )
         return np.array(response.data[0].embedding)
@@ -887,8 +887,8 @@ class InductiveCodeGenerator:
                 model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
                 response_model=ClusterSummaryOutput,
-                reasoning_effort=self.model_config.gpt5_reasoning_effort,
-                text_verbosity=self.model_config.gpt5_text_verbosity,
+                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
+                text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
                 semaphore=self.concurrency_semaphore
             )
             
@@ -1076,7 +1076,7 @@ class InductiveCodeGenerator:
             candidate_prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(
                 survey_question=self.var_lab,
                 language=DEFAULT_LANGUAGE,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
+                cluster_summary=self._get_theme_statement(theme_data),
                 code_text=codes_text
             )
             candidate_tokens = len(self.encoding.encode(candidate_prompt)) + 200  # + completion estimate
@@ -1088,7 +1088,7 @@ class InductiveCodeGenerator:
             code_gen_prompt = CODE_GENERATION_PROMPT.format(
                 language=DEFAULT_LANGUAGE,
                 survey_question=self.var_lab,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
+                cluster_summary=self._get_theme_statement(theme_data),
                 candidate_codes=candidate_codes_text
             )
             code_gen_tokens = len(self.encoding.encode(code_gen_prompt)) + 150  # + completion estimate
@@ -1101,7 +1101,7 @@ class InductiveCodeGenerator:
             validation_prompt = VALIDATION_PROMPT.format(
                 language=DEFAULT_LANGUAGE,
                 survey_question=self.var_lab,
-                cluster_summary=f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}",
+                cluster_summary=self._get_theme_statement(theme_data),
                 candidate_codes=validation_codes_text,
                 step3_recommendation='{"coding_decisions": [{"decision": "create_new", "justification": "Example reasoning"}]}'
             )
@@ -1811,7 +1811,7 @@ class InductiveCodeGenerator:
             codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
                                    for code in nearest_codes[:20]])
             
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
+            cluster_summary = self._get_theme_statement(theme_data)
             
             # Prepare exact parameters for prompt
             params = {
@@ -1836,8 +1836,8 @@ class InductiveCodeGenerator:
                 model=self.model_config.get_model_for_stage('candidate_selection'),
                 prompt=prompt,
                 response_model=CandidateCodeSelectionOutput,
-                reasoning_effort=self.model_config.gpt5_reasoning_effort,
-                text_verbosity=self.model_config.gpt5_text_verbosity,
+                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('candidate_selection'),
+                text_verbosity=self.model_config.get_text_verbosity_for_stage('candidate_selection'),
                 semaphore=self.concurrency_semaphore
             )
             
@@ -1878,7 +1878,7 @@ class InductiveCodeGenerator:
                 candidate_codes_text = "\n\n".join([f"Code: {code.code}\nDefinition: {code.definition}" 
                                                    for code in candidate_selection])
                 
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
+            cluster_summary = self._get_theme_statement(theme_data)
             
             # Prepare exact parameters for prompt
             params = {
@@ -1903,8 +1903,8 @@ class InductiveCodeGenerator:
                 model=self.model_config.get_model_for_stage('code_recommendation'),
                 prompt=prompt,
                 response_model=CodeRecommendation,
-                reasoning_effort=self.model_config.gpt5_reasoning_effort,
-                text_verbosity=self.model_config.gpt5_text_verbosity,
+                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('code_recommendation'),
+                text_verbosity=self.model_config.get_text_verbosity_for_stage('code_recommendation'),
                 semaphore=self.concurrency_semaphore
             )
             
@@ -1952,15 +1952,15 @@ class InductiveCodeGenerator:
         try:
             # Build prompt directly
             # Use candidate_selection instead of full codebook (consistent with rate-limited version)
-            # if candidate_selection and len(candidate_selection) > 0:
-            #     validation_codes_text = "\n".join([
-            #         f"Code: {code.code}\nDefinition: {code.definition}\n" 
-            #         for code in candidate_selection
-            #     ])
-            # else:
-            #     validation_codes_text = "No existing codes available."
+            if candidate_selection and len(candidate_selection) > 0:
+                validation_codes_text = "\n".join([
+                    f"Code: {code.code}\nDefinition: {code.definition}\n" 
+                    for code in candidate_selection
+                ])
+            else:
+                validation_codes_text = "No existing codes available."
             
-            cluster_summary = f"Theme: {self._get_theme_statement(theme_data)}\nDescription: {self._get_theme_description(theme_data)}"
+            cluster_summary = self._get_theme_statement(theme_data)
             step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
             
             # Prepare exact parameters for prompt
@@ -1968,7 +1968,7 @@ class InductiveCodeGenerator:
                 'language': DEFAULT_LANGUAGE,
                 'survey_question': self.var_lab,
                 'cluster_summary': cluster_summary,
-                #'candidate_codes': validation_codes_text,
+                'candidate_codes': validation_codes_text,
                 'step3_recommendation': step3_recommendation_text
             }
             
@@ -1988,8 +1988,8 @@ class InductiveCodeGenerator:
                 model=self.model_config.get_model_for_stage('recommendation_validation'),
                 prompt=prompt,
                 response_model=ValidationResult,
-                reasoning_effort=self.model_config.gpt5_reasoning_effort,
-                text_verbosity=self.model_config.gpt5_text_verbosity,
+                reasoning_effort=self.model_config.get_reasoning_effort_for_stage('recommendation_validation'),
+                text_verbosity=self.model_config.get_text_verbosity_for_stage('recommendation_validation'),
                 semaphore=self.concurrency_semaphore
             )
             
@@ -2086,17 +2086,6 @@ class InductiveCodeGenerator:
                                             self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                             codebook_updated = True
                                             #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
-                        
-                        elif validation.decision == "REVISE" and validation.validated_code:
-                            # Validation revised the decision - use the revised code
-                            added, new_version = await self.shared_codebook.add_code_if_new(
-                                validation.validated_code.code, validation.validated_code.definition
-                            )
-                            if added:
-                                self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
-                                codebook_updated = True
-                                #self.verbose_reporter.stat_line(f"C{cluster_id}: REVISE - Added revised code '{validation.validated_code.code}'")
-                        
                         else:
                             self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}' or missing validated_code")
                 

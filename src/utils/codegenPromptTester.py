@@ -201,7 +201,8 @@ class SimplePromptTester:
         
         code_text = step2_input.get('code_text', '')
         if code_text:
-            code_lines = [line.strip() for line in code_text.split('\n') if line.strip() and line.strip().startswith('-')]
+            # Count codes by looking for "Code:" lines (codeGenerator formats as "Code: {name}\nDefinition: {def}\n")
+            code_lines = [line.strip() for line in code_text.split('\n') if line.strip().startswith('Code:')]
             print(f"  Nearest Codes: {len(code_lines)} codes, {len(code_text)} characters")
         
         prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(**step2_input)
@@ -231,7 +232,8 @@ class SimplePromptTester:
         
         candidate_codes = step3_input.get('candidate_codes', '')
         if candidate_codes:
-            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip() and line.strip().startswith('-')]
+            # Count codes by looking for "Code:" lines (codeGenerator formats as "Code: {name}\nDefinition: {def}")
+            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip().startswith('Code:')]
             print(f"  Candidate Codes: {len(code_lines)} codes, {len(candidate_codes)} characters")
         
         prompt = CODE_GENERATION_PROMPT.format(**step3_input)
@@ -261,7 +263,8 @@ class SimplePromptTester:
         
         candidate_codes = step4_input.get('candidate_codes', '')
         if candidate_codes:
-            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip() and line.strip().startswith('-')]
+            # Count codes by looking for "Code:" lines (codeGenerator formats as "Code: {name}\nDefinition: {def}\n")
+            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip().startswith('Code:')]
             print(f"  Candidate Codes: {len(code_lines)} codes, {len(candidate_codes)} characters")
         
         step3_recommendation = step4_input.get('step3_recommendation', '')
