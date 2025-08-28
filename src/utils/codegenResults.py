@@ -86,8 +86,8 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                 if show_detailed_reasoning:
                         print(f"-  {definition}")
         else:
-            # Debug: Show available cluster IDs
-            available_ids = list(step2_analysis.keys())
+            # # Debug: Show available cluster IDs
+            # available_ids = list(step2_analysis.keys())
             print("\n🔍 CANDIDATE CODES: [No candidate found]")
     else:
         print("\n🔍 CANDIDATE CODES: [Not available]")
