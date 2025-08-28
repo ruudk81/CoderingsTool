@@ -506,6 +506,9 @@ class SimilarityEngine:
                         self.verbose_reporter.stat_line(f"Singleton batch: {cluster_ids[idx]} (couldn't group at 0.85)")
                     break
         
+        # Apply anti-greedy redistribution to balance batch sizes
+        batches = self._redistribute_to_anti_greedy_pattern(batches, similarity_matrix, cluster_ids, progressive_thresholds)
+        
         # Report final batch statistics
         for batch_idx, batch_cluster_ids in enumerate(batches):
             # Convert cluster_ids back to indices for similarity calculation
@@ -633,6 +636,172 @@ class SimilarityEngine:
                     break  # Start over to find next compatible theme
         
         return batch_indices
+
+    def _redistribute_to_anti_greedy_pattern(self, batches: List[List[str]], 
+                                           similarity_matrix: np.ndarray, 
+                                           cluster_ids: List[str], 
+                                           progressive_thresholds: List[float]) -> List[List[str]]:
+        """Redistribute clusters to achieve anti-greedy pattern (increasing batch sizes)"""
+        if not batches or len(batches) <= 1:
+            return batches
+            
+        self.verbose_reporter.step_start("Anti-Greedy Batch Redistribution")
+        
+        # Calculate original distribution
+        original_sizes = [len(batch) for batch in batches]
+        total_clusters = sum(original_sizes)
+        
+        self.verbose_reporter.stat_line(f"Original batch sizes: {original_sizes} (total: {total_clusters})")
+        
+        # Calculate target anti-greedy distribution (increasing sizes)
+        target_sizes = self._calculate_anti_greedy_targets(total_clusters, len(batches))
+        self.verbose_reporter.stat_line(f"Target batch sizes: {target_sizes}")
+        
+        # Identify moveable clusters between adjacent batches
+        moveable_clusters = self._identify_moveable_clusters(batches, similarity_matrix, cluster_ids, progressive_thresholds)
+        
+        # Perform redistribution
+        redistributed_batches = self._perform_redistribution(batches, target_sizes, moveable_clusters, 
+                                                            similarity_matrix, cluster_ids, progressive_thresholds)
+        
+        # Report results
+        final_sizes = [len(batch) for batch in redistributed_batches]
+        self.verbose_reporter.stat_line(f"Final batch sizes: {final_sizes}")
+        
+        moved_count = sum(abs(final_sizes[i] - original_sizes[i]) for i in range(len(final_sizes))) // 2
+        self.verbose_reporter.stat_line(f"Clusters redistributed: {moved_count}")
+        
+        self.verbose_reporter.step_complete("Anti-Greedy Batch Redistribution")
+        
+        return redistributed_batches
+
+    def _calculate_anti_greedy_targets(self, total_clusters: int, num_batches: int) -> List[int]:
+        """Calculate target batch sizes for anti-greedy pattern (increasing sizes)"""
+        if num_batches <= 1:
+            return [total_clusters]
+        
+        # Create increasing pattern: start small, end large
+        # Use arithmetic progression with positive common difference
+        base_size = total_clusters // num_batches
+        remainder = total_clusters % num_batches
+        
+        # Create increasing sequence
+        targets = []
+        adjustment = -(num_batches - 1) // 2  # Start below average
+        
+        for i in range(num_batches):
+            target = base_size + adjustment
+            if i < remainder:  # Distribute remainder across later batches
+                target += 1
+            targets.append(max(1, target))  # Ensure minimum size of 1
+            adjustment += 1  # Increase for next batch
+        
+        # Adjust if total doesn't match (due to minimum size constraints)
+        current_total = sum(targets)
+        if current_total != total_clusters:
+            # Add/remove from last batch
+            targets[-1] += (total_clusters - current_total)
+        
+        return targets
+
+    def _identify_moveable_clusters(self, batches: List[List[str]], 
+                                  similarity_matrix: np.ndarray,
+                                  cluster_ids: List[str],
+                                  progressive_thresholds: List[float]) -> Dict[int, Dict[int, List[str]]]:
+        """Identify clusters that can be moved between adjacent batches while respecting similarity constraints"""
+        moveable = {}  # {from_batch: {to_batch: [cluster_ids]}}
+        
+        for from_idx in range(len(batches) - 1):  # Don't check last batch
+            to_idx = from_idx + 1
+            from_threshold = progressive_thresholds[from_idx] if from_idx < len(progressive_thresholds) else 0.85
+            to_threshold = progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else 0.85
+            
+            # Find clusters in from_batch that could move to to_batch
+            moveable_to_next = []
+            
+            for cluster_id in batches[from_idx]:
+                # Check if this cluster could fit in the next batch without violating similarity constraints
+                if self._can_cluster_join_batch(cluster_id, batches[to_idx], similarity_matrix, cluster_ids, to_threshold):
+                    moveable_to_next.append(cluster_id)
+            
+            if moveable_to_next:
+                if from_idx not in moveable:
+                    moveable[from_idx] = {}
+                moveable[from_idx][to_idx] = moveable_to_next
+        
+        return moveable
+
+    def _can_cluster_join_batch(self, cluster_id: str, target_batch: List[str], 
+                              similarity_matrix: np.ndarray, cluster_ids: List[str], 
+                              threshold: float) -> bool:
+        """Check if a cluster can join a batch without violating similarity constraints"""
+        if not target_batch:
+            return True
+        
+        try:
+            cluster_idx = cluster_ids.index(cluster_id)
+        except ValueError:
+            return False
+        
+        # Check similarity with all clusters in target batch
+        for target_cluster_id in target_batch:
+            try:
+                target_idx = cluster_ids.index(target_cluster_id)
+                similarity = similarity_matrix[cluster_idx, target_idx]
+                if similarity >= threshold:
+                    return False  # Would violate similarity constraint
+            except ValueError:
+                continue
+        
+        return True
+
+    def _perform_redistribution(self, batches: List[List[str]], target_sizes: List[int],
+                              moveable_clusters: Dict[int, Dict[int, List[str]]],
+                              similarity_matrix: np.ndarray, cluster_ids: List[str],
+                              progressive_thresholds: List[float]) -> List[List[str]]:
+        """Perform the actual redistribution of clusters"""
+        # Create mutable copies
+        redistributed = [batch.copy() for batch in batches]
+        current_sizes = [len(batch) for batch in redistributed]
+        
+        # Redistribute from early batches to later batches
+        for from_idx in range(len(redistributed) - 1):
+            if from_idx not in moveable_clusters:
+                continue
+                
+            current_size = len(redistributed[from_idx])
+            target_size = target_sizes[from_idx]
+            
+            # If this batch is larger than target, try to move clusters to later batches
+            if current_size > target_size:
+                excess = current_size - target_size
+                
+                # Try to move to each possible later batch
+                for to_idx, moveable_list in moveable_clusters[from_idx].items():
+                    if excess <= 0:
+                        break
+                    
+                    current_to_size = len(redistributed[to_idx])
+                    target_to_size = target_sizes[to_idx]
+                    
+                    # If target batch has room, move some clusters
+                    if current_to_size < target_to_size:
+                        can_accept = target_to_size - current_to_size
+                        to_move = min(excess, can_accept, len(moveable_list))
+                        
+                        # Move clusters
+                        for i in range(to_move):
+                            cluster_to_move = moveable_list[i]
+                            if cluster_to_move in redistributed[from_idx]:
+                                # Verify one more time before moving
+                                if self._can_cluster_join_batch(cluster_to_move, redistributed[to_idx],
+                                                              similarity_matrix, cluster_ids,
+                                                              progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else 0.85):
+                                    redistributed[from_idx].remove(cluster_to_move)
+                                    redistributed[to_idx].append(cluster_to_move)
+                                    excess -= 1
+        
+        return redistributed
 
 
 # ============================================================================
