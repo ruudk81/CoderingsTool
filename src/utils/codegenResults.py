@@ -104,7 +104,7 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                 decision_type = decision.get('decision', 'Unknown')
                 theme_number = decision.get('theme_number', i)
                 final_code_label = decision.get('final_code_label', 'Unknown')
-                # final_code_description = decision.get('final_code_description', 'Unknown')
+                final_code_description = decision.get('final_code_definition', 'No description available')  # Fixed field name
                 source_code = decision.get('source_code', None)
                 justification = decision.get('justification', 'No justification provided')
                 
@@ -112,7 +112,8 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                     if decision_type == "create": 
                         print(f"{decision_type.upper()}: {final_code_label}") 
                     if decision_type == "modify": 
-                         print(f"{decision_type.upper()}: {source_code} -> {final_code_label}")    
+                        source_display = source_code if source_code else "[Unknown Source]"
+                        print(f"{decision_type.upper()}: {source_display} -> {final_code_label}")    
                     if decision_type == "use": 
                         print(f"{decision_type.upper()}: {final_code_label}")                          
                 else:
@@ -120,14 +121,15 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                     if decision_type == "create": 
                         print(f"{decision_type.upper()}: {final_code_label}") 
                     if decision_type == "modify": 
-                         print(f"{decision_type.upper()}: {source_code} -> {final_code_label}")    
+                        source_display = source_code if source_code else "[Unknown Source]"
+                        print(f"{decision_type.upper()}: {source_display} -> {final_code_label}")    
                     if decision_type == "use": 
                         print(f"{decision_type.upper()}: {final_code_label}") 
                 
-                # if show_detailed_reasoning:
-                #     print(f"Definition: {final_code_description}")
-                #     if source_code:
-                #         print(f"Source code: {source_code}")
+                if show_detailed_reasoning:
+                    print(f"Definition: {final_code_description}")
+                    if source_code:
+                        print(f"Source code: {source_code}")
                 
                 print(f"\nReasoning: {justification}")
         else:
