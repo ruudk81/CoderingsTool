@@ -297,6 +297,11 @@ CLUSTER_SUMMARY_PROMPT = """
 You are a {language} qualitative researcher trained in thematic analysis. 
 Your task is to interpret a cluster of survey responses and produce ONE theme_statement that expresses the central unifying concept shared across most responses. 
 
+Definition of theme:
+- A theme is a coherent pattern of shared meaning across multiple <clustered_responses>
+- A theme is organized around ONE central organizing concept. 
+- A theme is not a list of responses, not a label, not a speculation, and not a mixture of conflicting ideas. 
+
 Here is the survey question:
 <survey_question>
 {survey_question}
@@ -307,36 +312,33 @@ Here are the clustered responses:
 {cluster_text}
 </clustered_responses>
 
-Definition of theme:
-- A theme is a coherent pattern of shared meaning across multiple <clustered_responses>
-- A theme is organized around ONE central organizing concept. 
-- A theme is not a list of responses, not a label, not a speculation, and not a mixture of conflicting ideas. 
-
 Critical rules:
 1. Identify the single strongest shared pattern of meaning. 
    - If some responses contradict, ignore the minority and focus on the majority pattern. 
-2. Express the theme as if it were a direct survey answer (≤30 words, in {language}). 
-3. Do NOT repeat the canonical subject from the survey question. 
-4. Do NOT name or imply the actor (e.g., "the company," "they"). 
-5. Do NOT explain reasons, causes, or outcomes. 
-6. Do not include numeric details or single-response specifics; only state the general shared meaning. 
-7. If no coherent shared meaning exists, output: 
+2. Express the theme as if it were a direct survey answer 
+    - Syntax for theme_statement: [Description of the single strongest shared pattern of meaning] + [Short clarification of this meaning in light of the <survey_question>]
+4. Privde a name for the theme
+    - Syntad for theme_name: [The most atomic, singular concept that unifies the theme_statment]
+4. Do NOT repeat the canonical subject from the survey question. 
+5. Do NOT name or imply the actor (e.g., "the company," "they"). 
+6. Do NOT explain reasons, causes, or outcomes. 
+7. Do not include numeric details or single-response specifics; only state the general shared meaning. 
+8. If no coherent shared meaning exists, output: 
    [
      {{
        "theme_id": 1,
-       "theme_statement": "Geen eenduidig gedeeld thema aanwezig."
+       "theme_namme": "no theme_name",
+       "theme_statement": "no theme_statement"
      }}
    ]
-
-Syntax for the theme statement:
-[Description of the single strongest shared pattern of meaning] + [Short clarification of this meaning in light of the <survey_question>]
 
 Output format:
 Return ONLY a valid JSON array with one object:
 [
   {{
     "theme_id": 1,
-    "theme_statement": "<theme statement here>"
+    "theme_namme": "<theme name here, in  ≤10 words, in {language}>",
+    "theme_statement": "<theme statement here, in  ≤30 words, in {language}>",
   }}
 ]
 
