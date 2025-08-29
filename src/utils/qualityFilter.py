@@ -233,7 +233,7 @@ class SmartAPIClient:
                 
                 # Record successful request with accurate token count
                 estimated_tokens = len(self.encoding.encode(prompt))
-                self.monitor.record_request(estimated_tokens)
+                await self.monitor.record_request(estimated_tokens)
                 
                 return response
                 
@@ -437,7 +437,7 @@ class Grader:
                 self.verbose_reporter.progress_line(completed, len(all_tasks), "sub-batches")
         
         # Final stats
-        final_stats = monitor.get_current_utilization()
+        final_stats = await monitor.get_current_utilization()
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Completed in {final_stats['elapsed_time']:.1f}s " +
                                           f"(RPM: {final_stats['rpm_utilization']:.0%}, " +
