@@ -6,11 +6,11 @@ InductiveCodeGenerator is a sophisticated text analysis system that processes cl
 ## Architecture Overview
 
 ### Core Design Principles
-1. **Theme-Based Similarity Processing**: Clusters grouped by theme embeddings (similarity < 0.7)
-2. **Sequential Batch Processing**: Dissimilarity batches run sequentially for SharedCodebook consistency
+1. **Theme-Based Similarity Processing**: Clusters grouped by theme embeddings  
+2. **Sequential Batch Processing**: Anit-Greedy dissimilarity batches run sequentially for SharedCodebook consistency
 3. **Aggressive Within-Batch Parallelism**: Concurrent processing within dissimilarity batches
 4. **Version-Based Codebook Management**: Thread-safe SharedCodebook with version tracking
-5. **Instructor-Enhanced API Calls**: AsyncOpenAI + instructor for structured outputs
+5. **Structured outputs**: via Openai API 
 
 ### Main Class
 ```python

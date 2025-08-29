@@ -351,8 +351,10 @@ Critical requirements:
 Remember to think carefully about the shared meaning across the responses and express the central organizing concept clearly and concisely in your theme statement.
 """
 
+
 CANDIDATE_CODE_SELECTION_PROMPT = """
-You are a {language} qualitative analyst specializing in matching descriptive codes from a codebook to theme statements identified in response patterns to an open-ended survey question. Your task is to return all existing codes from the codebook that meaningfully correspond to the presented theme statement(s).
+You are a {language} qualitative analyst specializing in matching descriptive codes from a codebook to theme(s) identified in response patterns to an open-ended survey question. 
+Your task is to return all existing codes from the codebook that meaningfully correspond to the presented themes.
 
 First, carefully review the following survey question:
 
@@ -360,11 +362,11 @@ First, carefully review the following survey question:
 {survey_question}
 </survey_question>
 
-Next, examine the theme statement(s) derived from response patterns:
+Next, examine the theme name(s) and statement(s):
 
-<theme_statement>
+<themes>
 {cluster_summary}
-</theme_statement>
+</themes>
 
 Now, review the existing codebook:
 
@@ -374,10 +376,12 @@ Now, review the existing codebook:
 
 When matching codes to the theme statement(s), follow these guidelines:
 
-1. Review EACH theme statement carefully in relation to the existing codebook.
-2. Match based on semantic meaning, not word overlap. Focus on meaning, scope, and level of abstraction in the context of the survey question. Ignore superficial or surface-level matches.
-3. Include only codes with conceptual overlap. Return all codes meaningfully reflect the theme.
-4. Preserve codebook integrity. Copy code names and definitions exactly as provided. Do not add, remove, or alter any fields or wording.
+1. Review EACH theme in <themes> carefully in relation to codes in <existing_codebook>.
+2. Match based primarily on the theme NAME; the theme STATEMENT is supporting context only.
+3. Match based on semantic meaning, not word overlap. Focus on meaning, scope, and level of abstraction in the context of the survey question. Ignore superficial or surface-level matches.
+4. Include only codes with conceptual overlap. Return all codes that meaningfully reflect the theme.
+5. Preserve codebook integrity. Copy code names and definitions exactly as provided. Do not add, remove, or alter any fields or wording.
+6. If a code matches multiple themes, include it only once in the final output.
 
 Your output should be in the following JSON format, strictly in {language}:
 
@@ -399,8 +403,9 @@ Your output should be in the following JSON format, strictly in {language}:
 
 Critical requirements:
 - You may return ZERO, ONE, or MULTIPLE codes, depending on theme relevance.
-- Output must be a SINGLE JSON array combining matches across ALL theme statements.
+- Output must be a SINGLE JSON array combining matches across ALL theme statements (no per-theme lists).
 - Do not create new codes or modify existing ones.
+- Do not duplicate codes if they apply to multiple themes.
 - Output ONLY the JSON array — no explanation, headers, or extra text.
 - All values must be in {language}.
 - No comments, no trailing commas.
@@ -408,25 +413,33 @@ Critical requirements:
 """
 
 
+
 CODE_GENERATION_PROMPT = """
-You are a qualitative codebook curator specializing in {language}. Your task is to analyze theme statements from survey responses and decide whether to use existing codes, modify them, or create new ones. Your goal is to integrate new insights into the codebook while avoiding redundancy and ensuring conceptual clarity.
+You are a {language} codebook curator who is responsible for coding themes expressed in survey responses.
+Your task is to analyze these themes and decide whether to use existing codes, modify them, or create new ones. 
+Your goal is to integrate new insights into the codebook while avoiding redundancy and ensuring conceptual clarity.
 
 Here are the inputs you will be working with:
-
-1) Survey Question
+<input>
+1) Survey question
 <survey_question>
 {survey_question}
 </survey_question>
 
-2) Theme Statements
-<theme_statements>
+2) Themes expressed survey responses
+<themes>
 {cluster_summary}
-</theme_statements>
+</themes>
 
-3) Existing Codes
+3) Existing codes in the codebook
 <existing_codes>
 {candidate_codes}
 </existing_codes>
+
+Note:
+- Prioritize semantic alignment between the THEME NAME and the CODE LABEL.
+- Use the THEME STATEMENT and CODE DEFINITION only as supporting context to confirm scope and clarify meaning.
+</input>
 
 DECISION RULES:
 
@@ -437,12 +450,12 @@ Your job is to decide for each theme whether to:
 
 Use the following thresholds:
 
-A) If the theme and a candidate code are at the same abstraction level (e.g., both are specific behaviors or both are mid-level categories):
+A) If the theme name and a candidate code are at the same abstraction level (e.g., both are specific behaviors or both are mid-level categories):
 - USE if the existing code covers ≥90% of the theme's meaning.
 - MODIFY if the existing code covers ≥70% and <90%, and a minimal change to the definition resolves the gap.
 - CREATE if the existing code covers <70%, or if the gap cannot be resolved with a minimal change.
 
-B) If the theme and all candidate codes are at different abstraction levels (e.g., one is broader or narrower than the other):
+B) If the theme name and all candidate codes are at different abstraction levels (e.g., one is broader or narrower than the other):
 - CREATE by default.
 - Only USE if a code covers 95% of the theme's meaning and using it does not distort the structure.
 
@@ -471,7 +484,6 @@ Return ONLY valid JSON, in {language}. No extra text. No trailing commas. Each t
 
 Required schema:
 <output_format>
-<output_format>
 {{
   "coding_decisions": [
     {{
@@ -493,7 +505,6 @@ Required schema:
   ]
 }}
 </output_format>
-</output_format>
 
 Begin your analysis now and provide the final JSON in the required format. Ensure that your output is valid JSON and follows the exact schema provided above.
 """
@@ -502,7 +513,7 @@ VALIDATION_PROMPT = """
 You are a {language} qualitative data analyst specializing in codebook validation. Your task is to review coding recommendations for theme statements and finalize consistent, atomic, parsimonious codes for the codebook. All outputs must comply with the validation criteria provided.
 
 Here are the inputs you will be working with:
-
+<input>
 1. Survey question:
 <survey_question>
 {survey_question}
@@ -511,12 +522,16 @@ Here are the inputs you will be working with:
 2. Themes to code:
 <themes_to_code>
 {cluster_summary}
+
+Note:
+- Prioritize the THEME NAME; Use the THEME STATEMENT only as supporting context to confirm scope and clarify meaning.
 </themes_to_code>
 
 3. Coding recommendation:
 <coding_recommendation>
 {step3_recommendation}
 </coding_recommendation>
+</input>
 
 Follow these step-by-step instructions:
 
