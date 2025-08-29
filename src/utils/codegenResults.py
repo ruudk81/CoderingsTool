@@ -40,10 +40,16 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         print("\n📝 CLUSTER THEME(S):")
         if len(themes) > 0: 
             for i, theme in enumerate(themes, 1):
-                if i > 1: 
-                    print(f"{i}. {str(theme)}")
+                # Extract theme_name and theme_statement from theme object
+                if hasattr(theme, 'theme_name') and hasattr(theme, 'theme_statement'):
+                    theme_display = f"{theme.theme_name}: {theme.theme_statement}"
                 else:
-                    print(f"{str(theme)}")
+                    theme_display = str(theme)
+                
+                if i > 1: 
+                    print(f"{i}. {theme_display}")
+                else:
+                    print(f"{theme_display}")
         else:
             print("[No themes identified]")
 

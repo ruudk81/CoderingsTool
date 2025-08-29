@@ -56,7 +56,7 @@ async def async_responses_create_with_json_retry(
     text_verbosity: str = "low", 
     semaphore = None,
     max_retries: int = 3
-):
+    ):
     """Async wrapper with JSON validation retry logic"""
     
     base_prompt = prompt
@@ -164,7 +164,8 @@ async def async_responses_create_with_semaphore(model: str, prompt: str, reasoni
 
 
 # ============================================================================
-# CODEDESIGNER API CLIENT WITH RATE LIMITING
+#  CUSTOM API CLIENT WITH RATE LIMITING 
+#  TODO: currently only used in stage 1/"theme extraction". Check if api client can be used for stage 2-4.
 # ============================================================================
 
 class CodeDesignerAPIClient:
@@ -177,7 +178,6 @@ class CodeDesignerAPIClient:
         self.model_config = model_config
         self.encoding = encoding
         self.verbose_reporter = verbose_reporter
-        # Initialize config-aware concurrency control
         self.concurrency_semaphore = asyncio.Semaphore(getattr(config, 'async_concurrency_limit', 16))
     
     @retry(
@@ -370,6 +370,7 @@ class SimilarityEngine:
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
         theme_statements = [themes[cid].root[0].theme_statement for cid in cluster_ids]  # Each sub-cluster has only one theme now
+        theme_names = [themes[cid].root[0].theme_name for cid in cluster_ids]  # Parallel list for theme names
         
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
         batch_size = 100
@@ -534,7 +535,7 @@ class SimilarityEngine:
         for batch_idx, batch_cluster_ids in enumerate(batches):
             theme_labels = []
             if themes:
-                theme_labels = [f"C{cid}: '{themes[cid].root[0].theme_statement if themes[cid].root else 'unknown'}'" if cid in themes else f"C{cid}: unknown" 
+                theme_labels = [f"C{cid}: '{themes[cid].root[0].theme_name if themes[cid].root else 'unknown'}'" if cid in themes else f"C{cid}: unknown" 
                               for cid in batch_cluster_ids]
             else:
                 theme_labels = [f"C{cid}" for cid in batch_cluster_ids]
@@ -916,6 +917,12 @@ class InductiveCodeGenerator:
             return theme_data.root[0].theme_statement
         return "Unknown theme"
     
+    def _get_theme_name(self, theme_data) -> str:
+        """Safely get theme name from theme data"""
+        if hasattr(theme_data, 'root') and theme_data.root:
+            return theme_data.root[0].theme_name
+        return "Unknown theme name"
+    
     def _get_theme_description(self, theme_data) -> str:
         """Safely get theme description from theme data"""
         # For now, use theme statement as description since they're the same
@@ -1087,7 +1094,7 @@ class InductiveCodeGenerator:
                 # Capture theme extraction results for transparency
                 self.step1_summaries[cluster_id] = {
                     'cluster_summary': f"{theme_item.theme_statement}",
-                    'themes': [item.theme_statement for item in response],  # All themes from array
+                    'themes': response,  # Store full theme objects with name and statement
                 }
                 
                 return result
@@ -1463,7 +1470,7 @@ class InductiveCodeGenerator:
             
     #         return {
     #             'cluster_id': cluster_id,
-    #             'theme_name': self._get_theme_statement(theme_data),
+    #             'theme_name': self._get_theme_name(theme_data),
     #             'theme_description': self._get_theme_description(theme_data),
     #             'ideas_count': len(cluster_data['ideas']),
     #             'candidate_selection': candidate_selection,
@@ -1910,7 +1917,7 @@ class InductiveCodeGenerator:
             
             return {
                 'cluster_id': cluster_id,
-                'theme_name': self._get_theme_statement(theme_data),
+                'theme_name': self._get_theme_name(theme_data),
                 'theme_description': self._get_theme_description(theme_data),
                 'ideas_count': len(cluster_data['ideas']),
                 'candidate_selection': candidate_selection,
