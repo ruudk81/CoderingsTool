@@ -155,6 +155,9 @@ class SimplePromptTester:
   
         if self.cluster_id in step1_inputs:
             step1_input = step1_inputs[self.cluster_id]
+            # Ensure cluster_id is present for prompt formatting (backward compatibility)
+            if 'cluster_id' not in step1_input:
+                step1_input['cluster_id'] = str(self.cluster_id)
             print("\n[USING ACTUAL PIPELINE INPUTS]\n")
         else:
             # Fallback: reconstruct (but show warning)

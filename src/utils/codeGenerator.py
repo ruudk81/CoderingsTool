@@ -1251,9 +1251,8 @@ class InductiveCodeGenerator:
         
         prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
         
-        # Capture exact parameters used in prompt construction (exclude cluster_id since it's passed as positional arg)
-        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
-        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)
+        # Capture exact parameters used in prompt construction
+        self._capture_prompt_params(cluster_id, "step1", **params)
         
         # Capture prompt with prompt_printer if available
         if self.prompt_printer:
