@@ -7,14 +7,13 @@ import os
 import sys
 import random
 import pickle
-#from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import Optional, Union
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from config import CacheConfig, DEFAULT_LANGUAGE
-import models
+from utils import codeGenerator
 from prompts import CLUSTER_SUMMARY_PROMPT, CANDIDATE_CODE_SELECTION_PROMPT, CODE_GENERATION_PROMPT, VALIDATION_PROMPT
 
 class SimplePromptTester:
@@ -99,7 +98,7 @@ class SimplePromptTester:
             
             # Convert dictionary back to Pydantic model
             if isinstance(dict_data, dict):
-                return models.CodeGeneratorReasoningResults.model_validate(dict_data)
+                return codeGenerator.CodeGeneratorReasoningResults.model_validate(dict_data)
             else:
                 # Already a Pydantic model
                 return dict_data
@@ -111,6 +110,7 @@ class SimplePromptTester:
     def _sample_cluster_id(self):
         """Sample a random cluster ID that has data in ALL steps"""
         # First get all possible cluster IDs
+         
         all_cluster_ids = list(set([
             response_idea['initial_cluster'] 
             for result in self.initial_cluster_results 
@@ -151,8 +151,8 @@ class SimplePromptTester:
         print("PROMPT 1: CLUSTER SUMMARY")
         print("="*80)
         
-        # Use EXACT same inputs as actual pipeline
         step1_inputs = getattr(self.codebook_reasoning, 'step1_inputs', {})
+  
         if self.cluster_id in step1_inputs:
             step1_input = step1_inputs[self.cluster_id]
             print("\n[USING ACTUAL PIPELINE INPUTS]\n")
@@ -160,6 +160,7 @@ class SimplePromptTester:
             # Fallback: reconstruct (but show warning)
             cluster_text = self._get_cluster_text()
             step1_input = {
+                "cluster_id": str(self.cluster_id),
                 "language": self.language,
                 "survey_question": self.var_lab,
                 "cluster_text": cluster_text
