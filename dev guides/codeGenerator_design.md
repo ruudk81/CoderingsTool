@@ -93,7 +93,7 @@ class ValidationResult(BaseModel):
 - **Processing**:
   1. Generate embeddings for themes via `SimilarityEngine`
   2. Calculate pairwise cosine similarity matrix
-  3. Greedy batch formation with similarity threshold (0.7)
+  3. Anti-Greedy batch formation with similarity threshold (0.7)
   4. Report similarity distribution statistics
 - **Output**: `List[List[int]]` - Sequential list of dissimilarity batches
 

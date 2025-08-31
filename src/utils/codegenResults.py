@@ -28,49 +28,45 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})  
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
     step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
-    
-    #debug 
-    #cluster_id = "32-2"
-    
+  
     # 1. CLUSTER THEME(S)
+    #cluster_id = '14-2'
     if step1_summaries and cluster_id in step1_summaries:
         step1_data = step1_summaries[cluster_id]
-        themes = step1_data.get("themes", [])
+        analysis = step1_data.get("analysis", [])
+        theme_id = step1_data.get("theme_id", [])
+        theme_label = step1_data.get("theme_label", [])
+        theme_description = step1_data.get("theme_description", [])
         
-        print("\n📝 CLUSTER THEME(S):")
-        if len(themes) > 0: 
-            for i, theme in enumerate(themes, 1):
-                # Extract theme_name and theme_statement from theme object
-                if hasattr(theme, 'theme_name') and hasattr(theme, 'theme_statement'):
-                    theme_display = f"{theme.theme_name}: {theme.theme_statement}"
-                else:
-                    theme_display = str(theme)
-                
-                if i > 1: 
-                    print(f"{i}. {theme_display}")
-                else:
-                    print(f"{theme_display}")
+        print("\n🧠 CLUSTER ANALYSIS:")
+        if analysis:
+            print(f"{analysis}")
+        else:
+            print("[No analysis]")
+
+        print("\n🔍 CLUSTER THEME:")
+        if theme_id > 0: 
+            print(f"Theme: {theme_id}")
+            print(f"Label: {theme_label}")
+            print(f"Description: {theme_description}")
         else:
             print("[No themes identified]")
-
     else:
-        print("\n📝 1. CLUSTER THEME(S): [Not available]")
-
-    #debug 
-    #cluster_id = "35"
+        print("\n🔍 1. CLUSTER THEME(S): [Not available]")
     
-    parent_cluster = cluster_id.split('-')[0]
-    
-    if step1_inputs and parent_cluster in step1_inputs:
-        cluster_text = step1_inputs[parent_cluster].get('cluster_text', '')  
+    # 2. CLUSTER IDEAS 
+    if step1_inputs and cluster_id in step1_inputs:
+        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')  
         if cluster_text:
             ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
             clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
             print(f"\n💡 CLUSTER IDEAS ({len(clean_ideas)} responses):")
-            for i, idea in enumerate(clean_ideas[:10], 1):  # Show first 10
+            for i, idea in enumerate(clean_ideas, 1):  
                 print(f"   {i}. {idea}")
-            if len(clean_ideas) > 10:
-                print(f"   ... and {len(clean_ideas) - 10} more ideas")
+            # for i, idea in enumerate(clean_ideas[:10], 1):  # Show first 10
+            #     print(f"   {i}. {idea}")
+            # if len(clean_ideas) > 10:
+            #     print(f"   ... and {len(clean_ideas) - 10} more ideas")
         else:
             print("\n💡 CLUSTER IDEAS: [No cluster_text found]")
     else:
@@ -98,12 +94,12 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     else:
         print("\n🔍 CANDIDATE CODES: [Not available]")
     
-    show_detailed_reasoning = False
+    #show_detailed_reasoning = False
     
     # 4. RECOMMENDED CHANGES TO CODEBOOK
     if step3_recommendations and cluster_id in step3_recommendations:
         gen_result = step3_recommendations[cluster_id]
-        print("\n📊 RECOMMENDED CHANGES TO CODEBOOK:")
+        print("\n🎯 RECOMMENDED CHANGES TO CODEBOOK:")
         
         if 'coding_decisions' in gen_result:
             for i, decision in enumerate(gen_result['coding_decisions'], 1):
@@ -141,7 +137,7 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         else:
             print("[No recommendations found]")
     else:
-        print("\n📊 RECOMMENDED CHANGES TO CODEBOOK: [Not available]")
+        print("\n🎯 RECOMMENDED CHANGES TO CODEBOOK: [Not available]")
     
     
     # 5. VALIDATION WITH REASONING

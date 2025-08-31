@@ -36,6 +36,7 @@ DEFAULT_LANGUAGE = "Dutch"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # =============================================================================
 # OPENAI RATE LIMITS (Official limits as of 2025)
@@ -524,6 +525,89 @@ class VectorizerConfig:
 
 
 # =============================================================================
+# CODEDESIGNER CONFIGURATION
+# =============================================================================
+
+@dataclass
+class CodeDesignerConfig:
+    """Configuration for the new CodeGenerator system"""
+    
+    # Model configuration
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    model: str = DEFAULT_MODEL
+    temperature: float = 0.1
+    max_tokens: int = 4000
+    seed: Optional[int] = 42
+    
+    # Theme-based similarity batching
+    similarity_threshold: float = 0.7  # Cosine similarity threshold for dissimilarity batching
+    max_sub_batch_size: int = 10  # Maximum clusters per sub-batch
+    
+    # Rate limiting and performance
+    batch_size: int = 20  # Base batch size for API calls
+    max_concurrent_requests: int = 15  # Maximum concurrent API requests
+    async_concurrency_limit: int = 16  # Async concurrency limit for codeGenerator
+    enable_aggressive_parallelism: bool = True  # Enable concurrent processing within batches
+    
+    # Processing strategy
+    enable_sequential_batch_processing: bool = True  # Process dissimilarity batches sequentially
+    enable_sub_batch_processing: bool = True  # Split large batches into sub-batches
+    
+    # Monitoring and reporting
+    enable_similarity_distribution_analysis: bool = True  # Report similarity statistics
+    enable_batch_analytics: bool = True  # Report batch formation statistics
+    enable_performance_monitoring: bool = True  # Monitor processing performance
+    
+    # SharedCodebook settings
+    enable_version_tracking: bool = True  # Track codebook versions
+    enable_embedding_cache: bool = True  # Cache code embeddings per version
+    max_cached_versions: int = 5  # Maximum cached codebook versions
+
+# =============================================================================
+# SMART PHASE PROCESSING CONFIGURATION
+# =============================================================================
+
+# @dataclass
+# class SmartPhaseConfig:
+#     """Configuration for smart phase processing optimization"""
+    
+#     # Feature flag - DISABLED by default for safety
+#     enable_smart_phase_processing: bool = True
+    
+#     # Fallback behavior
+#     enable_automatic_fallback: bool = True
+#     fallback_timeout_seconds: int = 120  # Fallback if phase 1 takes too long (increased from 30s)
+    
+#     # Phase 1: Theme extraction settings
+#     theme_extraction_concurrency: int = 20  # Reduced concurrency to avoid API rate limits
+#     theme_extraction_batch_size: int = 20  # Batch size for theme extraction API calls
+    
+#     # Phase 2: Batch formation settings  
+#     similarity_threshold: float = 0.7  # Cosine similarity threshold for theme grouping
+#     target_batch_size: int = 10  # Target clusters per batch (optimized for 50-100 total)
+#     min_batch_size: int = 5  # Minimum clusters per batch
+#     max_batch_size: int = 15  # Maximum clusters per batch
+    
+#     # Phase 3: Sequential processing settings
+#     enable_inter_batch_optimization: bool = True  # Use updated codebook between batches
+#     batch_progress_reporting: bool = True  # Report progress between batches
+    
+#     # Performance monitoring
+#     enable_performance_comparison: bool = True  # Compare performance with current system
+#     enable_timing_details: bool = False  # Detailed timing breakdowns (verbose only)
+    
+#     # Memory management
+#     cache_theme_embeddings: bool = True  # Cache theme embeddings for reuse
+#     max_cached_theme_embeddings: int = 1000  # Limit cache size
+#     clear_cache_between_runs: bool = True  # Clear theme cache between runs
+    
+#     # Testing and validation
+#     enable_output_validation: bool = True  # Compare outputs between systems (test mode)
+#     validation_sample_size: int = 10  # Number of clusters to validate in test mode
+#     enable_test_mode: bool = False  # Run both systems and compare (for testing)
+
+
+# =============================================================================
 # LABELLING CONFIGURATION
 # =============================================================================
 
@@ -624,106 +708,6 @@ class ExportConfig:
 
 
 # =============================================================================
-# DEDUPLICATION CONFIGURATION
-# =============================================================================
-
-@dataclass
-class DeduplicationConfig:
-    """Configuration for codebook deduplication step"""
-    batch_size: int = 10
-    overlap_size: int = 5
-    similarity_threshold: float = 0.75
-    temperature: float = 0.0
-    max_tokens: int = 4000
-    retries: int = 3
-    retry_delay: int = 2
-    max_concurrent_requests: int = 5
-    # Model configuration - will be overridden by ModelConfig
-    model: str = "gpt-4.1-mini"  # Fallback model
-    min_codes_for_deduplication: int = 5  # Skip if fewer codes
-
-# =============================================================================
-# SMART PHASE PROCESSING CONFIGURATION
-# =============================================================================
-
-@dataclass
-class SmartPhaseConfig:
-    """Configuration for smart phase processing optimization"""
-    
-    # Feature flag - DISABLED by default for safety
-    enable_smart_phase_processing: bool = True
-    
-    # Fallback behavior
-    enable_automatic_fallback: bool = True
-    fallback_timeout_seconds: int = 120  # Fallback if phase 1 takes too long (increased from 30s)
-    
-    # Phase 1: Theme extraction settings
-    theme_extraction_concurrency: int = 20  # Reduced concurrency to avoid API rate limits
-    theme_extraction_batch_size: int = 20  # Batch size for theme extraction API calls
-    
-    # Phase 2: Batch formation settings  
-    similarity_threshold: float = 0.7  # Cosine similarity threshold for theme grouping
-    target_batch_size: int = 10  # Target clusters per batch (optimized for 50-100 total)
-    min_batch_size: int = 5  # Minimum clusters per batch
-    max_batch_size: int = 15  # Maximum clusters per batch
-    
-    # Phase 3: Sequential processing settings
-    enable_inter_batch_optimization: bool = True  # Use updated codebook between batches
-    batch_progress_reporting: bool = True  # Report progress between batches
-    
-    # Performance monitoring
-    enable_performance_comparison: bool = True  # Compare performance with current system
-    enable_timing_details: bool = False  # Detailed timing breakdowns (verbose only)
-    
-    # Memory management
-    cache_theme_embeddings: bool = True  # Cache theme embeddings for reuse
-    max_cached_theme_embeddings: int = 1000  # Limit cache size
-    clear_cache_between_runs: bool = True  # Clear theme cache between runs
-    
-    # Testing and validation
-    enable_output_validation: bool = True  # Compare outputs between systems (test mode)
-    validation_sample_size: int = 10  # Number of clusters to validate in test mode
-    enable_test_mode: bool = False  # Run both systems and compare (for testing)
-
-# =============================================================================
-# CODEDESIGNER CONFIGURATION
-# =============================================================================
-
-@dataclass
-class CodeDesignerConfig:
-    """Configuration for the new CodeDesigner system"""
-    
-    # Model configuration
-    model: str = DEFAULT_MODEL
-    temperature: float = 0.1
-    max_tokens: int = 4000
-    seed: Optional[int] = 42
-    
-    # Theme-based similarity batching
-    similarity_threshold: float = 0.7  # Cosine similarity threshold for dissimilarity batching
-    max_sub_batch_size: int = 10  # Maximum clusters per sub-batch
-    
-    # Rate limiting and performance
-    batch_size: int = 20  # Base batch size for API calls
-    max_concurrent_requests: int = 15  # Maximum concurrent API requests
-    async_concurrency_limit: int = 16  # Async concurrency limit for codeGenerator
-    enable_aggressive_parallelism: bool = True  # Enable concurrent processing within batches
-    
-    # Processing strategy
-    enable_sequential_batch_processing: bool = True  # Process dissimilarity batches sequentially
-    enable_sub_batch_processing: bool = True  # Split large batches into sub-batches
-    
-    # Monitoring and reporting
-    enable_similarity_distribution_analysis: bool = True  # Report similarity statistics
-    enable_batch_analytics: bool = True  # Report batch formation statistics
-    enable_performance_monitoring: bool = True  # Monitor processing performance
-    
-    # SharedCodebook settings
-    enable_version_tracking: bool = True  # Track codebook versions
-    enable_embedding_cache: bool = True  # Cache code embeddings per version
-    max_cached_versions: int = 5  # Maximum cached codebook versions
-
-# =============================================================================
 # DEFAULT INSTANCES
 # =============================================================================
 
@@ -738,8 +722,8 @@ DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
-DEFAULT_DEDUPLICATION_CONFIG = DeduplicationConfig()
-DEFAULT_SMART_PHASE_CONFIG = SmartPhaseConfig()
+#DEFAULT_DEDUPLICATION_CONFIG = DeduplicationConfig()
+#DEFAULT_SMART_PHASE_CONFIG = SmartPhaseConfig()
 DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
 
 

@@ -21,14 +21,14 @@ cache_manager = CacheManager(cache_config)
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
-# filename = "M250285 input voor coderen - met Q18Q19.sav"
-# id_column = "respondentid"
-# var_name = "q19"
-# #var_name = "Q18Q19"
+filename = "M250285 input voor coderen - met Q18Q19.sav"
+id_column = "respondentid"
+var_name = "q19"
+#var_name = "Q18Q19"
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
+# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Q20"
 
 # filename = "M000000 Associatiemonitor Merk X net databestand.sav"
 # id_column = "DLNMID"
@@ -276,7 +276,7 @@ else:
 from utils import qualityFilter
 
 FORCE = False
-VERBOSE = True
+VERBOSE = False
 PROMPT_PRINTER = False
 
 step_name        = "quality_filter"
@@ -343,7 +343,7 @@ from utils import ideaExtractor
 
 FORCE = False
 VERBOSE = True
-PROMPT_PRINTER = True
+PROMPT_PRINTER = False
 
 step_name        = "extracted_ideas"
 if  FORCE:
@@ -626,7 +626,7 @@ else:
         codebook_entries = []
         codebook = []  # Legacy format for backward compatibility
         
-        if results and isinstance(results, models.CodeGeneratorReasoningResults):
+        if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
             # Use the deduplicated codebook directly from results
             final_codebook = results.codebook
             
@@ -709,6 +709,7 @@ else:
 
 #HIER
 
+
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
@@ -718,7 +719,7 @@ if True and CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
 
 
-cluster_id = "26"
+cluster_id = "3-2"
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
