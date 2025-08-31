@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 # from collections import deque
 
 from openai import OpenAI, RateLimitError
+from pydantic import BaseModel, ConfigDict, RootModel
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, wait_exponential, retry_if_exception_type
 from pydantic import ValidationError
@@ -16,8 +17,7 @@ from asyncio_throttle import Throttler
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
-import models
-from models import ClusterSummaryOutput, CandidateCodeSelectionOutput, CodeRecommendation, ValidationResult, CodeGeneratorReasoningResults, ClusterThemeItem 
+from models import ClusterModel
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
@@ -35,6 +35,106 @@ except ImportError:
 
 # Initialize client
 client = OpenAI()
+
+
+# ============================================================================
+#  MODELS FOR STRUCTURED OUTPUTS AND VALIDATION
+# ============================================================================
+
+"""Prompt 1 : Theme Extraction"""
+class ClusterThemeItem(BaseModel):
+    theme_id: int 
+    theme_label: str 
+    theme_description: str  
+
+class ClusterSummaryItem(BaseModel):
+    analysis: str  
+    extracted_themes: List[ClusterThemeItem] 
+
+class ClusterSummaryOutput(RootModel[Dict[str, ClusterSummaryItem]]):
+    root: Dict[str, ClusterSummaryItem]
+
+"""Prompt 2 : Candidate codes selection"""
+class CandidateCode(BaseModel):
+    code: str
+    definition: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CandidateCodeSelectionOutput(RootModel[List[CandidateCode]]):
+    root: List[CandidateCode]
+
+"""Prompt 3 : Code generation instigation"""
+class CodingDecision(BaseModel):
+    theme_number: int
+    theme_name: str 
+    decision: str  # use | modify | create
+    final_code_label: str
+    final_code_definition: str
+    source_code: Optional[str] = None   
+    justification: str
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodeRecommendation(BaseModel):
+    coding_decisions: List[CodingDecision]
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+"""Prompt 4 : Validation of code label and description"""
+class ValidatedCode(BaseModel):
+    code: str
+    definition: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class OriginalRecommendation(BaseModel):
+    code: str
+    definition: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodeValidation(BaseModel):
+    theme_number: int
+    theme_name: str 
+    original_recommendation: OriginalRecommendation
+    decision: str  # APPROVE | REJECT
+    decision_rationale: str
+    validated_code: ValidatedCode
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ValidationResult(BaseModel):
+    code_validations: List[CodeValidation]
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+ 
+"""Codebook with reasoning"""
+class CodeGeneratorReasoningResults(BaseModel):
+    cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
+    
+    step1_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 1 received
+    step2_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 2 received
+    step3_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 3 received
+    step4_inputs: Dict[Union[int, str], Dict[str, Any]] = {}  # What Prompt 4 received
+    step3_validation_warnings: Dict[Union[int, str], List[Dict[str, Any]]] = {}  # Validation warnings
+    
+    step1_summaries: Dict[Union[int, str], Dict[str, Any]]  # ClusterThemeAnalysis: {cluster_summary, themes[]}
+    step2_analysis: Dict[Union[int, str], List[Dict[str, str]]]  # List[CandidateCode]: Array of candidate codes
+    step3_recommendations: Dict[Union[int, str], Dict[str, Any]]  # CodeRecommendation: {coding_decisions[]}  
+    step4_validations: Dict[Union[int, str], Dict[str, Any]]  # ValidationResult: {code_validations[]}
+    step4_validated_codes: Dict[Union[int, str], Dict[str, Any]] = {}  # Final validated codes from Step 4
+    
+    stats: Dict[str, Any]
+    generator_version: str
+    var_lab: str
+    total_clusters: int
+    total_ideas: int
+    processing_timestamp: str
+    
+    cluster_assignments: Dict[Union[int, str], Dict[str, Any]]
+    codebook: List[Dict[str, str]]   
+    cluster_data: Dict[Union[int, str], Dict[str, Any]]   
+    validation_details: Optional[Dict[Union[int, str], Any]] = None   
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
 
 # ============================================================================
 # ASYNC WRAPPERS FOR TRUE CONCURRENCY
@@ -74,7 +174,31 @@ async def async_responses_create_with_json_retry(
             
             # Try to parse JSON
             if hasattr(response_model, 'model_validate_json'):
-                response = response_model.model_validate_json(resp.output_text)
+                # Special handling for ClusterSummaryOutput - LLM might return array instead of object
+                if response_model == ClusterSummaryOutput:
+                    import json
+                    try:
+                        parsed_json = json.loads(resp.output_text)
+                        # Handle various LLM response formats
+                        if isinstance(parsed_json, list):
+                            if len(parsed_json) == 1 and isinstance(parsed_json[0], dict):
+                                # Case: [{"cluster_id": {...}}] -> {"cluster_id": {...}}
+                                parsed_json = parsed_json[0]
+                            elif len(parsed_json) > 1:
+                                # Case: [{"cluster_id": {...}}, {...}] - merge all dictionaries
+                                merged_dict = {}
+                                for item in parsed_json:
+                                    if isinstance(item, dict):
+                                        merged_dict.update(item)
+                                parsed_json = merged_dict
+                        # Now validate with the corrected structure
+                        response = response_model.model_validate(parsed_json)
+                    except (json.JSONDecodeError, ValidationError):
+                        # Fall back to original method if preprocessing fails
+                        response = response_model.model_validate_json(resp.output_text)
+                else:
+                    response = response_model.model_validate_json(resp.output_text)
+                    
                 if hasattr(response, 'root'):
                     return response.root
                 return response
@@ -174,7 +298,7 @@ class CodeDesignerAPIClient:
         self.throttler = throttler
         self.monitor = monitor
         self.config = config
-        self.client = async_client
+        self.client = async_client #TODO: is not async client, change to client. Globally defined
         self.model_config = model_config
         self.encoding = encoding
         self.verbose_reporter = verbose_reporter
@@ -211,7 +335,6 @@ class CodeDesignerAPIClient:
                 if hasattr(self.verbose_reporter, '_parent_stats'):
                     self.verbose_reporter._parent_stats['api_errors'] = self.verbose_reporter._parent_stats.get('api_errors', 0) + 1
                 raise
-
 
 # ============================================================================
 # SHARED CODEBOOK 
@@ -369,19 +492,30 @@ class SimilarityEngine:
         
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
-        theme_statements = [themes[cid].root[0].theme_statement for cid in cluster_ids]  # Each sub-cluster has only one theme now
-        theme_names = [themes[cid].root[0].theme_name for cid in cluster_ids]  # Parallel list for theme names
-        
+        # Get theme_labels - themes[cid] is ClusterSummaryOutput with root dict
+        theme_names = []
+        for cid in cluster_ids:
+            theme_output = themes[cid]
+            try:
+                # Access the ClusterSummaryItem from the root dict
+                cluster_summary_items = list(theme_output.root.values())
+                if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                    theme_names.append(cluster_summary_items[0].extracted_themes[0].theme_label)
+                else:
+                    theme_names.append("Unknown")
+            except (AttributeError, IndexError):
+                theme_names.append("Unknown")   
+                      
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
         batch_size = 100
         theme_embeddings = {}
         
         try:
-            for i in range(0, len(theme_statements), batch_size):
-                batch_statements = theme_statements[i:i + batch_size]
+            for i in range(0, len(theme_names), batch_size):
+                batch_statements = theme_names[i:i + batch_size]
                 batch_ids = cluster_ids[i:i + batch_size]
                 
-                self.verbose_reporter.stat_line(f"Processing batch {i//batch_size + 1}/{(len(theme_statements) + batch_size - 1)//batch_size} ({len(batch_statements)} themes)")
+                self.verbose_reporter.stat_line(f"Processing batch {i//batch_size + 1}/{(len(theme_names) + batch_size - 1)//batch_size} ({len(batch_statements)} themes)")
                 
                 # Use efficient batch embedding like embedder.py
                 batch_embeddings = await self._embed_openai_batch(batch_statements)
@@ -397,9 +531,13 @@ class SimilarityEngine:
             
             for cluster_id, theme in themes.items():
                 try:
-                    # Use first theme's statement
-                    theme_statement = theme.root[0].theme_statement if theme.root else "Unknown"
-                    embedding = await self._get_embedding(theme_statement)
+                    # Extract theme_label from ClusterSummaryOutput structure
+                    cluster_summary_items = list(theme.root.values())
+                    if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                        theme_label = cluster_summary_items[0].extracted_themes[0].theme_label
+                    else:
+                        theme_label = "Unknown"
+                    embedding = await self._get_embedding(theme_label)
                     theme_embeddings[cluster_id] = embedding
                 except Exception as individual_error:
                     self.verbose_reporter.error(f"Failed to embed theme for cluster {cluster_id}: {individual_error}")
@@ -411,15 +549,15 @@ class SimilarityEngine:
         return theme_embeddings
     
     async def _embed_openai_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
-        """Efficient batch embedding using OpenAI API (adapted from embedder.py) with retry logic"""
+        """Batch embedding with retry logic"""
         client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        # Retry logic similar to embedder.py
+       
         for attempt in range(3):
             try:
                 response = client.embeddings.create(
                     input=batch_texts,
-                    model="text-embedding-3-large"
+                    #model="text-embedding-3-large"
+                    model=DEFAULT_CODEDESIGNER_CONFIG.embedding_model
                 )
                 return [np.array(item.embedding, dtype=np.float32) for item in response.data]
                 
@@ -432,10 +570,11 @@ class SimilarityEngine:
                 await asyncio.sleep(wait_time)
 
     async def _get_embedding(self, text: str) -> np.ndarray:
-        """Get embedding for single text using OpenAI embeddings API (fallback method)"""
+        """Get embedding for single text"""
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.embeddings.create(
-            model="text-embedding-3-large",
+            #model="text-embedding-3-large",
+            model=DEFAULT_CODEDESIGNER_CONFIG.embedding_model,
             input=text
         )
         return np.array(response.data[0].embedding)
@@ -454,8 +593,8 @@ class SimilarityEngine:
         self._report_similarity_distribution(similarity_matrix)
         
         # Report hierarchical dissimilarity batching strategy  
-        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
-        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching with max 0.85 similarity: {' → '.join(map(str, progressive_thresholds))}")
+        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8]
+        self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching with max 0.80 similarity: {' → '.join(map(str, progressive_thresholds))}")
         
         # Hierarchical Dissimilarity Batching
         # Create batches in order of increasing similarity tolerance
@@ -535,8 +674,17 @@ class SimilarityEngine:
         for batch_idx, batch_cluster_ids in enumerate(batches):
             theme_labels = []
             if themes:
-                theme_labels = [f"C{cid}: '{themes[cid].root[0].theme_name if themes[cid].root else 'unknown'}'" if cid in themes else f"C{cid}: unknown" 
-                              for cid in batch_cluster_ids]
+                for cid in batch_cluster_ids:
+                    if cid in themes:
+                        theme_output = themes[cid]
+                        cluster_summary_items = list(theme_output.root.values())
+                        if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                            theme_label = cluster_summary_items[0].extracted_themes[0].theme_label
+                            theme_labels.append(f"C{cid}: '{theme_label}'")
+                        else:
+                            theme_labels.append(f"C{cid}: 'unknown'")
+                    else:
+                        theme_labels.append(f"C{cid}: unknown")
             else:
                 theme_labels = [f"C{cid}" for cid in batch_cluster_ids]
             
@@ -662,8 +810,7 @@ class SimilarityEngine:
         moveable_clusters = self._identify_moveable_clusters(batches, similarity_matrix, cluster_ids, progressive_thresholds)
         
         # Perform redistribution
-        redistributed_batches = self._perform_redistribution(batches, target_sizes, moveable_clusters, 
-                                                            similarity_matrix, cluster_ids, progressive_thresholds)
+        redistributed_batches = self._perform_redistribution(batches, target_sizes, moveable_clusters, similarity_matrix, cluster_ids, progressive_thresholds)
         
         # Report results
         final_sizes = [len(batch) for batch in redistributed_batches]
@@ -714,7 +861,7 @@ class SimilarityEngine:
         
         for from_idx in range(len(batches) - 1):  # Don't check last batch
             to_idx = from_idx + 1
-            from_threshold = progressive_thresholds[from_idx] if from_idx < len(progressive_thresholds) else 0.85
+            #from_threshold = progressive_thresholds[from_idx] if from_idx < len(progressive_thresholds) else 0.85
             to_threshold = progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else 0.85
             
             # Find clusters in from_batch that could move to to_batch
@@ -763,7 +910,7 @@ class SimilarityEngine:
         """Perform the actual redistribution of clusters"""
         # Create mutable copies
         redistributed = [batch.copy() for batch in batches]
-        current_sizes = [len(batch) for batch in redistributed]
+        #current_sizes = [len(batch) for batch in redistributed]
         
         # Redistribute from early batches to later batches
         for from_idx in range(len(redistributed) - 1):
@@ -814,7 +961,7 @@ class InductiveCodeGenerator:
     
     def __init__(
         self,
-        cluster_results: List[models.ClusterModel],
+        cluster_results: List[ClusterModel],
         starter_codes: List[Dict[str, str]], 
         var_lab: str,
         verbose: bool = False,
@@ -839,7 +986,7 @@ class InductiveCodeGenerator:
         self.concurrency_semaphore = asyncio.Semaphore(self.config.async_concurrency_limit)
         
         # Initialize async client and rate limiting
-        self.async_client = client  # Use global client
+        self.async_client = client  # TODO: Use global client, which is not AsyncOpenai anymore
         self.embedding_client = OpenAI()
         
         # Initialize tokenizer with proper model mapping
@@ -850,10 +997,9 @@ class InductiveCodeGenerator:
             tiktoken_model_mapping = {
                 'gpt-4.1-mini': 'gpt-4o-mini',
                 'gpt-4.1': 'gpt-4o', 
-                'gpt-4.1-turbo': 'gpt-4o'
-            }
+                'gpt-4.1-turbo': 'gpt-4o'}
             
-            tiktoken_model = tiktoken_model_mapping.get(self.config.model)
+            tiktoken_model = tiktoken_model_mapping.get(self.config.model) #TODO this is only for 4.1 what about other models, including 4o and 5?
             if tiktoken_model:
                 try:
                     self.encoding = tiktoken.encoding_for_model(tiktoken_model)
@@ -876,10 +1022,7 @@ class InductiveCodeGenerator:
         self.global_monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
         
         # Initialize components
-        self.similarity_engine = SimilarityEngine(
-            similarity_threshold=self.config.similarity_threshold,
-            verbose_reporter=self.verbose_reporter
-        )
+        self.similarity_engine = SimilarityEngine(similarity_threshold=self.config.similarity_threshold, verbose_reporter=self.verbose_reporter)
         self.shared_codebook = SharedCodebook(starter_codes)
         
         # Results storage
@@ -887,16 +1030,16 @@ class InductiveCodeGenerator:
         self._processing_stats = {}
         
         # Initialize prompt tracking for CodeGeneratorReasoningResults
-        self.step1_inputs = {}   # Theme extraction inputs
-        self.step2_inputs = {}   # Not used in current architecture  
-        self.step3_inputs = {}   # Code generation inputs
-        self.step4_inputs = {}   # Validation inputs
-        self.step1_summaries = {}  # Theme extraction results
-        self.step2_analysis = {}   # Not used in current architecture
+        self.step1_inputs = {}           # Theme extraction inputs
+        self.step2_inputs = {}           # Candidate code selection inputs
+        self.step3_inputs = {}           # Code generation inputs
+        self.step4_inputs = {}           # Validation inputs
+        self.step1_summaries = {}        # Theme extraction results
+        self.step2_analysis = {}         # Candidate codes
         self.step3_recommendations = {}  # Code generation results
-        self.step4_validations = {}  # Validation results
+        self.step4_validations = {}      # Validation results
         self.step4_validated_codes = {}  # Final validated codes
-        self.cluster_assignments = {}  # Cluster-to-code mappings
+        self.cluster_assignments = {}    # Cluster-to-code mappings
     
     def _capture_prompt_params(self, cluster_id: Union[int, str], step: str, **kwargs):
         """Capture exact parameters used in prompt.format() for debugging/testing"""
@@ -911,19 +1054,45 @@ class InductiveCodeGenerator:
         elif step == "step4":
             self.step4_inputs[key] = kwargs
     
-    def _get_theme_statement(self, theme_data) -> str:
-        """Safely get theme statement from theme data"""
-        if hasattr(theme_data, 'root') and theme_data.root:
-            return theme_data.root[0].theme_statement
+    def _format_theme_for_prompt(self, theme_data) -> str:
+        if hasattr(theme_data, 'root'):
+            # Handle ClusterSummaryOutput structure
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                theme = cluster_summary_items[0].extracted_themes[0]
+                return f"Theme name: {theme.theme_label}\nTheme description: {theme.theme_description}"
+        elif hasattr(theme_data, 'root') and theme_data.root:
+            # Handle ThemeExtractionResult structure  
+            theme = theme_data.root[0]
+            return f"Theme name: {theme.theme_label}\nTheme description: {theme.theme_description}"
         return "Unknown theme"
     
-    def _get_theme_name(self, theme_data) -> str:
+    
+    def _get_theme_statement(self, theme_data) -> str: #TODO: check, might potentially by redundant
+        """Safely get theme statement from theme data"""
+        if hasattr(theme_data, 'root'):
+            # Handle ClusterSummaryOutput structure
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                return cluster_summary_items[0].extracted_themes[0].theme_description
+        elif hasattr(theme_data, 'root') and theme_data.root:
+            # Handle ThemeExtractionResult structure
+            return theme_data.root[0].theme_description
+        return "Unknown theme"
+    
+    def _get_theme_name(self, theme_data) -> str: #TODO: check, might potentially by redundant
         """Safely get theme name from theme data"""
-        if hasattr(theme_data, 'root') and theme_data.root:
-            return theme_data.root[0].theme_name
+        if hasattr(theme_data, 'root'):
+            # Handle ClusterSummaryOutput structure
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                return cluster_summary_items[0].extracted_themes[0].theme_label
+        elif hasattr(theme_data, 'root') and theme_data.root:
+            # Handle ThemeExtractionResult structure
+            return theme_data.root[0].theme_label
         return "Unknown theme name"
     
-    def _get_theme_description(self, theme_data) -> str:
+    def _get_theme_description(self, theme_data) -> str: #TODO: check, might potentially by redundant
         """Safely get theme description from theme data"""
         # For now, use theme statement as description since they're the same
         return self._get_theme_statement(theme_data)
@@ -939,11 +1108,21 @@ class InductiveCodeGenerator:
                 if idea.initial_cluster is not None and idea.initial_cluster != -1:
                     cluster_id = idea.initial_cluster
                     
+                    # Create cluster entry if it doesn't exist
+                    if cluster_id not in clusters:
+                        clusters[cluster_id] = {
+                            'cluster_id': cluster_id,
+                            'ideas': [],
+                            'embeddings': [],
+                            'respondent_ids': []
+                        }
+                    
+                    # Add idea data
+                    clusters[cluster_id]['ideas'].append(idea.idea)
+                    clusters[cluster_id]['respondent_ids'].append(idea.idea_id)  # Using idea_id as respondent identifier
+                    
+                    # Add embedding if available
                     if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                        if cluster_id not in clusters:
-                            clusters[cluster_id] = {'ideas': [], 'embeddings': []}
-                        
-                        clusters[cluster_id]['ideas'].append(idea.idea)
                         clusters[cluster_id]['embeddings'].append(idea.idea_embedding)
         
         # Filter out empty clusters
@@ -965,35 +1144,45 @@ class InductiveCodeGenerator:
         
         # Convert to dictionary
         theme_results = {}
-        for result in results:
-            if result is not None:
-                theme_results[result.cluster_id] = result
+        for result_tuple in results:
+            if result_tuple is not None:
+                cluster_id, theme_result = result_tuple
+                if theme_result is not None:
+                    theme_results[cluster_id] = theme_result
         
         self.verbose_reporter.stat_line(f"Extracted {len(theme_results)} themes")
         self.verbose_reporter.step_complete("Theme Extraction")
         return theme_results
     
-    def expand_multi_theme_clusters(self, themes: Dict[int, ClusterSummaryOutput], 
-                                   clusters: Dict[int, Dict[str, Any]]) -> Tuple[Dict[str, ClusterSummaryOutput], Dict[str, Dict[str, Any]]]:
+    def expand_multi_theme_clusters(self, themes: Dict[int, ClusterSummaryOutput], clusters: Dict[int, Dict[str, Any]]) -> Tuple[Dict[str, ClusterSummaryOutput], Dict[str, Dict[str, Any]]]:
         """Expand multi-theme clusters into sub-clusters for independent processing"""
         self.verbose_reporter.step_start("Multi-Theme Cluster Expansion")
         
         expanded_themes = {}
         expanded_clusters = {}
         
-        # Also expand step1_summaries to match the new sub-cluster structure
+        # Also expand step1_summaries and step1_inputs to match the new sub-cluster structure
         expanded_step1_summaries = {}
+        expanded_step1_inputs = {}
         
         for cluster_id, theme_data in themes.items():
-            if len(theme_data.root) > 1:
+            # theme_data is a ClusterSummaryOutput, .root is a dict with cluster_id as key
+            # Get the ClusterSummaryItem and check its extracted_themes
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and len(cluster_summary_items[0].extracted_themes) > 1:
                 # Multi-theme cluster: create sub-clusters
-                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.root)} sub-clusters")
+                extracted_themes = cluster_summary_items[0].extracted_themes
+                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(extracted_themes)} sub-clusters")
                 
-                for i, theme_item in enumerate(theme_data.root, 1):
+                for i, theme_item in enumerate(extracted_themes, 1):
                     sub_cluster_id = f"{cluster_id}-{i}"
-                    
-                    # Create single-theme ClusterSummaryOutput for sub-cluster
-                    single_theme_data = ClusterSummaryOutput([theme_item])
+                    original_analysis = cluster_summary_items[0].analysis
+                    cluster_summary_item = ClusterSummaryItem(
+                        analysis=original_analysis,
+                        extracted_themes=[theme_item]
+                    )
+                    # Create ClusterSummaryOutput with proper structure
+                    single_theme_data = ClusterSummaryOutput(root={sub_cluster_id: cluster_summary_item})
                     expanded_themes[sub_cluster_id] = single_theme_data
                     
                     # Duplicate cluster data for sub-cluster
@@ -1001,11 +1190,15 @@ class InductiveCodeGenerator:
                         expanded_clusters[sub_cluster_id] = clusters[cluster_id].copy()
                     
                     # Create step1_summary for this sub-cluster with only its single theme
-                    if cluster_id in self.step1_summaries:
-                        expanded_step1_summaries[sub_cluster_id] = {
-                            'cluster_summary': theme_item.theme_statement,
-                            'themes': [theme_item.theme_statement]  # Single theme only
-                        }
+                    expanded_step1_summaries[sub_cluster_id] = {
+                        'analysis': cluster_summary_items[0].analysis,
+                        'theme_id': theme_item.theme_id,
+                        'theme_label': theme_item.theme_label,
+                        'theme_description': theme_item.theme_description
+                    } 
+                    # Duplicate step1_inputs for each sub-cluster to maintain key alignment
+                    if str(cluster_id) in self.step1_inputs:
+                        expanded_step1_inputs[sub_cluster_id] = self.step1_inputs[str(cluster_id)].copy()
                     
             else:
                 # Single-theme cluster: keep as-is but convert to string ID for consistency
@@ -1016,16 +1209,33 @@ class InductiveCodeGenerator:
                     expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
                 
                 # Also convert step1_summaries to string ID
-                if cluster_id in self.step1_summaries:
-                    expanded_step1_summaries[string_cluster_id] = self.step1_summaries[cluster_id]
+                # Get the theme data from the single-theme cluster
+                cluster_summary_items = list(theme_data.root.values())
+                if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                    theme_item = cluster_summary_items[0].extracted_themes[0]  # First (and only) theme
+                    expanded_step1_summaries[string_cluster_id] = {
+                        'analysis': cluster_summary_items[0].analysis,
+                        'theme_id': theme_item.theme_id,
+                        'theme_label': theme_item.theme_label,
+                        'theme_description': theme_item.theme_description
+                    }
+                    
+                # Also convert step1_inputs to string ID for consistency
+                if str(cluster_id) in self.step1_inputs:
+                    expanded_step1_inputs[string_cluster_id] = self.step1_inputs[str(cluster_id)]
         
-        # Replace the original step1_summaries with the expanded version
+        # Replace the original step1_summaries and step1_inputs with the expanded versions
         self.step1_summaries = expanded_step1_summaries
+        self.step1_inputs = expanded_step1_inputs
         
         self.verbose_reporter.stat_line(f"Expanded {len(themes)} clusters into {len(expanded_themes)} processing units")
         self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
         
         return expanded_themes, expanded_clusters
+    
+    #########################################################################################################
+    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -  
+    #########################################################################################################
     
     async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str]):
         """Extract theme for single cluster using instructor"""
@@ -1033,6 +1243,7 @@ class InductiveCodeGenerator:
         
         # Prepare exact parameters for prompt
         params = {
+            'cluster_id': str(cluster_id),  # Convert to string as prompt expects string
             'survey_question': self.var_lab,
             'language': DEFAULT_LANGUAGE,
             'cluster_text': ideas_text
@@ -1040,8 +1251,9 @@ class InductiveCodeGenerator:
         
         prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
         
-        # Capture exact parameters used in prompt construction
-        self._capture_prompt_params(cluster_id, "step1", **params)
+        # Capture exact parameters used in prompt construction (exclude cluster_id since it's passed as positional arg)
+        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
+        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)
         
         # Capture prompt with prompt_printer if available
         if self.prompt_printer:
@@ -1069,41 +1281,37 @@ class InductiveCodeGenerator:
             )
             
             # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
-            # Debug: Check response type
+            # The response is a dictionary with cluster_id as key (RootModel.root was automatically extracted)
             if hasattr(response, '__await__'):
                 self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
                 return None
             
-            if response and len(response) > 0:
-                # Take the first theme item (most common case)
-                theme_item = response[0]
-                
-                # Create a proper result object with required attributes
-                class ThemeExtractionResult:
-                    def __init__(self, themes_list: List[ClusterThemeItem], cluster_id: int):
-                        self.themes = themes_list
-                        self.cluster_id = cluster_id
-                    
-                    @property
-                    def root(self):
-                        """Backward compatibility for code that expects .root"""
-                        return self.themes
-                
-                result = ThemeExtractionResult(response, cluster_id)
+            # The response should be a dictionary (since async_responses_create_with_json_retry extracts .root)
+            if isinstance(response, dict):
+                # The response is already the root dictionary from ClusterSummaryOutput
+                # Create a proper ClusterSummaryOutput object
+                result = ClusterSummaryOutput(root=response)
                 
                 # Capture theme extraction results for transparency
-                self.step1_summaries[cluster_id] = {
-                    'cluster_summary': f"{theme_item.theme_statement}",
-                    'themes': response,  # Store full theme objects with name and statement
-                }
+                cluster_key = str(cluster_id)
+                if cluster_key in response:
+                    cluster_summary_item = response[cluster_key]
+                    if cluster_summary_item.extracted_themes:
+                        first_theme = cluster_summary_item.extracted_themes[0]
+                        self.step1_summaries[cluster_id] = {
+                            'analysis': cluster_summary_item.analysis,
+                            'cluster_summary': first_theme.theme_description,
+                            'themes': cluster_summary_item.extracted_themes,
+                        }
                 
-                return result
+                return (cluster_id, result)
             else:
-                return None
+                self.verbose_reporter.error(f"Unexpected response type for cluster {cluster_id}: {type(response)}")
+                return (cluster_id, None)
             
         except Exception as e:
             self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {e}")
-            return None
+            return (cluster_id, None)
     
     async def _process_with_optimal_strategy(self, tasks: List, stage_name: str, clusters: Dict[int, Dict[str, Any]] = None):
         """Process tasks with rate limiting and optimal strategy"""
@@ -1145,6 +1353,7 @@ class InductiveCodeGenerator:
                     cluster_id, cluster_data = cluster_items[i]
                     ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
                     prompt = CLUSTER_SUMMARY_PROMPT.format(
+                        cluster_id=str(cluster_id),
                         survey_question=self.var_lab,
                         language=DEFAULT_LANGUAGE,
                         cluster_text=ideas_text
@@ -1197,6 +1406,7 @@ class InductiveCodeGenerator:
         for cluster_id, cluster_data in cluster_items:
             ideas_text = "\n".join([f"- {idea}" for idea in cluster_data['ideas']])
             prompt = CLUSTER_SUMMARY_PROMPT.format(
+                cluster_id=str(cluster_id),
                 survey_question=self.var_lab,
                 language=DEFAULT_LANGUAGE,
                 cluster_text=ideas_text
@@ -1378,7 +1588,8 @@ class InductiveCodeGenerator:
         # This prevents multiple clusters from generating the same embeddings simultaneously
         cached_embeddings = await self.shared_codebook.get_embeddings_for_version(base_version)
         if cached_embeddings is None and codebook_snapshot:
-            code_texts = [f"{code['code']}: {code['definition']}" for code in codebook_snapshot]
+            #code_texts = [f"{code['code']}: {code['definition']}" for code in codebook_snapshot] 
+            code_texts = [f"{code['code']}" for code in codebook_snapshot]
             try:
                 code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
                 await self.shared_codebook.cache_embeddings(base_version, code_embeddings)
@@ -1416,7 +1627,8 @@ class InductiveCodeGenerator:
                     # Generate embeddings for all codes in the updated codebook
                     if self.verbose_detailed: 
                         self.verbose_reporter.stat_line(f"Post-processing: Generating embeddings for updated codebook (version {new_version})")
-                    code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
+                    #code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
+                    code_texts = [f"{code['code']}" for code in updated_codes]
                     try:
                         code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
                         await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
@@ -1425,65 +1637,7 @@ class InductiveCodeGenerator:
                         self.verbose_reporter.error(f"Failed to generate embeddings for updated codebook (version {new_version}): {e}")
         
         return results
-    
-    # async def _process_single_cluster_pipeline(self, cluster_id: int, 
-    #                                          clusters: Dict, themes: Dict) -> Optional[Dict[str, Any]]:
-    #     """3-step pipeline for single cluster"""
-        
-    #     if cluster_id not in themes or cluster_id not in clusters:
-    #         return None
-        
-    #     cluster_data = clusters[cluster_id]
-    #     theme_data = themes[cluster_id]
-        
-    #     try:
-    #         # Step 1: Get current codebook for candidate selection (ensures latest codes are visible)
-    #         current_codes, _ = await self.shared_codebook.get_current_snapshot()
-    #         nearest_codes = await self._find_nearest_codes_by_theme(
-    #             cluster_id, theme_data, current_codes, k=5
-    #         )
-            
-    #         # Step 1: Candidate selection - pure unlimited call
-    #         candidate_selection = await self._select_candidate_codes(
-    #             cluster_id, cluster_data, theme_data, nearest_codes
-    #         )
-            
-    #         # Step 4b: Code Generation - unlimited
-    #         code_generation = await self._generate_code(
-    #             cluster_id, cluster_data, theme_data, candidate_selection
-    #         )
-            
-    #         # Step 4c: Validation
-    #         validation = await self._validate_code(
-    #             cluster_id, cluster_data, theme_data, code_generation, candidate_selection
-    #         )
-            
-    #         # Extract final code/definition from complex validation structure
-    #         final_code = None
-    #         final_definition = None
-    #         if validation and hasattr(validation, 'code_validations') and validation.code_validations:
-    #             # Get the first validated code (for now - could aggregate multiple)
-    #             first_validation = validation.code_validations[0]
-    #             if first_validation.validated_code:
-    #                 final_code = first_validation.validated_code.code
-    #                 final_definition = first_validation.validated_code.definition
-            
-    #         return {
-    #             'cluster_id': cluster_id,
-    #             'theme_name': self._get_theme_name(theme_data),
-    #             'theme_description': self._get_theme_description(theme_data),
-    #             'ideas_count': len(cluster_data['ideas']),
-    #             'candidate_selection': candidate_selection,
-    #             'code_generation': code_generation,
-    #             'validation': validation,
-    #             'final_code': final_code,
-    #             'final_definition': final_definition
-    #         }
-            
-    #     except Exception as e:
-    #         self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
-    #         return None
-    
+   
     async def _find_nearest_codes_by_theme(self, cluster_id: Union[int, str], theme_data, 
                                           current_codes: List[Dict[str, str]], k: int = 5) -> List[Dict[str, str]]:
         """Find k nearest codes to themes using cosine similarity - handles multiple themes per cluster"""
@@ -1529,11 +1683,11 @@ class InductiveCodeGenerator:
         """Get embedding for a specific theme item"""
         try:
             # Generate embedding for this specific theme
-            theme_text = theme_item.theme_statement
+            theme_text = theme_item.theme_description  # Using theme_description instead of theme_statement
             embedding = await self.similarity_engine._get_embedding(theme_text)
             return embedding
         except Exception as e:
-            self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_statement}' for cluster {cluster_id}: {e}")
+            self.verbose_reporter.error(f"Failed to embed theme '{theme_item.theme_description}' for cluster {cluster_id}: {e}")
             return None
     
     async def _get_nearest_codes_by_embedding(self, theme_embedding: np.ndarray, 
@@ -1550,7 +1704,8 @@ class InductiveCodeGenerator:
             #self.verbose_reporter.stat_line(f"Generating embeddings for {len(current_codes)} codes (version {version})")
             
             # Format codes for embedding (same format as old codeGenerator)
-            code_texts = [f"{code['code']}: {code['definition']}" for code in current_codes]
+            #code_texts = [f"{code['code']}: {code['definition']}" for code in current_codes]
+            code_texts = [f"{code['code']}" for code in current_codes]
             
             # Batch embed all codes
             try:
@@ -1865,8 +2020,7 @@ class InductiveCodeGenerator:
         
         return clusters
     
-    # ============================================================================
-    # PHASE 3: UNLIMITED PARALLELISM WITH VERSION-BASED CODEBOOK UPDATES
+
     async def _process_single_cluster(self, cluster_id: str, clusters: Dict, themes: Dict,
                                                codebook_snapshot: List[Dict], base_version: int) -> Optional[Dict[str, Any]]:
         """Process single cluster with unlimited concurrency - no artificial limits (Phase 3)"""
@@ -1979,15 +2133,20 @@ class InductiveCodeGenerator:
         else:
             self.verbose_reporter.stat_line("No new codes to add to SharedCodebook from this sub-batch")
     
+    #########################################################################################################
+    # Stage 2: Prompt Formatting & LLM Calling for CANDIDATE CODE SELECTION  
+    #########################################################################################################
     
     async def _select_candidate_codes(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, nearest_codes: List[Dict]):
         """Select candidate codes with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
-            codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" 
-                                   for code in nearest_codes[:20]])
+            #codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" for code in nearest_codes[:20]])
+            #cluster_summary = self._get_theme_statement(theme_data)
             
-            cluster_summary = self._get_theme_statement(theme_data)
+            codes_text = "\n".join([f"Code label: {code['code']}\nCode description: {code['definition']}\n" for code in nearest_codes[:20]])
+            
+            cluster_summary = self._format_theme_for_prompt(theme_data)
             
             # Prepare exact parameters for prompt
             params = {
@@ -2017,15 +2176,6 @@ class InductiveCodeGenerator:
                 semaphore=self.concurrency_semaphore
             )
             
-            if self.verbose_detailed: 
-                if response is None:
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP1 - API returned None response")
-                    return []
-                elif len(response) == 0:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned empty list (valid)")
-                else:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - API returned {len(response)} candidates")
-            
             # # Capture step2_analysis - the actual candidate codes used in pipeline
             if response:
                 self.step2_analysis[cluster_id] = [
@@ -2045,16 +2195,21 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return []
     
+    #########################################################################################################
+    # Stage 3: Prompt Formatting & LLM Calling for GENERATE CODES
+    #########################################################################################################
+    
     async def _generate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, candidate_selection):
         """Generate code with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
             candidate_codes_text = ""
             if candidate_selection and len(candidate_selection) > 0:
-                candidate_codes_text = "\n\n".join([f"Code: {code.code}\nDefinition: {code.definition}" 
+                candidate_codes_text = "\n\n".join([f"Code label: {code.code}\nCode description: {code.definition}" 
                                                    for code in candidate_selection])
                 
-            cluster_summary = self._get_theme_statement(theme_data)
+            #cluster_summary = self._get_theme_statement(theme_data)
+            cluster_summary = self._format_theme_for_prompt(theme_data)
             
             # Prepare exact parameters for prompt
             params = {
@@ -2083,22 +2238,14 @@ class InductiveCodeGenerator:
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('code_recommendation'),
                 semaphore=self.concurrency_semaphore
             )
-            
-            if self.verbose_detailed: 
-                if response is None:
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP2 - API returned None response")
-                    return None
-                elif not hasattr(response, 'coding_decisions') or not response.coding_decisions:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned response with no coding decisions")
-                else:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - API returned {len(response.coding_decisions)} coding decisions")
-            
+                
             # Capture step3_recommendations (code generation results)
             if response and hasattr(response, 'coding_decisions'):
                 self.step3_recommendations[cluster_id] = {
                     'coding_decisions': [
                         {
                             'theme_number': decision.theme_number,
+                            'theme_name': decision.theme_name,
                             'decision': decision.decision,
                             'final_code_label': decision.final_code_label,
                             'final_code_definition': decision.final_code_definition,
@@ -2120,23 +2267,26 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP2 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return None
     
-    # Removed _make_instructor_call_with_cleanup - using responses.create directly now
+    
+    #########################################################################################################
+    # Stage 4: Prompt Formatting & LLM Calling for VALIDATIONN
+    #########################################################################################################
 
     async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, 
                                        code_generation, candidate_selection):
         """Validate code with unlimited concurrency - pure API call"""
         try:
-            # Build prompt directly
-            # Use candidate_selection instead of full codebook (consistent with rate-limited version)
             if candidate_selection and len(candidate_selection) > 0:
                 validation_codes_text = "\n".join([
-                    f"Code: {code.code}\nDefinition: {code.definition}\n" 
+                    f"Code label: {code.code}\nCode description: {code.definition}\n" 
                     for code in candidate_selection
                 ])
             else:
                 validation_codes_text = "No existing codes available."
             
-            cluster_summary = self._get_theme_statement(theme_data)
+            #cluster_summary = self._get_theme_statement(theme_data)
+            cluster_summary = self._format_theme_for_prompt(theme_data)
+            
             step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
             
             # Prepare exact parameters for prompt
@@ -2168,15 +2318,7 @@ class InductiveCodeGenerator:
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('recommendation_validation'),
                 semaphore=self.concurrency_semaphore
             )
-            
-            if self.verbose_detailed: 
-                if response is None:
-                    self.verbose_reporter.error(f"C{cluster_id}: STEP3 - API returned None response")
-                    return None
-                elif not hasattr(response, 'code_validations') or not response.code_validations:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned response with no validations")
-                else:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - API returned {len(response.code_validations)} validations")
+         
             
             # Capture step4_validations
             if response and hasattr(response, 'code_validations'):
@@ -2184,6 +2326,7 @@ class InductiveCodeGenerator:
                     'code_validations': [
                         {
                             'theme_number': validation.theme_number,
+                            'theme_name': validation.theme_name,
                             'original_recommendation': {
                                 'code': validation.original_recommendation.code,
                                 'definition': validation.original_recommendation.definition
@@ -2198,10 +2341,11 @@ class InductiveCodeGenerator:
                     ]
                 }
             
-            # Update SharedCodebook based on validation decisions (same logic as rate-limited version)
+            # Update SharedCodebook based on validation decisions  
             if response and response.code_validations:
                 codebook_updated = False
                 new_version = None
+                changed_codes = []  # Track (action, code_label) for incremental embedding
                 
                 # Process each validation decision
                 for i, validation in enumerate(response.code_validations):
@@ -2223,6 +2367,7 @@ class InductiveCodeGenerator:
                                 if added:
                                     self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                     codebook_updated = True
+                                    changed_codes.append(('create', validation.validated_code.code))
                                     #self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE+{validation.decision} - Added new code '{validation.validated_code.code}' ({action_source})")
                             
                             # Handle modify decisions (both APPROVE and REJECT replace original)
@@ -2234,6 +2379,7 @@ class InductiveCodeGenerator:
                                 if replaced:
                                     self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                     codebook_updated = True
+                                    changed_codes.append(('modify', validation.validated_code.code))
                                     #self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY+{validation.decision} - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' ({action_source})")
                             
                             # Handle use decisions
@@ -2252,6 +2398,7 @@ class InductiveCodeGenerator:
                                         if replaced:
                                             self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
                                             codebook_updated = True
+                                            changed_codes.append(('modify', validation.validated_code.code))
                                             #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' (VALIDATED)")
                                     else:
                                         # Fallback: add as new code if we can't identify original
@@ -2261,28 +2408,77 @@ class InductiveCodeGenerator:
                                         if added:
                                             self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
                                             codebook_updated = True
+                                            changed_codes.append(('create', validation.validated_code.code))
                                             #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
                         else:
                             self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}' or missing validated_code")
                 
-                # Generate embeddings for new/modified codes
-                if codebook_updated and new_version is not None:
+                # Generate embeddings for new/modified codes ONLY (smart incremental approach)
+                if codebook_updated and new_version is not None and changed_codes:
                     # Get updated codebook
                     updated_codes, _ = await self.shared_codebook.get_current_snapshot()
                     
-                    # Check if we need to regenerate embeddings (cache invalidated)
+                    # Check if embeddings already exist (shouldn't happen with proper version tracking)
                     cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
                     if cached_embeddings is None:
-                        # Generate embeddings for all codes
+                        # Get previous version's embeddings to reuse
+                        previous_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version - 1)
+                        
+                        if previous_embeddings and len(changed_codes) < len(updated_codes):
+                            # Smart incremental embedding: only embed changed codes
+                            if self.verbose_detailed: 
+                                self.verbose_reporter.stat_line(f"C{cluster_id}: Smart incremental embedding - {len(changed_codes)} changed codes out of {len(updated_codes)} total")
+                            
+                            # Start with previous embeddings
+                            new_embeddings = list(previous_embeddings)
+                            
+                            # Build list of changed codes to embed
+                            codes_to_embed = []
+                            code_indices = []
+                            
+                            for action, code_label in changed_codes:
+                                # Find index of this code in updated codebook
+                                for idx, code in enumerate(updated_codes):
+                                    if code['code'] == code_label:
+                                        codes_to_embed.append(f"{code['code']}")
+                                        code_indices.append(idx)
+                                        break
+                            
+                            # Embed only the changed codes
+                            if codes_to_embed:
+                                try:
+                                    changed_embeddings = await self.similarity_engine._embed_openai_batch(codes_to_embed)
+                                    
+                                    # Update embeddings at correct positions
+                                    for i, idx in enumerate(code_indices):
+                                        if idx < len(new_embeddings):
+                                            new_embeddings[idx] = changed_embeddings[i]
+                                        else:
+                                            # Extend if needed (for new codes at end)
+                                            while len(new_embeddings) < idx:
+                                                new_embeddings.append(None)
+                                            new_embeddings.append(changed_embeddings[i])
+                                    
+                                    # Cache the updated embeddings
+                                    await self.shared_codebook.cache_embeddings(new_version, new_embeddings)
+                                    if self.verbose_detailed:
+                                        self.verbose_reporter.stat_line(f"C{cluster_id}: Successfully cached incremental embeddings for version {new_version}")
+                                except Exception as e:
+                                    self.verbose_reporter.error(f"C{cluster_id}: Failed incremental embedding, falling back to full: {e}")
+                                    # Fall through to full embedding below
+                                else:
+                                    # Success - skip full embedding
+                                    return response
+                        
+                        # Fallback: embed all codes (first time or incremental failed)
                         if self.verbose_detailed: 
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: Generating embeddings for updated codebook (version {new_version})")
-                        code_texts = [f"{code['code']}: {code['definition']}" for code in updated_codes]
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: Full embedding for {len(updated_codes)} codes (fallback)")
+                        code_texts = [f"{code['code']}" for code in updated_codes]
                         try:
                             code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
                             await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
-                            #self.verbose_reporter.stat_line(f"C{cluster_id}: Updated embeddings cache for version {new_version}")
                         except Exception as e:
-                            self.verbose_reporter.error(f"C{cluster_id}: Failed to generate embeddings for new codes: {e}")
+                            self.verbose_reporter.error(f"C{cluster_id}: Failed to generate embeddings: {e}")
             
             return response
             
@@ -2296,8 +2492,7 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: STEP3 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
             return None
     
-    # ============================================================================
-    # PHASE 3: PERFORMANCE TRACKING AND BOTTLENECK IDENTIFICATION
+
     def summary(self) -> Dict[str, Any]:
         """Get comprehensive processing summary statistics"""
         clusters_found = self._processing_stats.get('clusters_found', 0)
