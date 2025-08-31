@@ -26,7 +26,8 @@
       "WebFetch(domain:wandb.ai)",
       "Bash(sed:*)",
       "Bash(copy codeGenerator.py codeGenerator_backup_20250814_171500.py)",
-      "Bash(Get-Date -Format \"yyyyMMdd_HHmmss\")"
+      "Bash(Get-Date -Format \"yyyyMMdd_HHmmss\")",
+      "Bash(awk:*)"
     ],
     "deny": []
   }

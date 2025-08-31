@@ -294,61 +294,96 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a {language} qualitative researcher trained in thematic analysis. 
-Your task is to interpret a cluster of survey responses and produce ONE theme_statement that expresses the central unifying concept shared across most responses. 
+You are a {language} qualitative researcher trained in thematic analysis by Braun & Clarke.
+Your task is to identify and construct a theme or themes from descriptive codes that have been derived from written responses to an open-ended survey question.
 
-Definition of theme:
-- A theme is a coherent pattern of shared meaning across multiple <clustered_responses>
-- A theme is organized around ONE central organizing concept. 
-- A theme is not a list of responses, not a label, not a speculation, and not a mixture of conflicting ideas. 
+<inputs>
+Cluster ID: {cluster_id}
 
-Here is the survey question:
-<survey_question>
-{survey_question}
-</survey_question>
+Research question:
+"{survey_question}"
 
-Here are the clustered responses:
-<clustered_responses>
+Cluster of descriptive codes to analyze:
 {cluster_text}
-</clustered_responses>
+</inputs>
 
-Critical rules:
-1. Identify the single strongest shared pattern of meaning. 
-   - If some responses contradict, ignore the minority and focus on the majority pattern. 
-2. Express the theme as if it were a direct survey answer 
-    - Syntax for theme_statement: [Description of the single strongest shared pattern of meaning] + [Short clarification of this meaning in light of the <survey_question>]
-4. Privde a name for the theme
-    - Syntad for theme_name: [The most atomic, singular concept that unifies the theme_statment]
-4. Do NOT repeat the canonical subject from the survey question. 
-5. Do NOT name or imply the actor (e.g., "the company," "they"). 
-6. Do NOT explain reasons, causes, or outcomes. 
-7. Do not include numeric details or single-response specifics; only state the general shared meaning. 
-8. If no coherent shared meaning exists, output: 
-   [
-     {{
-       "theme_id": 1,
-       "theme_namme": "no theme_name",
-       "theme_statement": "no theme_statement"
-     }}
-   ]
+Follow these steps exactly and in order. Do not skip or reorder any step.
 
-Output format:
-Return ONLY a valid JSON array with one object:
-[
-  {{
-    "theme_id": 1,
-    "theme_namme": "<theme name here, in  ≤10 words, in {language}>",
-    "theme_statement": "<theme statement here, in  ≤30 words, in {language}>",
+1. Understand the context:
+   - Read the research question carefully.
+   - Review all descriptive codes thoroughly.
+
+2. Determine number of patterns:
+   - If all relevant codes can be explained by ONE coherent shared pattern of meaning, proceed with one.
+   - Otherwise, identify two or more patterns.
+
+3. Filter patterns:
+   - A shared pattern cannot consist of only one code.
+   - Exclude all isolated singletons (patterns with only one code) from further analysis.
+    
+4. Identify central organizing concepts (COCs):
+   - For each pattern of shared meaning, determine exactly one central organizing concept (COC).
+   - A valid pattern must have exactly one COC.
+
+5. Document your analysis:
+   - Clearly state how many COCs were identified.
+   - Justify why you split into multiple themes or merged into one.
+   - Reference the descriptive codes in your explanation.
+
+6. Construct themes:
+   - Create exactly one theme per COC.
+   - A valid theme MUST:
+     - Express a clear analytic idea.
+     - Explain how and why the responses belong together.
+   - A theme MUST NOT be:
+     - A raw list of responses.
+     - A purely descriptive label.
+     - A speculation beyond the data.
+     - A mix of unrelated or conflicting ideas.
+   - If no COC and shared meaning can be identified, do not create a theme.
+
+7. Create theme labels:
+   - Must be ≤ 10 words.
+   - Must express exactly one unifying analytic idea.
+   - Must include the COC.
+
+8. Write theme descriptions:
+   - Must be ≤ 30 words.
+   - Must state the strongest shared pattern of meaning.
+   - Must explain how this meaning relates to the research question.
+
+Checklist (before finalizing)
+[ ] Isolated singletons (patterns with only one code) are excluded from further output.
+[ ]  Label ≤10 words
+[ ]  Label is a noun phrase
+[ ] Label has only one concept (not combined ideas)
+[ ]  Description ≤30 words
+[ ]  NO repeat of the subject from the survey question (e.g., avoid canonical subjects already present in the question).
+[ ]  NO canonical actors mentioned (e.g., avoid actors implied by the research setting, such as "respondents" or "target group").  
+
+
+Output instructions:
+- Return your output as a valid JSON dictionary with one or more theme objects.
+- Each object must have this structure:
+
+{{
+  "exact cluster_id as string here": {{
+    "analysis": "provide your analysis here in {language}",
+    "extracted_themes": [
+      {{
+        "theme_id": [number],
+        "theme_label": "[theme label in ≤10 words, in {language}]",
+        "theme_description": "[label description in ≤30 words, in {language}]"
+      }}
+      // add more theme objects here if needed
+    ]
   }}
-]
+}}
 
 Critical requirements:
-- Output must be valid JSON
-- Output ONLY the JSON array — no extra text before or after
-- No comments, no trailing commas
-- All text fields must be in {language}
+- Output must ONLY be valid JSON — no extra text before or after.
 
-Remember to think carefully about the shared meaning across the responses and express the central organizing concept clearly and concisely in your theme statement.
+
 """
 
 
@@ -362,7 +397,7 @@ First, carefully review the following survey question:
 {survey_question}
 </survey_question>
 
-Next, examine the theme name(s) and statement(s):
+Next, examine the theme name(s) and theme descriptions(s):
 
 <themes>
 {cluster_summary}
@@ -374,10 +409,10 @@ Now, review the existing codebook:
 {code_text}
 </existing_codebook>
 
-When matching codes to the theme statement(s), follow these guidelines:
+When matching codes to theme(s), follow these guidelines:
 
 1. Review EACH theme in <themes> carefully in relation to codes in <existing_codebook>.
-2. Match based primarily on the theme NAME; the theme STATEMENT is supporting context only.
+2. Match based primarily on the theme NAME; the theme DESCRIPTION is supporting context only.
 3. Match based on semantic meaning, not word overlap. Focus on meaning, scope, and level of abstraction in the context of the survey question. Ignore superficial or surface-level matches.
 4. Include only codes with conceptual overlap. Return all codes that meaningfully reflect the theme.
 5. Preserve codebook integrity. Copy code names and definitions exactly as provided. Do not add, remove, or alter any fields or wording.
@@ -412,8 +447,6 @@ Critical requirements:
 - Each object must include ONLY the fields: "code" and "definition".
 """
 
-
-
 CODE_GENERATION_PROMPT = """
 You are a {language} codebook curator who is responsible for coding themes expressed in survey responses.
 Your task is to analyze these themes and decide whether to use existing codes, modify them, or create new ones. 
@@ -438,7 +471,7 @@ Here are the inputs you will be working with:
 
 Note:
 - Prioritize semantic alignment between the THEME NAME and the CODE LABEL.
-- Use the THEME STATEMENT and CODE DEFINITION only as supporting context to confirm scope and clarify meaning.
+- Use the THEME DESCRIPTION and CODE DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </input>
 
 DECISION RULES:
@@ -450,12 +483,12 @@ Your job is to decide for each theme whether to:
 
 Use the following thresholds:
 
-A) If the theme name and a candidate code are at the same abstraction level (e.g., both are specific behaviors or both are mid-level categories):
+A) If the theme NAME and a candidate code are at the same abstraction level (e.g., both are specific behaviors or both are mid-level categories):
 - USE if the existing code covers ≥90% of the theme's meaning.
 - MODIFY if the existing code covers ≥70% and <90%, and a minimal change to the definition resolves the gap.
 - CREATE if the existing code covers <70%, or if the gap cannot be resolved with a minimal change.
 
-B) If the theme name and all candidate codes are at different abstraction levels (e.g., one is broader or narrower than the other):
+B) If the theme NAME and all candidate codes are at different abstraction levels (e.g., one is broader or narrower than the other):
 - CREATE by default.
 - Only USE if a code covers 95% of the theme's meaning and using it does not distort the structure.
 
@@ -488,6 +521,7 @@ Required schema:
   "coding_decisions": [
     {{
       "theme_number": 1,
+      "theme_name": "Exact name theme",
       "decision": "use | modify | create",
       "final_code_label": "label of the code to be used/modified/created",
       "final_code_definition": "≤25 words, operational definition",
@@ -496,6 +530,7 @@ Required schema:
     }},
     {{
       "theme_number": 2,
+      "theme_name": "Exact name theme",
       "decision": "...",
       "final_code_label": "...",
       "final_code_definition": "...",
@@ -524,7 +559,7 @@ Here are the inputs you will be working with:
 {cluster_summary}
 
 Note:
-- Prioritize the THEME NAME; Use the THEME STATEMENT only as supporting context to confirm scope and clarify meaning.
+- Prioritize the THEME NAME; Use the THEME DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </themes_to_code>
 
 3. Coding recommendation:
@@ -578,6 +613,7 @@ Provide your output in strict JSON format, in {language} , ensuring all validati
   "code_validations": [
     {{
       "theme_number": 1,
+      "theme_name": "Exact name theme",
       "original_recommendation": {{
         "code": "label originally proposed",
         "definition": "definition originally proposed"
@@ -591,6 +627,7 @@ Provide your output in strict JSON format, in {language} , ensuring all validati
     }},
     {{
       "theme_number": 2,
+      "theme_name": "Exact name theme",
       "original_recommendation": {{
         "code": "...",
         "definition": "..."
@@ -610,7 +647,6 @@ Critical requirements:
 - Output ONLY valid JSON — no other text.
 - All fields must be in {language}.
 """
-
 
 # =============================================================================
 # STEP 8: THEME IDENTIFICATION  
