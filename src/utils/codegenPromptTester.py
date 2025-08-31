@@ -154,16 +154,24 @@ class SimplePromptTester:
         step1_inputs = getattr(self.codebook_reasoning, 'step1_inputs', {})
   
         if self.cluster_id in step1_inputs:
-            step1_input = step1_inputs[self.cluster_id]
-            # Ensure cluster_id is present for prompt formatting (backward compatibility)
+            step1_inputs = step1_inputs[self.cluster_id]
+            parent_cluster = str(self.cluster_id).split('-')[0]
+            step1_input =  {
+                "cluster_id": parent_cluster,
+                "language": step1_inputs["language"],
+                "survey_question": step1_inputs["survey_question"],
+                "cluster_text": step1_inputs["cluster_text"]
+            }
+            
+            
             if 'cluster_id' not in step1_input:
                 step1_input['cluster_id'] = str(self.cluster_id)
             print("\n[USING ACTUAL PIPELINE INPUTS]\n")
         else:
-            # Fallback: reconstruct (but show warning)
             cluster_text = self._get_cluster_text()
+            parent_cluster = str(self.cluster_id).split('-')[0]
             step1_input = {
-                "cluster_id": str(self.cluster_id),
+                "cluster_id": parent_cluster,
                 "language": self.language,
                 "survey_question": self.var_lab,
                 "cluster_text": cluster_text

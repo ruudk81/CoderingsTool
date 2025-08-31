@@ -709,7 +709,6 @@ else:
 
 #HIER
 
-
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
@@ -719,7 +718,18 @@ if True and CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
 
 
-cluster_id = "3-2"
+
+#debug : prompts 
+cluster_id = "22-2"
+if True:  
+    from utils import codegenPromptTester    
+    tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
+    #tester.test_prompt_1()
+    #tester.test_prompt_2()
+    #tester.test_prompt_3()
+    tester.test_prompt_4()
+    # codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
+    
 #debug : reasoning
 if True and CACHE_CODEGENERATOR_REASONING: 
     from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
@@ -727,21 +737,14 @@ if True and CACHE_CODEGENERATOR_REASONING:
             display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
     else:
         print("Note: codebook_reasoning not available for display")
-
-#debug : prompts 
-if True:  
-    from utils import codegenPromptTester    
-    codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
-    #tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
-    #tester.test_all_prompts()   
-    #tester.test_prompt_4()
+    
  
 # === STEP 8 ========================================================================================================
 """Identify themes"""
 from utils.themeIdentifier import ThemeIdentifier
 
 FORCE = True
-VERBOSE = False
+VERBOSE = True
 PROMPT_PRINTER  = False
 
 step_name = "theme_identification"
@@ -751,6 +754,8 @@ if  FORCE:
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+codebook = codebook_main
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     theme_enriched_codebooks = cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)

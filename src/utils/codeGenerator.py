@@ -5,6 +5,7 @@ import asyncio
 import time
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union
+import json
 # from dataclasses import dataclass
 # from collections import deque
 
@@ -1068,7 +1069,7 @@ class InductiveCodeGenerator:
         return "Unknown theme"
     
     
-    def _get_theme_statement(self, theme_data) -> str: #TODO: check, might potentially by redundant
+    def _get_theme_statement(self, theme_data) -> str: #TODO: check, is possibly redundant
         """Safely get theme statement from theme data"""
         if hasattr(theme_data, 'root'):
             # Handle ClusterSummaryOutput structure
@@ -1080,7 +1081,7 @@ class InductiveCodeGenerator:
             return theme_data.root[0].theme_description
         return "Unknown theme"
     
-    def _get_theme_name(self, theme_data) -> str: #TODO: check, might potentially by redundant
+    def _get_theme_name(self, theme_data) -> str: #TODO: check, is possibly redundant
         """Safely get theme name from theme data"""
         if hasattr(theme_data, 'root'):
             # Handle ClusterSummaryOutput structure
@@ -1092,7 +1093,7 @@ class InductiveCodeGenerator:
             return theme_data.root[0].theme_label
         return "Unknown theme name"
     
-    def _get_theme_description(self, theme_data) -> str: #TODO: check, might potentially by redundant
+    def _get_theme_description(self, theme_data) -> str: #TODO: check, is possibly 
         """Safely get theme description from theme data"""
         # For now, use theme statement as description since they're the same
         return self._get_theme_statement(theme_data)
@@ -1252,7 +1253,9 @@ class InductiveCodeGenerator:
         prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
         
         # Capture exact parameters used in prompt construction
-        self._capture_prompt_params(cluster_id, "step1", **params)
+        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'} 
+        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)  
+   
         
         # Capture prompt with prompt_printer if available
         if self.prompt_printer:
@@ -2271,8 +2274,7 @@ class InductiveCodeGenerator:
     # Stage 4: Prompt Formatting & LLM Calling for VALIDATIONN
     #########################################################################################################
 
-    async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, 
-                                       code_generation, candidate_selection):
+    async def _validate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, code_generation, candidate_selection):
         """Validate code with unlimited concurrency - pure API call"""
         try:
             if candidate_selection and len(candidate_selection) > 0:
@@ -2286,7 +2288,22 @@ class InductiveCodeGenerator:
             #cluster_summary = self._get_theme_statement(theme_data)
             cluster_summary = self._format_theme_for_prompt(theme_data)
             
-            step3_recommendation_text = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
+            #step3_recommendation_json = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
+            if code_generation:
+                step3_recommendation_json = json.loads(code_generation.model_dump_json(indent=2))
+            else:
+                step3_recommendation_json = {"coding_decisions": []}
+            
+            step3_recommendatione = step3_recommendation_json["coding_decisions"] 
+            step3_recommendation_text = "\n\n".join(
+                f"Theme_number: {d['theme_number']}\n"
+                #f"Theme name: {d['theme_name']}\n"
+                #f"Decision: {d['decision']}\n"
+                f"Recommended label: {d['final_code_label']}\n"
+                f"Recommended definition: {d['final_code_definition']}\n"
+                #f"Source code: {d['source_code']}\n"
+                for d in step3_recommendatione
+                )
             
             # Prepare exact parameters for prompt
             params = {
