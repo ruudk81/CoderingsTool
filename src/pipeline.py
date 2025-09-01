@@ -658,16 +658,18 @@ else:
                 codebook_entry = models.CodebookEntry(
                     code=item['code'],
                     definition=item['definition'],
-                    source_clusters=None
+                    source_cluster=item['source_cluster_id']
                 )
                 codebook_entries.append(codebook_entry)
                 
-                legacy_entry = models.Codebook(
-                    code=item['code'],
-                    definition=item['definition'],
-                    theme=None
-                )
-                codebook.append(legacy_entry)
+                # legacy_entry = models.Codebook(
+                #     code=item['code'],
+                #     definition=item['definition'],
+                    
+                #     theme=None,
+                #     theme_description=None
+                # )
+                # codebook.append(legacy_entry)
                 idx += 1
         else:
             print("Warning: Codebook generator returned no results")
@@ -912,23 +914,212 @@ if theme_enriched_codebook and theme_enriched_codebook.codes:
         for code in no_theme_codes:
             print(f"   - {code}")
             
-for entry in enriched_codebook:
-    print(entry.code)
-    print(entry.definition)
-    print("\n")
+# for entry in enriched_codebook:
+#     print(entry.code)
+#     print(entry.definition)
+#     print("\n")
 
+# === STEP 9a =======================================================================================================
+"""Assign codes (and themes) - Direct LLM Processing (No Embeddings)"""
+from utils import codeAssigner
+
+FORCE = True
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name = "code_assignment_direct"
+if  FORCE:
+    FORCE_STEP      = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
+    code_assigned_results_direct = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results_direct if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results_direct if resp.response_ideas)
+    verbose_reporter.summary("DIRECT CODE ASSIGNMENTS FROM CACHE", {
+        "Input responses": len(code_assigned_results_direct),
+        "Ideas processed": total_ideas,
+        "Code assignments": total_assignments,
+        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results_direct if resp.response_ideas)
+    })
+else:
+    verbose_reporter.section_header("DIRECT CODE ASSIGNMENT PHASE (NO EMBEDDINGS)")
+    start_time = time.time()
+    
+    if not theme_enriched_codebook or not theme_enriched_codebook.codes:
+        print("Error: No enriched codebook available for direct code assignment.")
+        code_assigned_results_direct = []
+    elif not initial_cluster_results:
+        print("Error: No cluster results available for direct code assignment.")
+        code_assigned_results_direct = []
+    else:
+        print(f"\nDirect assignment: Processing ideas from {len(initial_cluster_results)} cluster results")
+        print(f"Using complete codebook with {len(theme_enriched_codebook.codes)} codes")
         
-# === STEP 9 ========================================================================================================
+        # Create simplified code assigner without embeddings
+        code_assigner_instance = codeAssigner.CodeAssigner(
+            cluster_models=initial_cluster_results,  # Use original cluster models
+            codebook=[models.Codebook(
+                code=entry.code, 
+                definition=entry.definition,
+                theme=entry.theme,
+                theme_description=entry.theme_description
+            ) for entry in theme_enriched_codebook.codes],
+            var_lab=var_lab,
+            code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
+            cached_idea_embeddings=None,  # No cached embeddings needed
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        
+        code_assigned_results = code_assigner_instance.assign()
+ 
+    for result in code_assigned_results:
+        if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
+            result.assignment_metadata = {}
+        result.assignment_metadata.update({
+            "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
+            "assignment_method": "direct_llm_processing",
+            "theme_methodology": theme_enriched_codebook.theme_methodology,
+            "assignment_timestamp": start_time
+        })
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
+    print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
+
+# === CODEBOOK PRINTOUT ========================================================================================================
+for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
+    print(f"{idx}) {entry.code}")
+    #print(entry.definition)
+    #print("\n")
+
+# === ASSIGNMENT STATS  ========================================================================================================
+from utils.pipelineSummarizer import PipelineSummarizer
+summarizer = PipelineSummarizer(verbose=True)
+summarizer.generate_summary(
+    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
+    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None)
+
+# === RANDOM ASSIGNMENTS  ========================================================================================================
+import random
+sampled_result = random.choice(code_assigned_results)
+print(f"Respondent ID: {sampled_result.respondent_id}")
+print(f"Response: {sampled_result.response}")
+#print(f"Idea count: {sampled_result.idea_count}")
+#print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+#print("---- Assigned Codes ----")
+for idea in sampled_result.response_ideas:
+    print("-" * 40)
+    print(f"Idea ID: {idea.idea_id}")
+    print(f"Idea: {idea.idea}")
+    print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+    #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+    print(f"Rationale: {idea.assignment_rationale}")
+    print(f"Assignment Confidence: {idea.assignment_confidence}")
+    print("-" * 40)
+
+# === RANDOM PROMPT  ========================================================================================================
+print("\n" + "="*80)
+print("RANDOM PROMPT TESTING (DEBUG)")
+print("="*80)
+
+# Extract ideas directly from initial_cluster_results
+all_ideas_for_debug = []
+for result in initial_cluster_results:
+    if result.response_ideas:
+        for idea in result.response_ideas:
+            all_ideas_for_debug.append({
+                'idea_id': idea.idea_id,
+                'idea': idea.idea,
+                'respondent_id': result.respondent_id
+            })
+
+from prompts import CODE_ASSIGNMENT_PROMPT
+
+if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
+    # Pick random idea from debug data
+    random_idea = random.choice(all_ideas_for_debug)
+    
+    # Get idea details
+    idea_id = random_idea['idea_id']
+    idea_text = random_idea['idea']
+    respondent_id = random_idea['respondent_id']
+    
+    print("🎯 Random Selected Idea:")
+    print(f"  ID: {idea_id}")
+    print(f"  Respondent: {respondent_id}")
+    print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
+    print(f"  Text ({len(idea_text)} chars): {idea_text}")
+    
+    # Get first 5 codes as candidate codes (simplified for demo)
+    if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
+        similar_codes = theme_enriched_codebook.codes # First 5 codes as example
+        
+        # print("\nCandidate Codes (first 5):")
+        # for j, code in enumerate(similar_codes, 1):
+        #     print(f"  {j}. {code.code}: {code.definition}")
+        
+        # Format candidate codes for prompt (match CodeAssigner format)
+        candidate_codes_text = "\n".join([
+            f"Code label: {code.code}\nCode description: {code.definition}\n" 
+            #f"Code: {code.definition}\n"
+            for code in similar_codes
+        ])
+        
+        # Create prompt using same logic as CodeAssigner
+        prompt = CODE_ASSIGNMENT_PROMPT.format(
+            language="Dutch",  # Match pipeline language
+            var_lab=var_lab,
+            idea_id=idea_id,
+            idea_text=idea_text,
+            candidate_codes=candidate_codes_text
+        )
+        
+        print(f"\n{'='*60}")
+        print("FORMATTED PROMPT:")
+        print(f"{'='*60}")
+        print(prompt)
+        #print("="*60)
+        
+        for result in code_assigned_results:
+            segments = result.response_ideas
+            for segment in segments:
+                if segment.idea_id == idea_id:
+                    print(f"\n{'='*60}")
+                    print("llM RESPNSE:")
+                    print(f"{'='*60}")
+                    # print(f"Response: {segment.idea_id}")
+                    print(f"Response: {segment.idea}")
+                    print("Assigned code:\n", "".join(segment.assigned_codes))
+                    print(f"\nReasoning:\n {segment.assignment_rationale}")
+                    print(f"\nConfidence: {segment.assignment_confidence}")
+                    #print("\n")
+        
+    else:
+        print("ERROR: No codebook available for prompt generation")
+else:
+    print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
+   
+# === STEP 9b  ========================================================================================================
 """Assign codes (and themes)"""
 from utils import codeAssigner
+from utils import clusterAssigner
 from prompts import CODE_ASSIGNMENT_PROMPT
 
 FORCE = True
+USE_CLUSTER_ASSIGNER_V2 = True  # Set to False to use original CodeAssigner
 
 step_name = "code_assignment"
 if  FORCE:
     FORCE_STEP      = step_name
-    PROMPT_PRINTER  = True
+    PROMPT_PRINTER  = False
 
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
@@ -967,23 +1158,48 @@ else:
             print(f"\nLoaded {len(cached_ideas)} idea embeddings from cache")
             print(f"Assigning codes from {len(theme_enriched_codebook.codes)} enriched codes")
             
-            # Create code assigner with cached embeddings
-            code_assigner_instance = codeAssigner.CodeAssigner(
-                cluster_models=[],  # Empty - we're using cached embeddings
-                codebook=[models.Codebook(
-                    code=entry.code, 
-                    definition=entry.definition,
-                    theme=entry.theme,
-                    theme_description=entry.theme_description
-                ) for entry in theme_enriched_codebook.codes],
-                var_lab=var_lab,
-                code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
-                cached_idea_embeddings=cached_ideas,  # Pass cached embeddings
-                verbose=VERBOSE,
-                prompt_printer=prompt_printer
-            )
-            
-            code_assigned_results = code_assigner_instance.assign()
+            if USE_CLUSTER_ASSIGNER_V2:
+                print("🚀 Using ClusterAssigner v2 (cluster-based direct assignment)")
+                
+                # Create cluster assigner with direct cluster-code mapping
+                cluster_assigner_instance = clusterAssigner.ClusterAssigner(
+                    cluster_models=initial_cluster_results,  # Use original cluster models with idea-cluster mappings
+                    enriched_codebook=theme_enriched_codebook.codes,  # Use enriched codes with themes
+                    theme_embeddings={},  # No theme embeddings needed
+                    var_lab=var_lab,
+                    verbose=VERBOSE
+                )
+                
+                code_assigned_results = cluster_assigner_instance.assign()
+                
+                # Show cluster assignment stats
+                stats = cluster_assigner_instance.get_assignment_stats()
+                print(f"\n✅ ClusterAssigner v2 Results:")
+                print(f"   Total ideas: {stats.total_ideas}")
+                print(f"   Reassigned to sub-clusters: {stats.reassigned_to_subclusters}")
+                print(f"   Perfect cluster matches: {stats.perfect_matches}")
+                print(f"   Processing time: {stats.processing_time_seconds:.2f}s")
+                
+            else:
+                print("⚡ Using original CodeAssigner (embedding similarity)")
+                
+                # Create code assigner with cached embeddings
+                code_assigner_instance = codeAssigner.CodeAssigner(
+                    cluster_models=[],  # Empty - we're using cached embeddings
+                    codebook=[models.Codebook(
+                        code=entry.code, 
+                        definition=entry.definition,
+                        theme=entry.theme,
+                        theme_description=entry.theme_description
+                    ) for entry in theme_enriched_codebook.codes],
+                    var_lab=var_lab,
+                    code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
+                    cached_idea_embeddings=cached_ideas,  # Pass cached embeddings
+                    verbose=VERBOSE,
+                    prompt_printer=prompt_printer
+                )
+                
+                code_assigned_results = code_assigner_instance.assign()
      
         for result in code_assigned_results:
             if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
@@ -1001,71 +1217,6 @@ else:
     print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
 
-
-for result in code_assigned_results:
-    segments = result.response_ideas
-    print(segment.idea_id)
-    for segment in segments:
-        print(f"Response: {segment.idea}")
-        print("Assigned code:", "".join(segment.assigned_codes))
-        print(f"Reasoning: {segment.assignment_rationale}")
-        print(f"Confidence{segment.assignment_confidence}")
-        print("\n")
-    break
-
-# === RANDOM PROMPT DEBUG ========================================================================================================
-print("\n" + "="*80)
-print("RANDOM PROMPT TESTING (DEBUG)")
-print("="*80)
-
-if 'code_assigned_results' in locals() and 'cached_ideas' in locals() and cached_ideas:
-    # Pick random idea from cached embeddings
-    random_idea = random.choice(cached_ideas)
-    
-    # Get idea details
-    idea_id = random_idea['idea_id']
-    idea_text = random_idea['idea']
-    idea_embedding = random_idea['embedding']
-    respondent_id = random_idea['respondent_id']
-    
-    print("🎯 Random Selected Idea:")
-    print(f"  ID: {idea_id}")
-    print(f"  Respondent: {respondent_id}")
-    print(f"  Position: {cached_ideas.index(random_idea) + 1} of {len(cached_ideas)}")
-    print(f"  Text ({len(idea_text)} chars): {idea_text}")
-    
-    # Get first 5 codes as candidate codes (simplified for demo)
-    if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
-        similar_codes = theme_enriched_codebook.codes[:5]  # First 5 codes as example
-        
-        print("\nCandidate Codes (first 5):")
-        for j, code in enumerate(similar_codes, 1):
-            print(f"  {j}. {code.code}: {code.definition}")
-        
-        # Format candidate codes for prompt (match CodeAssigner format)
-        candidate_codes_text = "\n".join([
-            f"Code: {code.definition}\n"
-            for code in similar_codes
-        ])
-        
-        # Create prompt using same logic as CodeAssigner
-        prompt = CODE_ASSIGNMENT_PROMPT.format(
-            language="Dutch",  # Match pipeline language
-            var_lab=var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            candidate_codes=candidate_codes_text
-        )
-        
-        print(f"\n{'='*60}")
-        print("FORMATTED PROMPT:")
-        print(f"{'='*60}")
-        print(prompt)
-        print("="*60)
-    else:
-        print("ERROR: No codebook available for prompt generation")
-else:
-    print("ERROR: Missing code_assigned_results or cached_ideas for random prompt test")
 
 # from utils.pipelineSummarizer import PipelineSummarizer
 # summarizer = PipelineSummarizer(verbose=True)

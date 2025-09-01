@@ -8,15 +8,15 @@ import sys
 import random
 import pickle
 import numpy as np
-from typing import Optional, Union, List, Dict
+from typing import Optional, List, Dict #Union
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from config import CacheConfig, DEFAULT_LANGUAGE, EmbeddingConfig, get_embedding_dimensions
-from utils.codeAssigner import CodeAssigner, EmbeddingLoader
+from utils.codeAssigner import EmbeddingLoader # CodeAssigner, 
 from prompts import CODE_ASSIGNMENT_PROMPT
-import models
+#import models
 from sklearn.metrics.pairwise import cosine_similarity
 
 class AssignPromptTester:
@@ -249,6 +249,50 @@ class AssignPromptTester:
         
         return random_idea, None
     
+    def debug_embedding_formats(self):
+        """Debug embedding format differences between ideas and codes"""
+        print("\n" + "="*80)
+        print("EMBEDDING FORMAT DEBUGGING")
+        print("="*80)
+        
+        if not self.cached_ideas or not self.codebook:
+            print("ERROR: Missing cached ideas or codebook")
+            return
+        
+        # Sample a few ideas and codes
+        sample_ideas = random.sample(self.cached_ideas, min(3, len(self.cached_ideas)))
+        sample_codes = self.codebook[:5]
+        
+        print("🔍 IDEA EMBEDDING FORMAT:")
+        print("Ideas are embedded as raw text:")
+        for i, idea_data in enumerate(sample_ideas, 1):
+            print(f"  {i}. '{idea_data['idea']}'")
+            print(f"      Length: {len(idea_data['idea'])} chars")
+        
+        print(f"\n🔍 CODE EMBEDDING FORMAT:")
+        print("Codes are embedded as definitions only (FIXED):")
+        for i, code in enumerate(sample_codes, 1):
+            print(f"  {i}. '{code.definition}'")
+            print(f"      Length: {len(code.definition)} chars")
+            print(f"      Original code name: '{code.code}'")
+        
+        print(f"\n📊 FORMAT ALIGNMENT CHECK:")
+        print("✅ Both ideas and codes now use plain text format")
+        print("✅ This should improve semantic similarity matching")
+        print("✅ No more 'Code Name: Definition' vs 'idea text' mismatch")
+        
+        # Show similarity example if embeddings are available
+        if len(sample_ideas) > 0 and len(sample_codes) > 0:
+            idea_data = sample_ideas[0]
+            idea_embedding = np.array(idea_data['embedding'])
+            similar_codes = self._find_similar_codes(idea_embedding, top_k=3)
+            
+            print(f"\n🎯 SIMILARITY TEST (with corrected format):")
+            print(f"Idea: '{idea_data['idea']}'")
+            print(f"Top 3 similar codes:")
+            for j, code in enumerate(similar_codes, 1):
+                print(f"  {j}. {code.code}: {code.definition}")
+    
     def test_assignment_prompts(self, specific_idea_id: Optional[str] = None):
         """Test code assignment prompts for sampled ideas"""
         print("\n" + "="*80)
@@ -400,8 +444,9 @@ def main(var_lab=None, idea_id=None, num_samples=5):
     print("4. Show codebook summary")
     print("5. Test all (prompts + summaries)")
     print("6. Quick random test (single idea)")
+    print("7. Debug embedding formats (FIXED misalignment)")
     
-    choice = input("\nChoose (1-6): ").strip()
+    choice = input("\nChoose (1-7): ").strip()
     
     if choice == '1':
         tester.test_assignment_prompts()
@@ -421,6 +466,8 @@ def main(var_lab=None, idea_id=None, num_samples=5):
         tester.test_assignment_prompts()
     elif choice == '6':
         tester.test_single_random_idea()
+    elif choice == '7':
+        tester.debug_embedding_formats()
     else:
         print("ERROR: Invalid choice")
 

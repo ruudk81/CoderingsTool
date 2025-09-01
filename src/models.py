@@ -61,7 +61,7 @@ class CodeAssignedModel(ClusterModel):
 class CodebookEntry(BaseModel):
     code: str
     definition: str
-    source_clusters: Optional[List[int]] = None  # Which clusters influenced this code
+    source_clusters:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodebookModel(BaseModel):
@@ -77,7 +77,8 @@ class CodeDefinition(BaseModel):
 
 class Codebook(BaseModel):
     code: str
-    definition: str    
+    definition: str
+    source_clusters:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"    
     theme: Optional[str] = None
     theme_description: Optional[str] = None   
 
@@ -85,7 +86,7 @@ class Codebook(BaseModel):
 class ThemeEnrichedCodebookEntry(CodebookEntry):
     theme: Optional[str] = None
     theme_description: Optional[str] = None
-    theme_cluster_id: Optional[int] = None
+    theme_cluster_id: Optional[Union[int, str]] = None  # Support sub-clusters like "12-1", "12-2"
     is_miscellaneous: Optional[bool] = False
 
 class ThemeEnrichedCodebookModel(CodebookModel):

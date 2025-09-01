@@ -357,7 +357,7 @@ class SharedCodebook:
         async with self._lock:
             return self._codes.copy(), self._version
     
-    async def add_code_if_new(self, code: str, definition: str) -> Tuple[bool, int]:
+    async def add_code_if_new(self, code: str, definition: str, cluster_id: Optional[Union[int, str]] = None) -> Tuple[bool, int]:
         """Add a new code if it doesn't exist, return (added, new_version)"""
         async with self._lock:
             # Check if code already exists
@@ -365,41 +365,60 @@ class SharedCodebook:
                 if existing['code'].lower() == code.lower():
                     return False, self._version
             
-            # Add new code
-            self._codes.append({'code': code, 'definition': definition})
+            # Add new code with cluster origin tracking
+            code_entry = {'code': code, 'definition': definition}
+            if cluster_id is not None:
+                code_entry['source_cluster_id'] = str(cluster_id)
+            
+            self._codes.append(code_entry)
             self._version += 1
             self._update_log.append({
                 'version': self._version,
                 'action': 'add',
                 'code': code,
+                'cluster_id': cluster_id,
                 'timestamp': time.time()
             })
             return True, self._version
     
-    async def replace_code(self, original_code: str, new_code: str, new_definition: str) -> Tuple[bool, int]:
+    async def replace_code(self, original_code: str, new_code: str, new_definition: str, cluster_id: Optional[Union[int, str]] = None) -> Tuple[bool, int]:
         """Replace an existing code with a modified version, return (replaced, new_version)"""
         async with self._lock:
             # Find and replace the original code
             for i, existing in enumerate(self._codes):
                 if existing['code'].lower() == original_code.lower():
-                    self._codes[i] = {'code': new_code, 'definition': new_definition}
+                    # Preserve existing cluster_id if none provided, otherwise use new one
+                    existing_cluster_id = existing.get('source_cluster_id') if cluster_id is None else str(cluster_id)
+                    
+                    replacement_entry = {'code': new_code, 'definition': new_definition}
+                    if existing_cluster_id is not None:
+                        replacement_entry['source_cluster_id'] = existing_cluster_id
+                    
+                    self._codes[i] = replacement_entry
                     self._version += 1
                     self._update_log.append({
                         'version': self._version,
                         'action': 'replace',
                         'original_code': original_code,
                         'new_code': new_code,
+                        'cluster_id': cluster_id,
                         'timestamp': time.time()
                     })
                     return True, self._version
             
-            self._codes.append({'code': new_code, 'definition': new_definition})
+            # If original not found, add as new code with cluster tracking
+            code_entry = {'code': new_code, 'definition': new_definition}
+            if cluster_id is not None:
+                code_entry['source_cluster_id'] = str(cluster_id)
+                
+            self._codes.append(code_entry)
             self._version += 1
             self._update_log.append({
                 'version': self._version,
                 'action': 'add_as_fallback',
                 'original_code': original_code,
                 'new_code': new_code,
+                'cluster_id': cluster_id,
                 'timestamp': time.time()
             })
             return True, self._version
@@ -458,7 +477,11 @@ class SharedCodebook:
                         break
                 
                 if not exists:
-                    self._codes.append({'code': code, 'definition': definition})
+                    code_entry = {'code': code, 'definition': definition}
+                    if cluster_id and cluster_id != 'unknown':
+                        code_entry['source_cluster_id'] = str(cluster_id)
+                    
+                    self._codes.append(code_entry)
                     added_count += 1
                     self._update_log.append({
                         'version': self._version + 1,
@@ -2378,7 +2401,8 @@ class InductiveCodeGenerator:
                             # Handle create decisions (both APPROVE and REJECT add new codes)
                             if coding_decision.decision == "create":
                                 added, new_version = await self.shared_codebook.add_code_if_new(
-                                    validation.validated_code.code, validation.validated_code.definition
+                                    validation.validated_code.code, validation.validated_code.definition,
+                                    cluster_id  # Pass current cluster_id (sub-cluster)
                                 )
                                 if added:
                                     self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
@@ -2390,7 +2414,8 @@ class InductiveCodeGenerator:
                             elif coding_decision.decision == "modify" and coding_decision.source_code:
                                 replaced, new_version = await self.shared_codebook.replace_code(
                                     coding_decision.source_code, 
-                                    validation.validated_code.code, validation.validated_code.definition
+                                    validation.validated_code.code, validation.validated_code.definition,
+                                    cluster_id  # Pass current cluster_id (sub-cluster)
                                 )
                                 if replaced:
                                     self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
@@ -2409,7 +2434,8 @@ class InductiveCodeGenerator:
                                     if hasattr(coding_decision, 'source_code') and coding_decision.source_code:
                                         replaced, new_version = await self.shared_codebook.replace_code(
                                             coding_decision.source_code,
-                                            validation.validated_code.code, validation.validated_code.definition
+                                            validation.validated_code.code, validation.validated_code.definition,
+                                            cluster_id  # Pass current cluster_id (sub-cluster)
                                         )
                                         if replaced:
                                             self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
@@ -2419,7 +2445,8 @@ class InductiveCodeGenerator:
                                     else:
                                         # Fallback: add as new code if we can't identify original
                                         added, new_version = await self.shared_codebook.add_code_if_new(
-                                            validation.validated_code.code, validation.validated_code.definition
+                                            validation.validated_code.code, validation.validated_code.definition,
+                                            cluster_id  # Pass current cluster_id (sub-cluster)
                                         )
                                         if added:
                                             self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1

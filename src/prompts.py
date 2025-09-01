@@ -762,7 +762,6 @@ Follow these steps carefully:
 {codes_text}
 </clustered_codes>
 
-
 4. Check whether the codes in this cluster can be grouped together. Ask yourself:
    - Do all the codes in the cluster conceptually share an overarching, unifying and ATOMIC idea, concept or theme?
    - Do all the codes express similar sentiment (all positive, all negative, or all neutral)?
@@ -875,6 +874,9 @@ Idea Text: {idea_text}
 Now, review the 5 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
+
+Note:
+- Prioritize the CODE LABEL; Use the CODE DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </candidate_codes>
 
 Your goal is to select the single best fitting code for the response segment. Follow these steps:
