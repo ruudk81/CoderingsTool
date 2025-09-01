@@ -38,7 +38,7 @@ class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
 
 class ClusterSubmodel(EmbeddingsSubmodel):
-    initial_cluster: Optional[int] = None   
+    initial_cluster: Optional[Union[int, str]] = None   # Support sub-clusters like "8-1", "8-2"   
     
 class ClusterModel(EmbeddingsModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
@@ -61,7 +61,7 @@ class CodeAssignedModel(ClusterModel):
 class CodebookEntry(BaseModel):
     code: str
     definition: str
-    source_clusters:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
+    source_cluster: Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodebookModel(BaseModel):
@@ -78,7 +78,7 @@ class CodeDefinition(BaseModel):
 class Codebook(BaseModel):
     code: str
     definition: str
-    source_clusters:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"    
+    source_cluster:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"    
     theme: Optional[str] = None
     theme_description: Optional[str] = None   
 

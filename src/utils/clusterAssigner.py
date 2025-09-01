@@ -51,18 +51,20 @@ class ClusterAssigner:
         language: str = DEFAULT_LANGUAGE,
         verbose: bool = False):
         
+        # Set all instance variables first
         self.cluster_models = cluster_models
         self.enriched_codebook = enriched_codebook
         self.theme_embeddings = theme_embeddings or {}
         self.var_lab = var_lab
         self.language = language
+        self.verbose = verbose  # Add this line
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         # Results storage
         self._results: List[models.CodeAssignedModel] = []
         self._stats = ClusterAssignmentStats()
         
-        # Build mappings once during initialization
+        # Build mappings once during initialization (after all instance vars are set)
         self._cluster_codes_map = self._build_cluster_codes_mapping()
         self._subcluster_themes_map = self._build_subcluster_themes_mapping()
     
@@ -70,18 +72,24 @@ class ClusterAssigner:
         """Build mapping from cluster/sub-cluster IDs to their codes"""
         cluster_codes = defaultdict(list)
         
+        # Debug: Check what fields are available
+        if self.verbose:
+            print("\n[DEBUG] Checking enriched_codebook entries:")
+            for i, code in enumerate(self.enriched_codebook[:3]):  # Show first 3
+                print(f"  Entry {i}: code='{code.code}'")
+                print(f"    source_cluster: {getattr(code, 'source_cluster', 'NOT FOUND')}")
+                print(f"    theme_cluster_id: {getattr(code, 'theme_cluster_id', 'NOT FOUND')}")
+        
         for code in self.enriched_codebook:
-            # Use theme_cluster_id as primary cluster association
-            if code.theme_cluster_id is not None:
-                cluster_id = str(code.theme_cluster_id)
+            # Use source_cluster as primary cluster association
+            if hasattr(code, 'source_cluster') and code.source_cluster is not None:
+                cluster_id = str(code.source_cluster)
                 cluster_codes[cluster_id].append(code)
             
-            # Also use source_clusters if available
-            if code.source_clusters:
-                for cluster_id in code.source_clusters:
-                    cluster_id = str(cluster_id)
-                    if code not in cluster_codes[cluster_id]:
-                        cluster_codes[cluster_id].append(code)
+            # Fallback to theme_cluster_id if no source_cluster
+            elif code.theme_cluster_id is not None:
+                cluster_id = str(code.theme_cluster_id)
+                cluster_codes[cluster_id].append(code)
         
         self.verbose_reporter.stat_line(f"Built cluster-codes mapping for {len(cluster_codes)} clusters")
         for cluster_id, codes in list(cluster_codes.items())[:5]:  # Show first 5
@@ -93,27 +101,32 @@ class ClusterAssigner:
         """Build mapping from sub-cluster IDs to their theme information"""
         subcluster_themes = {}
         
-        # Extract theme information from theme_embeddings if available
-        for cluster_id, theme_data in self.theme_embeddings.items():
-            cluster_id = str(cluster_id)
-            
-            # Handle different theme data formats
-            if hasattr(theme_data, 'root') and theme_data.root:
-                # ClusterSummaryOutput format
-                if isinstance(theme_data.root, dict):
-                    for sub_id, summary_item in theme_data.root.items():
-                        if hasattr(summary_item, 'extracted_themes') and summary_item.extracted_themes:
-                            theme = summary_item.extracted_themes[0]  # Use first theme
-                            subcluster_themes[str(sub_id)] = {
-                                'theme_label': theme.theme_label if hasattr(theme, 'theme_label') else '',
-                                'theme_description': theme.theme_description if hasattr(theme, 'theme_description') else '',
-                                'analysis': summary_item.analysis if hasattr(summary_item, 'analysis') else ''
-                            }
-            
-            # Also map parent cluster IDs
-            parent_cluster = cluster_id.split('-')[0] if '-' in cluster_id else cluster_id
-            if parent_cluster not in subcluster_themes and cluster_id in subcluster_themes:
-                subcluster_themes[parent_cluster] = subcluster_themes[cluster_id]
+        # Extract sub-cluster information from codes' source_cluster field
+        parent_to_subclusters = defaultdict(set)
+        
+        for code in self.enriched_codebook:
+            if hasattr(code, 'source_cluster') and code.source_cluster is not None:
+                cluster_id = str(code.source_cluster)
+                
+                # Check if this is a sub-cluster (contains '-')
+                if '-' in cluster_id:
+                    parent_cluster = cluster_id.split('-')[0]
+                    parent_to_subclusters[parent_cluster].add(cluster_id)
+                    
+                    # Use code's theme information for sub-cluster
+                    if cluster_id not in subcluster_themes:
+                        subcluster_themes[cluster_id] = {
+                            'theme_label': code.theme or '',
+                            'theme_description': code.theme_description or '',
+                            'codes': []
+                        }
+                    subcluster_themes[cluster_id]['codes'].append(code.code)
+        
+        # Debug output
+        if self.verbose:
+            print(f"\n[DEBUG] Found {len(parent_to_subclusters)} parent clusters with sub-clusters:")
+            for parent, subs in list(parent_to_subclusters.items())[:3]:
+                print(f"  Cluster {parent} -> {sorted(subs)}")
         
         self.verbose_reporter.stat_line(f"Built sub-cluster themes mapping for {len(subcluster_themes)} clusters")
         
@@ -315,6 +328,14 @@ class ClusterAssigner:
         
         self.verbose_reporter.stat_line(f"Processing {len(all_ideas)} ideas with cluster-based assignment")
         self.verbose_reporter.stat_line(f"Available codes across {len(self._cluster_codes_map)} clusters")
+        
+        # Debug: Check if any sub-clusters were found
+        if self.verbose:
+            sub_cluster_count = sum(1 for c in self._cluster_codes_map.keys() if '-' in str(c))
+            print(f"\n[DEBUG] Cluster breakdown:")
+            print(f"  Total clusters with codes: {len(self._cluster_codes_map)}")
+            print(f"  Sub-clusters (with '-'): {sub_cluster_count}")
+            print(f"  Parent clusters: {len(self._cluster_codes_map) - sub_cluster_count}")
         
         # Step 2: Reassign ideas to sub-clusters
         self.verbose_reporter.step_start("Sub-cluster Reassignment")
