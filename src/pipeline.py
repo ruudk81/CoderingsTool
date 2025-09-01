@@ -849,7 +849,7 @@ else:
             enriched_entry = models.ThemeEnrichedCodebookEntry(
                 code=entry.code,
                 definition=entry.definition,
-                source_clusters=entry.source_clusters,
+                source_cluster=entry.source_cluster,
                 theme=theme_name,
                 theme_description=theme_info,
                 theme_cluster_id=theme_cluster_id,
