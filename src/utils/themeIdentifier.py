@@ -268,8 +268,8 @@ class ThemeIdentifier:
         for i, code in enumerate(self.codebook, 1):
             self.code_registry[i] = {
                 'code_id': i,
-                'code_name': code.code,
-                'definition': code.definition
+                'code_name': code['code'],
+                'definition': code['definition']
             }
     
     def _prepare_codes_for_embedding(self) -> List[CodeEmbedding]:
@@ -279,15 +279,15 @@ class ThemeIdentifier:
         #print(f"Total codes in codebook: {len(self.codebook)}")
         
         for i, code in enumerate(self.codebook, 1):
-            embedding_text = f"Code: {code.code}. Definition: {code.definition}"
+            embedding_text = f"Code: {code['code']}. Definition: {code['definition']}"
             code_embedding = CodeEmbedding(
                 code_number=i,
-                code_name=code.code,
-                definition=code.definition,
+                code_name=code['code'],
+                definition=code['definition'],
                 embedding_text=embedding_text
             )
             code_embeddings.append(code_embedding)
-            #print(f"  {i}. '{code.code}' -> code_number={i}")
+            #print(f"  {i}. '{code['code']}' -> code_number={i}")
         
         #print(f"✅ Step 1 complete: Created {len(code_embeddings)} CodeEmbedding objects")
         return code_embeddings

@@ -656,7 +656,7 @@ class CodeAssignmentConfig:
     top_k_similar_codes: int = 5  # Number of most similar codes to present
     min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
     # Model configuration - will be overridden by ModelConfig
-    model: str = "gpt-4o-mini"  # Fallback model
+    model: str = DEFAULT_MODEL  # Fallback model
     max_assignment_examples: int = 3  # For verbose output
 
 # =============================================================================
