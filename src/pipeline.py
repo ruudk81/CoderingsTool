@@ -993,6 +993,22 @@ else:
     cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
     print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
+# === EXPORT CODE ASSIGNMENTS TO EXCEL ========================================================================================================
+from utils.codeAssignmentExporter import CodeAssignmentExporter
+
+try:
+    exporter = CodeAssignmentExporter(verbose=VERBOSE)
+    excel_path = exporter.export_to_excel(
+        code_assigned_results_direct,
+        theme_enriched_codebook,
+        filename,
+        var_name,
+        export_dir=None  # Will create default export directory
+    )
+    print(f"✅ Code assignments exported to Excel: {excel_path}")
+except Exception as e:
+    print(f"⚠️ Excel export failed: {str(e)}")
+
 # === CODEBOOK PRINTOUT ========================================================================================================
 for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
     print(f"{idx}) {entry.code}")
@@ -1218,38 +1234,7 @@ else:
 
 
 
-# from utils.pipelineSummarizer import PipelineSummarizer
-# summarizer = PipelineSummarizer(verbose=True)
-# summarizer.generate_summary(
-#     code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-#     theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
-#     enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None
-# )
 
-
-# for result in code_assigned_results:
-#     for idea in result.response_ideas:
-#         print(idea.assigned_themes)
-#     break
-    
-
-#debug
-# import random
-# sampled_result = random.choice(code_assigned_results)
-# print(f"Respondent ID: {sampled_result.respondent_id}")
-# print(f"Response: {sampled_result.response}")
-# #print(f"Idea count: {sampled_result.idea_count}")
-# #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-# #print("---- Assigned Codes ----")
-# for idea in sampled_result.response_ideas:
-#     print("-" * 40)
-#     print(f"Idea ID: {idea.idea_id}")
-#     print(f"Idea: {idea.idea}")
-#     print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
-#     #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
-#     print(f"Rationale: {idea.assignment_rationale}")
-#     print(f"Assignment Confidence: {idea.assignment_confidence}")
-#     print("-" * 40)
 
 
 
