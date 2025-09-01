@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """UI text constants for the CoderingsTool application with language support"""
 
 # Language configuration
@@ -8,18 +9,18 @@ AVAILABLE_LANGUAGES = ["nl", "en"]
 UI_TEXTS = {
     "nl": {
         # App Configuration
-        "APP_TITLE": "CoderingsTool - Enquête Respons Analyse",
+        "APP_TITLE": "CoderingsTool - Enquete Respons Analyse",
         "APP_DESCRIPTION": """
-        Analyseer open antwoorden uit enquêtes met AI-gestuurde tekstverwerking. 
+        Analyseer open antwoorden uit enquetes met AI-gestuurde tekstverwerking. 
         Deze tool helpt u kwalitatieve data uit SPSS-bestanden te verwerken, clusteren en categoriseren.
         """,
         
         # Sidebar
         "SIDEBAR_HEADER": "Analyse Pipeline",
-        "SIDEBAR_DESCRIPTION": "Volg de stappen om uw enquêtedata te analyseren",
+        "SIDEBAR_DESCRIPTION": "Volg de stappen om uw enquetedata te analyseren",
         
         # Upload Page
-        "UPLOAD_HELP": "Upload een SPSS-bestand (.sav) met enquête antwoorden. Het bestand moet respondent-ID's en tekst antwoorden bevatten.",
+        "UPLOAD_HELP": "Upload een SPSS-bestand (.sav) met enquete antwoorden. Het bestand moet respondent-ID's en tekst antwoorden bevatten.",
         
         # Step Information
         "PREPROCESSING_INFO": """
@@ -44,9 +45,9 @@ UI_TEXTS = {
         """,
         
         "CLUSTERING_INFO": """
-        Hiërarchische clustering zal:
+        Hierarchische clustering zal:
         - Vergelijkbare antwoorden groeperen
-        - Meta, meso en micro clusters creëren
+        - Meta, meso en micro clusters creeren
         - Thema's in de data identificeren
         """,
         
@@ -66,11 +67,11 @@ UI_TEXTS = {
         
         # Step Descriptions for Info Panel
         "STEP_DESCRIPTIONS": [
-            "Upload uw SPSS databestand met enquête antwoorden.",
+            "Upload uw SPSS databestand met enquete antwoorden.",
             "Preprocessing normaliseert en schoont de tekstdata voor analyse.",
             "Kwaliteitsfiltering verwijdert lage kwaliteit of betekenisloze antwoorden.",
             "Embeddings zetten tekst om in numerieke representaties voor clustering.",
-            "Clustering groepeert vergelijkbare antwoorden in hiërarchische thema's.",
+            "Clustering groepeert vergelijkbare antwoorden in hierarchische thema's.",
             "Labeling wijst betekenisvolle beschrijvingen toe aan elke cluster.",
             "Bekijk en download uw geanalyseerde resultaten."
         ],
@@ -82,7 +83,7 @@ UI_TEXTS = {
         "ERROR_API_KEY": "OpenAI API-sleutel niet geconfigureerd. Stel OPENAI_API_KEY omgevingsvariabele in.",
         
         # Success Messages
-        "SUCCESS_UPLOAD": "Bestand succesvol geüpload!",
+        "SUCCESS_UPLOAD": "Bestand succesvol geupload!",
         "SUCCESS_PREPROCESSING": "Tekst preprocessing voltooid!",
         "SUCCESS_FILTERING": "Kwaliteitsfiltering voltooid!",
         "SUCCESS_EMBEDDING": "Embeddings succesvol gegenereerd!",
