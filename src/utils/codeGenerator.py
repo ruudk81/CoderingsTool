@@ -1974,7 +1974,7 @@ class InductiveCodeGenerator:
             
             # Processing metadata
             stats=self.summary(),
-            generator_version="codeDesigner_v3_complex_prompts",
+            generator_version="codeGenerator_4 chain prompt",
             var_lab=self.var_lab,
             total_clusters=len(self.cluster_assignments),
             total_ideas=sum(len(cluster_data.get('ideas', [])) for cluster_data in cluster_data.values()) if cluster_data else 0,

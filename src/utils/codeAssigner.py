@@ -236,6 +236,41 @@ class CodeAssignmentResponse(BaseModel):
     assigned_themes: Optional[List[str]] = None
 
 
+class EmbeddingLoader:
+    """Utility class for loading and managing embeddings from cache"""
+    
+    @staticmethod
+    def load_idea_embeddings_from_cache(cache_manager, filename):
+        """Load idea embeddings from cache step 'embeddings'"""
+        embeddings_results = cache_manager.load_from_cache(
+            filename, "embeddings", models.EmbeddingsModel
+        )
+        
+        if not embeddings_results:
+            return []
+        
+        # Extract all ideas with their embeddings
+        ideas_with_embeddings = []
+        for result in embeddings_results:
+            if result.response_ideas:
+                for idea in result.response_ideas:
+                    if idea.idea_embedding is not None:
+                        ideas_with_embeddings.append({
+                            'idea': idea.idea,
+                            'idea_id': idea.idea_id,
+                            'embedding': idea.idea_embedding,
+                            'respondent_id': result.respondent_id
+                        })
+        
+        return ideas_with_embeddings
+    
+    @staticmethod
+    def format_codes_for_embedding(enriched_codebook):
+        """Format enriched codebook entries for embedding generation"""
+        # Match existing format in _get_code_embeddings (line 300)
+        return [f"{code.code}: {code.definition}" for code in enriched_codebook]
+
+
 class CodeAssigner:
     """
     Evidence-based optimal code assignment with precision rate limiting.
@@ -248,6 +283,7 @@ class CodeAssigner:
         codebook: List[models.Codebook],
         var_lab: str,
         code_to_theme_mapping: Optional[Dict[str, str]] = None,
+        cached_idea_embeddings: Optional[List[Dict]] = None,
         config: Optional[CodeAssignmentConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
@@ -270,6 +306,9 @@ class CodeAssigner:
         
         # Cache for code embeddings - will be precomputed
         self._code_embeddings = None
+        
+        # Cache for idea embeddings if provided
+        self._cached_idea_embeddings = cached_idea_embeddings
         
         # Theme mapping for code-to-theme assignments
         self.code_to_theme_mapping = code_to_theme_mapping or {}
@@ -297,7 +336,8 @@ class CodeAssigner:
     async def _get_code_embeddings(self):
         """Generate embeddings for all codes in the codebook for similarity matching"""
         if self._code_embeddings is None:
-            code_texts = [f"{code.code}: {code.definition}" for code in self.codebook]
+            # Use EmbeddingLoader format (definitions only)
+            code_texts = EmbeddingLoader.format_codes_for_embedding(self.codebook)
             
             # Create temporary models for embedding generation
             temp_models = []
@@ -358,6 +398,20 @@ class CodeAssigner:
 
     def _extract_all_ideas(self) -> List[tuple]:
         """Extract all individual ideas with their embeddings for processing"""
+        # Use cached embeddings if provided
+        if self._cached_idea_embeddings:
+            all_ideas = []
+            for cached_idea in self._cached_idea_embeddings:
+                all_ideas.append((
+                    cached_idea['respondent_id'],
+                    cached_idea['idea_id'],
+                    cached_idea['idea'],
+                    cached_idea['embedding']
+                ))
+            self.verbose_reporter.stat_line(f"Using {len(all_ideas)} cached idea embeddings")
+            return all_ideas
+        
+        # Otherwise extract from cluster models
         all_ideas = []
         
         for model in self.cluster_models:
@@ -384,7 +438,8 @@ class CodeAssigner:
         
         # Format candidate codes for prompt
         candidate_codes_text = "\n".join([
-            f"Code: {code.code}\nDefinition: {code.definition}\n" 
+            #f"Code: {code.code}\nDefinition: {code.definition}\n" 
+            f"Code: {code.definition}\n" 
             for code in similar_codes
         ])
         
@@ -455,6 +510,47 @@ class CodeAssigner:
 
     def _merge_results_into_models(self, assignment_results: List[CodeAssignmentResponse]) -> List[models.CodeAssignedModel]:
         """Merge assignment results back into model structure"""
+        
+        # If using cached embeddings, create simple models from assignments
+        if self._cached_idea_embeddings and not self.cluster_models:
+            coded_models = []
+            
+            # Group assignments by respondent_id
+            respondent_assignments = {}
+            for result in assignment_results:
+                # Extract respondent_id from the cached data
+                for cached_idea in self._cached_idea_embeddings:
+                    if cached_idea['idea_id'] == result.idea_id:
+                        resp_id = cached_idea['respondent_id']
+                        if resp_id not in respondent_assignments:
+                            respondent_assignments[resp_id] = []
+                        respondent_assignments[resp_id].append(result)
+                        break
+            
+            # Create CodeAssignedModel for each respondent
+            for resp_id, assignments in respondent_assignments.items():
+                assigned_ideas = []
+                for assignment in assignments:
+                    assigned_idea = models.AssignedIdeaSubmodel(
+                        idea_id=assignment.idea_id,
+                        idea=assignment.idea,
+                        assigned_codes=assignment.assigned_codes,
+                        assignment_confidence=assignment.assignment_confidence,
+                        assignment_rationale=assignment.assignment_rationale,
+                        assigned_themes=assignment.assigned_themes
+                    )
+                    assigned_ideas.append(assigned_idea)
+                
+                coded_model = models.CodeAssignedModel(
+                    respondent_id=resp_id,
+                    response='',  # We don't have the full response text
+                    response_ideas=assigned_ideas
+                )
+                coded_models.append(coded_model)
+            
+            return coded_models
+        
+        # Original logic for cluster models
         # Create lookup for assignments by idea_id
         assignments_lookup = {result.idea_id: result for result in assignment_results}
         
@@ -611,3 +707,25 @@ class CodeAssigner:
             nest_asyncio.apply()
         
         return asyncio.run(self.assign_codes())
+    
+    async def generate_code_embeddings_only(self, enriched_codebook):
+        """Generate embeddings for enriched codebook without full assignment"""
+        # Format codes using EmbeddingLoader utility
+        code_texts = EmbeddingLoader.format_codes_for_embedding(enriched_codebook)
+        
+        # Use existing embedder to generate embeddings
+        self.verbose_reporter.stat_line(f"Generating embeddings for {len(code_texts)} codes...")
+        start_time = time.time()
+        
+        # Use embedder's batch processing
+        code_embeddings = await self.embedder.embed_batch(code_texts)
+        
+        elapsed = time.time() - start_time
+        self.verbose_reporter.stat_line(f"Code embeddings generated in {elapsed:.2f}s")
+        
+        # Return structured result
+        return {
+            'codes': enriched_codebook,
+            'embeddings': code_embeddings,
+            'texts': code_texts
+        }

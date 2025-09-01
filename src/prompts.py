@@ -859,50 +859,43 @@ Return ONLY the JSON object with all content in {language}."""
 # =============================================================================
 
 CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses.
+You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 5 candidate codes to a specific response segment.
 
-Your task is to assign the **single most appropriate code** from a focused list of 5 candidate codes to a specific response segment.
-
----
-
-You are working with a **pre-selected set of 5 candidate codes** that are most likely to fit this response. This reduces ambiguity and improves accuracy. **You must assign exactly ONE code**, even if fit is low — choose the best available option based on semantic meaning.
-
----
-
-Step 1: Review the original survey question:
+First, review the original survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Step 2: Examine the response segment:
+Next, examine the response segment you need to analyze:
 <idea_to_analyze>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-Step 3: Review the 5 candidate codes and their descriptions:
+Now, review the 5 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
 </candidate_codes>
 
----
+Your goal is to select the single best fitting code for the response segment. Follow these steps:
 
-**Assignment Instructions**:
+1. Carefully read and understand each candidate code's definition.
+2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
+3. Identify which code best captures the core concept expressed in the response.
+4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
 
-1. **Select the best fitting code**:
-   - Prioritize **exact conceptual matches** based on meaning.
-   - Do **not** rely on surface keywords — base your choice on **semantic alignment** with the code's definition.
+When selecting the best fitting code:
+- Prioritize exact conceptual matches based on meaning.
+- Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
 
-2. **Rate the strength of the fit** using this scale:
-   - **Excellent (0.9–1.0)** – The idea directly expresses the code definition.
-   - **Good (0.7–0.8)** – Strong match, minor interpretation needed.
-   - **Moderate (0.5–0.6)** – Somewhat related, but requires reasonable interpretation.
-   - **Poor (0.3–0.4)** – Weak fit, conceptually strained but closest available.
-   - **Very Poor (0.0–0.2)** – Barely applicable, forced fit due to lack of better options.
+After selecting the code, rate the strength of the fit using this scale:
+- Excellent (0.9–1.0): The idea directly expresses the code definition.
+- Good (0.7–0.8): Strong match, minor interpretation needed.
+- Moderate (0.5–0.6): Somewhat related, but requires reasonable interpretation.
+- Poor (0.3–0.4): Weak fit, conceptually strained but closest available.
+- Very Poor (0.0–0.2): Barely applicable, forced fit due to lack of better options.
 
----
-
-**Return your response in the following JSON format:**
+Provide your response in the following JSON format:
 <output_format>
 {{
   "idea_id": "{idea_id}",
@@ -913,95 +906,93 @@ Step 3: Review the 5 candidate codes and their descriptions:
 }}
 </output_format>
 
----
-
-**Critical Requirements**:
-- Use **exact code names** as provided
-- Assign **one and only one** code per response
-- The **confidence score must reflect conceptual fit**, not how likely the model feels
-- The **rationale must explain the semantic connection** to the code definition
-- Return **ONLY the JSON object** in {language}
+Critical requirements:
+- Use exact code names as provided in the candidate codes list.
+- Assign one and only one code per response.
+- The confidence score must reflect conceptual fit, not how likely you feel about the assignment.
+- The rationale must explain the semantic connection to the code definition.
+- Return ONLY the JSON object in {language}.
 
 Begin the code assignment now.
 """
 
-# =============================================================================
-# DEDUPLICATION PROMPT
-# =============================================================================
+# # =============================================================================
+# # DEDUPLICATION PROMPT
+# # =============================================================================
 
-DEDUPLICATION_PROMPT = """
-You are a {language} qualitative data analyst creating the MOST EFFICIENT, MINIMAL codebook for analyzing this research question.
+# DEDUPLICATION_PROMPT = """
+# You are a {language} qualitative data analyst creating the MOST EFFICIENT, MINIMAL codebook for analyzing this research question.
 
-Your mission: Create a codebook where every code is ESSENTIAL and IRREPLACEABLE for analysis.
-Think like a researcher analyzing 1000+ responses - codes that are too similar create confusion and inconsistent coding.
+# Your mission: Create a codebook where every code is ESSENTIAL and IRREPLACEABLE for analysis.
+# Think like a researcher analyzing 1000+ responses - codes that are too similar create confusion and inconsistent coding.
 
-────────────────────────────────────────
-SURVEY CONTEXT
-────────────────────────────────────────
-Survey Question: {survey_question}
+# ────────────────────────────────────────
+# SURVEY CONTEXT
+# ────────────────────────────────────────
+# Survey Question: {survey_question}
 
-Language: {language}
+# Language: {language}
 
-────────────────────────────────────────
-CODES TO ANALYZE
-────────────────────────────────────────
-{codes_batch}
+# ────────────────────────────────────────
+# CODES TO ANALYZE
+# ────────────────────────────────────────
+# {codes_batch}
 
-────────────────────────────────────────
-EFFICIENCY-FOCUSED PRINCIPLES
-────────────────────────────────────────
-Create a codebook optimized for:
+# ────────────────────────────────────────
+# EFFICIENCY-FOCUSED PRINCIPLES
+# ────────────────────────────────────────
+# Create a codebook optimized for:
 
-🎯 RESEARCH EFFICIENCY: Minimal codes that capture maximum analytical insight
-🧠 CODER CLARITY: Codes so distinct that human coders never hesitate between options
-📊 ANALYTICAL POWER: Each code must justify its separate existence for this research question
-⚡ PRACTICAL USE: Designed for coding hundreds of real survey responses
+# 🎯 RESEARCH EFFICIENCY: Minimal codes that capture maximum analytical insight
+# 🧠 CODER CLARITY: Codes so distinct that human coders never hesitate between options
+# 📊 ANALYTICAL POWER: Each code must justify its separate existence for this research question
+# ⚡ PRACTICAL USE: Designed for coding hundreds of real survey responses
 
-────────────────────────────────────────
-AGGRESSIVE MERGING MANDATE
-────────────────────────────────────────
-You are tasked with creating the MOST CONDENSED possible codebook.
+# ────────────────────────────────────────
+# AGGRESSIVE MERGING MANDATE
+# ────────────────────────────────────────
+# You are tasked with creating the MOST CONDENSED possible codebook.
 
-MERGE codes that express the same core concept, even if they differ in:
-- Specific wording
-- Minor details  
-- Slight emphasis differences
+# MERGE codes that express the same core concept, even if they differ in:
+# - Specific wording
+# - Minor details  
+# - Slight emphasis differences
 
-Default to MERGING. Only keep codes separate if they represent fundamentally different concepts that cannot be combined.
+# Default to MERGING. Only keep codes separate if they represent fundamentally different concepts that cannot be combined.
 
-────────────────────────────────────────
-MERGE DECISION PROCESS
-────────────────────────────────────────
-For ANY two codes that seem related:
+# ────────────────────────────────────────
+# MERGE DECISION PROCESS
+# ────────────────────────────────────────
+# For ANY two codes that seem related:
 
-1. Do they address the same basic respondent concern? → MERGE
-2. Would survey responses fit under both codes? → MERGE  
-3. Is the difference mainly in wording, not meaning? → MERGE
+# 1. Do they address the same basic respondent concern? → MERGE
+# 2. Would survey responses fit under both codes? → MERGE  
+# 3. Is the difference mainly in wording, not meaning? → MERGE
 
-ONLY keep separate if codes represent completely different themes that cannot be logically combined.
+# ONLY keep separate if codes represent completely different themes that cannot be logically combined.
 
-────────────────────────────────────────
-OUTPUT FORMAT (JSON only, no other text)
-────────────────────────────────────────
-{{
-  "merge_decisions": [
-    {{
-      "codes_to_merge": ["exact code name 1", "exact code name 2"],
-      "final_code_name": "best merged code name",
-      "final_definition": "clear combined definition in 1-2 sentences",
-      "justification": "why these codes are semantically identical for this survey"
-    }}
-  ],
-  "codes_to_keep_unchanged": ["exact code name 3", "exact code name 4", ...]
-}}
+# ────────────────────────────────────────
+# OUTPUT FORMAT (JSON only, no other text)
+# ────────────────────────────────────────
+# {{
+#   "merge_decisions": [
+#     {{
+#       "codes_to_merge": ["exact code name 1", "exact code name 2"],
+#       "final_code_name": "best merged code name",
+#       "final_definition": "clear combined definition in 1-2 sentences",
+#       "justification": "why these codes are semantically identical for this survey"
+#     }}
+#   ],
+#   "codes_to_keep_unchanged": ["exact code name 3", "exact code name 4", ...]
+# }}
 
-Rules:
-- All field values must be in {language}
-- Use exact code names as they appear above
-- Only merge codes that are truly duplicates
-- If no duplicates found, return empty merge_decisions array
-- Output ONLY valid JSON, no other text
-"""
+# Rules:
+# - All field values must be in {language}
+# - Use exact code names as they appear above
+# - Only merge codes that are truly duplicates
+# - If no duplicates found, return empty merge_decisions array
+# - Output ONLY valid JSON, no other text
+# """
 
 
 
