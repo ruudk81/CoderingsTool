@@ -30,8 +30,11 @@ def get_tiktoken_encoding(model_name: str):
         return tiktoken.get_encoding("cl100k_base")
 
 @st.cache_resource
-def get_spacy_nlp():
-    """Load SpaCy language model with Streamlit caching for session-wide reuse"""
+def get_spacy_nlp_conditional(spell_check_enabled: bool = True):
+    """Load SpaCy language model conditionally based on configuration"""
+    if not spell_check_enabled:
+        return None  # Skip loading entirely to save memory and time
+        
     import spacy
     from config import DEFAULT_LANGUAGE
     
@@ -44,3 +47,28 @@ def get_spacy_nlp():
         vocab = "nl_core_news_lg" if DEFAULT_LANGUAGE == "Dutch" else "en_core_web_lg"
         st.error(f"SpaCy model not found. Please install it with: python -m spacy download {vocab}")
         raise RuntimeError(f"SpaCy model not found. Please install it with: python -m spacy download {vocab}")
+
+@st.cache_resource
+def get_spacy_nlp():
+    """Load SpaCy language model with Streamlit caching for session-wide reuse (always loads)"""
+    return get_spacy_nlp_conditional(True)
+
+@st.cache_resource
+def get_embedder_for_provider(provider: str, config=None, model_config=None):
+    """Load embedding provider conditionally - only load what's needed"""
+    with st.spinner(f"Initializing {provider} embedder..."):
+        if provider.lower() == "openai":
+            from utils.embedder import Embedder
+            return Embedder(config=config, model_config=model_config, provider="openai", verbose=False)
+        elif provider.lower() == "gemini":
+            from utils.embedder import Embedder  
+            return Embedder(config=config, model_config=model_config, provider="gemini", verbose=False)
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider}")
+
+@st.cache_resource
+def get_clusterer_conditional(config_hash: str = "default"):
+    """Load clusterer resources conditionally"""
+    with st.spinner("Loading clustering algorithms..."):
+        from utils.clusterer import Clusterer
+        return Clusterer

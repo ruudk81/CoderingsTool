@@ -34,7 +34,8 @@ from config import (
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
-from utils.cached_resources import get_openai_client, get_tiktoken_encoding
+from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
+from utils.session_manager import get_session_manager
 
 # Cached resource functions for heavy pipeline components
 @st.cache_resource
@@ -128,6 +129,10 @@ def _get_code_assignment_exporter():
 def _get_code_generator_reasoning_results():
     from utils.codeGenerator import CodeGeneratorReasoningResults
     return CodeGeneratorReasoningResults
+
+def _get_theme_organizer_reasoning():
+    from utils.themeOrganizerReasoning import ThemeOrganizerReasoning
+    return ThemeOrganizerReasoning
 
 class StreamlitPipelineRunner:
     """Pipeline runner optimized for Streamlit with session state management"""
@@ -646,6 +651,115 @@ class StreamlitPipelineRunner:
             if streamlit_container:
                 theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
                 streamlit_container.success(f"✅ Identified {theme_count} themes in {elapsed_time:.2f}s")
+        
+        return theme_enriched_codebook
+    
+    def step_8b_organize_themes_reasoning(self, codebook_main: models.CodebookModel, filename: str, var_name: str, var_lab: str,
+                                        model_config: Optional[ModelConfig] = None,
+                                        reasoning_effort: str = "high",
+                                        text_verbosity: str = "medium",
+                                        force_recalc: bool = False,
+                                        streamlit_container=None) -> models.ThemeEnrichedCodebookModel:
+        """Step 8b: Organize themes using OpenAI reasoning models (alternative to step 8)"""
+        
+        step_name = "theme_organization_reasoning"
+        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        
+        if streamlit_container:
+            streamlit_container.text("🔄 Organizing themes with reasoning model...")
+        
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
+            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
+            if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
+                theme_enriched_codebook = theme_enriched_codebooks[0]
+                verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
+            else:
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
+                    theme_methodology="Error loading from cache"
+                )
+        else:
+            verbose_reporter.section_header("THEME ORGANIZATION WITH REASONING MODEL")
+            start_time = time.time()
+            
+            if not codebook_main.codes:
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
+                    theme_methodology="No codes available"
+                )
+            else:
+                # Prepare codebook for reasoning model
+                codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
+                
+                # Use model from model_config if available, otherwise default
+                model_name = "gpt-5"
+                if model_config and hasattr(model_config, 'model'):
+                    model_name = model_config.model
+                
+                # Initialize theme organizer (lazy loaded)
+                ThemeOrganizerReasoning = _get_theme_organizer_reasoning()
+                theme_organizer = ThemeOrganizerReasoning(
+                    codebook=codebook,
+                    var_lab=var_lab,
+                    verbose=self.verbose,
+                    model=model_name,
+                    reasoning_effort=reasoning_effort,
+                    text_verbosity=text_verbosity
+                )
+                
+                async def run_theme_organization():
+                    return await theme_organizer.organize_themes_reasoning()
+                
+                result = asyncio.run(run_theme_organization())
+                
+                # Process theme results
+                enriched_entries = []
+                code_to_theme_mapping = result.get('code_to_theme_mapping', {})
+                themes = result.get('themes', [])
+                
+                # Enrich codebook entries with theme information
+                for entry in codebook_main.codes:
+                    theme_name = code_to_theme_mapping.get(entry.code)
+                    theme_info = None
+                    theme_cluster_id = None
+                    is_misc = False
+                    
+                    if theme_name:
+                        theme_name_normalized = theme_name.strip().lower()
+                        for theme in themes:
+                            if theme['theme_name'].strip().lower() == theme_name_normalized:
+                                theme_info = theme.get('theme_description', '')
+                                theme_cluster_id = theme.get('cluster_id', 'reasoning_theme')
+                                is_misc = theme.get('is_miscellaneous', False)
+                                break
+                    
+                    enriched_entry = models.ThemeEnrichedCodebookEntry(
+                        code=entry.code,
+                        definition=entry.definition,
+                        source_cluster=entry.source_cluster,
+                        theme=theme_name,
+                        theme_description=theme_info,
+                        theme_cluster_id=theme_cluster_id,
+                        is_miscellaneous=is_misc
+                    )
+                    enriched_entries.append(enriched_entry)
+                
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=enriched_entries,
+                    generation_metadata=codebook_main.generation_metadata,
+                    source_variable=codebook_main.source_variable,
+                    themes_summary=themes,
+                    code_to_theme_mapping=code_to_theme_mapping,
+                    theme_methodology=result.get('methodology', 'Single-prompt reasoning model organization')
+                )
+            
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, elapsed_time)
+            
+            if streamlit_container:
+                theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
+                streamlit_container.success(f"✅ Organized {theme_count} themes using reasoning model in {elapsed_time:.2f}s")
         
         return theme_enriched_codebook
     

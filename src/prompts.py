@@ -849,9 +849,82 @@ OUTPUT FORMAT (JSON):
   "rationale": "[detailed explanation of why this code belongs with this theme or remains miscellaneous]"
 }}
 
-CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
-
 Return ONLY the JSON object with all content in {language}."""
+
+# =============================================================================
+# STEP 8B: THEME ORGANIZATION WITH REASONING MODELS
+# =============================================================================
+
+THEME_ORGANIZATION_REASONING_PROMPT = """
+You are a {language} qualitative specialist with expertise in curating codebooks and organizing themes using systematic thematic analysis principles.
+
+You will be given a codebook with codes and definitions. Your task is to organize these codes into a 2 or 3 level hierarchical structure where each level represents another abstraction level - from broad conceptual themes to more specific sub-themes to very concrete codes.
+
+Here are the codes for you to work with:
+<codebook>
+{codebook}
+</codebook>
+
+Here is the research question as meaningful context from which the codes are derived:
+<research_question>
+{research_question}
+</research_question>
+
+Follow these rules/criteria:
+
+1. **Theme labels must be atomic** - No compounding of ideas in theme labels is allowed. Each theme should represent one clear, unified concept.
+
+2. **Theme labels must be relevant and meaningful** - All themes must be directly relevant to and meaningful in light of the research question context.
+
+3. **Theme labels must group similar concepts** - Group codes that share similar ideas, thoughts, or concepts specifically in light of the research question.
+
+4. **Hierarchical organization** - Organize themes in 2-3 levels:
+   - Level 1: Broad, overarching themes (most abstract)
+   - Level 2: More specific sub-themes (intermediate abstraction)  
+   - Level 3: Very specific themes (most concrete, closest to original codes)
+
+5. **Comprehensive coverage** - Every code must be assigned to exactly one theme. No codes should be left unassigned.
+
+6. **Logical hierarchy** - Higher level themes should logically contain and encompass lower level themes.
+
+7. **Language consistency** - All theme names and descriptions must be in {language}.
+
+8. **Avoid redundancy** - Each theme should be distinct with no conceptual overlap between themes at the same level.
+
+9. **Miscellaneous handling** - If some codes truly don't fit well together, create a "Miscellaneous" or "Other" theme, but minimize its use.
+
+10. **Balanced distribution** - Aim for reasonably balanced theme sizes where practical, avoiding one theme with most codes.
+
+Return this exact JSON output format:
+
+{{
+  "themes": [
+    {{
+      "theme_name": "[Atomic theme name in {language}]",
+      "theme_description": "[Detailed description of what this theme represents in {language}]",
+      "level": 1,
+      "codes": [
+        {{
+          "code": "[Original code name]",
+          "definition": "[Original code definition]",
+          "source_cluster": "[Original source cluster if available]"
+        }}
+      ],
+      "is_miscellaneous": false
+    }}
+  ],
+  "methodology": "Single-prompt hierarchical theme organization using reasoning model",
+  "total_codes_organized": {codes_count},
+  "language": "{language}"
+}}
+
+Critical requirements:
+- Return ONLY the JSON format above, no additional text
+- All fields must be in {language} where specified
+- Every code from the input must appear in exactly one theme
+- Theme names must be atomic (single concept only)
+- Organize logically from broad (level 1) to specific (level 2-3)
+- Ensure themes are meaningful in context of the research question"""
 
 # =============================================================================
 # STEP 9: CODE ASSIGNMENT
