@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
+import streamlit as st
 import nest_asyncio
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -25,6 +26,7 @@ from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
+from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +92,8 @@ class SpellChecker:
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.model = self.model_config.get_model_for_stage('spell_check')
         
-        # Instructor-patched async OpenAI client for structured output
-        self.client = instructor.patch(AsyncOpenAI(api_key=self.openai_api_key))
+        # Instructor-patched async OpenAI client for structured output (cached)
+        self.client = get_openai_client(self.openai_api_key)
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
@@ -138,14 +140,9 @@ class SpellChecker:
         }
     
     @staticmethod 
-    @lru_cache(maxsize=1)  
     def get_nlp():  
-        try:
-            vocab = "nl_core_news_lg" if DEFAULT_LANGUAGE == "Dutch" else "en_core_web_lg"
-            nlp = spacy.load(vocab)
-            return nlp
-        except OSError:
-            raise RuntimeError("SpaCy model not found. Please install it with: python -m spacy download")
+        """Load SpaCy language model with Streamlit caching for session-wide reuse"""
+        return get_spacy_nlp()
    
     @staticmethod
     @lru_cache(maxsize=1)
@@ -322,11 +319,7 @@ class SpellChecker:
         
     def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
         tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
-        try:
-            encoding = tiktoken.encoding_for_model(tiktoken_model)
-        except KeyError:
-            encoding = tiktoken.get_encoding("cl100k_base")
-            logger.warning(f"Using cl100k_base encoding as fallback for {tiktoken_model}")
+        encoding = get_tiktoken_encoding(tiktoken_model)
             
         token_budget = max_tokens - len(encoding.encode(prompt_header)) - completion_reserve
         

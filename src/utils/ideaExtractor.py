@@ -25,8 +25,9 @@ from prompts import IDEA_EXTRACTION_PROMPT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
+from .cached_resources import get_openai_client, get_tiktoken_encoding
 
-async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+async_client = get_openai_client(OPENAI_API_KEY)
 
 
 @dataclass
@@ -46,10 +47,7 @@ class WorkloadAnalyzer:
     
     def __init__(self, model_name: str):
         self.model_name = model_name
-        try:
-            self.encoding = tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
+        self.encoding = get_tiktoken_encoding(model_name)
     
     def measure_token_usage(self, sample_prompts: List[str], num_samples: int = 10) -> float:
         """Measure actual token usage from real prompts"""
@@ -252,12 +250,8 @@ class IdeaExtractor:
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
-        # Initialize tokenizer for batch size calculation
-        try:
-            self.encoding = tiktoken.encoding_for_model(self.model)
-        except KeyError:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.model}")
+        # Initialize tokenizer for batch size calculation (cached)
+        self.encoding = get_tiktoken_encoding(self.model)
 
     def _build_prompt(self, respondent_id: str, response: str) -> str:
         """Build prompt for a single response"""

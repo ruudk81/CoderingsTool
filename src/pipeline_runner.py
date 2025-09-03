@@ -34,6 +34,51 @@ from config import (
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
+from utils.cached_resources import get_openai_client, get_tiktoken_encoding
+
+# Cached resource functions for heavy pipeline components
+@st.cache_resource
+def _get_cached_embedder(config_hash: str, model_config_hash: str, provider: str):
+    """Cache embedder instances for session-wide reuse"""
+    Embedder = _get_embedder()
+    return Embedder(
+        config=None,  # Will be set when called
+        model_config=None,  # Will be set when called  
+        provider=provider,
+        verbose=False
+    )
+
+@st.cache_resource
+def _get_cached_clusterer(config_hash: str):
+    """Cache clusterer class for session-wide reuse"""
+    return _get_clusterer()
+
+@st.cache_resource  
+def _get_cached_theme_identifier():
+    """Cache theme identifier class for session-wide reuse"""
+    return _get_theme_identifier()
+
+# Cached data functions for processing results
+@st.cache_data(show_spinner="Loading SPSS data...")
+def _cache_spss_data(filename: str, id_column: str, var_name: str):
+    """Cache SPSS file parsing results for fast reruns"""
+    from utils.dataLoader import DataLoader
+    data_loader = DataLoader(verbose=False)
+    return data_loader.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name)
+
+@st.cache_data(show_spinner="Loading cached embeddings...")
+def _cache_embedding_results(content_hash: str, provider: str, model_name: str):
+    """Cache embedding generation results by content hash"""
+    # This will be populated by the actual embedding process
+    # Returns None if not cached, which signals to generate new embeddings
+    return None
+
+@st.cache_data(show_spinner="Loading cached spell corrections...")  
+def _cache_spell_correction_results(content_hash: str, model_name: str, config_hash: str):
+    """Cache spell correction results by content and config hash"""
+    # This will be populated by the actual spell correction process
+    # Returns None if not cached, which signals to run spell correction
+    return None
 
 # Lazy loading functions to improve startup performance
 def _get_text_normalizer():
@@ -116,8 +161,8 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("DATA LOADING SUMMARY")
             start_time = time.time()
             
-            # Load data from SPSS file
-            raw_text_df = self.data_loader.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name)
+            # Load data from SPSS file (with Streamlit caching)
+            raw_text_df = _cache_spss_data(filename, id_column, var_name)
             raw_unstructured = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
             raw_text_list = []
             

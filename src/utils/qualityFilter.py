@@ -23,6 +23,7 @@ from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
+from .cached_resources import get_openai_client, get_tiktoken_encoding
 
 try:
     import nest_asyncio #for Spyder
@@ -30,7 +31,7 @@ try:
 except ImportError:
     pass
 
-async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+async_client = get_openai_client(OPENAI_API_KEY)
 
 
 @dataclass
@@ -264,12 +265,8 @@ class Grader:
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
         
-        # Initialize tokenizer for batch size calculation
-        try:
-            self.encoding = tiktoken.encoding_for_model(self.model)
-        except KeyError:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.model}")
+        # Initialize tokenizer for batch size calculation (cached)
+        self.encoding = get_tiktoken_encoding(self.model)
         
         # Initialize workload analyzer
         self.workload_analyzer = WorkloadAnalyzer(self.model, self.encoding)
