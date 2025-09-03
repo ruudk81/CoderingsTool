@@ -9,19 +9,18 @@ from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
-import streamlit as st
 import nest_asyncio
 from pydantic import BaseModel
-from openai import AsyncOpenAI
-import instructor
-import tiktoken
-import spacy
+#from openai import AsyncOpenAI
+#import instructor
+#import tiktoken
+#import spacy
 
 # === MODELS ========================================================================================================
 import models
 
 # === CONFIG ========================================================================================================
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig,DEFAULT_MODEL_CONFIG #DEFAULT_MODEL
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================

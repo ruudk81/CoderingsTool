@@ -3,9 +3,9 @@ Optimized Session State Management for Streamlit Performance
 Provides cached property access and efficient state validation
 """
 
-import streamlit as st
 import time
 from typing import Optional, Any, Dict
+from .bare_mode_utils import conditional_cache_resource, get_session_state, is_streamlit_context
 import hashlib
 import json
 
@@ -48,76 +48,76 @@ class SessionManager:
     def has_data(self) -> bool:
         """Check if data is loaded"""
         return self._get_cached('has_data', lambda: (
-            hasattr(st.session_state, 'data') and 
-            st.session_state.data is not None and
-            len(st.session_state.data) > 0
+            hasattr(get_session_state(), 'data') and 
+            get_session_state().data is not None and
+            len(get_session_state().data) > 0
         ))
     
     @property
     def has_preprocessed_data(self) -> bool:
         """Check if preprocessing is complete"""
         return self._get_cached('has_preprocessed_data', lambda: (
-            st.session_state.step >= 2 and
-            hasattr(st.session_state, 'preprocessed_data') and
-            st.session_state.preprocessed_data is not None and
-            len(st.session_state.preprocessed_data) > 0
+            get_session_state().step >= 2 and
+            hasattr(get_session_state(), 'preprocessed_data') and
+            get_session_state().preprocessed_data is not None and
+            len(get_session_state().preprocessed_data) > 0
         ))
     
     @property
     def has_quality_filtered_data(self) -> bool:
         """Check if quality filtering is complete"""
         return self._get_cached('has_quality_filtered_data', lambda: (
-            st.session_state.step >= 3 and
-            hasattr(st.session_state, 'quality_filtered_data') and
-            st.session_state.quality_filtered_data is not None and
-            len(st.session_state.quality_filtered_data) > 0
+            get_session_state().step >= 3 and
+            hasattr(get_session_state(), 'quality_filtered_data') and
+            get_session_state().quality_filtered_data is not None and
+            len(get_session_state().quality_filtered_data) > 0
         ))
     
     @property
     def has_embeddings(self) -> bool:
         """Check if embeddings are generated"""
         return self._get_cached('has_embeddings', lambda: (
-            st.session_state.step >= 5 and
-            hasattr(st.session_state, 'embeddings_data') and
-            st.session_state.embeddings_data is not None and
-            len(st.session_state.embeddings_data) > 0
+            get_session_state().step >= 5 and
+            hasattr(get_session_state(), 'embeddings_data') and
+            get_session_state().embeddings_data is not None and
+            len(get_session_state().embeddings_data) > 0
         ))
     
     @property
     def has_clusters(self) -> bool:
         """Check if clustering is complete"""
         return self._get_cached('has_clusters', lambda: (
-            st.session_state.step >= 6 and
-            hasattr(st.session_state, 'cluster_results') and
-            st.session_state.cluster_results is not None and
-            len(st.session_state.cluster_results) > 0
+            get_session_state().step >= 6 and
+            hasattr(get_session_state(), 'cluster_results') and
+            get_session_state().cluster_results is not None and
+            len(get_session_state().cluster_results) > 0
         ))
     
     @property
     def data_size(self) -> int:
         """Get current data size efficiently"""
         return self._get_cached('data_size', lambda: (
-            len(st.session_state.data) if self.has_data else 0
+            len(get_session_state().data) if self.has_data else 0
         ))
     
     @property
     def current_step(self) -> int:
         """Get current pipeline step"""
-        return getattr(st.session_state, 'step', 0)
+        return getattr(get_session_state(), 'step', 0)
     
     @property
     def spell_check_enabled(self) -> bool:
         """Check if spell checking is enabled in configuration"""
         return self._get_cached('spell_check_enabled', lambda: (
-            hasattr(st.session_state, 'spellcheck_config') and
-            getattr(st.session_state.spellcheck_config, 'enabled', True)
+            hasattr(get_session_state(), 'spellcheck_config') and
+            getattr(get_session_state().spellcheck_config, 'enabled', True)
         ))
     
     @property
     def embedding_provider(self) -> str:
         """Get selected embedding provider"""
         return self._get_cached('embedding_provider', lambda: (
-            getattr(st.session_state, 'embedding_provider', 'openai')
+            getattr(get_session_state(), 'embedding_provider', 'openai')
         ))
     
     def get_data_hash(self) -> Optional[str]:
@@ -128,7 +128,7 @@ class SessionManager:
         return self._get_cached('data_hash', lambda: (
             self._compute_content_hash([
                 getattr(item, 'response', str(item)) 
-                for item in st.session_state.data[:100]  # Sample first 100 for performance
+                for item in get_session_state().data[:100]  # Sample first 100 for performance
             ])
         ))
     
@@ -161,7 +161,7 @@ class SessionManager:
     
     def mark_step_complete(self, step: int):
         """Mark a pipeline step as complete and invalidate related caches"""
-        st.session_state.step = max(st.session_state.step, step)
+        get_session_state().step = max(get_session_state().step, step)
         
         # Invalidate caches that depend on step completion
         cache_keys_to_invalidate = [
@@ -179,20 +179,20 @@ class SessionManager:
         if current_step > 3:
             # After preprocessing, clear raw text processing resources
             for key in ['text_normalizer', 'spell_checker_results']:
-                if hasattr(st.session_state, key):
-                    delattr(st.session_state, key)
+                if hasattr(get_session_state(), key):
+                    delattr(get_session_state(), key)
         
         if current_step > 5:
             # After embeddings, clear intermediate processing results
             for key in ['quality_filter_details', 'preprocessing_stats']:
-                if hasattr(st.session_state, key):
-                    delattr(st.session_state, key)
+                if hasattr(get_session_state(), key):
+                    delattr(get_session_state(), key)
         
         if current_step > 6:
             # After clustering, clear embedding computation details
             for key in ['embedding_batch_results', 'embedding_errors']:
-                if hasattr(st.session_state, key):
-                    delattr(st.session_state, key)
+                if hasattr(get_session_state(), key):
+                    delattr(get_session_state(), key)
     
     def get_performance_metrics(self) -> Dict[str, Any]:
         """Get current performance metrics"""
@@ -205,12 +205,12 @@ class SessionManager:
             "memory_usage_mb": psutil.Process().memory_info().rss / 1024 / 1024,
             "modules_loaded": len(sys.modules),
             "cache_entries": len(self._cache),
-            "session_keys": len([k for k in dir(st.session_state) if not k.startswith('_')])
+            "session_keys": len([k for k in dir(get_session_state()) if not k.startswith('_')])
         }
 
 
 # Global session manager instance
-@st.cache_resource
+@conditional_cache_resource
 def get_session_manager():
     """Get cached session manager instance"""
     return SessionManager()
