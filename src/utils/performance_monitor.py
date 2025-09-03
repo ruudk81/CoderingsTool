@@ -2,10 +2,10 @@
 Performance Monitoring and Adaptive Optimization for CoderingsTool
 """
 
-import streamlit as st
 import time
 import psutil
 import sys
+from .bare_mode_utils import conditional_cache_resource, is_streamlit_context
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
@@ -102,7 +102,7 @@ class PerformanceMonitor:
         self.start_times = {}
         self.operation_counts = defaultdict(int)
         
-    @st.cache_resource
+    @conditional_cache_resource
     def get_monitor(_self):
         """Get cached performance monitor instance"""
         return PerformanceMonitor()

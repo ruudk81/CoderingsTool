@@ -10,7 +10,6 @@ import asyncio
 import pandas as pd
 import nest_asyncio
 from typing import List, Dict, Optional, Any, Tuple, Union
-import streamlit as st
 
 nest_asyncio.apply()
 
@@ -37,9 +36,13 @@ from utils.verboseReporter import VerboseReporter
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
 from utils.session_manager import get_session_manager
 from utils.streamlit_debug import DebugCapture, VerboseCapture, PromptCapture, SampleGenerator, StepSamplers
+from utils.bare_mode_utils import (
+    conditional_cache_resource, conditional_cache_data, get_session_state, 
+    conditional_error, conditional_info, conditional_success, conditional_warning
+)
 
 # Cached resource functions for heavy pipeline components
-@st.cache_resource
+@conditional_cache_resource
 def _get_cached_embedder(config_hash: str, model_config_hash: str, provider: str):
     """Cache embedder instances for session-wide reuse"""
     Embedder = _get_embedder()
@@ -50,18 +53,18 @@ def _get_cached_embedder(config_hash: str, model_config_hash: str, provider: str
         verbose=False
     )
 
-@st.cache_resource
+@conditional_cache_resource
 def _get_cached_clusterer(config_hash: str):
     """Cache clusterer class for session-wide reuse"""
     return _get_clusterer()
 
-@st.cache_resource  
+@conditional_cache_resource  
 def _get_cached_theme_identifier():
     """Cache theme identifier class for session-wide reuse"""
     return _get_theme_identifier()
 
 # Cached data functions for processing results
-@st.cache_data(show_spinner="Loading SPSS data...")
+@conditional_cache_data(show_spinner="Loading SPSS data...")
 def _cache_spss_data(filename: str, id_column: str, var_name: str, encoding: str = None):
     """Cache SPSS file parsing results for fast reruns with encoding support (single variable)"""
     from utils.dataLoader import DataLoader
@@ -74,8 +77,8 @@ def _cache_spss_data(filename: str, id_column: str, var_name: str, encoding: str
         # Store successful encoding info for user feedback
         successful_encoding = data_loader.get_last_successful_encoding()
         if successful_encoding:
-            st.session_state['last_encoding_used'] = successful_encoding
-            st.session_state['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
+            get_session_state()['last_encoding_used'] = successful_encoding
+            get_session_state()['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
         
         return result
         
@@ -83,11 +86,11 @@ def _cache_spss_data(filename: str, id_column: str, var_name: str, encoding: str
         error_msg = str(e)
         if "encoding" in error_msg.lower() or "byte sequence" in error_msg.lower():
             # This is an encoding error, provide helpful message
-            st.error(f"🔴 Encoding Error: {error_msg}")
-            st.info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
+            conditional_error(f"🔴 Encoding Error: {error_msg}")
+            conditional_info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
         raise
 
-@st.cache_data(show_spinner="Loading and merging SPSS data...")
+@conditional_cache_data(show_spinner="Loading and merging SPSS data...")
 def _cache_multiple_spss_data(filename: str, id_column: str, var_names: tuple, 
                               merge_strategy: str = "concatenate", separator: str = " ",
                               skip_empty: bool = True, encoding: str = None):
@@ -113,8 +116,8 @@ def _cache_multiple_spss_data(filename: str, id_column: str, var_names: tuple,
         # Store successful encoding info for user feedback
         successful_encoding = data_loader.get_last_successful_encoding()
         if successful_encoding:
-            st.session_state['last_encoding_used'] = successful_encoding
-            st.session_state['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
+            get_session_state()['last_encoding_used'] = successful_encoding
+            get_session_state()['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
         
         return result
         
@@ -122,18 +125,18 @@ def _cache_multiple_spss_data(filename: str, id_column: str, var_names: tuple,
         error_msg = str(e)
         if "encoding" in error_msg.lower() or "byte sequence" in error_msg.lower():
             # This is an encoding error, provide helpful message
-            st.error(f"🔴 Encoding Error: {error_msg}")
-            st.info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
+            conditional_error(f"🔴 Encoding Error: {error_msg}")
+            conditional_info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
         raise
 
-@st.cache_data(show_spinner="Loading cached embeddings...")
+@conditional_cache_data(show_spinner="Loading cached embeddings...")
 def _cache_embedding_results(content_hash: str, provider: str, model_name: str):
     """Cache embedding generation results by content hash"""
     # This will be populated by the actual embedding process
     # Returns None if not cached, which signals to generate new embeddings
     return None
 
-@st.cache_data(show_spinner="Loading cached spell corrections...")  
+@conditional_cache_data(show_spinner="Loading cached spell corrections...")  
 def _cache_spell_correction_results(content_hash: str, model_name: str, config_hash: str):
     """Cache spell correction results by content and config hash"""
     # This will be populated by the actual spell correction process
@@ -230,13 +233,13 @@ class StreamlitPipelineRunner:
             
             # Use provided encoding or fall back to session state, then to auto-detect (None)
             if encoding is None:
-                encoding = st.session_state.get('file_encoding', 'auto')
+                encoding = get_session_state().get('file_encoding', 'auto')
                 encoding = None if encoding == 'auto' else encoding
             
             # Determine loading mode: single or multiple variables
             if var_names and len(var_names) > 1:
                 # Multiple variables mode - get merge configuration from session state
-                merge_config = st.session_state.get('merge_config', {})
+                merge_config = get_session_state().get('merge_config', {})
                 merge_strategy = merge_config.get('strategy', 'concatenate')
                 separator = merge_config.get('separator', ' ')
                 skip_empty = merge_config.get('skip_empty', True)
@@ -1148,7 +1151,7 @@ class StreamlitPipelineRunner:
         return output_path
 
 # Global pipeline runner instance for Streamlit
-@st.cache_resource
+@conditional_cache_resource
 def get_pipeline_runner():
     """Get cached pipeline runner instance"""
     return StreamlitPipelineRunner()
