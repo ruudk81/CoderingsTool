@@ -7,7 +7,7 @@ import numpy.typing as npt
 
 class ResponseModel(BaseModel):
     respondent_id: Any
-    response: Union[str, float, int]   
+    response: Union[str, float, int, None]   
     response_type: Optional[str] = None   
     model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
  

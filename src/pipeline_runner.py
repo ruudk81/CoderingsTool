@@ -271,15 +271,19 @@ class StreamlitPipelineRunner:
             
             # Structure data NaN=system missing; Numeric=undefined user missing; String=response 
             for resp_id, resp in raw_unstructured:
-                if pd.isna(resp):
+                if pd.isna(resp) or resp is None:
                     response_type = 'nan'
+                    response_value = None  # Ensure None is passed for missing values
                 elif isinstance(resp, (int, float)):
                     response_type = 'numeric'
+                    response_value = resp
                 elif isinstance(resp, str):
                     response_type = 'string'
+                    response_value = resp
                 else:
                     response_type = 'unknown'
-                raw_text_list.append(models.ResponseModel(respondent_id=resp_id, response=resp, response_type=response_type))
+                    response_value = resp
+                raw_text_list.append(models.ResponseModel(respondent_id=resp_id, response=response_value, response_type=response_type))
             
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -363,7 +367,7 @@ class StreamlitPipelineRunner:
                 if original.respondent_id in processed_map:
                     item = processed_map[original.respondent_id]
                     desc_item = item.to_model(models.PreprocessedModel)
-                    if item.response == 'nan':
+                    if item.response == 'nan' or item.response is None:
                         desc_item.quality_filter_code = 99999998  # System missing
                         desc_item.quality_filter = True
                     elif isinstance(item.response, int):
@@ -382,9 +386,11 @@ class StreamlitPipelineRunner:
                             desc_item.quality_filter = None
                     preprocessed_text.append(desc_item)
                 else:
+                    # Handle cases where original response was None or missing
+                    response_value = '<NA>' if original.response is None else original.response
                     preprocessed_text.append(models.PreprocessedModel(
                         respondent_id=original.respondent_id,
-                        response='<NA>',
+                        response=response_value,
                         response_type='nan',
                         quality_filter_code=99999998,
                         quality_filter=True))
