@@ -39,6 +39,9 @@ from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager
 import ui_text as ui
 
+# Debug imports
+from utils.streamlit_debug import display_debug_controls, create_debug_capture_from_session, display_all_debug_info
+
 # Lazy loading functions to improve startup performance
 def _get_pipeline_runner():
     if st.session_state.pipeline_runner is None:
@@ -439,6 +442,10 @@ def main():
         
         # Advanced Settings
         show_advanced_settings()
+        
+        # Debug Controls
+        st.markdown("---")
+        display_debug_controls()
     
     # Main content
     col1, col2 = st.columns([2, 1])
@@ -540,13 +547,44 @@ def show_upload_page():
                     key="id_variable"
                 )
             
+            # Advanced encoding options
+            with st.expander("🔧 " + ("Geavanceerde Opties" if lang == "nl" else "Advanced Options"), expanded=False):
+                encoding_options = [
+                    ("Automatisch detecteren", "auto"),
+                    ("UTF-8", "utf-8"),
+                    ("Windows-1252 (West-Europees)", "windows-1252"),
+                    ("ISO-8859-1 (Latin-1)", "iso-8859-1"),
+                    ("CP1252 (Windows West-Europees)", "cp1252"),
+                    ("ISO-8859-15 (Latin-9, Euro)", "iso-8859-15"),
+                    ("Windows-1250 (Centraal-Europees)", "windows-1250")
+                ]
+                
+                encoding_choice = st.selectbox(
+                    "Bestandscodering" if lang == "nl" else "File Encoding",
+                    options=[opt[1] for opt in encoding_options],
+                    format_func=lambda x: next(opt[0] for opt in encoding_options if opt[1] == x),
+                    index=0,  # Default to auto-detect
+                    key="file_encoding",
+                    help="Kies een specifieke codering als het bestand niet correct wordt geladen" if lang == "nl" 
+                         else "Choose a specific encoding if the file is not loading correctly"
+                )
+                
+                # Show encoding success message if available
+                if hasattr(st.session_state, 'encoding_success_message'):
+                    st.success(st.session_state.encoding_success_message)
+                    del st.session_state.encoding_success_message  # Clear after showing
+            
             # Preview selected variable
             if st.button("Voorbeeld Bekijken" if lang == "nl" else "Preview Variable"):
                 if text_var and id_var:
                     with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
                         try:
+                            # Use selected encoding, None if auto-detect
+                            encoding = st.session_state.get('file_encoding', 'auto')
+                            encoding = None if encoding == 'auto' else encoding
+                            
                             preview_data = _get_data_loader().get_variable_with_IDs(
-                                st.session_state.filename, id_var, text_var
+                                st.session_state.filename, id_var, text_var, encoding=encoding
                             )
                             st.session_state.variable_preview = preview_data
                             st.session_state.selected_variable = text_var
@@ -595,15 +633,24 @@ def show_preprocessing_page():
     
     if st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
         progress_container = st.empty()
+        
+        # Create debug capture from session state
+        debug_capture = create_debug_capture_from_session()
+        
         try:
             # Step 1: Load data if not already loaded
             if 'raw_text_list' not in st.session_state.pipeline_results:
-                var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable)
+                # Use selected encoding, None if auto-detect
+                encoding = st.session_state.get('file_encoding', 'auto')
+                encoding = None if encoding == 'auto' else encoding
+                
+                var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
                 raw_text_list = _get_pipeline_runner().step_1_load_data(
                     filename=st.session_state.filename,
                     id_column=st.session_state.selected_id_column,
                     var_name=st.session_state.selected_variable,
-                    streamlit_container=progress_container
+                    streamlit_container=progress_container,
+                    encoding=encoding
                 )
                 st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                 st.session_state.pipeline_results['var_lab'] = var_lab
@@ -615,10 +662,16 @@ def show_preprocessing_page():
                 var_lab=st.session_state.pipeline_results['var_lab'],
                 model_config=st.session_state.model_config,
                 spellcheck_config=st.session_state.spellcheck_config,
-                streamlit_container=progress_container
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
             st.session_state.step = 2
+            
+            # Display debug information if enabled
+            if debug_capture and (debug_capture.show_verbose or debug_capture.capture_prompts or debug_capture.show_samples):
+                display_all_debug_info(debug_capture)
+            
             st.rerun()
         except Exception as e:
             progress_container.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
@@ -664,6 +717,10 @@ def show_idea_extraction_page():
     
     if st.button("Start Idee Extractie" if lang == "nl" else "Start Idea Extraction", type="primary"):
         progress_container = st.empty()
+        
+        # Create debug capture from session state
+        debug_capture = create_debug_capture_from_session()
+        
         try:
             encoded_text = _get_pipeline_runner().step_4_extract_ideas(
                 quality_filtered_text=st.session_state.pipeline_results['quality_filtered_text'],
@@ -671,7 +728,8 @@ def show_idea_extraction_page():
                 var_lab=st.session_state.pipeline_results['var_lab'],
                 model_config=st.session_state.model_config,
                 segmentation_config=st.session_state.segmentation_config,
-                streamlit_container=progress_container
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
             st.session_state.pipeline_results['encoded_text'] = encoded_text
             st.session_state.step = 4
@@ -738,6 +796,10 @@ def show_clustering_page():
     
     if st.button(ui.get_text("BTN_CLUSTER", lang), type="primary"):
         progress_container = st.empty()
+        
+        # Create debug capture from session state
+        debug_capture = create_debug_capture_from_session()
+        
         try:
             # Update hdbscan_config with UI values
             clustering_config = st.session_state.hdbscan_config
@@ -748,7 +810,8 @@ def show_clustering_page():
                 embedded_text=st.session_state.pipeline_results['embedded_text'],
                 filename=st.session_state.filename,
                 hdbscan_config=clustering_config,
-                streamlit_container=progress_container
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
             st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
             st.session_state.step = 6
@@ -782,7 +845,7 @@ def show_codebook_generation_page():
     if st.button("Genereer Codebook" if lang == "nl" else "Generate Codebook", type="primary"):
         progress_container = st.empty()
         try:
-            codebook_main = _get_pipeline_runner().step_7_generate_codebook(
+            codebook_main, reasoning_results = _get_pipeline_runner().step_7_generate_codebook(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                 filename=st.session_state.filename,
                 var_name=st.session_state.selected_variable,
@@ -793,6 +856,7 @@ def show_codebook_generation_page():
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['codebook_main'] = codebook_main
+            st.session_state.pipeline_results['reasoning_results'] = reasoning_results
             st.session_state.step = 7
             st.rerun()
         except Exception as e:
@@ -858,6 +922,10 @@ def show_code_assignment_page():
     
     if st.button("Wijs Codes Toe" if lang == "nl" else "Assign Codes", type="primary"):
         progress_container = st.empty()
+        
+        # Create debug capture from session state
+        debug_capture = create_debug_capture_from_session()
+        
         try:
             code_assigned_results = _get_pipeline_runner().step_9a_assign_codes(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
@@ -867,7 +935,8 @@ def show_code_assignment_page():
                 method=method,
                 model_config=st.session_state.model_config,
                 code_assignment_config=st.session_state.code_assignment_config,
-                streamlit_container=progress_container
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
             st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
             st.session_state.step = 9
@@ -969,6 +1038,7 @@ def show_export_page():
                         filename=st.session_state.filename,
                         var_name=st.session_state.selected_variable,
                         export_dir=None,
+                        reasoning_results=st.session_state.pipeline_results.get('reasoning_results'),
                         streamlit_container=progress_container
                     )
                     

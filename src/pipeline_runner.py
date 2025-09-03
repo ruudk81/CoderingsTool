@@ -36,6 +36,7 @@ from config import (
 from utils.verboseReporter import VerboseReporter
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
 from utils.session_manager import get_session_manager
+from utils.streamlit_debug import DebugCapture, VerboseCapture, PromptCapture, SampleGenerator, StepSamplers
 
 # Cached resource functions for heavy pipeline components
 @st.cache_resource
@@ -61,11 +62,30 @@ def _get_cached_theme_identifier():
 
 # Cached data functions for processing results
 @st.cache_data(show_spinner="Loading SPSS data...")
-def _cache_spss_data(filename: str, id_column: str, var_name: str):
-    """Cache SPSS file parsing results for fast reruns"""
+def _cache_spss_data(filename: str, id_column: str, var_name: str, encoding: str = None):
+    """Cache SPSS file parsing results for fast reruns with encoding support"""
     from utils.dataLoader import DataLoader
     data_loader = DataLoader(verbose=False)
-    return data_loader.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name)
+    
+    try:
+        # Try with specified encoding or let DataLoader handle encoding detection
+        result = data_loader.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name, encoding=encoding)
+        
+        # Store successful encoding info for user feedback
+        successful_encoding = data_loader.get_last_successful_encoding()
+        if successful_encoding:
+            st.session_state['last_encoding_used'] = successful_encoding
+            st.session_state['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
+        
+        return result
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "encoding" in error_msg.lower() or "byte sequence" in error_msg.lower():
+            # This is an encoding error, provide helpful message
+            st.error(f"🔴 Encoding Error: {error_msg}")
+            st.info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
+        raise
 
 @st.cache_data(show_spinner="Loading cached embeddings...")
 def _cache_embedding_results(content_hash: str, provider: str, model_name: str):
@@ -150,7 +170,7 @@ class StreamlitPipelineRunner:
     
     def step_1_load_data(self, filename: str, id_column: str, var_name: str, 
                         force_recalc: bool = False, 
-                        streamlit_container=None) -> List[models.ResponseModel]:
+                        streamlit_container=None, encoding: str = None) -> List[models.ResponseModel]:
         """Step 1: Load data from SPSS file"""
         
         step_name = "data"
@@ -166,8 +186,12 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("DATA LOADING SUMMARY")
             start_time = time.time()
             
-            # Load data from SPSS file (with Streamlit caching)
-            raw_text_df = _cache_spss_data(filename, id_column, var_name)
+            # Load data from SPSS file (with Streamlit caching and encoding support)
+            # Use provided encoding or fall back to session state, then to auto-detect (None)
+            if encoding is None:
+                encoding = st.session_state.get('file_encoding', 'auto')
+                encoding = None if encoding == 'auto' else encoding
+            raw_text_df = _cache_spss_data(filename, id_column, var_name, encoding)
             raw_unstructured = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
             raw_text_list = []
             
@@ -196,7 +220,8 @@ class StreamlitPipelineRunner:
                          model_config: Optional[ModelConfig] = None,
                          spellcheck_config: Optional[SpellCheckConfig] = None,
                          force_recalc: bool = False,
-                         streamlit_container=None) -> List[models.PreprocessedModel]:
+                         streamlit_container=None,
+                         debug_capture: Optional[DebugCapture] = None) -> List[models.PreprocessedModel]:
         """Step 2: Preprocess text data"""
         
         step_name = "preprocessed"
@@ -243,6 +268,16 @@ class StreamlitPipelineRunner:
                 normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
                 corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
                 finalized_text = text_finalizer.finalize_responses(corrected_text)
+                
+                # Debug capture: spell correction samples
+                if debug_capture and debug_capture.show_samples:
+                    if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+                        sample_gen = SampleGenerator(debug_capture, step_name)
+                        sample_gen.generate_samples(
+                            spell_checker.correction_examples,
+                            "spell_corrections", 
+                            StepSamplers.sample_spell_corrections
+                        )
             else:
                 finalized_text = []
                 
@@ -334,7 +369,8 @@ class StreamlitPipelineRunner:
                            model_config: Optional[ModelConfig] = None,
                            segmentation_config: Optional[SegmentationConfig] = None,
                            force_recalc: bool = False,
-                           streamlit_container=None) -> List[models.IdeasExtractedModel]:
+                           streamlit_container=None,
+                           debug_capture: Optional[DebugCapture] = None) -> List[models.IdeasExtractedModel]:
         """Step 4: Extract ideas from responses"""
         
         step_name = "extracted_ideas"
@@ -367,6 +403,15 @@ class StreamlitPipelineRunner:
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
+            
+            # Debug capture: idea extraction samples
+            if debug_capture and debug_capture.show_samples and encoded_text:
+                sample_gen = SampleGenerator(debug_capture, step_name)
+                sample_gen.generate_samples(
+                    encoded_text,
+                    "idea_extractions",
+                    StepSamplers.sample_idea_extractions
+                )
             
             if streamlit_container:
                 segments = sum(item.idea_count for item in encoded_text)
@@ -420,7 +465,8 @@ class StreamlitPipelineRunner:
     def step_6_cluster(self, embedded_text: List[models.EmbeddingsModel], filename: str,
                       hdbscan_config: Optional[HDBSCANConfig] = None,
                       force_recalc: bool = False,
-                      streamlit_container=None) -> List[models.ClusterModel]:
+                      streamlit_container=None,
+                      debug_capture: Optional[DebugCapture] = None) -> List[models.ClusterModel]:
         """Step 6: Cluster embeddings"""
         
         step_name = "initial_clusters"
@@ -446,6 +492,15 @@ class StreamlitPipelineRunner:
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
+            
+            # Debug capture: cluster content samples
+            if debug_capture and debug_capture.show_samples and initial_cluster_results:
+                sample_gen = SampleGenerator(debug_capture, step_name)
+                sample_gen.generate_samples(
+                    initial_cluster_results,
+                    "cluster_contents",
+                    StepSamplers.sample_cluster_contents
+                )
             
             if streamlit_container:
                 cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
@@ -769,7 +824,8 @@ class StreamlitPipelineRunner:
                            model_config: Optional[ModelConfig] = None,
                            code_assignment_config: Optional[CodeAssignmentConfig] = None,
                            force_recalc: bool = False,
-                           streamlit_container=None) -> List[models.CodeAssignedModel]:
+                           streamlit_container=None,
+                           debug_capture: Optional[DebugCapture] = None) -> List[models.CodeAssignedModel]:
         """Step 9a: Assign codes to ideas"""
         
         step_name = "code_assignment_direct" if method == "direct_llm" else "code_assignment"
@@ -852,6 +908,15 @@ class StreamlitPipelineRunner:
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
+            
+            # Debug capture: code assignment samples
+            if debug_capture and debug_capture.show_samples and code_assigned_results:
+                sample_gen = SampleGenerator(debug_capture, step_name)
+                sample_gen.generate_samples(
+                    code_assigned_results,
+                    "code_assignments",
+                    StepSamplers.sample_code_assignments
+                )
             
             if streamlit_container:
                 total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
