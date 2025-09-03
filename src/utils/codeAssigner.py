@@ -198,8 +198,9 @@ class SmartAPIClient:
         async with self.throttler:
             try:
                 # Make the API call
+                model_name = self.model_config.get_model_for_stage('code_assignment')
                 response = await self.client.chat.completions.create(
-                    model=self.config.model,
+                    model=model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
@@ -283,6 +284,7 @@ class CodeAssigner:
         code_to_theme_mapping: Optional[Dict[str, str]] = None,
         cached_idea_embeddings: Optional[List[Dict]] = None,
         config: Optional[CodeAssignmentConfig] = None,
+        model_config: Optional[ModelConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
         
@@ -290,10 +292,11 @@ class CodeAssigner:
         self.codebook = codebook
         self.var_lab = var_lab
         self.config = config or DEFAULT_CODE_ASSIGNMENT_CONFIG
+        self.model_config = model_config or ModelConfig()
+        self.model = self.model_config.get_model_for_stage('code_assignment')
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.CodeAssignedModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
-        self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
         
@@ -304,14 +307,14 @@ class CodeAssigner:
         self.code_to_theme_mapping = code_to_theme_mapping or {}
         
         # Initialize components for optimal strategy
-        self.workload_analyzer = WorkloadAnalyzer(self.config.model)
+        self.workload_analyzer = WorkloadAnalyzer(self.model)
         
         # Initialize rate limits and monitoring
-        rate_limits = get_openai_rate_limits(self.config.model)
+        rate_limits = get_openai_rate_limits(self.model)
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
-        self.verbose_reporter.stat_line(f"Model: {self.config.model}")
+        self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
 
 
@@ -389,7 +392,7 @@ class CodeAssigner:
                     prompt_content=prompt,
                     prompt_type="code_assignment",
                     metadata={
-                        "model": self.config.model,
+                        "model": self.model,
                         "var_lab": self.var_lab,
                         "language": self.language,
                         "idea_id": idea_id

@@ -206,6 +206,7 @@ class SmartAPIClient:
         self.config = config
         self.client = async_client
         self.model_config = model_config
+        self.model = self.model_config.get_model_for_stage('quality_filter')
         self.encoding = encoding
         self.verbose_reporter = verbose_reporter
     
@@ -222,7 +223,7 @@ class SmartAPIClient:
             try:
                 # Make the API call
                 response = await self.client.chat.completions.create(
-                    model=self.config.model,
+                    model=self.model,
                     response_model=List[models.QualityFilteredModel],
                     max_retries=0,  # Let tenacity handle retries
                     messages=[{"role": "user", "content": prompt}],
@@ -248,31 +249,33 @@ class Grader:
         responses: List[models.PreprocessedModel], 
         var_lab: str,
         config: Optional[QualityFilterConfig] = None,
+        model_config: Optional[ModelConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
         
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
+        self.model_config = model_config or ModelConfig()
+        self.model = self.model_config.get_model_for_stage('quality_filter')
         self.grader_instructions = GRADER_INSTRUCTIONS 
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
-        self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         
         # Initialize tokenizer for batch size calculation
         try:
-            self.encoding = tiktoken.encoding_for_model(self.config.model)
+            self.encoding = tiktoken.encoding_for_model(self.model)
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
-            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
+            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.model}")
         
         # Initialize workload analyzer
-        self.workload_analyzer = WorkloadAnalyzer(self.config.model, self.encoding)
+        self.workload_analyzer = WorkloadAnalyzer(self.model, self.encoding)
         
         # Get rate limits
-        rate_limits = get_openai_rate_limits(self.config.model)
+        rate_limits = get_openai_rate_limits(self.model)
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
 
@@ -370,7 +373,7 @@ class Grader:
                 prompt_content=prompt,
                 prompt_type="quality_assessment",
                 metadata={
-                    "model": self.config.model,
+                    "model": self.model,
                     "var_lab": self.question,
                     "language": DEFAULT_LANGUAGE,
                     "sub_batch_size": len(sub_batch),
@@ -454,7 +457,7 @@ class Grader:
         pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
         
         self.verbose_reporter.step_start("Quality Assessment")
-        self.verbose_reporter.stat_line(f"Model: {self.config.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
+        self.verbose_reporter.stat_line(f"Model: {self.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
         self.verbose_reporter.stat_line(f"Items needing LLM evaluation: {len(items_to_process)}")
         self.verbose_reporter.stat_line(f"Pre-filtered items: {len(pre_filtered_items)}")
         

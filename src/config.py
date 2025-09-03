@@ -177,7 +177,7 @@ class ModelConfig:
     
     # Step 4: Embedding model
     embedding_model: str = "text-embedding-3-large"
-    #embedding_model: str = "gemini-embedding-001"
+    embedding_model: str = "gemini-embedding-001"
     
     # Step 6: Codebook generation
     speculative_codes_model: str = DEFAULT_MODEL  
@@ -412,7 +412,7 @@ class SpellCheckConfig:
     max_correction_examples: int = 10  # For verbose output
     seed: int = 42
     context_chars: int = 20  # Characters of context for spell checking
-    spell_check_threshold: float = 0.7  # Confidence threshold for corrections
+    spell_check_threshold: float = 0.7  # TODO: probably redundant
     max_concurrent_requests: int = 5  # For API rate limiting
 
 # =============================================================================
@@ -431,7 +431,7 @@ class QualityFilterConfig:
     medium_quality_threshold: float = 0.4
     max_filter_examples: int = 5  # For verbose output
     # Model configuration - will be overridden by ModelConfig
-    model: str = "gpt-4o-mini"  # Fallback model
+    model: str = DEFAULT_MODEL  # Fallback model
     max_concurrent_requests: int = 5  # For API rate limiting
 
 
@@ -501,17 +501,13 @@ class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
     min_cluster_size: Optional[int] = 2  # Smaller clusters for better semantic coherence
     min_samples: Optional[int] = None # Lower threshold for more selective clustering
-    cluster_selection_epsilon: Optional[float] = 0.0  
+    cluster_selection_epsilon: Optional[float] = 0.5  
     alpha: Optional[float] = 1.0  # Default stability weighting as requested
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
     prediction_data: bool = True
     approx_min_span_tree: bool = False
     gen_min_span_tree: bool = True
-
-
-# Default HDBSCAN configuration instance
-DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
 
 
 @dataclass
@@ -719,6 +715,7 @@ DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
+DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()

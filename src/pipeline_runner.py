@@ -20,7 +20,17 @@ import models
 # === CONFIG ========================================================================================================
 from utils import dataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig, EmbeddingConfig
+from config import (
+    CacheConfig, 
+    ModelConfig,
+    SpellCheckConfig,
+    QualityFilterConfig, 
+    SegmentationConfig,
+    EmbeddingConfig,
+    HDBSCANConfig,
+    CodeDesignerConfig,
+    CodeAssignmentConfig
+)
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
@@ -33,6 +43,7 @@ from utils import codeGenerator
 from utils.themeIdentifier import ThemeIdentifier
 from utils import codeAssigner
 from utils.codeAssignmentExporter import CodeAssignmentExporter
+from utils.codeGenerator import CodeGeneratorReasoningResults
 
 class StreamlitPipelineRunner:
     """Pipeline runner optimized for Streamlit with session state management"""
@@ -93,6 +104,8 @@ class StreamlitPipelineRunner:
         return raw_text_list
     
     def step_2_preprocess(self, raw_text_list: List[models.ResponseModel], filename: str, var_lab: str,
+                         model_config: Optional[ModelConfig] = None,
+                         spellcheck_config: Optional[SpellCheckConfig] = None,
                          force_recalc: bool = False,
                          streamlit_container=None) -> List[models.PreprocessedModel]:
         """Step 2: Preprocess text data"""
@@ -112,7 +125,11 @@ class StreamlitPipelineRunner:
             
             # Initialize utils
             text_normalizer = textNormalizer.TextNormalizer(verbose=self.verbose)
-            spell_checker = spellChecker.SpellChecker(verbose=self.verbose)
+            spell_checker = spellChecker.SpellChecker(
+                config=spellcheck_config,
+                model_config=model_config,
+                verbose=self.verbose
+            )
             text_finalizer = textFinalizer.TextFinalizer(verbose=self.verbose)
             
             # Preprocess strings
@@ -180,6 +197,8 @@ class StreamlitPipelineRunner:
         return preprocessed_text
     
     def step_3_quality_filter(self, preprocessed_text: List[models.PreprocessedModel], filename: str, var_lab: str,
+                             model_config: Optional[ModelConfig] = None,
+                             quality_filter_config: Optional[QualityFilterConfig] = None,
                              force_recalc: bool = False,
                              streamlit_container=None) -> List[models.QualityFilteredModel]:
         """Step 3: Quality filter responses"""
@@ -197,7 +216,13 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("QUALITY FILTERING PHASE")
             start_time = time.time()
             
-            grader = qualityFilter.Grader(preprocessed_text, var_lab, verbose=self.verbose)
+            grader = qualityFilter.Grader(
+                preprocessed_text, 
+                var_lab, 
+                config=quality_filter_config,
+                model_config=model_config,
+                verbose=self.verbose
+            )
             quality_filtered_text = grader.grade()
             
             end_time = time.time()
@@ -211,6 +236,8 @@ class StreamlitPipelineRunner:
         return quality_filtered_text
     
     def step_4_extract_ideas(self, quality_filtered_text: List[models.QualityFilteredModel], filename: str, var_lab: str,
+                           model_config: Optional[ModelConfig] = None,
+                           segmentation_config: Optional[SegmentationConfig] = None,
                            force_recalc: bool = False,
                            streamlit_container=None) -> List[models.IdeasExtractedModel]:
         """Step 4: Extract ideas from responses"""
@@ -234,6 +261,8 @@ class StreamlitPipelineRunner:
             encoder = ideaExtractor.IdeaExtractor(
                 responses=filtered_text,
                 var_lab=var_lab,
+                config=segmentation_config,
+                model_config=model_config,
                 verbose=self.verbose
             )
             encoded_text = encoder.extract()
@@ -249,7 +278,9 @@ class StreamlitPipelineRunner:
         return encoded_text
     
     def step_5_generate_embeddings(self, encoded_text: List[models.IdeasExtractedModel], filename: str, var_lab: str,
-                                  provider: str = "gemini", embedding_model: str = "gemini-embedding-001",
+                                  model_config: Optional[ModelConfig] = None,
+                                  embedding_config: Optional[EmbeddingConfig] = None,
+                                  provider: str = "openai",
                                   force_recalc: bool = False,
                                   streamlit_container=None) -> List[models.EmbeddingsModel]:
         """Step 5: Generate embeddings"""
@@ -268,11 +299,10 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
             start_time = time.time()
             
-            embedding_config = EmbeddingConfig()
             get_embeddings = Embedder(
                 config=embedding_config,
+                model_config=model_config,
                 provider=provider,
-                embedding_model=embedding_model,
                 verbose=self.verbose
             )
             input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
@@ -289,7 +319,7 @@ class StreamlitPipelineRunner:
         return embedded_text
     
     def step_6_cluster(self, embedded_text: List[models.EmbeddingsModel], filename: str,
-                      epsilon: float = 0.5, alpha: Optional[float] = None,
+                      hdbscan_config: Optional[HDBSCANConfig] = None,
                       force_recalc: bool = False,
                       streamlit_container=None) -> List[models.ClusterModel]:
         """Step 6: Cluster embeddings"""
@@ -308,22 +338,6 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
             start_time = time.time()
             
-            # Create custom HDBSCAN config if overrides specified
-            hdbscan_config = None
-            if alpha is not None or epsilon != 0.5:
-                from config import DEFAULT_HDBSCAN_CONFIG, HDBSCANConfig
-                hdbscan_config = HDBSCANConfig(
-                    min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
-                    min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
-                    cluster_selection_epsilon=epsilon,
-                    alpha=alpha or DEFAULT_HDBSCAN_CONFIG.alpha,
-                    metric=DEFAULT_HDBSCAN_CONFIG.metric,
-                    cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
-                    prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
-                    approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
-                    gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
-                )
-            
             clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=self.verbose)
             clusterer.run()
             initial_cluster_results = clusterer.to_cluster_model()
@@ -339,6 +353,8 @@ class StreamlitPipelineRunner:
         return initial_cluster_results
     
     def step_7_generate_codebook(self, initial_cluster_results: List[models.ClusterModel], filename: str, var_name: str, var_lab: str,
+                               model_config: Optional[ModelConfig] = None,
+                               code_designer_config: Optional[CodeDesignerConfig] = None,
                                use_speculative_starter_codes: bool = False,
                                force_recalc: bool = False,
                                streamlit_container=None) -> models.CodebookModel:
@@ -376,6 +392,8 @@ class StreamlitPipelineRunner:
                 cluster_results=initial_cluster_results,
                 starter_codes=starter_codes,
                 var_lab=var_lab,
+                config=code_designer_config,
+                model_config=model_config,
                 verbose=True,
                 verbose_detailed=False
             )
@@ -514,6 +532,8 @@ class StreamlitPipelineRunner:
     def step_9a_assign_codes(self, initial_cluster_results: List[models.ClusterModel], 
                            theme_enriched_codebook: models.ThemeEnrichedCodebookModel, 
                            filename: str, var_lab: str, method: str = "direct_llm",
+                           model_config: Optional[ModelConfig] = None,
+                           code_assignment_config: Optional[CodeAssignmentConfig] = None,
                            force_recalc: bool = False,
                            streamlit_container=None) -> List[models.CodeAssignedModel]:
         """Step 9a: Assign codes to ideas"""
@@ -551,6 +571,8 @@ class StreamlitPipelineRunner:
                     var_lab=var_lab,
                     code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
                     cached_idea_embeddings=None,
+                    config=code_assignment_config,
+                    model_config=model_config,
                     verbose=self.verbose
                 )
             else:
@@ -572,6 +594,8 @@ class StreamlitPipelineRunner:
                     var_lab=var_lab,
                     code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
                     cached_idea_embeddings=cached_ideas,
+                    config=code_assignment_config,
+                    model_config=model_config,
                     verbose=self.verbose
                 )
             
@@ -628,6 +652,63 @@ class StreamlitPipelineRunner:
             streamlit_container.info(f"📁 File saved to: {excel_path}")
         
         return excel_path
+    
+    def step_10_export_excel_with_reasoning(self, code_assigned_results: List[models.CodeAssignedModel],
+                                           theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
+                                           filename: str, var_name: str, export_dir: Optional[str] = None,
+                                           streamlit_container=None) -> str:
+        """Step 10: Export Excel with reasoning data from step 7"""
+        
+        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        
+        if streamlit_container:
+            streamlit_container.text("🔄 Exporting results with reasoning data...")
+        
+        verbose_reporter.section_header("EXCEL EXPORT WITH REASONING PHASE")
+        
+        # Try to load reasoning data from cache
+        reasoning_results = None
+        try:
+            reasoning_models = self.cache_manager.load_from_cache(
+                filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
+            )
+            if reasoning_models and len(reasoning_models) > 0:
+                reasoning_results = reasoning_models[0]
+                verbose_reporter.stat_line("✅ Loaded step 7 reasoning data from cache")
+            else:
+                verbose_reporter.warning("⚠️ No reasoning data found in cache - using regular export")
+        except Exception as e:
+            verbose_reporter.warning(f"⚠️ Failed to load reasoning data: {e} - using regular export")
+        
+        # Create exporter
+        exporter = CodeAssignmentExporter(verbose=self.verbose)
+        
+        # Export with or without reasoning data
+        if reasoning_results:
+            output_path = exporter.export_to_excel_with_reasoning(
+                code_assigned_results=code_assigned_results,
+                theme_enriched_codebook=theme_enriched_codebook,
+                reasoning_results=reasoning_results,
+                filename=filename,
+                var_name=var_name,
+                export_dir=export_dir
+            )
+            verbose_reporter.stat_line("📊 Excel with reasoning exported successfully")
+        else:
+            # Fallback to regular export
+            output_path = exporter.export_to_excel(
+                code_assigned_results=code_assigned_results,
+                theme_enriched_codebook=theme_enriched_codebook,
+                filename=filename,
+                var_name=var_name,
+                export_dir=export_dir
+            )
+            verbose_reporter.stat_line("📊 Regular Excel export completed (no reasoning data)")
+        
+        if streamlit_container:
+            streamlit_container.success(f"✅ Export completed: {output_path}")
+        
+        return output_path
 
 # Global pipeline runner instance for Streamlit
 @st.cache_resource

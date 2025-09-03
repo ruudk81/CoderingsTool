@@ -179,6 +179,7 @@ class SmartAPIClient:
         self.config = config
         self.client = async_client
         self.model_config = model_config
+        self.model = self.model_config.get_model_for_stage('segmentation')
         self.encoding = encoding
         self.verbose_reporter = verbose_reporter
     
@@ -195,7 +196,7 @@ class SmartAPIClient:
             try:
                 # Make the API call
                 response = await self.client.chat.completions.create(
-                    model=self.config.model,
+                    model=self.model,
                     response_model=List[IdeaResponse],
                     max_retries=0,  # Let tenacity handle retries
                     messages=[{"role": "user", "content": prompt}],
@@ -227,34 +228,36 @@ class IdeaExtractor:
         responses: List[models.QualityFilteredModel],
         var_lab: str,
         config: Optional[SegmentationConfig] = None,
+        model_config: Optional[ModelConfig] = None,
         verbose: bool = False,
         prompt_printer=None):
         
         self.responses = responses
         self.var_lab = var_lab
         self.config = config or DEFAULT_SEGMENTATION_CONFIG
+        self.model_config = model_config or ModelConfig()
+        self.model = self.model_config.get_model_for_stage('segmentation')
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
-        self.model_config = ModelConfig()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
         
         # Initialize components for optimal strategy
-        self.workload_analyzer = WorkloadAnalyzer(self.config.model)
+        self.workload_analyzer = WorkloadAnalyzer(self.model)
         
         # Initialize rate limits and monitoring
-        rate_limits = get_openai_rate_limits(self.config.model)
+        rate_limits = get_openai_rate_limits(self.model)
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
         # Initialize tokenizer for batch size calculation
         try:
-            self.encoding = tiktoken.encoding_for_model(self.config.model)
+            self.encoding = tiktoken.encoding_for_model(self.model)
         except KeyError:
             self.encoding = tiktoken.get_encoding("cl100k_base")
-            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.config.model}")
+            self.verbose_reporter.warning(f"Using cl100k_base encoding as fallback for {self.model}")
 
     def _build_prompt(self, respondent_id: str, response: str) -> str:
         """Build prompt for a single response"""
@@ -281,7 +284,7 @@ class IdeaExtractor:
                     prompt_content=prompt,
                     prompt_type="idea_extraction",
                     metadata={
-                        "model": self.config.model,
+                        "model": self.model,
                         "var_lab": self.var_lab,
                         "language": self.language,
                         "respondent_id": respondent_id
@@ -336,7 +339,7 @@ class IdeaExtractor:
         strategy = self.workload_analyzer.calculate_optimal_strategy(len(all_responses), avg_tokens)
         
         # Show optimal strategy
-        self.verbose_reporter.stat_line(f"Model: {self.config.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
+        self.verbose_reporter.stat_line(f"Model: {self.model} (Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM)")
         self.verbose_reporter.stat_line(f"Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
         self.verbose_reporter.stat_line(f"Processing {len(all_responses)} responses with individual API calls...")
         
@@ -384,7 +387,7 @@ class IdeaExtractor:
         
         # self.verbose_reporter.empty_line()
         # self.verbose_reporter.stat_line("Idea extraction configuration:")
-        # self.verbose_reporter.stat_line(f"  • Model: {self.config.model}")
+        # self.verbose_reporter.stat_line(f"  • Model: {self.model}")
         # self.verbose_reporter.stat_line(f"  • Temperature: {self.config.temperature}")
         # self.verbose_reporter.empty_line()
         
