@@ -295,7 +295,7 @@ class SpellChecker:
                 self.verbose_reporter.warning(f"Expected dictionary at: {self.dict_path}")
         else:
             if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line("✓ Hunspell installation verified")
+                self.verbose_reporter.stat_line("OK Hunspell installation verified")
         
         # Stats tracking
         self.stats = {
@@ -834,26 +834,14 @@ class SpellChecker:
         
         sentences_list = [response.original_response for response in responses]
         
-        # Calculate total words and check for early termination
+        # Calculate total words for metrics
         total_words = sum(len(sentence.split()) for sentence in sentences_list)
-        
-        # Early termination check for large datasets
-        if self.config.enable_early_termination and total_words > self.config.max_words_to_check:
-            print(f"⚠️  Large dataset detected ({total_words:,} words)")
-            print(f"⚠️  Skipping spell checking (limit: {self.config.max_words_to_check:,} words)")
-            print("⚠️  Proceeding without corrections to avoid performance bottleneck")
-            
-            # Return original responses without spell checking
-            processed_responses = [models.PreprocessedModel(
-                respondent_id=response.respondent_id, 
-                response=response.original_response
-            ) for response in responses]
-            
-            return processed_responses
         
         # Verbose metrics
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Total words to analyze: {total_words:,}")
+        else:
+            print(f"  • Total words to analyze: {total_words:,}")
             
         # Initialize word frequency cache if enabled
         word_frequency_cache = {} if self.config.enable_word_frequency_cache else None
