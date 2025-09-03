@@ -37,8 +37,24 @@ from config import (
 )
 from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager
-from pipeline_runner import get_pipeline_runner
 import ui_text as ui
+
+# Lazy loading functions to improve startup performance
+def _get_pipeline_runner():
+    if st.session_state.pipeline_runner is None:
+        from pipeline_runner import get_pipeline_runner
+        st.session_state.pipeline_runner = get_pipeline_runner()
+    return st.session_state.pipeline_runner
+
+def _get_data_loader():
+    if st.session_state.data_loader is None:
+        st.session_state.data_loader = DataLoader(verbose=False)
+    return st.session_state.data_loader
+
+def _get_cache_manager():
+    if st.session_state.cache_manager is None:
+        st.session_state.cache_manager = CacheManager(CacheConfig())
+    return st.session_state.cache_manager
 
 # Page config - MUST be first Streamlit command
 st.set_page_config(
@@ -69,11 +85,11 @@ if 'variable_preview' not in st.session_state:
 if 'pipeline_results' not in st.session_state:
     st.session_state.pipeline_results = {}
 if 'cache_manager' not in st.session_state:
-    st.session_state.cache_manager = CacheManager(CacheConfig())
+    st.session_state.cache_manager = None  # Lazy load when needed
 if 'data_loader' not in st.session_state:
-    st.session_state.data_loader = DataLoader(verbose=False)
+    st.session_state.data_loader = None  # Lazy load when needed
 if 'pipeline_runner' not in st.session_state:
-    st.session_state.pipeline_runner = get_pipeline_runner()
+    st.session_state.pipeline_runner = None  # Lazy load when needed
 
 # Initialize configuration objects for session-specific settings
 if 'model_config' not in st.session_state:
@@ -480,7 +496,7 @@ def show_upload_page():
                     
                     # Load variables from SPSS file
                     try:
-                        variables = st.session_state.data_loader.list_variables(uploaded_file.name)
+                        variables = _get_data_loader().list_variables(uploaded_file.name)
                         st.session_state.available_variables = variables
                         st.success(f"Bestand geladen met {len(variables)} variabelen!" if lang == "nl" else f"File loaded with {len(variables)} variables!")
                         # Don't advance to step 1 yet - let user select variables first
@@ -529,7 +545,7 @@ def show_upload_page():
                 if text_var and id_var:
                     with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
                         try:
-                            preview_data = st.session_state.data_loader.get_variable_with_IDs(
+                            preview_data = _get_data_loader().get_variable_with_IDs(
                                 st.session_state.filename, id_var, text_var
                             )
                             st.session_state.variable_preview = preview_data
@@ -582,8 +598,8 @@ def show_preprocessing_page():
         try:
             # Step 1: Load data if not already loaded
             if 'raw_text_list' not in st.session_state.pipeline_results:
-                var_lab = st.session_state.data_loader.get_varlab(st.session_state.filename, st.session_state.selected_variable)
-                raw_text_list = st.session_state.pipeline_runner.step_1_load_data(
+                var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable)
+                raw_text_list = _get_pipeline_runner().step_1_load_data(
                     filename=st.session_state.filename,
                     id_column=st.session_state.selected_id_column,
                     var_name=st.session_state.selected_variable,
@@ -593,7 +609,7 @@ def show_preprocessing_page():
                 st.session_state.pipeline_results['var_lab'] = var_lab
             
             # Step 2: Preprocessing
-            preprocessed_text = st.session_state.pipeline_runner.step_2_preprocess(
+            preprocessed_text = _get_pipeline_runner().step_2_preprocess(
                 raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
@@ -615,7 +631,7 @@ def show_filtering_page():
     if st.button(ui.get_text("BTN_FILTER", lang), type="primary"):
         progress_container = st.empty()
         try:
-            quality_filtered_text = st.session_state.pipeline_runner.step_3_quality_filter(
+            quality_filtered_text = _get_pipeline_runner().step_3_quality_filter(
                 preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
@@ -649,7 +665,7 @@ def show_idea_extraction_page():
     if st.button("Start Idee Extractie" if lang == "nl" else "Start Idea Extraction", type="primary"):
         progress_container = st.empty()
         try:
-            encoded_text = st.session_state.pipeline_runner.step_4_extract_ideas(
+            encoded_text = _get_pipeline_runner().step_4_extract_ideas(
                 quality_filtered_text=st.session_state.pipeline_results['quality_filtered_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
@@ -691,7 +707,7 @@ def show_embedding_page():
             # Update embedding config with UI values
             embedding_config = st.session_state.embedding_config
             
-            embedded_text = st.session_state.pipeline_runner.step_5_generate_embeddings(
+            embedded_text = _get_pipeline_runner().step_5_generate_embeddings(
                 encoded_text=st.session_state.pipeline_results['encoded_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
@@ -728,7 +744,7 @@ def show_clustering_page():
             clustering_config.cluster_selection_epsilon = epsilon
             clustering_config.alpha = alpha
             
-            initial_cluster_results = st.session_state.pipeline_runner.step_6_cluster(
+            initial_cluster_results = _get_pipeline_runner().step_6_cluster(
                 embedded_text=st.session_state.pipeline_results['embedded_text'],
                 filename=st.session_state.filename,
                 hdbscan_config=clustering_config,
@@ -766,7 +782,7 @@ def show_codebook_generation_page():
     if st.button("Genereer Codebook" if lang == "nl" else "Generate Codebook", type="primary"):
         progress_container = st.empty()
         try:
-            codebook_main = st.session_state.pipeline_runner.step_7_generate_codebook(
+            codebook_main = _get_pipeline_runner().step_7_generate_codebook(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                 filename=st.session_state.filename,
                 var_name=st.session_state.selected_variable,
@@ -802,7 +818,7 @@ def show_theme_identification_page():
     if st.button("Identificeer Thema's" if lang == "nl" else "Identify Themes", type="primary"):
         progress_container = st.empty()
         try:
-            theme_enriched_codebook = st.session_state.pipeline_runner.step_8_identify_themes(
+            theme_enriched_codebook = _get_pipeline_runner().step_8_identify_themes(
                 codebook_main=st.session_state.pipeline_results['codebook_main'],
                 filename=st.session_state.filename,
                 var_name=st.session_state.selected_variable,
@@ -843,7 +859,7 @@ def show_code_assignment_page():
     if st.button("Wijs Codes Toe" if lang == "nl" else "Assign Codes", type="primary"):
         progress_container = st.empty()
         try:
-            code_assigned_results = st.session_state.pipeline_runner.step_9a_assign_codes(
+            code_assigned_results = _get_pipeline_runner().step_9a_assign_codes(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                 theme_enriched_codebook=st.session_state.pipeline_results['theme_enriched_codebook'],
                 filename=st.session_state.filename,
@@ -947,7 +963,7 @@ def show_export_page():
                     # Use enhanced export with reasoning data via pipeline runner
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel met redenering..." if lang == "nl" else "Exporting results to Excel with reasoning..."))
                     
-                    excel_path = st.session_state.pipeline_runner.step_10_export_excel_with_reasoning(
+                    excel_path = _get_pipeline_runner().step_10_export_excel_with_reasoning(
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
