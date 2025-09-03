@@ -421,6 +421,13 @@ class SpellCheckConfig:
     progress_report_interval: int = 10000  # Report progress every N words
     max_unique_oov_words: int = 5000  # Limit unique OOV words to process
     enable_early_termination: bool = True  # Allow early termination for large datasets
+    
+    # Aggressive parallel processing settings for suggestion generation
+    max_concurrent_suggestion_chunks: int = 5  # Number of concurrent chunks for OOV processing
+    max_words_per_chunk: int = 1200  # Maximum words per chunk
+    enable_adaptive_chunking: bool = True  # Dynamic chunk sizing based on performance
+    chunk_progress_reporting: bool = True  # Show progress per chunk
+    suggestion_processing_semaphore_limit: int = 50  # Limit concurrent Hunspell processes
 
 # =============================================================================
 # SEGMENT CONFIGURATION

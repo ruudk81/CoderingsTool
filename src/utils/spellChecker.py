@@ -468,8 +468,16 @@ class SpellChecker:
         return left_part, right_part
 
     async def find_best_suggestions_batch_async(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Process unique OOV words only once for efficiency"""
-        # Sort for consistent processing order 
+        """Process unique OOV words with aggressive parallel processing"""
+        if len(unique_oov_words) <= self.config.max_words_per_chunk:
+            # Small dataset - use original method
+            return await self._process_suggestions_single_batch(unique_oov_words)
+        else:
+            # Large dataset - use aggressive parallel processing
+            return await self._process_suggestions_parallel_chunks(unique_oov_words)
+    
+    async def _process_suggestions_single_batch(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
+        """Original single-batch processing for small datasets"""
         sorted_oov_words = sorted(unique_oov_words)
 
         async def process_word(word):
@@ -493,6 +501,124 @@ class SpellChecker:
                 best_suggestions[result[0]].append(result[1:])
 
         return best_suggestions
+    
+    async def _process_suggestions_parallel_chunks(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
+        """Quality Filter style aggressive parallel processing with workload analysis"""
+        
+        # WORKLOAD ANALYSIS (Quality Filter Style)
+        print(f"[SUGGESTION GENERATION ANALYSIS]")
+        sorted_oov_words = sorted(unique_oov_words)
+        total_operations = len(sorted_oov_words)
+        
+        # Estimate processing rate based on system capabilities
+        # Each word requires: Hunspell calls + SpaCy analysis + vector calculations
+        estimated_ops_per_second = 8.0  # Conservative estimate based on your data (9.8 words/sec observed)
+        estimated_time_sequential = total_operations / estimated_ops_per_second
+        
+        # Calculate optimal concurrent processing strategy
+        max_concurrent = self.config.suggestion_processing_semaphore_limit
+        optimal_batch_size = min(100, max(10, total_operations // max_concurrent))  # 10-100 words per batch
+        total_batches = (total_operations + optimal_batch_size - 1) // optimal_batch_size
+        
+        # Aggressive parallelism calculation
+        parallel_efficiency = min(max_concurrent, total_batches) * 0.75  # 75% efficiency due to coordination overhead
+        estimated_time_parallel = estimated_time_sequential / parallel_efficiency
+        
+        print(f"- Words to process: {total_operations:,}")
+        print(f"- Estimated sequential time: {estimated_time_sequential:.1f}s ({estimated_ops_per_second:.1f} words/sec)")
+        print(f"- Optimal strategy: {max_concurrent} concurrent batches, {optimal_batch_size} words each") 
+        print(f"- Total batches: {total_batches}")
+        print(f"- Estimated parallel time: {estimated_time_parallel:.1f}s (speedup: {estimated_time_sequential/estimated_time_parallel:.1f}x)")
+        print("Processing suggestion generation...")
+        
+        # QUALITY FILTER STYLE BATCH PROCESSING
+        start_time = time.time()
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        # Create batches for optimal processing
+        batches = []
+        for i in range(0, len(sorted_oov_words), optimal_batch_size):
+            batch = sorted_oov_words[i:i + optimal_batch_size]
+            batches.append(batch)
+        
+        async def process_batch_aggressive(batch_words: List[str], batch_index: int):
+            """Quality filter style batch processing with aggressive concurrency"""
+            async with semaphore:
+                batch_start_time = time.time()
+                batch_results = defaultdict(list)
+                
+                # Process all words in batch concurrently (like quality filter processes items)
+                async def process_single_word(word):
+                    try:
+                        # Parallel Hunspell and splitting operations
+                        unsplit_task = self.run_hunspell_word_async(word)
+                        split_task = self.find_best_split_for_spellcheck(word)
+                        
+                        # Execute both operations concurrently
+                        unsplit_suggestions, (left_part, right_part) = await asyncio.gather(unsplit_task, split_task)
+                        
+                        split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
+                        unsplit_suggestion = (
+                            min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
+                            if unsplit_suggestions else None)
+                        
+                        return word, unsplit_suggestion, split_suggestion
+                    except Exception as e:
+                        logger.error(f"Error processing word '{word}': {e}")
+                        return word, None, None
+                
+                # Process all words in this batch concurrently
+                batch_tasks = [process_single_word(word) for word in batch_words]
+                results = await asyncio.gather(*batch_tasks)
+                
+                # Collect results
+                for result in results:
+                    if result and len(result) == 3:
+                        batch_results[result[0]].append(result[1:])
+                
+                batch_time = time.time() - batch_start_time
+                batch_rate = len(batch_words) / max(batch_time, 0.1)
+                
+                return batch_results, batch_rate
+        
+        # Execute all batches with progress tracking (Quality Filter style)
+        completed_batches = 0
+        all_results = []
+        total_rate_samples = []
+        
+        batch_tasks = [process_batch_aggressive(batch, idx) for idx, batch in enumerate(batches)]
+        
+        # Process batches and show progress like quality filter
+        for completed_task in asyncio.as_completed(batch_tasks):
+            batch_results, batch_rate = await completed_task
+            all_results.append(batch_results)
+            total_rate_samples.append(batch_rate)
+            completed_batches += 1
+            
+            # Progress reporting (every 10% or every 10 batches)
+            if completed_batches % max(1, total_batches // 10) == 0 or completed_batches % 10 == 0:
+                progress_percent = (completed_batches / total_batches) * 100
+                elapsed = time.time() - start_time
+                current_rate = sum(len(batch) for batch in batches[:completed_batches]) / max(elapsed, 0.1)
+                remaining_words = sum(len(batch) for batch in batches[completed_batches:])
+                eta = remaining_words / max(current_rate, 0.1)
+                print(f"Processing suggestion batches... {completed_batches}/{total_batches} ({progress_percent:.1f}%) [{current_rate:.1f} words/sec, ETA: {eta:.1f}s]")
+        
+        # Combine all results
+        combined_results = defaultdict(list)
+        for batch_result in all_results:
+            for word, suggestions in batch_result.items():
+                combined_results[word].extend(suggestions)
+        
+        # Final performance metrics
+        total_time = time.time() - start_time
+        total_rate = len(unique_oov_words) / max(total_time, 0.1)
+        efficiency = (total_rate / estimated_ops_per_second) * 100 if estimated_ops_per_second > 0 else 100
+        
+        print(f"OK Completed suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({total_rate:.1f} words/sec)")
+        print(f"  Performance: {efficiency:.1f}% of estimated rate, {total_rate/estimated_ops_per_second:.1f}x speedup over sequential")
+        
+        return combined_results
         
     def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
         tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
@@ -849,51 +975,96 @@ class SpellChecker:
         oov_words = []
         docs_with_oov = 0
         
-        # Single hunspell session to speed up process
-        oov_identification_session = HunspellSession(self.hunspell_path, self.dict_path)
+        # AGGRESSIVE BATCHED OOV IDENTIFICATION (Quality Filter Style)
+        print("  • Extracting and batching words for OOV analysis...")
         
-        try:
-            words_processed = 0
-            last_progress_report = 0
+        # Extract all words first for efficient batching
+        all_words_to_check = []
+        word_to_responses = defaultdict(list)  # Track which responses contain each word
+        
+        for response_idx, doc in enumerate(self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size)):
+            for token in doc:
+                if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
+                    word_normalized = token.text.lower()
+                    word_original = token.text
+                    
+                    # Check cache first
+                    if word_frequency_cache is not None and word_normalized in word_frequency_cache:
+                        is_oov = word_frequency_cache[word_normalized] 
+                        if is_oov:
+                            oov_words.append(word_original)
+                            self.stats['oov_words_found'] += 1
+                            word_to_responses[word_original].append(response_idx)
+                    else:
+                        # Add to batch for Hunspell checking
+                        all_words_to_check.append((word_normalized, word_original, response_idx))
+        
+        print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
+        
+        # BATCH HUNSPELL PROCESSING (Quality Filter Style)
+        if all_words_to_check:
+            batch_size = 1000  # Process 1000 words per Hunspell batch
+            total_batches = (len(all_words_to_check) + batch_size - 1) // batch_size
             
-            for doc in self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size):
-                doc_flagged = False
-                for token in doc:
-                    if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
-                        word = token.text.lower()  # Normalize for caching
-                        words_processed += 1
-                        self.stats['words_checked'] += 1
-                        
-                        # Progress reporting for large datasets
-                        if (self.config.progress_report_interval > 0 and 
-                            words_processed - last_progress_report >= self.config.progress_report_interval):
-                            print(f"  • Analyzed {words_processed:,} words, found {self.stats['oov_words_found']} OOV words...")
-                            last_progress_report = words_processed
-                        
-                        # Check word frequency cache first
-                        is_oov = None
-                        if word_frequency_cache is not None:
-                            if word in word_frequency_cache:
-                                is_oov = word_frequency_cache[word]
-                        
-                        # Only call Hunspell if not in cache
-                        if is_oov is None:
-                            output = oov_identification_session.check_word(token.text)
+            print(f"  • Processing {len(all_words_to_check):,} words in {total_batches} Hunspell batches...")
+            
+            # Use multiple concurrent Hunspell sessions for parallel processing
+            max_concurrent_sessions = min(5, total_batches)  # Up to 5 concurrent sessions
+            semaphore = asyncio.Semaphore(max_concurrent_sessions)
+            
+            async def process_hunspell_batch(batch_words, batch_index):
+                """Process a batch of words with dedicated Hunspell session"""
+                async with semaphore:
+                    session = HunspellSession(self.hunspell_path, self.dict_path)
+                    batch_oov_words = []
+                    
+                    try:
+                        for word_normalized, word_original, response_idx in batch_words:
+                            self.stats['words_checked'] += 1
+                            output = session.check_word(word_original)
                             is_oov = output and output.startswith(('&', '#'))
                             
                             # Cache the result
                             if word_frequency_cache is not None:
-                                word_frequency_cache[word] = is_oov
+                                word_frequency_cache[word_normalized] = is_oov
+                            
+                            if is_oov:
+                                batch_oov_words.append((word_original, response_idx))
+                                self.stats['oov_words_found'] += 1
                         
-                        if is_oov:
-                            oov_words.append(token.text)  # Keep original case for corrections
-                            self.stats['oov_words_found'] += 1
-                            doc_flagged = True
-             
-                if doc_flagged:
-                    docs_with_oov += 1
-        finally:
-            oov_identification_session.close()
+                        # Progress reporting
+                        progress = (batch_index + 1) / total_batches * 100
+                        print(f"    Hunspell batch {batch_index + 1}/{total_batches} ({progress:.1f}%) - found {len(batch_oov_words)} OOV words")
+                        
+                        return batch_oov_words
+                        
+                    finally:
+                        session.close()
+            
+            # Create batches and process concurrently
+            batches = []
+            for i in range(0, len(all_words_to_check), batch_size):
+                batch = all_words_to_check[i:i + batch_size]
+                batches.append(batch)
+            
+            # Process all batches concurrently
+            start_time = time.time()
+            batch_tasks = [process_hunspell_batch(batch, idx) for idx, batch in enumerate(batches)]
+            batch_results = await asyncio.gather(*batch_tasks)
+            
+            # Combine results and track response flagging
+            response_flagged = set()
+            for batch_result in batch_results:
+                for word_original, response_idx in batch_result:
+                    oov_words.append(word_original)
+                    word_to_responses[word_original].append(response_idx)
+                    response_flagged.add(response_idx)
+            
+            docs_with_oov = len(response_flagged)
+            processing_time = time.time() - start_time
+            words_per_second = len(all_words_to_check) / max(processing_time, 0.1)
+            
+            print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
             
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
