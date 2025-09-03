@@ -13,11 +13,14 @@ import models
 # === CONFIG ========================================================================================================
 from utils import dataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig
+from config import CacheConfig, ModelConfig
 
 # Initialize cache manager
 cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
+
+# Initialize model configuration
+model_config = ModelConfig()
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
@@ -151,7 +154,7 @@ else:
     verbose_reporter.section_header("PREPROCESSING PHASE")
     # intialize utils
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
-    spell_checker         = spellChecker.SpellChecker(verbose=VERBOSE, prompt_printer=prompt_printer)
+    spell_checker         = spellChecker.SpellChecker(model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
     start_time            = time.time()
     # preprocess strings 
@@ -304,7 +307,7 @@ if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
 else:
     verbose_reporter.section_header("QUALITY FILTERING PHASE")
     start_time = time.time()
-    grader = qualityFilter.Grader(preprocessed_text, var_lab, verbose=VERBOSE, prompt_printer=prompt_printer)
+    grader = qualityFilter.Grader(preprocessed_text, var_lab, model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
     quality_filtered_text = grader.grade()
     grading_summary = grader.summary()
     end_time = time.time()
@@ -366,6 +369,7 @@ else:
     encoder = ideaExtractor.IdeaExtractor(
         responses=filtered_text,
         var_lab=var_lab,
+        model_config=model_config,
         verbose=VERBOSE,
         prompt_printer=prompt_printer
     )
@@ -418,10 +422,9 @@ else:
     embedding_config = EmbeddingConfig()
     get_embeddings = Embedder(
             config=embedding_config,
-            provider="gemini",
-            embedding_model="gemini-embedding-001",  
-            # provider="openai",
-            # embedding_model="text-embedding-3-large",  
+            model_config=model_config,
+            # provider="gemini",
+            provider="openai",
             verbose=VERBOSE)
     input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
     embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
@@ -454,8 +457,11 @@ if  FORCE:
 verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-CLUSTERING_ALPHA = None  # 1 is default, 1.5 would give more weight to size of clusters over distance. But advice is not to play around with this param too much/not at all.
-CLUSTERING_EPSILON = 0.5  # Embeddings from OpenAI/Gemini are L2-normalized by default. After UMAP (10D, metric="cosine") and Euclidean HDBSCAN clustering, an epsilon of 0.5 typically corresponds to ~0.875–0.9 cosine similarity in the original embedding space. This prevents splitting clusters that are semantically very close.
+
+from config import HDBSCANConfig
+
+CLUSTERING_ALPHA = HDBSCANConfig.alpha  # 1 is default, 1.5 would give more weight to size of clusters over distance. But advice is not to play around with this param too much/not at all.
+CLUSTERING_EPSILON = HDBSCANConfig.cluster_selection_epsilon  # Embeddings from OpenAI/Gemini are L2-normalized by default. After UMAP (10D, metric="cosine") and Euclidean HDBSCAN clustering, an epsilon of 0.5 typically corresponds to ~0.875–0.9 cosine similarity in the original embedding space. This prevents splitting clusters that are semantically very close.
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
     initial_cluster_results = cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
@@ -697,15 +703,18 @@ else:
     
     cache_manager.save_to_cache([codebook_main], filename, step_name, elapsed_time)
     
-    if CACHE_CODEGENERATOR_REASONING and results:
+    # Always cache codebook reasoning if available for consistent exports
+    if results:
         try:
             codebook_reasoning = results
             cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", elapsed_time)
-            print("✓ Cached codebook reasoning for debugging")
+            print("✓ Cached codebook reasoning for export consistency")
         except Exception as e:
-            print(f"Warning: Failed to cache reasoning results: {e}")
-    elif CACHE_CODEGENERATOR_REASONING:
-        print("Note: CACHE_CODEGENERATOR_REASONING enabled but no results to cache")
+            print(f"⚠️ Warning: Failed to cache reasoning results: {e}")
+            print("   Export will fall back to basic format without reasoning columns")
+    else:
+        print("⚠️ Warning: No reasoning results generated to cache")
+        print("   Export will fall back to basic format without reasoning columns")
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -919,8 +928,8 @@ if theme_enriched_codebook and theme_enriched_codebook.codes:
 #     print(entry.definition)
 #     print("\n")
 
-# === STEP 9a =======================================================================================================
-"""Assign codes (and themes) - Direct LLM Processing (No Embeddings)"""
+# === STEP 9 =======================================================================================================
+"""Assign codes (and themes)"""
 from utils import codeAssigner
 
 FORCE = True
@@ -936,14 +945,14 @@ prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realt
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    code_assigned_results_direct = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
-    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results_direct if resp.response_ideas)
-    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results_direct if resp.response_ideas)
+    code_assigned_results = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
     verbose_reporter.summary("DIRECT CODE ASSIGNMENTS FROM CACHE", {
-        "Input responses": len(code_assigned_results_direct),
+        "Input responses": len(code_assigned_results),
         "Ideas processed": total_ideas,
         "Code assignments": total_assignments,
-        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results_direct if resp.response_ideas)
+        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
     })
 else:
     verbose_reporter.section_header("DIRECT CODE ASSIGNMENT PHASE (NO EMBEDDINGS)")
@@ -951,10 +960,10 @@ else:
     
     if not theme_enriched_codebook or not theme_enriched_codebook.codes:
         print("Error: No enriched codebook available for direct code assignment.")
-        code_assigned_results_direct = []
+        code_assigned_results = []
     elif not initial_cluster_results:
         print("Error: No cluster results available for direct code assignment.")
-        code_assigned_results_direct = []
+        code_assigned_results = []
     else:
         print(f"\nDirect assignment: Processing ideas from {len(initial_cluster_results)} cluster results")
         print(f"Using complete codebook with {len(theme_enriched_codebook.codes)} codes")
@@ -971,6 +980,7 @@ else:
             var_lab=var_lab,
             code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
             cached_idea_embeddings=None,  # No cached embeddings needed
+            model_config=model_config,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
         )
@@ -993,21 +1003,6 @@ else:
     cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
     print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
-# === EXPORT CODE ASSIGNMENTS TO EXCEL ========================================================================================================
-from utils.codeAssignmentExporter import CodeAssignmentExporter
-
-try:
-    exporter = CodeAssignmentExporter(verbose=VERBOSE)
-    excel_path = exporter.export_to_excel(
-        code_assigned_results_direct,
-        theme_enriched_codebook,
-        filename,
-        var_name,
-        export_dir=None  # Will create default export directory
-    )
-    print(f"✅ Code assignments exported to Excel: {excel_path}")
-except Exception as e:
-    print(f"⚠️ Excel export failed: {str(e)}")
 
 # === CODEBOOK PRINTOUT ========================================================================================================
 for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
@@ -1123,118 +1118,19 @@ if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and
 else:
     print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
    
-# === STEP 9b  ========================================================================================================
-"""Assign codes (and themes)"""
-from utils import codeAssigner
-from utils import clusterAssigner
-from prompts import CODE_ASSIGNMENT_PROMPT
+# === STEP 10  ========================================================================================================
+"""Export Results"""
+from utils.codeAssignmentExporter import CodeAssignmentExporter
 
-FORCE = True
-USE_CLUSTER_ASSIGNER_V2 = True  # Set to False to use original CodeAssigner
-
-step_name = "code_assignment"
-if  FORCE:
-    FORCE_STEP      = step_name
-    PROMPT_PRINTER  = False
-
-verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name):
-    code_assigned_results = cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
-    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
-    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
-    verbose_reporter.summary("CODE ASSIGNMENTS FROM CACHE", {
-        "Input responses": len(code_assigned_results),
-        "Ideas processed": total_ideas,
-        "Code assignments": total_assignments,
-        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
-    })
-else:
-    verbose_reporter.section_header("CODE ASSIGNMENT PHASE")
-    start_time = time.time()
-    
-    if not theme_enriched_codebook or not theme_enriched_codebook.codes:
-        print("Error: No enriched codebook available for code assignment.")
-        code_assigned_results = []
-    elif not initial_cluster_results:
-        print("Error: No cluster results available for code assignment.")
-        code_assigned_results = []
-    else:
-        # Load cached idea embeddings
-        cached_ideas = codeAssigner.EmbeddingLoader.load_idea_embeddings_from_cache(
-            cache_manager, filename
-        )
-        
-        if not cached_ideas:
-            print("Error: No cached idea embeddings found. Run embedding step first.")
-            code_assigned_results = []
-        else:
-            print(f"\nLoaded {len(cached_ideas)} idea embeddings from cache")
-            print(f"Assigning codes from {len(theme_enriched_codebook.codes)} enriched codes")
-            
-            if USE_CLUSTER_ASSIGNER_V2:
-                print("🚀 Using ClusterAssigner v2 (cluster-based direct assignment)")
-                
-                # Create cluster assigner with direct cluster-code mapping
-                cluster_assigner_instance = clusterAssigner.ClusterAssigner(
-                    cluster_models=initial_cluster_results,  # Use original cluster models with idea-cluster mappings
-                    enriched_codebook=theme_enriched_codebook.codes,  # Use enriched codes with themes
-                    theme_embeddings={},  # No theme embeddings needed
-                    var_lab=var_lab,
-                    verbose=VERBOSE
-                )
-                
-                code_assigned_results = cluster_assigner_instance.assign()
-                
-                # Show cluster assignment stats
-                stats = cluster_assigner_instance.get_assignment_stats()
-                print(f"\n✅ ClusterAssigner v2 Results:")
-                print(f"   Total ideas: {stats.total_ideas}")
-                print(f"   Reassigned to sub-clusters: {stats.reassigned_to_subclusters}")
-                print(f"   Perfect cluster matches: {stats.perfect_matches}")
-                print(f"   Processing time: {stats.processing_time_seconds:.2f}s")
-                
-            else:
-                print("⚡ Using original CodeAssigner (embedding similarity)")
-                
-                # Create code assigner with cached embeddings
-                code_assigner_instance = codeAssigner.CodeAssigner(
-                    cluster_models=[],  # Empty - we're using cached embeddings
-                    codebook=[models.Codebook(
-                        code=entry.code, 
-                        definition=entry.definition,
-                        theme=entry.theme,
-                        theme_description=entry.theme_description
-                    ) for entry in theme_enriched_codebook.codes],
-                    var_lab=var_lab,
-                    code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
-                    cached_idea_embeddings=cached_ideas,  # Pass cached embeddings
-                    verbose=VERBOSE,
-                    prompt_printer=prompt_printer
-                )
-                
-                code_assigned_results = code_assigner_instance.assign()
-     
-        for result in code_assigned_results:
-            if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
-                result.assignment_metadata = {}
-            result.assignment_metadata.update({
-                "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
-                "theme_methodology": theme_enriched_codebook.theme_methodology,
-                "assignment_timestamp": start_time
-            })
-        
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    
-    cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
-    print(f"\n'Code assignment' completed in {elapsed_time:.2f} seconds.\n")
-
-
-
-
-
-
-
+try:
+    exporter = CodeAssignmentExporter(verbose=VERBOSE)
+    excel_path = exporter.export_to_excel(
+        code_assigned_results,
+        theme_enriched_codebook,
+        filename,
+        var_name,
+        export_dir=None  # Will create default export directory
+    )
+    print(f"✅ Code assignments exported to Excel: {excel_path}")
+except Exception as e:
+    print(f"⚠️ Excel export failed: {str(e)}")

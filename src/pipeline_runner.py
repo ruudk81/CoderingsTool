@@ -408,7 +408,7 @@ class StreamlitPipelineRunner:
                                code_designer_config: Optional[CodeDesignerConfig] = None,
                                use_speculative_starter_codes: bool = False,
                                force_recalc: bool = False,
-                               streamlit_container=None) -> models.CodebookModel:
+                               streamlit_container=None) -> Tuple[models.CodebookModel, Optional[Any]]:
         """Step 7: Generate codebook"""
         
         step_name = "codebook_generation"
@@ -417,11 +417,23 @@ class StreamlitPipelineRunner:
         if streamlit_container:
             streamlit_container.text("🔄 Generating codebook from clusters...")
         
+        reasoning_results = None
         if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
             codebook_models = self.cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
             if codebook_models and len(codebook_models) > 0:
                 codebook_main = codebook_models[0]
                 verbose_reporter.summary("CODEBOOK FROM CACHE", {"Total codes": len(codebook_main.codes)})
+                
+                # Try to load reasoning from cache too
+                try:
+                    CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
+                    reasoning_models = self.cache_manager.load_from_cache(
+                        filename, f"{step_name}_reasoning", CodeGeneratorReasoningResults
+                    )
+                    if reasoning_models and len(reasoning_models) > 0:
+                        reasoning_results = reasoning_models[0]
+                except Exception:
+                    pass  # Reasoning not available from cache
             else:
                 codebook_main = models.CodebookModel(codes=[], source_variable=var_name)
         else:
@@ -450,6 +462,7 @@ class StreamlitPipelineRunner:
                 verbose_detailed=False
             )
             results = generator.generate()
+            reasoning_results = results  # Store reasoning results for return
             
             codebook_entries = []
             CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
@@ -477,10 +490,17 @@ class StreamlitPipelineRunner:
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache([codebook_main], filename, step_name, elapsed_time)
             
+            # Always cache reasoning results for export consistency
+            if reasoning_results:
+                try:
+                    self.cache_manager.save_to_cache([reasoning_results], filename, f"{step_name}_reasoning", elapsed_time)
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to cache reasoning results: {e}")
+            
             if streamlit_container:
                 streamlit_container.success(f"✅ Generated {len(codebook_entries)} codes in {elapsed_time:.2f}s")
         
-        return codebook_main
+        return codebook_main, reasoning_results
     
     def step_8_identify_themes(self, codebook_main: models.CodebookModel, filename: str, var_name: str, var_lab: str,
                              force_recalc: bool = False,
@@ -713,9 +733,72 @@ class StreamlitPipelineRunner:
         
         return excel_path
     
+    def step_10_export_excel_consistent(self, code_assigned_results: List[models.CodeAssignedModel],
+                                        theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
+                                        filename: str, var_name: str, export_dir: Optional[str] = None,
+                                        reasoning_results: Optional[Any] = None,
+                                        streamlit_container=None) -> str:
+        """Step 10: Export results to Excel with consistent 15-column format (always tries to include reasoning)"""
+        
+        if streamlit_container:
+            streamlit_container.text("🔄 Exporting results with consistent format...")
+        
+        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter.section_header("EXCEL EXPORT WITH CONSISTENT FORMAT")
+        
+        # Try to get reasoning data from parameter, cache, or fallback to empty reasoning
+        final_reasoning_results = reasoning_results
+        
+        if final_reasoning_results is None:
+            try:
+                CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
+                reasoning_models = self.cache_manager.load_from_cache(
+                    filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
+                )
+                if reasoning_models and len(reasoning_models) > 0:
+                    final_reasoning_results = reasoning_models[0]
+                    verbose_reporter.stat_line("✅ Loaded reasoning data from cache")
+            except Exception as e:
+                verbose_reporter.warning(f"⚠️ No reasoning data available: {e}")
+        else:
+            verbose_reporter.stat_line("✅ Using reasoning data from step 7")
+        
+        # Always use the with_reasoning export for consistent format
+        # If no reasoning data available, it will show empty reasoning columns
+        CodeAssignmentExporter = _get_code_assignment_exporter()
+        exporter = CodeAssignmentExporter(verbose=self.verbose)
+        
+        if final_reasoning_results:
+            output_path = exporter.export_to_excel_with_reasoning(
+                code_assigned_results=code_assigned_results,
+                theme_enriched_codebook=theme_enriched_codebook,
+                reasoning_results=final_reasoning_results,
+                filename=filename,
+                var_name=var_name,
+                export_dir=export_dir
+            )
+            verbose_reporter.stat_line("📊 Excel with reasoning exported (15 columns)")
+        else:
+            # Fallback to regular export when no reasoning available
+            verbose_reporter.warning("⚠️ No reasoning data available - using regular export format")
+            output_path = exporter.export_to_excel(
+                code_assigned_results=code_assigned_results,
+                theme_enriched_codebook=theme_enriched_codebook,
+                filename=filename,
+                var_name=var_name,
+                export_dir=export_dir
+            )
+            verbose_reporter.stat_line("📊 Regular Excel exported (12 columns)")
+        
+        if streamlit_container:
+            streamlit_container.success(f"✅ Export completed: {output_path}")
+        
+        return output_path
+    
     def step_10_export_excel_with_reasoning(self, code_assigned_results: List[models.CodeAssignedModel],
                                            theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
                                            filename: str, var_name: str, export_dir: Optional[str] = None,
+                                           reasoning_results: Optional[Any] = None,
                                            streamlit_container=None) -> str:
         """Step 10: Export Excel with reasoning data from step 7"""
         
@@ -726,20 +809,22 @@ class StreamlitPipelineRunner:
         
         verbose_reporter.section_header("EXCEL EXPORT WITH REASONING PHASE")
         
-        # Try to load reasoning data from cache
-        reasoning_results = None
-        try:
-            CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
-            reasoning_models = self.cache_manager.load_from_cache(
-                filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
-            )
-            if reasoning_models and len(reasoning_models) > 0:
-                reasoning_results = reasoning_models[0]
-                verbose_reporter.stat_line("✅ Loaded step 7 reasoning data from cache")
-            else:
-                verbose_reporter.warning("⚠️ No reasoning data found in cache - using regular export")
-        except Exception as e:
-            verbose_reporter.warning(f"⚠️ Failed to load reasoning data: {e} - using regular export")
+        # Use passed reasoning_results or try to load from cache
+        if reasoning_results is not None:
+            verbose_reporter.stat_line("✅ Using reasoning data passed from step 7")
+        else:
+            try:
+                CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
+                reasoning_models = self.cache_manager.load_from_cache(
+                    filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
+                )
+                if reasoning_models and len(reasoning_models) > 0:
+                    reasoning_results = reasoning_models[0]
+                    verbose_reporter.stat_line("✅ Loaded step 7 reasoning data from cache")
+                else:
+                    verbose_reporter.warning("⚠️ No reasoning data found in cache - using regular export")
+            except Exception as e:
+                verbose_reporter.warning(f"⚠️ Failed to load reasoning data: {e} - using regular export")
         
         # Create exporter (lazy loaded)
         CodeAssignmentExporter = _get_code_assignment_exporter()
