@@ -5,12 +5,18 @@ import re
 import asyncio
 import subprocess
 import logging
+import time
+import statistics
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
-from collections import defaultdict
+from collections import defaultdict, deque
+from dataclasses import dataclass
 
 import nest_asyncio
 from pydantic import BaseModel
+from openai import RateLimitError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from asyncio_throttle import Throttler
 #from openai import AsyncOpenAI
 #import instructor
 #import tiktoken
@@ -20,7 +26,7 @@ from pydantic import BaseModel
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig,DEFAULT_MODEL_CONFIG #DEFAULT_MODEL
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, DEFAULT_MODEL_CONFIG, get_openai_rate_limits
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -53,6 +59,173 @@ class CorrectionItem(BaseModel):
 
 class LLMCorrectionResponse(BaseModel):
     corrections: List[CorrectionItem] 
+
+@dataclass
+class SpellCheckOptimalStrategy:
+    """Evidence-based optimal processing strategy for spell checking"""
+    target_time_seconds: float
+    launch_rate_per_second: float
+    concurrent_limit: int
+    bottleneck_type: str
+    total_requests: int
+    total_tokens: int
+    safety_factor: float
+    batch_size: int
+
+class SpellCheckWorkloadAnalyzer:
+    """Analyzes spell checking workload and calculates optimal processing strategy"""
+    
+    def __init__(self, model_name: str, encoding):
+        self.model_name = model_name
+        self.encoding = encoding
+    
+    def measure_token_usage(self, sample_batches: List[List[Any]], base_prompt_template: str, var_lab: str) -> float:
+        """Measure actual token usage from real spell checking prompts"""
+        if not sample_batches:
+            return 2000  # Conservative fallback for spell checking
+        
+        token_counts = []
+        for batch in sample_batches[:3]:  # Sample first 3 batches
+            tasks_string = ""
+            for i, task in enumerate(batch):
+                tasks_string += (
+                    f"Task {i + 1}:\n"
+                    f"Respondent ID: {task.respondent_id}\n"
+                    f"Response: \"{task.response_with_oov_placeholders}\"\n"
+                    f"Misspelled words: {task.oov_words}\n"
+                    f"Suggested corrections: {task.suggestions}\n\n")
+            
+            prompt = base_prompt_template.format(
+                language=DEFAULT_LANGUAGE,
+                var_lab=var_lab,
+                tasks=tasks_string
+            )
+            prompt_tokens = len(self.encoding.encode(prompt))
+            # Spell checking typically has shorter completions (structured output)
+            completion_tokens = int(prompt_tokens * 0.15)
+            total_tokens = prompt_tokens + completion_tokens
+            token_counts.append(total_tokens)
+        
+        return statistics.mean(token_counts) if token_counts else 2000
+    
+    def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float) -> SpellCheckOptimalStrategy:
+        """Calculate evidence-based strategy for spell checking with rate smoothing"""
+        # Get API limits from config
+        rate_limits = get_openai_rate_limits(self.model_name)
+        
+        # Calculate total resource requirements
+        total_requests = total_batches
+        total_tokens = total_requests * avg_tokens_per_batch
+        
+        # Calculate optimal sustained rate (what we can maintain)
+        optimal_sustained_rate = rate_limits.requests_per_minute / 60  # req/sec
+        optimal_sustained_tokens = rate_limits.tokens_per_minute / 60  # tokens/sec
+        
+        # Find bottleneck for sustained rate
+        time_by_requests = total_requests / optimal_sustained_rate
+        time_by_tokens = total_tokens / optimal_sustained_tokens
+        
+        # Use evidence-based approach: plan for sustained rate
+        bottleneck_time = max(time_by_requests, time_by_tokens)
+        bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
+        
+        # Apply conservative utilization for spell checking (85%)
+        safety_factor = 0.85
+        target_time = bottleneck_time / safety_factor
+        
+        # Calculate launch rate
+        optimal_launch_rate = total_requests / target_time
+        
+        # Conservative concurrent limit for spell checking (2-second burst capacity)
+        concurrent_limit = int(optimal_launch_rate * 2)
+        
+        return SpellCheckOptimalStrategy(
+            target_time_seconds=target_time,
+            launch_rate_per_second=optimal_launch_rate,
+            concurrent_limit=concurrent_limit,
+            bottleneck_type=bottleneck_type,
+            total_requests=total_requests,
+            total_tokens=total_tokens,
+            safety_factor=safety_factor,
+            batch_size=1
+        )
+
+class SpellCheckSlidingWindowMonitor:
+    """Real-time monitoring of API usage for spell checking with sliding windows"""
+    
+    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60):
+        self.rpm_limit = rpm_limit
+        self.tpm_limit = tpm_limit
+        self.window_seconds = window_seconds
+        
+        # Thread-safe tracking across all concurrent operations
+        self._lock = asyncio.Lock()
+        self.requests_window = deque()  # timestamps
+        self.tokens_window = deque()    # (timestamp, token_count) tuples
+        
+        # Statistics
+        self.total_requests = 0
+        self.total_tokens = 0
+        self.start_time = time.time()
+    
+    def _cleanup_windows(self):
+        """Remove entries older than window_seconds"""
+        cutoff_time = time.time() - self.window_seconds
+        
+        # Clean requests window
+        while self.requests_window and self.requests_window[0] < cutoff_time:
+            self.requests_window.popleft()
+        
+        # Clean tokens window
+        while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
+            self.tokens_window.popleft()
+    
+    async def can_proceed(self, estimated_tokens: int = 0) -> bool:
+        """Check if we can make request within 95% of 60-second limits"""
+        async with self._lock:
+            self._cleanup_windows()
+            
+            # Calculate current usage in 60-second window
+            current_rpm = len(self.requests_window)
+            current_tpm = sum(tokens for _, tokens in self.tokens_window)
+            
+            # Use 95% of limits for spell checking
+            would_exceed_rpm = (current_rpm + 1) > (self.rpm_limit * 0.95)
+            would_exceed_tpm = (current_tpm + estimated_tokens) > (self.tpm_limit * 0.95)
+            
+            return not (would_exceed_rpm or would_exceed_tpm)
+    
+    async def record_request(self, tokens_used: int):
+        """Record a completed API request"""
+        async with self._lock:
+            now = time.time()
+            self.requests_window.append(now)
+            self.tokens_window.append((now, tokens_used))
+            
+            self.total_requests += 1
+            self.total_tokens += tokens_used
+            
+            self._cleanup_windows()
+    
+    async def get_current_utilization(self) -> Dict:
+        """Get current resource utilization"""
+        async with self._lock:
+            self._cleanup_windows()
+            
+            current_rpm = len(self.requests_window)
+            current_tpm = sum(tokens for _, tokens in self.tokens_window)
+            
+            return {
+                'current_rpm': current_rpm,
+                'current_tpm': current_tpm,
+                'rpm_utilization': current_rpm / self.rpm_limit,
+                'tpm_utilization': current_tpm / self.tpm_limit,
+                'rpm_remaining': self.rpm_limit - current_rpm,
+                'tpm_remaining': self.tpm_limit - current_tpm,
+                'total_requests': self.total_requests,
+                'total_tokens': self.total_tokens,
+                'elapsed_time': time.time() - self.start_time
+            }
     
 class HunspellSession:
     def __init__(self, hunspell_path, dict_path):
@@ -444,8 +617,50 @@ class SpellChecker:
         
         batches = self.create_correction_batches(filtered_tasks, prompt_header, max_tokens, completion_reserve)
         
-        async def process_batch(batch: SpellCorrectionBatch, var_lab: str, batch_index: int) -> Dict[str, str]:
-            """Native async client with validation"""
+        # === WORKLOAD ANALYSIS & RATE LIMITING SETUP ===
+        if len(batches) > 1:  # Only use rate limiting for multiple batches
+            # Initialize workload analyzer
+            encoding = get_tiktoken_encoding(self.model)
+            analyzer = SpellCheckWorkloadAnalyzer(self.model, encoding)
+            
+            # Measure actual token usage from sample batches
+            sample_batches_for_analysis = []
+            for batch in batches[:3]:  # Sample first 3 batches
+                sample_batches_for_analysis.append(batch.tasks)
+            
+            avg_tokens_per_batch = analyzer.measure_token_usage(sample_batches_for_analysis, SPELLCHECK_INSTRUCTIONS, var_lab)
+            
+            # Calculate optimal strategy
+            strategy = analyzer.calculate_optimal_strategy(len(batches), avg_tokens_per_batch)
+            
+            # Initialize rate monitoring
+            rate_limits = get_openai_rate_limits(self.model)
+            monitor = SpellCheckSlidingWindowMonitor(rate_limits.requests_per_minute, rate_limits.tokens_per_minute)
+            
+            # Initialize throttler for rate limiting
+            throttler = Throttler(rate_limit=strategy.launch_rate_per_second)
+            
+            # Display strategy summary
+            print(f"[SPELL CHECK ANALYSIS]")
+            print(f"- Model: {self.model} (Limits: {rate_limits.requests_per_minute:,} RPM, {rate_limits.tokens_per_minute:,} TPM)")
+            print(f"- Correction batches to process: {len(batches):,}")
+            print(f"- Avg tokens per batch: {avg_tokens_per_batch:.0f}")
+            print(f"- Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
+            print(f"- Estimated time: {strategy.target_time_seconds:.1f}s ({strategy.bottleneck_type} bottleneck)")
+            print(f"Processing correction batches...")
+        
+        async def process_batch_with_rate_limiting(batch: SpellCorrectionBatch, var_lab: str, batch_index: int, 
+                                                use_rate_limiting: bool = False, throttler=None, monitor=None, 
+                                                avg_tokens_per_batch: float = 0) -> Dict[str, str]:
+            """Native async client with rate limiting and validation"""
+            
+            # Rate limiting: wait for permission to proceed
+            if use_rate_limiting and throttler:
+                async with throttler:
+                    if monitor and not await monitor.can_proceed(int(avg_tokens_per_batch)):
+                        # Back off if approaching limits
+                        await asyncio.sleep(1)
+            
             tasks_string = ""
             for i, task in enumerate(batch.tasks):
                 tasks_string += (
@@ -460,6 +675,14 @@ class SpellChecker:
                 var_lab=var_lab,
                 tasks=tasks_string)
             
+            # Calculate actual tokens for this request
+            if use_rate_limiting and monitor:
+                encoding = get_tiktoken_encoding(self.model)
+                prompt_tokens = len(encoding.encode(prompt))
+                estimated_tokens = int(prompt_tokens * 1.15)  # Include completion estimate
+            else:
+                estimated_tokens = 0
+                
             # Capture prompt only for the first batch
             if self.prompt_printer and batch_index == 0:
                 self.prompt_printer.capture_prompt(
@@ -474,7 +697,7 @@ class SpellChecker:
                         "batch_size": len(batch.tasks),
                         "total_batches": len(batches),
                         "batch_number": batch_index + 1,
-                        "client_type": "instructor_async"
+                        "client_type": "instructor_async_rate_limited" if use_rate_limiting else "instructor_async"
                     }
                 )
             
@@ -492,6 +715,10 @@ class SpellChecker:
                 
                 corrections = response.corrections
                 self.stats['llm_calls_successful'] += 1
+                
+                # Record API usage for rate monitoring
+                if use_rate_limiting and monitor:
+                    await monitor.record_request(estimated_tokens)
                 
             except Exception as e:
                 # Verbose error reporting for OpenAI issues
@@ -552,11 +779,46 @@ class SpellChecker:
         # Sort batches for consistent processing order
         sorted_batches = sorted(batches, key=lambda b: str(b.tasks[0].respondent_id) if b.tasks else "")
 
-        batch_results = await asyncio.gather(*(process_batch(batch, var_lab, i) for i, batch in enumerate(sorted_batches)))
+        # Execute batches with appropriate strategy
+        corrected_sentences_dict = {}
         
-        # Combine results
-        for result in batch_results:
-            corrected_sentences_dict.update(result)
+        if len(batches) > 1:
+            # Use rate-limited processing for multiple batches
+            semaphore = asyncio.Semaphore(strategy.concurrent_limit)
+            
+            async def controlled_batch_process(batch, batch_idx):
+                async with semaphore:
+                    return await process_batch_with_rate_limiting(
+                        batch, var_lab, batch_idx, 
+                        use_rate_limiting=True, 
+                        throttler=throttler, 
+                        monitor=monitor, 
+                        avg_tokens_per_batch=avg_tokens_per_batch
+                    )
+            
+            # Process with progress tracking
+            completed_batches = 0
+            tasks = [controlled_batch_process(batch, i) for i, batch in enumerate(sorted_batches)]
+            
+            # Process batches and show progress
+            for completed_task in asyncio.as_completed(tasks):
+                batch_result = await completed_task
+                corrected_sentences_dict.update(batch_result)
+                completed_batches += 1
+                
+                # Progress reporting
+                progress_percent = (completed_batches / len(batches)) * 100
+                print(f"Processing correction batches... {completed_batches}/{len(batches)} ({progress_percent:.1f}%)")
+                
+                # Optional: Show utilization stats periodically
+                if completed_batches % 10 == 0 and len(batches) > 20:
+                    utilization = await monitor.get_current_utilization()
+                    rate_per_second = utilization['total_requests'] / max(utilization['elapsed_time'], 0.1)
+                    print(f"  Current rate: {rate_per_second:.1f} req/s ({utilization['rpm_utilization']*100:.0f}% RPM, {utilization['tpm_utilization']*100:.0f}% TPM)")
+        else:
+            # Single batch - no need for rate limiting
+            batch_result = await process_batch_with_rate_limiting(sorted_batches[0], var_lab, 0)
+            corrected_sentences_dict.update(batch_result)
         
         return corrected_sentences_dict
 
