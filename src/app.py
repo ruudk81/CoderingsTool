@@ -668,8 +668,8 @@ def show_upload_page():
                                 st.session_state.variable_preview = preview_data
                                 st.session_state.selected_variable = selected_variables[0]
                                 st.session_state.selected_variables = selected_variables
-                                st.session_state.variable_mode = variable_mode
-                                # Ensure persistence for single variables
+                                # Don't modify variable_mode here - it's tied to the widget
+                                # Instead, store confirmed values separately
                                 st.session_state.variable_mode_confirmed = variable_mode
                                 st.session_state.selected_variables_confirmed = selected_variables
                                 st.session_state.is_merged_variable = False
@@ -691,13 +691,13 @@ def show_upload_page():
                                 st.session_state.variable_preview = preview_data
                                 st.session_state.selected_variable = "merged_text"  # For backward compatibility
                                 st.session_state.selected_variables = selected_variables
-                                st.session_state.variable_mode = variable_mode
+                                # Don't modify variable_mode here - it's tied to the widget
                                 st.session_state.merge_config = {
                                     'strategy': merge_strategy,
                                     'separator': separator,
                                     'skip_empty': skip_empty
                                 }
-                                # Ensure persistence for merged variables
+                                # Ensure persistence for merged variables using separate keys
                                 st.session_state.variable_mode_confirmed = variable_mode
                                 st.session_state.selected_variables_confirmed = selected_variables
                                 st.session_state.merge_config_confirmed = st.session_state.merge_config
@@ -758,12 +758,16 @@ def show_upload_page():
                 
                 # Ready to proceed button
                 if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
-                    # Ensure all necessary session state variables are preserved for merged variables
-                    if st.session_state.get('variable_mode') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
-                        # Force persist merge-related session state
-                        st.session_state['variable_mode_confirmed'] = st.session_state.get('variable_mode')
-                        st.session_state['selected_variables_confirmed'] = st.session_state.get('selected_variables')
-                        st.session_state['merge_config_confirmed'] = st.session_state.get('merge_config')
+                    # Double-check persistence of merge-related session state before proceeding
+                    current_mode = variable_mode  # Use the current widget value instead of session_state
+                    if current_mode == 'multiple' and len(selected_variables) > 1:
+                        # Ensure merge configuration is properly stored
+                        if 'variable_mode_confirmed' not in st.session_state:
+                            st.session_state['variable_mode_confirmed'] = current_mode
+                        if 'selected_variables_confirmed' not in st.session_state:
+                            st.session_state['selected_variables_confirmed'] = selected_variables
+                        if 'merge_config_confirmed' not in st.session_state and 'merge_config' in st.session_state:
+                            st.session_state['merge_config_confirmed'] = st.session_state['merge_config']
                         st.session_state['is_merged_variable'] = True
                     else:
                         st.session_state['is_merged_variable'] = False
@@ -778,9 +782,8 @@ def show_preprocessing_page():
     
     # Show current selection with better validation for merged variables
     if st.session_state.selected_variable and st.session_state.selected_id_column:
-        # Check if this is a merged variable scenario (use confirmed values as fallback)
-        is_multiple_mode = (st.session_state.get('variable_mode') == 'multiple' or 
-                          st.session_state.get('variable_mode_confirmed') == 'multiple' or
+        # Check if this is a merged variable scenario (use confirmed values to avoid widget conflicts)
+        is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or
                           st.session_state.get('is_merged_variable', False))
         
         selected_vars = (st.session_state.get('selected_variables') or 
@@ -820,11 +823,12 @@ def show_preprocessing_page():
             st.write("Session State Variables:")
             st.write(f"- selected_variable: {st.session_state.get('selected_variable')}")
             st.write(f"- selected_id_column: {st.session_state.get('selected_id_column')}")
-            st.write(f"- variable_mode: {st.session_state.get('variable_mode')}")
+            st.write(f"- variable_mode_confirmed: {st.session_state.get('variable_mode_confirmed')}")
             st.write(f"- selected_variables: {st.session_state.get('selected_variables')}")
+            st.write(f"- selected_variables_confirmed: {st.session_state.get('selected_variables_confirmed')}")
             st.write(f"- merge_config: {st.session_state.get('merge_config')}")
+            st.write(f"- merge_config_confirmed: {st.session_state.get('merge_config_confirmed')}")
             st.write(f"- is_merged_variable: {st.session_state.get('is_merged_variable')}")
-            st.write(f"- confirmed values: {st.session_state.get('variable_mode_confirmed')}, {st.session_state.get('selected_variables_confirmed')}")
         return
     
     if st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
@@ -840,9 +844,8 @@ def show_preprocessing_page():
                 encoding = st.session_state.get('file_encoding', 'auto')
                 encoding = None if encoding == 'auto' else encoding
                 
-                # Handle variable label for single vs multiple variables (use confirmed values as fallback)
-                is_multiple_mode = (st.session_state.get('variable_mode') == 'multiple' or 
-                                  st.session_state.get('variable_mode_confirmed') == 'multiple' or
+                # Handle variable label for single vs multiple variables (use confirmed values to avoid widget conflicts)
+                is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or
                                   st.session_state.get('is_merged_variable', False))
                 
                 selected_vars = (st.session_state.get('selected_variables') or 
