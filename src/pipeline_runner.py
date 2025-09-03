@@ -238,11 +238,16 @@ class StreamlitPipelineRunner:
             
             # Determine loading mode: single or multiple variables
             if var_names and len(var_names) > 1:
-                # Multiple variables mode - get merge configuration from session state
-                merge_config = get_session_state().get('merge_config', {})
+                # Multiple variables mode - get merge configuration from session state (with fallback to confirmed values)
+                session_state = get_session_state()
+                merge_config = (session_state.get('merge_config') or 
+                              session_state.get('merge_config_confirmed', {}))
                 merge_strategy = merge_config.get('strategy', 'concatenate')
                 separator = merge_config.get('separator', ' ')
                 skip_empty = merge_config.get('skip_empty', True)
+                
+                verbose_reporter.stat_line(f"Loading multiple variables: {var_names}")
+                verbose_reporter.stat_line(f"Merge strategy: {merge_strategy}, separator: '{separator}', skip_empty: {skip_empty}")
                 
                 # Use tuple for caching (lists are not hashable)
                 var_names_tuple = tuple(var_names)
