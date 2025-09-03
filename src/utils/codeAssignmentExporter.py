@@ -221,9 +221,9 @@ class CodeAssignmentExporter:
                                 'theme_name': code_info['theme_name'],
                                 'theme_description': code_info['theme_description'],
                                 # Step 7 reasoning data
-                                'step3_decision': reasoning_data.get('step3_decision', ''),
-                                'step3_justification': reasoning_data.get('step3_justification', ''),
-                                'step4_reasoning': reasoning_data.get('step4_reasoning', '')
+                                'codegen_theme': reasoning_data.get('codegen_theme', ''),
+                                'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
+                                'codebook_validation': reasoning_data.get('codebook_validation', '')
                             }
                             export_data.append(row_data)
                     else:
@@ -253,9 +253,9 @@ class CodeAssignmentExporter:
                             'theme_name': '',
                             'theme_description': '',
                             # Step 7 reasoning data
-                            'step3_decision': reasoning_data.get('step3_decision', ''),
-                            'step3_justification': reasoning_data.get('step3_justification', ''),
-                            'step4_reasoning': reasoning_data.get('step4_reasoning', '')
+                            'codegen_theme': reasoning_data.get('codegen_theme', ''),
+                            'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
+                            'codebook_validation': reasoning_data.get('codebook_validation', '')
                         }
                         export_data.append(row_data)
         
@@ -405,6 +405,16 @@ class CodeAssignmentExporter:
         """Create a mapping from cluster IDs to reasoning data"""
         reasoning_mapping = {}
         
+        # Process step 1 summaries (theme analysis)
+        for cluster_id, step1_data in reasoning_results.step1_summaries.items():
+            cluster_key = str(cluster_id)
+            if cluster_key not in reasoning_mapping:
+                reasoning_mapping[cluster_key] = {}
+            
+            # Extract analysis from step1 data for Codegen_theme
+            analysis = step1_data.get('analysis', '')
+            reasoning_mapping[cluster_key]['codegen_theme'] = analysis
+        
         # Process step 3 recommendations (code generation decisions)
         for cluster_id, step3_data in reasoning_results.step3_recommendations.items():
             cluster_key = str(cluster_id)
@@ -414,8 +424,11 @@ class CodeAssignmentExporter:
             if 'coding_decisions' in step3_data and step3_data['coding_decisions']:
                 # Get the first coding decision (there might be multiple themes per cluster)
                 first_decision = step3_data['coding_decisions'][0]
-                reasoning_mapping[cluster_key]['step3_decision'] = first_decision.get('decision', '')
-                reasoning_mapping[cluster_key]['step3_justification'] = first_decision.get('justification', '')
+                decision = first_decision.get('decision', '')
+                justification = first_decision.get('justification', '')
+                # Combine decision + justification for Codegen_recommendation
+                combined_recommendation = f"{decision}: {justification}" if decision and justification else decision or justification
+                reasoning_mapping[cluster_key]['codegen_recommendation'] = combined_recommendation
         
         # Process step 4 validations
         for cluster_id, step4_data in reasoning_results.step4_validations.items():
@@ -426,7 +439,11 @@ class CodeAssignmentExporter:
             if 'code_validations' in step4_data and step4_data['code_validations']:
                 # Get the first validation (there might be multiple validations per cluster)
                 first_validation = step4_data['code_validations'][0]
-                reasoning_mapping[cluster_key]['step4_reasoning'] = first_validation.get('decision_rationale', '')
+                code_label = first_validation.get('code_label', '')
+                justification = first_validation.get('decision_rationale', '')
+                # Combine code label + justification for Codebook_validation
+                combined_validation = f"{code_label}: {justification}" if code_label and justification else code_label or justification
+                reasoning_mapping[cluster_key]['codebook_validation'] = combined_validation
         
         return reasoning_mapping
     
@@ -434,7 +451,7 @@ class CodeAssignmentExporter:
                                  source_cluster: Optional[str], 
                                  parent_cluster: Optional[str]) -> Dict[str, str]:
         """Get reasoning data for a specific cluster, trying source cluster first then parent cluster"""
-        default_reasoning = {'step3_decision': '', 'step3_justification': '', 'step4_reasoning': ''}
+        default_reasoning = {'codegen_theme': '', 'codegen_recommendation': '', 'codebook_validation': ''}
         
         # Try source cluster first (sub-cluster like "12-1")
         if source_cluster and str(source_cluster) in reasoning_mapping:
@@ -479,9 +496,9 @@ class CodeAssignmentExporter:
             'Assignment Confidence',
             'Theme Name',
             'Theme Description',
-            'Step 3 Decision',
-            'Step 3 Justification',
-            'Step 4 Reasoning'
+            'Codegen_theme',
+            'Codegen_recommendation',
+            'Codebook_validation'
         ]
         
         for col, header in enumerate(headers, 1):
@@ -519,9 +536,9 @@ class CodeAssignmentExporter:
             'J': 20,  # Assignment Confidence
             'K': 30,  # Theme Name
             'L': 50,  # Theme Description
-            'M': 25,  # Step 3 Decision
-            'N': 60,  # Step 3 Justification
-            'O': 60   # Step 4 Reasoning
+            'M': 60,  # Codegen_theme
+            'N': 60,  # Codegen_recommendation
+            'O': 60   # Codebook_validation
         }
         
         for col, width in column_widths.items():
@@ -543,13 +560,13 @@ class CodeAssignmentExporter:
             ["Unique Codes", df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()],
             ["Unique Themes", df[df['theme_name'] != '']['theme_name'].nunique()],
             ["", ""],
-            ["Step 3 Decisions", "Count"],
+            ["Codegen Recommendations", "Count"],
         ]
         
-        # Add step 3 decision frequency
-        step3_freq = df[df['step3_decision'] != '']['step3_decision'].value_counts()
-        for decision, count in step3_freq.items():
-            summary_data.append([decision, count])
+        # Add codegen recommendation frequency
+        codegen_rec_freq = df[df['codegen_recommendation'] != '']['codegen_recommendation'].value_counts()
+        for recommendation, count in codegen_rec_freq.items():
+            summary_data.append([recommendation, count])
         
         summary_data.extend([
             ["", ""],

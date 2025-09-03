@@ -34,16 +34,55 @@ from config import (
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
-from utils import textNormalizer, spellChecker, textFinalizer
-from utils import qualityFilter
-from utils import ideaExtractor
-from utils.embedder import Embedder
-from utils.clusterer import Clusterer
-from utils import codeGenerator
-from utils.themeIdentifier import ThemeIdentifier
-from utils import codeAssigner
-from utils.codeAssignmentExporter import CodeAssignmentExporter
-from utils.codeGenerator import CodeGeneratorReasoningResults
+
+# Lazy loading functions to improve startup performance
+def _get_text_normalizer():
+    from utils import textNormalizer
+    return textNormalizer
+
+def _get_spell_checker():
+    from utils import spellChecker
+    return spellChecker
+
+def _get_text_finalizer():
+    from utils import textFinalizer
+    return textFinalizer
+
+def _get_quality_filter():
+    from utils import qualityFilter
+    return qualityFilter
+
+def _get_idea_extractor():
+    from utils import ideaExtractor
+    return ideaExtractor
+
+def _get_embedder():
+    from utils.embedder import Embedder
+    return Embedder
+
+def _get_clusterer():
+    from utils.clusterer import Clusterer
+    return Clusterer
+
+def _get_code_generator():
+    from utils import codeGenerator
+    return codeGenerator
+
+def _get_theme_identifier():
+    from utils.themeIdentifier import ThemeIdentifier
+    return ThemeIdentifier
+
+def _get_code_assigner():
+    from utils import codeAssigner
+    return codeAssigner
+
+def _get_code_assignment_exporter():
+    from utils.codeAssignmentExporter import CodeAssignmentExporter
+    return CodeAssignmentExporter
+
+def _get_code_generator_reasoning_results():
+    from utils.codeGenerator import CodeGeneratorReasoningResults
+    return CodeGeneratorReasoningResults
 
 class StreamlitPipelineRunner:
     """Pipeline runner optimized for Streamlit with session state management"""
@@ -123,7 +162,11 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("PREPROCESSING PHASE")
             start_time = time.time()
             
-            # Initialize utils
+            # Initialize utils (lazy loaded)
+            textNormalizer = _get_text_normalizer()
+            spellChecker = _get_spell_checker()
+            textFinalizer = _get_text_finalizer()
+            
             text_normalizer = textNormalizer.TextNormalizer(verbose=self.verbose)
             spell_checker = spellChecker.SpellChecker(
                 config=spellcheck_config,
@@ -216,6 +259,8 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("QUALITY FILTERING PHASE")
             start_time = time.time()
             
+            # Lazy load quality filter
+            qualityFilter = _get_quality_filter()
             grader = qualityFilter.Grader(
                 preprocessed_text, 
                 var_lab, 
@@ -258,6 +303,8 @@ class StreamlitPipelineRunner:
             
             filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
             
+            # Lazy load idea extractor
+            ideaExtractor = _get_idea_extractor()
             encoder = ideaExtractor.IdeaExtractor(
                 responses=filtered_text,
                 var_lab=var_lab,
@@ -299,6 +346,8 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
             start_time = time.time()
             
+            # Lazy load embedder
+            Embedder = _get_embedder()
             get_embeddings = Embedder(
                 config=embedding_config,
                 model_config=model_config,
@@ -338,6 +387,8 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
             start_time = time.time()
             
+            # Lazy load clusterer
+            Clusterer = _get_clusterer()
             clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=self.verbose)
             clusterer.run()
             initial_cluster_results = clusterer.to_cluster_model()
@@ -387,7 +438,8 @@ class StreamlitPipelineRunner:
                 )
                 starter_codes = starter_generator.generate()
             
-            # Generate codebook using inductive code generator
+            # Generate codebook using inductive code generator (lazy loaded)
+            codeGenerator = _get_code_generator()
             generator = codeGenerator.InductiveCodeGenerator(
                 cluster_results=initial_cluster_results,
                 starter_codes=starter_codes,
@@ -400,7 +452,8 @@ class StreamlitPipelineRunner:
             results = generator.generate()
             
             codebook_entries = []
-            if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
+            CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
+            if results and isinstance(results, CodeGeneratorReasoningResults):
                 final_codebook = results.codebook
                 for item in final_codebook:
                     codebook_entry = models.CodebookEntry(
@@ -460,6 +513,8 @@ class StreamlitPipelineRunner:
             else:
                 codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
                 
+                # Lazy load theme identifier
+                ThemeIdentifier = _get_theme_identifier()
                 theme_identifier = ThemeIdentifier(
                     codebook=codebook,
                     var_lab=var_lab,
@@ -558,6 +613,9 @@ class StreamlitPipelineRunner:
             elif not initial_cluster_results:
                 raise ValueError("No cluster results available for code assignment")
             
+            # Lazy load code assigner
+            codeAssigner = _get_code_assigner()
+            
             if method == "direct_llm":
                 # Direct LLM processing
                 code_assigner_instance = codeAssigner.CodeAssigner(
@@ -635,9 +693,11 @@ class StreamlitPipelineRunner:
         
         start_time = time.time()
         
+        # Lazy load code assignment exporter
+        CodeAssignmentExporter = _get_code_assignment_exporter()
         exporter = CodeAssignmentExporter(verbose=self.verbose)
         excel_path = exporter.export_to_excel(
-            code_assigned_results_direct=code_assigned_results,
+            code_assigned_results=code_assigned_results,
             theme_enriched_codebook=theme_enriched_codebook,
             filename=filename,
             var_name=var_name,
@@ -669,6 +729,7 @@ class StreamlitPipelineRunner:
         # Try to load reasoning data from cache
         reasoning_results = None
         try:
+            CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
             reasoning_models = self.cache_manager.load_from_cache(
                 filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
             )
@@ -680,7 +741,8 @@ class StreamlitPipelineRunner:
         except Exception as e:
             verbose_reporter.warning(f"⚠️ Failed to load reasoning data: {e} - using regular export")
         
-        # Create exporter
+        # Create exporter (lazy loaded)
+        CodeAssignmentExporter = _get_code_assignment_exporter()
         exporter = CodeAssignmentExporter(verbose=self.verbose)
         
         # Export with or without reasoning data
