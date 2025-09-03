@@ -26,7 +26,7 @@ from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
-from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp
+from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +140,9 @@ class SpellChecker:
         }
     
     @staticmethod 
-    def get_nlp():  
-        """Load SpaCy language model with Streamlit caching for session-wide reuse"""
-        return get_spacy_nlp()
+    def get_nlp(spell_check_enabled: bool = True):  
+        """Load SpaCy language model conditionally with Streamlit caching"""
+        return get_spacy_nlp_conditional(spell_check_enabled)
    
     @staticmethod
     @lru_cache(maxsize=1)
