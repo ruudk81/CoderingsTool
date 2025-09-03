@@ -108,6 +108,11 @@ class SpellChecker:
             self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
             self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
             self.verbose_reporter.stat_line(f"Batch size: {self.config.batch_size}", indent=1)
+            self.verbose_reporter.stat_line(f"Performance optimizations:", indent=1)
+            self.verbose_reporter.stat_line(f"  Max words to check: {self.config.max_words_to_check:,}", indent=1)
+            self.verbose_reporter.stat_line(f"  Max unique OOV words: {self.config.max_unique_oov_words:,}", indent=1)
+            self.verbose_reporter.stat_line(f"  Word frequency caching: {'enabled' if self.config.enable_word_frequency_cache else 'disabled'}", indent=1)
+            self.verbose_reporter.stat_line(f"  Early termination: {'enabled' if self.config.enable_early_termination else 'disabled'}", indent=1)
         
         # Installation check with verbose error reporting
         if not self.check_hunspell_installation():
@@ -567,10 +572,30 @@ class SpellChecker:
         
         sentences_list = [response.original_response for response in responses]
         
+        # Calculate total words and check for early termination
+        total_words = sum(len(sentence.split()) for sentence in sentences_list)
+        
+        # Early termination check for large datasets
+        if self.config.enable_early_termination and total_words > self.config.max_words_to_check:
+            print(f"⚠️  Large dataset detected ({total_words:,} words)")
+            print(f"⚠️  Skipping spell checking (limit: {self.config.max_words_to_check:,} words)")
+            print("⚠️  Proceeding without corrections to avoid performance bottleneck")
+            
+            # Return original responses without spell checking
+            processed_responses = [models.PreprocessedModel(
+                respondent_id=response.respondent_id, 
+                response=response.original_response
+            ) for response in responses]
+            
+            return processed_responses
+        
         # Verbose metrics
         if self.verbose_reporter.enabled:
-            total_words = sum(len(sentence.split()) for sentence in sentences_list)
-            self.verbose_reporter.stat_line(f"Total words to analyze: {total_words}")
+            self.verbose_reporter.stat_line(f"Total words to analyze: {total_words:,}")
+            
+        # Initialize word frequency cache if enabled
+        word_frequency_cache = {} if self.config.enable_word_frequency_cache else None
+        
         oov_words = []
         docs_with_oov = 0
         
@@ -578,15 +603,40 @@ class SpellChecker:
         oov_identification_session = HunspellSession(self.hunspell_path, self.dict_path)
         
         try:
+            words_processed = 0
+            last_progress_report = 0
+            
             for doc in self.get_nlp().pipe(sentences_list, batch_size=self.config.spacy_batch_size):
                 doc_flagged = False
                 for token in doc:
                     if token.is_alpha and token.ent_type_ == "" and len(token.text) > 2:
-                        word = token.text
+                        word = token.text.lower()  # Normalize for caching
+                        words_processed += 1
                         self.stats['words_checked'] += 1
-                        output = oov_identification_session.check_word(word)
-                        if output and output.startswith(('&', '#')):
-                            oov_words.append(word)
+                        
+                        # Progress reporting for large datasets
+                        if (self.config.progress_report_interval > 0 and 
+                            words_processed - last_progress_report >= self.config.progress_report_interval):
+                            print(f"  • Analyzed {words_processed:,} words, found {self.stats['oov_words_found']} OOV words...")
+                            last_progress_report = words_processed
+                        
+                        # Check word frequency cache first
+                        is_oov = None
+                        if word_frequency_cache is not None:
+                            if word in word_frequency_cache:
+                                is_oov = word_frequency_cache[word]
+                        
+                        # Only call Hunspell if not in cache
+                        if is_oov is None:
+                            output = oov_identification_session.check_word(token.text)
+                            is_oov = output and output.startswith(('&', '#'))
+                            
+                            # Cache the result
+                            if word_frequency_cache is not None:
+                                word_frequency_cache[word] = is_oov
+                        
+                        if is_oov:
+                            oov_words.append(token.text)  # Keep original case for corrections
                             self.stats['oov_words_found'] += 1
                             doc_flagged = True
              
@@ -599,9 +649,24 @@ class SpellChecker:
         unique_oov_words = list(set(oov_words))
         self.stats['unique_oov_words'] = len(unique_oov_words)
         
+        # Limit unique OOV words processing to prevent excessive correction attempts
+        if len(unique_oov_words) > self.config.max_unique_oov_words:
+            print(f"⚠️  Too many unique OOV words found ({len(unique_oov_words):,})")
+            print(f"⚠️  Limiting to first {self.config.max_unique_oov_words:,} most frequent OOV words")
+            
+            # Count frequency of each OOV word and keep most common ones
+            from collections import Counter
+            oov_counter = Counter(oov_words)
+            most_common_oov = [word for word, count in oov_counter.most_common(self.config.max_unique_oov_words)]
+            unique_oov_words = most_common_oov
+            self.stats['unique_oov_words'] = len(unique_oov_words)
+        
         # Verbose OOV analysis details
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Responses requiring correction: {docs_with_oov}")
+            if word_frequency_cache:
+                cache_hits = sum(1 for cached in word_frequency_cache.values() if not cached)
+                self.verbose_reporter.stat_line(f"Word frequency cache hits: {cache_hits}")
         
         # Verbose progress indicators for large datasets
         if self.verbose_reporter.enabled and len(responses) > 1000:
@@ -646,11 +711,22 @@ class SpellChecker:
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration() 
         
+        # Performance summary for large datasets
+        if total_words > 10000:
+            processing_time = stats.get_duration()
+            words_per_second = int(total_words / max(processing_time, 0.1))
+            print(f"• Performance: {words_per_second:,} words/sec, {processing_time:.1f}s total")
+        
         # Group all stats together
         if self.verbose_reporter.enabled: 
-          
             self.verbose_reporter.stat_line(f"Corrections Failed (no correction): {self.stats['corrections_no_response']}")
             self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
+            
+            # Word frequency cache statistics
+            if word_frequency_cache:
+                cache_size = len(word_frequency_cache)
+                cache_efficiency = (cache_size / max(self.stats['words_checked'], 1)) * 100
+                self.verbose_reporter.stat_line(f"Word cache efficiency: {cache_efficiency:.1f}% ({cache_size} unique words cached)")
           
         print(f"• Corrections applied: {self.stats['corrections_applied']}")
         

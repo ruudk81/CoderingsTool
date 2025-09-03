@@ -669,6 +669,10 @@ def show_upload_page():
                                 st.session_state.selected_variable = selected_variables[0]
                                 st.session_state.selected_variables = selected_variables
                                 st.session_state.variable_mode = variable_mode
+                                # Ensure persistence for single variables
+                                st.session_state.variable_mode_confirmed = variable_mode
+                                st.session_state.selected_variables_confirmed = selected_variables
+                                st.session_state.is_merged_variable = False
                             else:
                                 # Multiple variables preview - use merge functionality
                                 merge_strategy = st.session_state.get('merge_strategy', 'concatenate')
@@ -693,6 +697,11 @@ def show_upload_page():
                                     'separator': separator,
                                     'skip_empty': skip_empty
                                 }
+                                # Ensure persistence for merged variables
+                                st.session_state.variable_mode_confirmed = variable_mode
+                                st.session_state.selected_variables_confirmed = selected_variables
+                                st.session_state.merge_config_confirmed = st.session_state.merge_config
+                                st.session_state.is_merged_variable = True
                             
                             st.session_state.selected_id_column = id_var
                             st.success("Preview geladen!" if lang == "nl" else "Preview loaded!")
@@ -749,6 +758,16 @@ def show_upload_page():
                 
                 # Ready to proceed button
                 if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
+                    # Ensure all necessary session state variables are preserved for merged variables
+                    if st.session_state.get('variable_mode') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
+                        # Force persist merge-related session state
+                        st.session_state['variable_mode_confirmed'] = st.session_state.get('variable_mode')
+                        st.session_state['selected_variables_confirmed'] = st.session_state.get('selected_variables')
+                        st.session_state['merge_config_confirmed'] = st.session_state.get('merge_config')
+                        st.session_state['is_merged_variable'] = True
+                    else:
+                        st.session_state['is_merged_variable'] = False
+                    
                     st.session_state.step = 1
                     st.rerun()
 
@@ -757,11 +776,55 @@ def show_preprocessing_page():
     st.header("Stap 2: Preprocessing" if lang == "nl" else "Step 2: Preprocessing")
     st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
     
-    # Show current selection
+    # Show current selection with better validation for merged variables
     if st.session_state.selected_variable and st.session_state.selected_id_column:
-        st.info(f"**Variabele:** {st.session_state.selected_variable}\n\n**ID Kolom:** {st.session_state.selected_id_column}")
+        # Check if this is a merged variable scenario (use confirmed values as fallback)
+        is_multiple_mode = (st.session_state.get('variable_mode') == 'multiple' or 
+                          st.session_state.get('variable_mode_confirmed') == 'multiple' or
+                          st.session_state.get('is_merged_variable', False))
+        
+        selected_vars = (st.session_state.get('selected_variables') or 
+                        st.session_state.get('selected_variables_confirmed', []))
+        
+        if is_multiple_mode and len(selected_vars) > 1:
+            merge_config = (st.session_state.get('merge_config') or 
+                           st.session_state.get('merge_config_confirmed', {}))
+            st.info(
+                f"**Samengevoegde Variabelen:** {', '.join(selected_vars)}\n\n"
+                f"**ID Kolom:** {st.session_state.selected_id_column}\n\n"
+                f"**Samenvoeg Strategie:** {merge_config.get('strategy', 'concatenate')}"
+                if lang == "nl" else
+                f"**Merged Variables:** {', '.join(selected_vars)}\n\n"
+                f"**ID Column:** {st.session_state.selected_id_column}\n\n"
+                f"**Merge Strategy:** {merge_config.get('strategy', 'concatenate')}"
+            )
+        else:
+            st.info(f"**Variabele:** {st.session_state.selected_variable}\n\n**ID Kolom:** {st.session_state.selected_id_column}")
     else:
-        st.warning("Ga terug en selecteer een variabele" if lang == "nl" else "Go back and select a variable")
+        # Enhanced error message with debug information
+        missing_items = []
+        if not st.session_state.selected_variable:
+            missing_items.append("selected_variable")
+        if not st.session_state.selected_id_column:
+            missing_items.append("selected_id_column")
+        
+        error_msg = (
+            f"Ga terug en selecteer een variabele. Ontbrekend: {', '.join(missing_items)}"
+            if lang == "nl" else
+            f"Go back and select a variable. Missing: {', '.join(missing_items)}"
+        )
+        st.warning(error_msg)
+        
+        # Debug information for development
+        with st.expander("🔧 Debug Info" if lang == "en" else "🔧 Debug Informatie"):
+            st.write("Session State Variables:")
+            st.write(f"- selected_variable: {st.session_state.get('selected_variable')}")
+            st.write(f"- selected_id_column: {st.session_state.get('selected_id_column')}")
+            st.write(f"- variable_mode: {st.session_state.get('variable_mode')}")
+            st.write(f"- selected_variables: {st.session_state.get('selected_variables')}")
+            st.write(f"- merge_config: {st.session_state.get('merge_config')}")
+            st.write(f"- is_merged_variable: {st.session_state.get('is_merged_variable')}")
+            st.write(f"- confirmed values: {st.session_state.get('variable_mode_confirmed')}, {st.session_state.get('selected_variables_confirmed')}")
         return
     
     if st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
@@ -777,12 +840,20 @@ def show_preprocessing_page():
                 encoding = st.session_state.get('file_encoding', 'auto')
                 encoding = None if encoding == 'auto' else encoding
                 
-                # Handle variable label for single vs multiple variables
-                if st.session_state.get('variable_mode') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
+                # Handle variable label for single vs multiple variables (use confirmed values as fallback)
+                is_multiple_mode = (st.session_state.get('variable_mode') == 'multiple' or 
+                                  st.session_state.get('variable_mode_confirmed') == 'multiple' or
+                                  st.session_state.get('is_merged_variable', False))
+                
+                selected_vars = (st.session_state.get('selected_variables') or 
+                                st.session_state.get('selected_variables_confirmed', []))
+                
+                if is_multiple_mode and len(selected_vars) > 1:
                     # Multiple variables - create combined label
-                    merge_config = st.session_state.get('merge_config', {})
+                    merge_config = (st.session_state.get('merge_config') or 
+                                   st.session_state.get('merge_config_confirmed', {}))
                     var_labels = []
-                    for var in st.session_state.selected_variables:
+                    for var in selected_vars:
                         label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
                         var_labels.append(label or var)
                     var_lab = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
@@ -791,7 +862,7 @@ def show_preprocessing_page():
                     raw_text_list = _get_pipeline_runner().step_1_load_data(
                         filename=st.session_state.filename,
                         id_column=st.session_state.selected_id_column,
-                        var_names=st.session_state.selected_variables,
+                        var_names=selected_vars,
                         streamlit_container=progress_container,
                         encoding=encoding
                     )
@@ -998,10 +1069,19 @@ def show_codebook_generation_page():
     if st.button("Genereer Codebook" if lang == "nl" else "Generate Codebook", type="primary"):
         progress_container = st.empty()
         try:
+            # Determine variable name for codebook generation (use meaningful name for merged variables)
+            var_name_for_codebook = st.session_state.selected_variable
+            if (st.session_state.get('is_merged_variable', False) and 
+                st.session_state.get('selected_variables_confirmed')):
+                # Use first variable name or create composite name for merged variables
+                selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                if len(selected_vars) > 1:
+                    var_name_for_codebook = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+            
             codebook_main, reasoning_results = _get_pipeline_runner().step_7_generate_codebook(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                 filename=st.session_state.filename,
-                var_name=st.session_state.selected_variable,
+                var_name=var_name_for_codebook,
                 var_lab=st.session_state.pipeline_results['var_lab'],
                 model_config=st.session_state.model_config,
                 code_designer_config=st.session_state.code_designer_config,
@@ -1035,10 +1115,19 @@ def show_theme_identification_page():
     if st.button("Identificeer Thema's" if lang == "nl" else "Identify Themes", type="primary"):
         progress_container = st.empty()
         try:
+            # Determine variable name for theme identification (use meaningful name for merged variables)
+            var_name_for_themes = st.session_state.selected_variable
+            if (st.session_state.get('is_merged_variable', False) and 
+                st.session_state.get('selected_variables_confirmed')):
+                # Use first variable name or create composite name for merged variables
+                selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                if len(selected_vars) > 1:
+                    var_name_for_themes = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+            
             theme_enriched_codebook = _get_pipeline_runner().step_8_identify_themes(
                 codebook_main=st.session_state.pipeline_results['codebook_main'],
                 filename=st.session_state.filename,
-                var_name=st.session_state.selected_variable,
+                var_name=var_name_for_themes,
                 var_lab=st.session_state.pipeline_results['var_lab'],
                 streamlit_container=progress_container
             )
@@ -1185,11 +1274,20 @@ def show_export_page():
                     # Use enhanced export with reasoning data via pipeline runner
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel met redenering..." if lang == "nl" else "Exporting results to Excel with reasoning..."))
                     
+                    # Determine variable name for export (use meaningful name for merged variables)
+                    var_name_for_export = st.session_state.selected_variable
+                    if (st.session_state.get('is_merged_variable', False) and 
+                        st.session_state.get('selected_variables_confirmed')):
+                        # Use first variable name or create composite name for merged variables
+                        selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                        if len(selected_vars) > 1:
+                            var_name_for_export = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+                    
                     excel_path = _get_pipeline_runner().step_10_export_excel_with_reasoning(
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
-                        var_name=st.session_state.selected_variable,
+                        var_name=var_name_for_export,
                         export_dir=None,
                         reasoning_results=st.session_state.pipeline_results.get('reasoning_results'),
                         streamlit_container=progress_container
@@ -1203,12 +1301,21 @@ def show_export_page():
                     
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
                     
+                    # Determine variable name for export (use meaningful name for merged variables)
+                    var_name_for_export = st.session_state.selected_variable
+                    if (st.session_state.get('is_merged_variable', False) and 
+                        st.session_state.get('selected_variables_confirmed')):
+                        # Use first variable name or create composite name for merged variables
+                        selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                        if len(selected_vars) > 1:
+                            var_name_for_export = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+                    
                     exporter = CodeAssignmentExporter(verbose=True)
                     excel_path = exporter.export_to_excel(
                         code_assigned_results,
                         theme_enriched_codebook,
                         st.session_state.filename,
-                        st.session_state.selected_variable,
+                        var_name_for_export,
                         export_dir=None  # Will create default export directory
                     )
                     
@@ -1279,10 +1386,19 @@ def show_results_page():
             try:
                 with open(excel_path, "rb") as file:
                     excel_data = file.read()
+                # Determine variable name for download filename (use meaningful name for merged variables)
+                var_name_for_filename = st.session_state.selected_variable
+                if (st.session_state.get('is_merged_variable', False) and 
+                    st.session_state.get('selected_variables_confirmed')):
+                    # Use first variable name or create composite name for merged variables
+                    selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                    if len(selected_vars) > 1:
+                        var_name_for_filename = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+                
                 st.download_button(
                     label="📊 Download Excel Resultaten" if lang == "nl" else "📊 Download Excel Results",
                     data=excel_data,
-                    file_name=f"{st.session_state.filename}_{st.session_state.selected_variable}_results.xlsx",
+                    file_name=f"{st.session_state.filename}_{var_name_for_filename}_results.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except FileNotFoundError:
@@ -1303,10 +1419,19 @@ def show_results_page():
             for entry in codebook.codes:
                 codebook_csv += f'"{entry.code}","{entry.definition}","{entry.theme or ""}","{entry.theme_description or ""}"\n'
             
+            # Determine variable name for codebook filename (use meaningful name for merged variables)
+            var_name_for_codebook_filename = st.session_state.selected_variable
+            if (st.session_state.get('is_merged_variable', False) and 
+                st.session_state.get('selected_variables_confirmed')):
+                # Use first variable name or create composite name for merged variables
+                selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                if len(selected_vars) > 1:
+                    var_name_for_codebook_filename = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
+            
             st.download_button(
                 label="📋 Download Codebook" if lang == "nl" else "📋 Download Codebook",
                 data=codebook_csv,
-                file_name=f"{st.session_state.filename}_{st.session_state.selected_variable}_codebook.csv",
+                file_name=f"{st.session_state.filename}_{var_name_for_codebook_filename}_codebook.csv",
                 mime="text/csv"
             )
         else:

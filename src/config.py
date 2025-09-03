@@ -407,13 +407,20 @@ class SpellCheckConfig:
     max_batch_size: int = 5
     completion_reserve: int = 1000
     cache_size: int = 10000
-    spacy_batch_size: int = 32
+    spacy_batch_size: int = 64  # Increased for better performance
     repeated_char_threshold: int = 5  # Characters repeated 5+ times
     max_correction_examples: int = 10  # For verbose output
     seed: int = 42
     context_chars: int = 20  # Characters of context for spell checking
     spell_check_threshold: float = 0.7  # TODO: probably redundant
     max_concurrent_requests: int = 5  # For API rate limiting
+    
+    # Performance optimization settings
+    max_words_to_check: int = 100000  # Skip spell checking if more words than this
+    enable_word_frequency_cache: bool = True  # Cache common words
+    progress_report_interval: int = 10000  # Report progress every N words
+    max_unique_oov_words: int = 5000  # Limit unique OOV words to process
+    enable_early_termination: bool = True  # Allow early termination for large datasets
 
 # =============================================================================
 # SEGMENT CONFIGURATION
