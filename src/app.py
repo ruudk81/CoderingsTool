@@ -526,26 +526,99 @@ def show_upload_page():
         if var_data:
             st.dataframe(pd.DataFrame(var_data), use_container_width=True)
             
-            # Variable selection
-            col1, col2 = st.columns(2)
+            # Variable selection mode
+            st.subheader("📝 " + ("Variabele Selectie" if lang == "nl" else "Variable Selection"))
             
-            with col1:
-                # Select text variable to analyze
+            # Single vs Multiple variable toggle
+            variable_mode = st.radio(
+                "Selectie Mode" if lang == "nl" else "Selection Mode",
+                ["single", "multiple"],
+                format_func=lambda x: "Enkele variabele" if x == "single" and lang == "nl" 
+                                    else "Single variable" if x == "single"
+                                    else "Meerdere variabelen" if lang == "nl"
+                                    else "Multiple variables",
+                key="variable_mode",
+                horizontal=True,
+                help="Selecteer enkele variabele voor standaard analyse, of meerdere voor tekstsamenvoeging" if lang == "nl"
+                     else "Select single variable for standard analysis, or multiple for text merging"
+            )
+            
+            # ID column selection (always needed)
+            id_var = st.selectbox(
+                "🆔 " + ("Selecteer ID kolom" if lang == "nl" else "Select ID column"),
+                options=list(st.session_state.available_variables.keys()),
+                format_func=lambda x: f"{x} - {st.session_state.available_variables[x] or '(No label)'}",
+                key="id_variable"
+            )
+            
+            # Variable selection based on mode
+            if variable_mode == "single":
+                # Single variable selection
                 text_var = st.selectbox(
-                    "Selecteer tekst variabele" if lang == "nl" else "Select text variable",
+                    "📄 " + ("Selecteer tekst variabele" if lang == "nl" else "Select text variable"),
                     options=list(st.session_state.available_variables.keys()),
                     format_func=lambda x: f"{x} - {st.session_state.available_variables[x] or '(No label)'}",
                     key="text_variable"
                 )
-                
-            with col2:
-                # Select ID column
-                id_var = st.selectbox(
-                    "Selecteer ID kolom" if lang == "nl" else "Select ID column",
+                selected_variables = [text_var] if text_var else []
+            else:
+                # Multiple variable selection
+                selected_variables = st.multiselect(
+                    "📄 " + ("Selecteer tekst variabelen om samen te voegen" if lang == "nl" 
+                           else "Select text variables to merge"),
                     options=list(st.session_state.available_variables.keys()),
                     format_func=lambda x: f"{x} - {st.session_state.available_variables[x] or '(No label)'}",
-                    key="id_variable"
+                    key="text_variables_multi",
+                    help="Selecteer meerdere variabelen die samengevoegd zullen worden tot één tekst" if lang == "nl"
+                         else "Select multiple variables that will be merged into one text"
                 )
+                
+                # Merge configuration for multiple variables
+                if selected_variables and len(selected_variables) > 1:
+                    with st.expander("🔧 " + ("Samenvoeg Opties" if lang == "nl" else "Merge Options"), expanded=True):
+                        merge_col1, merge_col2 = st.columns(2)
+                        
+                        with merge_col1:
+                            merge_strategy = st.selectbox(
+                                "Samenvoeg Strategie" if lang == "nl" else "Merge Strategy",
+                                ["concatenate", "first_available", "all_combined"],
+                                format_func=lambda x: {
+                                    "concatenate": "Alles samenvoegen" if lang == "nl" else "Concatenate all",
+                                    "first_available": "Eerste beschikbare" if lang == "nl" else "First available",
+                                    "all_combined": "Alle met labels" if lang == "nl" else "All with labels"
+                                }[x],
+                                key="merge_strategy",
+                                help="Kies hoe meerdere variabelen samengevoegd worden" if lang == "nl"
+                                     else "Choose how multiple variables are merged"
+                            )
+                        
+                        with merge_col2:
+                            separator_options = [" ", "\n", " | ", "; ", ", "]
+                            separator = st.selectbox(
+                                "Scheidingsteken" if lang == "nl" else "Separator",
+                                separator_options,
+                                format_func=lambda x: {
+                                    " ": "Spatie" if lang == "nl" else "Space",
+                                    "\n": "Nieuwe regel" if lang == "nl" else "New line", 
+                                    " | ": "Pijp symbool" if lang == "nl" else "Pipe symbol",
+                                    "; ": "Puntkomma" if lang == "nl" else "Semicolon",
+                                    ", ": "Komma" if lang == "nl" else "Comma"
+                                }[x],
+                                key="merge_separator",
+                                help="Scheidingsteken tussen samengevoegde teksten" if lang == "nl"
+                                     else "Separator between merged texts"
+                            )
+                        
+                        skip_empty = st.checkbox(
+                            "Lege waarden overslaan" if lang == "nl" else "Skip empty values",
+                            value=True,
+                            key="skip_empty",
+                            help="Variabelen zonder inhoud niet opnemen in samengevoegde tekst" if lang == "nl"
+                                 else "Don't include variables without content in merged text"
+                        )
+                
+                # Set text_var for backward compatibility
+                text_var = selected_variables[0] if selected_variables else None
             
             # Advanced encoding options
             with st.expander("🔧 " + ("Geavanceerde Opties" if lang == "nl" else "Advanced Options"), expanded=False):
@@ -574,45 +647,105 @@ def show_upload_page():
                     st.success(st.session_state.encoding_success_message)
                     del st.session_state.encoding_success_message  # Clear after showing
             
-            # Preview selected variable
-            if st.button("Voorbeeld Bekijken" if lang == "nl" else "Preview Variable"):
-                if text_var and id_var:
+            # Preview selected variable(s)
+            preview_button_label = "Voorbeeld Bekijken" if lang == "nl" else "Preview Variables"
+            if variable_mode == "multiple" and len(selected_variables) > 1:
+                preview_button_label = f"Voorbeeld van {len(selected_variables)} variabelen" if lang == "nl" else f"Preview {len(selected_variables)} variables"
+            
+            if st.button(preview_button_label):
+                if selected_variables and id_var:
                     with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
                         try:
                             # Use selected encoding, None if auto-detect
                             encoding = st.session_state.get('file_encoding', 'auto')
                             encoding = None if encoding == 'auto' else encoding
                             
-                            preview_data = _get_data_loader().get_variable_with_IDs(
-                                st.session_state.filename, id_var, text_var, encoding=encoding
-                            )
-                            st.session_state.variable_preview = preview_data
-                            st.session_state.selected_variable = text_var
+                            if variable_mode == "single" or len(selected_variables) == 1:
+                                # Single variable preview
+                                preview_data = _get_data_loader().get_variable_with_IDs(
+                                    st.session_state.filename, id_var, selected_variables[0], encoding=encoding
+                                )
+                                st.session_state.variable_preview = preview_data
+                                st.session_state.selected_variable = selected_variables[0]
+                                st.session_state.selected_variables = selected_variables
+                                st.session_state.variable_mode = variable_mode
+                            else:
+                                # Multiple variables preview - use merge functionality
+                                merge_strategy = st.session_state.get('merge_strategy', 'concatenate')
+                                separator = st.session_state.get('merge_separator', ' ')
+                                skip_empty = st.session_state.get('skip_empty', True)
+                                
+                                preview_data = _get_data_loader().get_multiple_variables_with_IDs(
+                                    filename=st.session_state.filename,
+                                    id_column=id_var,
+                                    var_names=selected_variables,
+                                    merge_strategy=merge_strategy,
+                                    separator=separator,
+                                    skip_empty=skip_empty,
+                                    encoding=encoding
+                                )
+                                st.session_state.variable_preview = preview_data
+                                st.session_state.selected_variable = "merged_text"  # For backward compatibility
+                                st.session_state.selected_variables = selected_variables
+                                st.session_state.variable_mode = variable_mode
+                                st.session_state.merge_config = {
+                                    'strategy': merge_strategy,
+                                    'separator': separator,
+                                    'skip_empty': skip_empty
+                                }
+                            
                             st.session_state.selected_id_column = id_var
                             st.success("Preview geladen!" if lang == "nl" else "Preview loaded!")
                         except Exception as e:
                             st.error(f"Fout bij preview: {str(e)}" if lang == "nl" else f"Preview error: {str(e)}")
+                else:
+                    st.warning("Selecteer eerst variabelen en ID kolom" if lang == "nl" else "Please select variables and ID column first")
             
             # Show preview if available
             if st.session_state.variable_preview is not None:
-                st.subheader("Data Preview")
+                st.subheader("📊 Data Preview")
                 preview_df = st.session_state.variable_preview
+                
+                # Determine the text column name based on mode
+                text_column = st.session_state.selected_variable
+                if st.session_state.get('variable_mode') == 'multiple' and text_column == 'merged_text':
+                    display_text_column = 'merged_text'
+                else:
+                    display_text_column = text_column
                 
                 # Show statistics
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Totaal" if lang == "nl" else "Total", len(preview_df))
                 with col2:
-                    non_null = preview_df[st.session_state.selected_variable].notna().sum()
+                    non_null = preview_df[display_text_column].notna().sum()
                     st.metric("Niet-leeg" if lang == "nl" else "Non-empty", non_null)
                 with col3:
-                    unique_vals = preview_df[st.session_state.selected_variable].nunique()
+                    unique_vals = preview_df[display_text_column].nunique()
                     st.metric("Uniek" if lang == "nl" else "Unique", unique_vals)
                 
+                # Show merge information for multiple variables
+                if st.session_state.get('variable_mode') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
+                    merge_config = st.session_state.get('merge_config', {})
+                    st.info(
+                        f"🔗 **Samengevoegd:** {len(st.session_state.selected_variables)} variabelen "
+                        f"({', '.join(st.session_state.selected_variables)}) | "
+                        f"**Strategie:** {merge_config.get('strategy', 'concatenate')} | "
+                        f"**Scheidingsteken:** '{merge_config.get('separator', ' ')}'" 
+                        if lang == "nl" else
+                        f"🔗 **Merged:** {len(st.session_state.selected_variables)} variables "
+                        f"({', '.join(st.session_state.selected_variables)}) | "
+                        f"**Strategy:** {merge_config.get('strategy', 'concatenate')} | "
+                        f"**Separator:** '{merge_config.get('separator', ' ')}'"
+                    )
+                
                 # Show sample data
-                st.subheader("Sample Responses")
-                sample_data = preview_df[preview_df[st.session_state.selected_variable].notna()].head(10)
-                st.dataframe(sample_data, use_container_width=True)
+                st.subheader("📝 " + ("Voorbeeldgegevens" if lang == "nl" else "Sample Data"))
+                sample_data = preview_df[preview_df[display_text_column].notna()].head(10)
+                if len(sample_data) > 0:
+                    st.dataframe(sample_data, use_container_width=True)
+                else:
+                    st.warning("Geen niet-lege gegevens gevonden" if lang == "nl" else "No non-empty data found")
                 
                 # Ready to proceed button
                 if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
@@ -644,14 +777,34 @@ def show_preprocessing_page():
                 encoding = st.session_state.get('file_encoding', 'auto')
                 encoding = None if encoding == 'auto' else encoding
                 
-                var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
-                raw_text_list = _get_pipeline_runner().step_1_load_data(
-                    filename=st.session_state.filename,
-                    id_column=st.session_state.selected_id_column,
-                    var_name=st.session_state.selected_variable,
-                    streamlit_container=progress_container,
-                    encoding=encoding
-                )
+                # Handle variable label for single vs multiple variables
+                if st.session_state.get('variable_mode') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
+                    # Multiple variables - create combined label
+                    merge_config = st.session_state.get('merge_config', {})
+                    var_labels = []
+                    for var in st.session_state.selected_variables:
+                        label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
+                        var_labels.append(label or var)
+                    var_lab = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
+                    
+                    # Load multiple variables
+                    raw_text_list = _get_pipeline_runner().step_1_load_data(
+                        filename=st.session_state.filename,
+                        id_column=st.session_state.selected_id_column,
+                        var_names=st.session_state.selected_variables,
+                        streamlit_container=progress_container,
+                        encoding=encoding
+                    )
+                else:
+                    # Single variable (backward compatibility)
+                    var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
+                    raw_text_list = _get_pipeline_runner().step_1_load_data(
+                        filename=st.session_state.filename,
+                        id_column=st.session_state.selected_id_column,
+                        var_name=st.session_state.selected_variable,
+                        streamlit_container=progress_container,
+                        encoding=encoding
+                    )
                 st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                 st.session_state.pipeline_results['var_lab'] = var_lab
             
