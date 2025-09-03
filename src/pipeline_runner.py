@@ -63,13 +63,52 @@ def _get_cached_theme_identifier():
 # Cached data functions for processing results
 @st.cache_data(show_spinner="Loading SPSS data...")
 def _cache_spss_data(filename: str, id_column: str, var_name: str, encoding: str = None):
-    """Cache SPSS file parsing results for fast reruns with encoding support"""
+    """Cache SPSS file parsing results for fast reruns with encoding support (single variable)"""
     from utils.dataLoader import DataLoader
     data_loader = DataLoader(verbose=False)
     
     try:
         # Try with specified encoding or let DataLoader handle encoding detection
         result = data_loader.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name, encoding=encoding)
+        
+        # Store successful encoding info for user feedback
+        successful_encoding = data_loader.get_last_successful_encoding()
+        if successful_encoding:
+            st.session_state['last_encoding_used'] = successful_encoding
+            st.session_state['encoding_success_message'] = f"✅ File loaded successfully with {successful_encoding} encoding"
+        
+        return result
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "encoding" in error_msg.lower() or "byte sequence" in error_msg.lower():
+            # This is an encoding error, provide helpful message
+            st.error(f"🔴 Encoding Error: {error_msg}")
+            st.info("💡 Try specifying a different encoding in the advanced options, or contact support if the issue persists.")
+        raise
+
+@st.cache_data(show_spinner="Loading and merging SPSS data...")
+def _cache_multiple_spss_data(filename: str, id_column: str, var_names: tuple, 
+                              merge_strategy: str = "concatenate", separator: str = " ",
+                              skip_empty: bool = True, encoding: str = None):
+    """Cache multiple SPSS variables merged results for fast reruns with encoding support"""
+    from utils.dataLoader import DataLoader
+    data_loader = DataLoader(verbose=False)
+    
+    try:
+        # Convert tuple back to list for processing
+        var_names_list = list(var_names)
+        
+        # Try with specified encoding or let DataLoader handle encoding detection
+        result = data_loader.get_multiple_variables_with_IDs(
+            filename=filename, 
+            id_column=id_column, 
+            var_names=var_names_list,
+            merge_strategy=merge_strategy,
+            separator=separator,
+            skip_empty=skip_empty,
+            encoding=encoding
+        )
         
         # Store successful encoding info for user feedback
         successful_encoding = data_loader.get_last_successful_encoding()
@@ -168,16 +207,19 @@ class StreamlitPipelineRunner:
         # TODO: Implement streaming to Streamlit container
         return VerboseReporter(self.verbose)
     
-    def step_1_load_data(self, filename: str, id_column: str, var_name: str, 
+    def step_1_load_data(self, filename: str, id_column: str, var_name: str = None, var_names: list = None,
                         force_recalc: bool = False, 
                         streamlit_container=None, encoding: str = None) -> List[models.ResponseModel]:
-        """Step 1: Load data from SPSS file"""
+        """Step 1: Load data from SPSS file (single or multiple variables)"""
         
         step_name = "data"
         verbose_reporter = self.create_verbose_reporter(streamlit_container)
         
         if streamlit_container:
-            streamlit_container.text("🔄 Loading data from SPSS file...")
+            if var_names and len(var_names) > 1:
+                streamlit_container.text(f"🔄 Loading and merging {len(var_names)} variables from SPSS file...")
+            else:
+                streamlit_container.text("🔄 Loading data from SPSS file...")
         
         if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
             raw_text_list = self.cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
@@ -186,13 +228,37 @@ class StreamlitPipelineRunner:
             verbose_reporter.section_header("DATA LOADING SUMMARY")
             start_time = time.time()
             
-            # Load data from SPSS file (with Streamlit caching and encoding support)
             # Use provided encoding or fall back to session state, then to auto-detect (None)
             if encoding is None:
                 encoding = st.session_state.get('file_encoding', 'auto')
                 encoding = None if encoding == 'auto' else encoding
-            raw_text_df = _cache_spss_data(filename, id_column, var_name, encoding)
-            raw_unstructured = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
+            
+            # Determine loading mode: single or multiple variables
+            if var_names and len(var_names) > 1:
+                # Multiple variables mode - get merge configuration from session state
+                merge_config = st.session_state.get('merge_config', {})
+                merge_strategy = merge_config.get('strategy', 'concatenate')
+                separator = merge_config.get('separator', ' ')
+                skip_empty = merge_config.get('skip_empty', True)
+                
+                # Use tuple for caching (lists are not hashable)
+                var_names_tuple = tuple(var_names)
+                raw_text_df = _cache_multiple_spss_data(
+                    filename, id_column, var_names_tuple, 
+                    merge_strategy, separator, skip_empty, encoding
+                )
+                text_column = 'merged_text'
+            else:
+                # Single variable mode (backward compatibility)
+                if var_names and len(var_names) == 1:
+                    var_name = var_names[0]
+                elif not var_name:
+                    raise ValueError("Either var_name or var_names must be provided")
+                
+                raw_text_df = _cache_spss_data(filename, id_column, var_name, encoding)
+                text_column = var_name
+            
+            raw_unstructured = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[text_column].tolist()))
             raw_text_list = []
             
             # Structure data NaN=system missing; Numeric=undefined user missing; String=response 

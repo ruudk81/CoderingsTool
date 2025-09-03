@@ -145,6 +145,143 @@ class DataLoader:
        
         return variable
         
+    def get_multiple_variables_with_IDs(self, filename: str, id_column: str, var_names: list, 
+                                       merge_strategy: str = "concatenate", separator: str = " ",
+                                       skip_empty: bool = True, encoding: str = None):
+        """Get multiple variables merged into single column with IDs with encoding support"""
+        df, meta = self.load_sav(filename, encoding)
+        
+        # Validate all variables exist
+        missing_vars = [var for var in var_names if var not in df.columns]
+        if missing_vars:
+            self.verbose_reporter.stat_line(f"ERROR: Variables not found: {missing_vars}")
+            raise ValueError(f"Variables not found in file '{filename}': {missing_vars}")
+        
+        if id_column not in df.columns:
+            self.verbose_reporter.stat_line(f"ERROR: ID column '{id_column}' not found")
+            raise ValueError(f"ID column '{id_column}' not found in file '{filename}'")
+        
+        # Create working dataframe with ID and selected variables
+        working_df = df[[id_column] + var_names].copy()
+        
+        # Apply merge strategy
+        if merge_strategy == "concatenate":
+            merged_values = self._merge_concatenate(working_df, var_names, separator, skip_empty)
+        elif merge_strategy == "first_available":
+            merged_values = self._merge_first_available(working_df, var_names, skip_empty)
+        elif merge_strategy == "prioritized":
+            merged_values = self._merge_prioritized(working_df, var_names, skip_empty)
+        elif merge_strategy == "all_combined":
+            merged_values = self._merge_all_combined(working_df, var_names, separator, skip_empty, meta)
+        else:
+            raise ValueError(f"Unknown merge strategy: {merge_strategy}")
+        
+        # Create result DataFrame
+        result_df = pd.DataFrame({
+            id_column: working_df[id_column],
+            'merged_text': merged_values
+        })
+        
+        # Report statistics
+        combined_label = self._create_combined_label(meta, var_names, merge_strategy)
+        self.verbose_reporter.stat_line(f"Variables merged: {len(var_names)} ({', '.join(var_names)})")
+        self.verbose_reporter.stat_line(f"Combined label: {combined_label}")
+        self.verbose_reporter.stat_line(f"Merge strategy: {merge_strategy}")
+        
+        # Calculate coverage statistics
+        total_responses = len(result_df)
+        non_empty_responses = result_df['merged_text'].notna().sum()
+        coverage_pct = (non_empty_responses / total_responses) * 100 if total_responses > 0 else 0
+        
+        self.verbose_reporter.stat_line(f"Total responses: {total_responses:,}")
+        self.verbose_reporter.stat_line(f"Non-empty merged responses: {non_empty_responses:,}")
+        self.verbose_reporter.stat_line(f"Coverage: {coverage_pct:.1f}%")
+        
+        # Individual variable statistics
+        for var in var_names:
+            var_coverage = working_df[var].notna().sum()
+            var_pct = (var_coverage / total_responses) * 100 if total_responses > 0 else 0
+            self.verbose_reporter.stat_line(f"  {var}: {var_coverage:,} responses ({var_pct:.1f}%)")
+        
+        # Sample merged values
+        non_null_merged = result_df[result_df['merged_text'].notna()]['merged_text']
+        if len(non_null_merged) > 0:
+            sample_values = non_null_merged.head(5).tolist()
+            self.verbose_reporter.sample_list("Sample merged responses", sample_values)
+        
+        return result_df
+    
+    def _merge_concatenate(self, df, var_names, separator, skip_empty):
+        """Concatenate all non-empty values with separator"""
+        merged = []
+        for _, row in df.iterrows():
+            parts = []
+            for var in var_names:
+                value = row[var]
+                if pd.notna(value) and str(value).strip():
+                    parts.append(str(value).strip())
+                elif not skip_empty:
+                    parts.append("")
+            
+            if parts:
+                merged.append(separator.join(parts))
+            else:
+                merged.append(None)
+        return merged
+    
+    def _merge_first_available(self, df, var_names, skip_empty):
+        """Use first available non-empty value"""
+        merged = []
+        for _, row in df.iterrows():
+            result = None
+            for var in var_names:
+                value = row[var]
+                if pd.notna(value) and str(value).strip():
+                    result = str(value).strip()
+                    break
+            merged.append(result)
+        return merged
+    
+    def _merge_prioritized(self, df, var_names, skip_empty):
+        """Same as first_available but explicit about priority order"""
+        return self._merge_first_available(df, var_names, skip_empty)
+    
+    def _merge_all_combined(self, df, var_names, separator, skip_empty, meta):
+        """Include all responses with variable labels"""
+        merged = []
+        for _, row in df.iterrows():
+            parts = []
+            for var in var_names:
+                value = row[var]
+                if pd.notna(value) and str(value).strip():
+                    var_label = meta.column_labels[meta.column_names.index(var)] or var
+                    parts.append(f"{var_label}: {str(value).strip()}")
+                elif not skip_empty:
+                    var_label = meta.column_labels[meta.column_names.index(var)] or var
+                    parts.append(f"{var_label}: [empty]")
+            
+            if parts:
+                merged.append(separator.join(parts))
+            else:
+                merged.append(None)
+        return merged
+    
+    def _create_combined_label(self, meta, var_names, merge_strategy):
+        """Create a combined label for the merged variables"""
+        labels = []
+        for var in var_names:
+            label = meta.column_labels[meta.column_names.index(var)]
+            labels.append(label or var)
+        
+        if merge_strategy == "concatenate":
+            return f"Combined: {' + '.join(labels)}"
+        elif merge_strategy in ["first_available", "prioritized"]:
+            return f"First of: {' / '.join(labels)}"
+        elif merge_strategy == "all_combined":
+            return f"All combined: {' & '.join(labels)}"
+        else:
+            return f"Merged ({merge_strategy}): {' | '.join(labels)}"
+    
     def get_varlab(self, filename: str, var_name: str, encoding: str = None):
         """Get variable label with encoding support"""
         df, meta = self.load_sav(filename, encoding)
