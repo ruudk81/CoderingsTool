@@ -20,7 +20,7 @@ import spacy
 import models
 
 # === CONFIG ========================================================================================================
-from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, DEFAULT_MODEL_CONFIG
+from config import DEFAULT_MODEL, OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -84,11 +84,11 @@ class HunspellSession:
         self.process.terminate()
 
 class SpellChecker:
-    def __init__(self, config: SpellCheckConfig = None, openai_api_key: Optional[str] = None, 
-                 openai_model: str = None, verbose: bool = False, prompt_printer = None):
+    def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
+        self.model_config = model_config or ModelConfig()
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
-        self.openai_model = openai_model or DEFAULT_MODEL
+        self.model = self.model_config.get_model_for_stage('spell_check')
         
         # Instructor-patched async OpenAI client for structured output
         self.client = instructor.patch(AsyncOpenAI(api_key=self.openai_api_key))
@@ -102,7 +102,7 @@ class SpellChecker:
         if self.verbose_reporter.enabled:
             self.verbose_reporter.empty_line()
             print("Spell checker configuration:")
-            self.verbose_reporter.stat_line(f"Model: {self.openai_model}", indent=1)
+            self.verbose_reporter.stat_line(f"Model: {self.model}", indent=1)
             self.verbose_reporter.stat_line(f"Language: {DEFAULT_LANGUAGE}", indent=1)
             self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
             self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
@@ -471,7 +471,7 @@ class SpellChecker:
                     prompt_content=prompt,
                     prompt_type="correction",
                     metadata={
-                        "model": self.openai_model,
+                        "model": self.model,
                         "var_lab": var_lab,
                         "language": DEFAULT_LANGUAGE,
                         "batch_size": len(batch.tasks),
@@ -484,7 +484,7 @@ class SpellChecker:
             try:
                 self.stats['llm_calls_made'] += 1
                 response = await self.client.chat.completions.create(
-                    model=self.openai_model,
+                    model=self.model,
                     response_model=LLMCorrectionResponse,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=completion_reserve,

@@ -16,10 +16,27 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import ALLOWED_EXTENSIONS
+from config import (
+    ALLOWED_EXTENSIONS, 
+    CacheConfig,
+    ModelConfig,
+    SpellCheckConfig,
+    QualityFilterConfig, 
+    SegmentationConfig,
+    EmbeddingConfig,
+    HDBSCANConfig,
+    CodeDesignerConfig,
+    CodeAssignmentConfig,
+    DEFAULT_SPELLCHECK_CONFIG,
+    DEFAULT_QUALITY_FILTER_CONFIG,
+    DEFAULT_SEGMENTATION_CONFIG,
+    DEFAULT_EMBEDDING_CONFIG,
+    DEFAULT_HDBSCAN_CONFIG,
+    DEFAULT_CODEDESIGNER_CONFIG,
+    DEFAULT_CODE_ASSIGNMENT_CONFIG
+)
 from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig
 from pipeline_runner import get_pipeline_runner
 import ui_text as ui
 
@@ -58,6 +75,317 @@ if 'data_loader' not in st.session_state:
 if 'pipeline_runner' not in st.session_state:
     st.session_state.pipeline_runner = get_pipeline_runner()
 
+# Initialize configuration objects for session-specific settings
+if 'model_config' not in st.session_state:
+    st.session_state.model_config = ModelConfig()
+if 'spellcheck_config' not in st.session_state:
+    st.session_state.spellcheck_config = SpellCheckConfig()
+if 'quality_filter_config' not in st.session_state:
+    st.session_state.quality_filter_config = QualityFilterConfig()
+if 'segmentation_config' not in st.session_state:
+    st.session_state.segmentation_config = SegmentationConfig()
+if 'embedding_config' not in st.session_state:
+    st.session_state.embedding_config = EmbeddingConfig()
+if 'hdbscan_config' not in st.session_state:
+    st.session_state.hdbscan_config = HDBSCANConfig()
+if 'code_designer_config' not in st.session_state:
+    st.session_state.code_designer_config = CodeDesignerConfig()
+if 'code_assignment_config' not in st.session_state:
+    st.session_state.code_assignment_config = CodeAssignmentConfig()
+
+
+def show_advanced_settings():
+    """Show advanced settings UI in sidebar"""
+    with st.expander("⚙️ Advanced Settings", expanded=False):
+        st.markdown("### Pipeline Configuration")
+        st.markdown("*Settings apply only to current session*")
+        
+        # Model options for dropdowns
+        gpt4_models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
+        gpt5_models = ["gpt-5-mini", "gpt-5-nano", "gpt-5"]
+        all_models = gpt4_models + gpt5_models
+        embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "gemini-embedding-001"]
+        
+        # Reasoning and verbosity options
+        reasoning_options = ["minimal", "low", "medium", "high"]
+        verbosity_options = ["low", "medium", "high"]
+        
+        # Step 2: Preprocessing
+        st.markdown("#### 📝 Step 2: Preprocessing")
+        current_spell_model = st.session_state.model_config.get_model_for_stage('spell_check')
+        spell_model = st.selectbox(
+            "Spell Check Model",
+            options=all_models,
+            index=all_models.index(current_spell_model) if current_spell_model in all_models else 0,
+            key="spell_check_model"
+        )
+        if spell_model != current_spell_model:
+            st.session_state.model_config.spell_check_model = spell_model
+        
+        st.markdown("---")
+        
+        # Step 3: Quality Filter
+        st.markdown("#### 🔍 Step 3: Quality Filter")
+        current_quality_model = st.session_state.model_config.get_model_for_stage('quality_filter')
+        quality_model = st.selectbox(
+            "Quality Filter Model",
+            options=all_models,
+            index=all_models.index(current_quality_model) if current_quality_model in all_models else 0,
+            key="quality_filter_model"
+        )
+        if quality_model != current_quality_model:
+            st.session_state.model_config.quality_filter_model = quality_model
+        
+        st.markdown("---")
+        
+        # Step 4: Idea Extraction  
+        st.markdown("#### 💡 Step 4: Idea Extraction")
+        current_seg_model = st.session_state.model_config.get_model_for_stage('segmentation')
+        seg_model = st.selectbox(
+            "Segmentation Model",
+            options=all_models,
+            index=all_models.index(current_seg_model) if current_seg_model in all_models else 0,
+            key="segmentation_model"
+        )
+        if seg_model != current_seg_model:
+            st.session_state.model_config.segmentation_model = seg_model
+        
+        st.markdown("---")
+        
+        # Step 5: Embeddings
+        st.markdown("#### 🔗 Step 5: Embeddings")
+        current_emb_model = st.session_state.model_config.get_model_for_stage('embedding')
+        emb_model = st.selectbox(
+            "Embedding Model",
+            options=embedding_models,
+            index=embedding_models.index(current_emb_model) if current_emb_model in embedding_models else 0,
+            key="embedding_model"
+        )
+        if emb_model != current_emb_model:
+            st.session_state.model_config.embedding_model = emb_model
+        
+        st.markdown("---")
+        
+        # Step 6: Clustering (CRITICAL)
+        st.markdown("#### 📊 Step 6: Clustering ⭐")
+        st.markdown("*These parameters significantly impact clustering results*")
+        
+        epsilon = st.slider(
+            "Cluster Selection Epsilon",
+            min_value=0.1,
+            max_value=1.0,
+            value=float(st.session_state.hdbscan_config.cluster_selection_epsilon or 0.5),
+            step=0.1,
+            help="Controls cluster granularity. Lower = more clusters, Higher = fewer clusters",
+            key="cluster_epsilon"
+        )
+        if epsilon != st.session_state.hdbscan_config.cluster_selection_epsilon:
+            st.session_state.hdbscan_config.cluster_selection_epsilon = epsilon
+        
+        alpha = st.slider(
+            "Alpha (Size vs Distance Balance)",
+            min_value=0.5,
+            max_value=2.0,
+            value=float(st.session_state.hdbscan_config.alpha or 1.0),
+            step=0.1,
+            help="Balances cluster size vs distance. 1.0 = default, >1.0 = prefer larger clusters",
+            key="cluster_alpha"
+        )
+        if alpha != st.session_state.hdbscan_config.alpha:
+            st.session_state.hdbscan_config.alpha = alpha
+        
+        st.markdown("---")
+        
+        # Step 7: Code Generation (CRITICAL)
+        st.markdown("#### 🏗️ Step 7: Code Generation ⭐")
+        st.markdown("*Core code generation models and parameters*")
+        
+        # Theme Summary Model
+        current_theme_model = st.session_state.model_config.get_model_for_stage('theme_extraction')
+        theme_model = st.selectbox(
+                "Theme Summary Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_theme_model) if current_theme_model in (gpt5_models + gpt4_models) else 0,
+                key="theme_summary_model"
+        )
+        if theme_model != current_theme_model:
+            st.session_state.model_config.thematic_summary_model = theme_model
+        
+        # Candidate Selection Model
+            current_candidate_model = st.session_state.model_config.get_model_for_stage('candidate_selection')
+            candidate_model = st.selectbox(
+                "Candidate Selection Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_candidate_model) if current_candidate_model in (gpt5_models + gpt4_models) else 0,
+                key="candidate_selection_model"
+            )
+            if candidate_model != current_candidate_model:
+                st.session_state.model_config.candidate_selection_model = candidate_model
+            
+            # Code Generation Model
+            current_codegen_model = st.session_state.model_config.get_model_for_stage('code_recommendation')
+            codegen_model = st.selectbox(
+                "Code Generation Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_codegen_model) if current_codegen_model in (gpt5_models + gpt4_models) else 0,
+                key="code_generation_model"
+            )
+            if codegen_model != current_codegen_model:
+                st.session_state.model_config.code_generation_model = codegen_model
+            
+            # Validation Model
+            current_validation_model = st.session_state.model_config.get_model_for_stage('recommendation_validation')
+            validation_model = st.selectbox(
+                "Validation Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_validation_model) if current_validation_model in (gpt5_models + gpt4_models) else 0,
+                key="validation_model"
+            )
+            if validation_model != current_validation_model:
+                st.session_state.model_config.validation_model = validation_model
+            
+            st.markdown("**GPT-5 Reasoning Parameters**")
+            
+            # Theme Extraction Parameters
+            st.markdown("*Theme Extraction*")
+            theme_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.theme_extraction_reasoning_effort),
+                key="theme_reasoning"
+            )
+            if theme_reasoning != st.session_state.model_config.theme_extraction_reasoning_effort:
+                st.session_state.model_config.theme_extraction_reasoning_effort = theme_reasoning
+            
+            theme_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.theme_extraction_text_verbosity),
+                key="theme_verbosity"
+            )
+            if theme_verbosity != st.session_state.model_config.theme_extraction_text_verbosity:
+                st.session_state.model_config.theme_extraction_text_verbosity = theme_verbosity
+            
+            # Candidate Selection Parameters
+            st.markdown("*Candidate Selection*")
+            candidate_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.candidate_selection_reasoning_effort),
+                key="candidate_reasoning"
+            )
+            if candidate_reasoning != st.session_state.model_config.candidate_selection_reasoning_effort:
+                st.session_state.model_config.candidate_selection_reasoning_effort = candidate_reasoning
+            
+            candidate_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.candidate_selection_text_verbosity),
+                key="candidate_verbosity"
+            )
+            if candidate_verbosity != st.session_state.model_config.candidate_selection_text_verbosity:
+                st.session_state.model_config.candidate_selection_text_verbosity = candidate_verbosity
+            
+            # Code Generation Parameters
+            st.markdown("*Code Generation*")
+            codegen_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.code_generation_reasoning_effort),
+                key="codegen_reasoning"
+            )
+            if codegen_reasoning != st.session_state.model_config.code_generation_reasoning_effort:
+                st.session_state.model_config.code_generation_reasoning_effort = codegen_reasoning
+            
+            codegen_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.code_generation_text_verbosity),
+                key="codegen_verbosity"
+            )
+            if codegen_verbosity != st.session_state.model_config.code_generation_text_verbosity:
+                st.session_state.model_config.code_generation_text_verbosity = codegen_verbosity
+            
+            # Validation Parameters
+            st.markdown("*Validation*")
+            validation_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.validation_reasoning_effort),
+                key="validation_reasoning"
+            )
+            if validation_reasoning != st.session_state.model_config.validation_reasoning_effort:
+                st.session_state.model_config.validation_reasoning_effort = validation_reasoning
+            
+            validation_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.validation_text_verbosity),
+                key="validation_verbosity"
+            )
+            if validation_verbosity != st.session_state.model_config.validation_text_verbosity:
+                st.session_state.model_config.validation_text_verbosity = validation_verbosity
+        
+        st.markdown("---")
+        
+        # Step 9: Code Assignment
+        st.markdown("#### 🎯 Step 9: Code Assignment")
+        current_assign_model = st.session_state.model_config.get_model_for_stage('code_assignment')
+        assign_model = st.selectbox(
+            "Code Assignment Model",
+            options=all_models,
+            index=all_models.index(current_assign_model) if current_assign_model in all_models else 0,
+            key="code_assignment_model"
+        )
+        if assign_model != current_assign_model:
+            st.session_state.model_config.code_assignment_model = assign_model
+        
+        top_k = st.number_input(
+            "Top K Similar Codes",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.code_assignment_config.top_k_similar_codes,
+            help="Number of most similar codes to present to the model",
+            key="top_k_codes"
+        )
+        if top_k != st.session_state.code_assignment_config.top_k_similar_codes:
+            st.session_state.code_assignment_config.top_k_similar_codes = top_k
+        
+        confidence = st.slider(
+            "Confidence Threshold",
+            min_value=0.1,
+            max_value=0.9,
+            value=st.session_state.code_assignment_config.min_confidence_threshold,
+            step=0.1,
+            help="Minimum confidence for valid assignment",
+            key="confidence_threshold"
+        )
+        if confidence != st.session_state.code_assignment_config.min_confidence_threshold:
+            st.session_state.code_assignment_config.min_confidence_threshold = confidence
+        
+        batch_size = st.number_input(
+            "Batch Size",
+            min_value=5,
+            max_value=50,
+            value=st.session_state.code_assignment_config.batch_size,
+            help="Ideas processed per batch",
+            key="assignment_batch_size"
+        )
+        if batch_size != st.session_state.code_assignment_config.batch_size:
+            st.session_state.code_assignment_config.batch_size = batch_size
+        
+        # Reset to defaults button
+        if st.button("🔄 Reset All to Defaults", type="secondary"):
+            st.session_state.model_config = ModelConfig()
+            st.session_state.spellcheck_config = SpellCheckConfig()
+            st.session_state.quality_filter_config = QualityFilterConfig()
+            st.session_state.segmentation_config = SegmentationConfig()
+            st.session_state.embedding_config = EmbeddingConfig()
+            st.session_state.hdbscan_config = HDBSCANConfig()
+            st.session_state.code_designer_config = CodeDesignerConfig()
+            st.session_state.code_assignment_config = CodeAssignmentConfig()
+            st.rerun()
+
 
 def main():
     st.title(ui.get_text("APP_TITLE", st.session_state.language))
@@ -73,7 +401,7 @@ def main():
             language_options = {"Nederlands": "nl", "English": "en"}
             current_language_name = next(k for k, v in language_options.items() if v == st.session_state.language)
             selected_language = st.selectbox(
-                "",
+                "Language",
                 options=list(language_options.keys()),
                 index=list(language_options.keys()).index(current_language_name),
                 label_visibility="collapsed"
@@ -90,6 +418,11 @@ def main():
         # Progress indicator - Updated to 10 steps
         progress = st.progress(st.session_state.step / 10)
         st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step + 1}/10")
+        
+        st.markdown("---")
+        
+        # Advanced Settings
+        show_advanced_settings()
     
     # Main content
     col1, col2 = st.columns([2, 1])
@@ -264,6 +597,8 @@ def show_preprocessing_page():
                 raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
+                model_config=st.session_state.model_config,
+                spellcheck_config=st.session_state.spellcheck_config,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
@@ -284,6 +619,8 @@ def show_filtering_page():
                 preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
+                model_config=st.session_state.model_config,
+                quality_filter_config=st.session_state.quality_filter_config,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
@@ -316,6 +653,8 @@ def show_idea_extraction_page():
                 quality_filtered_text=st.session_state.pipeline_results['quality_filtered_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
+                model_config=st.session_state.model_config,
+                segmentation_config=st.session_state.segmentation_config,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['encoded_text'] = encoded_text
@@ -349,12 +688,16 @@ def show_embedding_page():
     if st.button(ui.get_text("BTN_EMBED", lang), type="primary"):
         progress_container = st.empty()
         try:
+            # Update embedding config with UI values
+            embedding_config = st.session_state.embedding_config
+            
             embedded_text = st.session_state.pipeline_runner.step_5_generate_embeddings(
                 encoded_text=st.session_state.pipeline_results['encoded_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
+                model_config=st.session_state.model_config,
+                embedding_config=embedding_config,
                 provider=provider,
-                embedding_model=model,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['embedded_text'] = embedded_text
@@ -380,11 +723,15 @@ def show_clustering_page():
     if st.button(ui.get_text("BTN_CLUSTER", lang), type="primary"):
         progress_container = st.empty()
         try:
+            # Update hdbscan_config with UI values
+            clustering_config = st.session_state.hdbscan_config
+            clustering_config.cluster_selection_epsilon = epsilon
+            clustering_config.alpha = alpha
+            
             initial_cluster_results = st.session_state.pipeline_runner.step_6_cluster(
                 embedded_text=st.session_state.pipeline_results['embedded_text'],
                 filename=st.session_state.filename,
-                epsilon=epsilon,
-                alpha=alpha,
+                hdbscan_config=clustering_config,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
@@ -424,6 +771,8 @@ def show_codebook_generation_page():
                 filename=st.session_state.filename,
                 var_name=st.session_state.selected_variable,
                 var_lab=st.session_state.pipeline_results['var_lab'],
+                model_config=st.session_state.model_config,
+                code_designer_config=st.session_state.code_designer_config,
                 use_speculative_starter_codes=use_speculative,
                 streamlit_container=progress_container
             )
@@ -500,6 +849,8 @@ def show_code_assignment_page():
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
                 method=method,
+                model_config=st.session_state.model_config,
+                code_assignment_config=st.session_state.code_assignment_config,
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
@@ -580,25 +931,50 @@ def show_export_page():
             value=True
         )
         
+        # Add option for enhanced export with reasoning data
+        include_reasoning = st.checkbox(
+            "🧠 Inclusief stap 7 redenering data (beslissingen, rechtvaardigingen, validatie)" 
+            if lang == "nl" else "🧠 Include step 7 reasoning data (decisions, justifications, validation)",
+            help=("Exporteer extra kolommen met LLM redenering uit stap 7 (code generatie)" 
+                  if lang == "nl" else "Export extra columns with LLM reasoning from step 7 (code generation)"),
+            value=True  # Default to enhanced export
+        )
+        
         if st.button("Exporteer Resultaten" if lang == "nl" else "Export Results", type="primary"):
             progress_container = st.empty()
             try:
-                # Use the same export logic as pipeline.py lines 997-1010
-                from utils.codeAssignmentExporter import CodeAssignmentExporter
-                
-                progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
-                
-                exporter = CodeAssignmentExporter(verbose=True)
-                excel_path = exporter.export_to_excel(
-                    code_assigned_results,
-                    theme_enriched_codebook,
-                    st.session_state.filename,
-                    st.session_state.selected_variable,
-                    export_dir=None  # Will create default export directory
-                )
-                
-                progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}" 
-                                          if lang == "nl" else f"Code assignments exported to Excel: {excel_path}"))
+                if include_reasoning:
+                    # Use enhanced export with reasoning data via pipeline runner
+                    progress_container.text("🔄 " + ("Resultaten exporteren naar Excel met redenering..." if lang == "nl" else "Exporting results to Excel with reasoning..."))
+                    
+                    excel_path = st.session_state.pipeline_runner.step_10_export_excel_with_reasoning(
+                        code_assigned_results=code_assigned_results,
+                        theme_enriched_codebook=theme_enriched_codebook,
+                        filename=st.session_state.filename,
+                        var_name=st.session_state.selected_variable,
+                        export_dir=None,
+                        streamlit_container=progress_container
+                    )
+                    
+                    progress_container.success("✅ " + (f"Code toewijzingen met redenering geëxporteerd naar Excel: {excel_path}" 
+                                              if lang == "nl" else f"Code assignments with reasoning exported to Excel: {excel_path}"))
+                else:
+                    # Use regular export without reasoning data
+                    from utils.codeAssignmentExporter import CodeAssignmentExporter
+                    
+                    progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
+                    
+                    exporter = CodeAssignmentExporter(verbose=True)
+                    excel_path = exporter.export_to_excel(
+                        code_assigned_results,
+                        theme_enriched_codebook,
+                        st.session_state.filename,
+                        st.session_state.selected_variable,
+                        export_dir=None  # Will create default export directory
+                    )
+                    
+                    progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}" 
+                                              if lang == "nl" else f"Code assignments exported to Excel: {excel_path}"))
                 
                 # Store in session for download
                 st.session_state.pipeline_results['excel_path'] = excel_path

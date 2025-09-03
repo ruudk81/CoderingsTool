@@ -22,7 +22,7 @@ def _ensure_gemini():
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, GEMINI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, get_embedding_dimensions
+from config import OPENAI_API_KEY, GEMINI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, ModelConfig, get_embedding_dimensions
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -41,13 +41,14 @@ class Embedder:
     def __init__(
         self, 
         config: EmbeddingConfig = None,
+        model_config: ModelConfig = None,
         provider: str = "openai",
         client: any = None, 
-        embedding_model: str = None, 
         var_lab: str = None,
         verbose: bool = False):
         
         self.config = config or DEFAULT_EMBEDDING_CONFIG
+        self.model_config = model_config or ModelConfig()
         self.provider = provider.lower()
 
         if self.provider == "openai":
@@ -59,7 +60,7 @@ class Embedder:
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 
-        self.embedding_model = embedding_model or self.config.embedding_model
+        self.embedding_model = self.model_config.get_model_for_stage('embedding')
         
         self.var_lab = var_lab
         self.verbose = verbose
