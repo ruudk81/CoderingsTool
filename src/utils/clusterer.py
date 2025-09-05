@@ -38,9 +38,10 @@ class Clusterer:
                  umap_n_components: int = 10,
                  umap_n_neighbors: int = 5,
                  hdbscan_config: Optional['HDBSCANConfig'] = None,
-                 verbose: bool = False):
+                 verbose: bool = False,
+                 verbose_reporter: Optional['VerboseReporter'] = None):
 
-        self.verbose_reporter = verboseReporter.VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = verbose_reporter or verboseReporter.VerboseReporter(verbose, capture_logging=True)
         self.variance_threshold = variance_threshold
         self.umap_n_components = umap_n_components
         self.umap_n_neighbors = umap_n_neighbors

@@ -2,22 +2,22 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import time
-import asyncio
+#import asyncio
 import json
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+#from dataclasses import dataclass
 
-import instructor
+#import instructor
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field, model_validator
-import models
+from pydantic import BaseModel, Field #, model_validator
+#import models
 
 # === CONFIG ========================================================================================================
 from prompts import THEME_ORGANIZATION_REASONING_PROMPT
-from config import DEFAULT_LANGUAGE, OPENAI_API_KEY, ModelConfig
+from config import DEFAULT_LANGUAGE, OPENAI_API_KEY #, ModelConfig
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
@@ -82,7 +82,7 @@ class ThemeOrganizerReasoning:
         self.text_verbosity = text_verbosity
         
         # Initialize verbose reporter
-        self.reporter = VerboseReporter(enabled=verbose, section_prefix="THEME ORGANIZATION")
+        self.reporter = VerboseReporter(enabled=verbose)
         
         # Initialize OpenAI client
         if not OPENAI_API_KEY:
@@ -101,7 +101,7 @@ class ThemeOrganizerReasoning:
             # Import here to avoid circular imports
             from utils.codeGenerator import _sync_responses_create
             
-            self.reporter.subsection("API Request", {
+            self.reporter.summary("API Request", {
                 "Model": self.model,
                 "Reasoning Effort": self.reasoning_effort,
                 "Text Verbosity": self.text_verbosity,
@@ -117,7 +117,16 @@ class ThemeOrganizerReasoning:
             )
             
             # Parse the JSON response
-            response_content = response.body.text
+            try:
+                response_content = response.output_text
+                if not response_content:
+                    raise RetryableError("Empty response content")
+                    
+            except AttributeError as e:
+                self.reporter.error(f"Response object missing output_text attribute: {e}")
+                self.reporter.debug(f"Response object type: {type(response)}")
+                self.reporter.debug(f"Response attributes: {dir(response)}")
+                raise RetryableError(f"Invalid response format: {e}")
             
             try:
                 # Try to parse as JSON first
@@ -126,7 +135,7 @@ class ThemeOrganizerReasoning:
                 # Convert to our Pydantic model
                 organized_codebook = OrganizedCodebook(**json_data)
                 
-                self.reporter.subsection("API Response Parsed", {
+                self.reporter.summary("API Response Parsed", {
                     "Themes Created": len(organized_codebook.themes),
                     "Total Codes": organized_codebook.total_codes_organized,
                     "Methodology": organized_codebook.methodology
@@ -136,8 +145,14 @@ class ThemeOrganizerReasoning:
                 
             except json.JSONDecodeError as e:
                 self.reporter.error(f"Failed to parse JSON response: {e}")
-                self.reporter.debug(f"Raw response: {response_content[:500]}...")
+                self.reporter.debug(f"Raw response length: {len(response_content)} chars")
+                self.reporter.debug(f"Raw response preview: {response_content[:500]}...")
                 raise RetryableError(f"Invalid JSON response: {e}")
+                
+            except Exception as e:
+                self.reporter.error(f"Failed to create OrganizedCodebook from JSON: {e}")
+                self.reporter.debug(f"JSON data keys: {list(json_data.keys()) if 'json_data' in locals() else 'N/A'}")
+                raise RetryableError(f"Invalid codebook structure: {e}")
                 
         except Exception as e:
             error_str = str(e)
@@ -174,7 +189,7 @@ class ThemeOrganizerReasoning:
                 codes_count=len(self.codebook)
             )
             
-            self.reporter.subsection("Input Preparation", {
+            self.reporter.summary("Input Preparation", {
                 "Research Question": self.var_lab[:100] + "..." if len(self.var_lab) > 100 else self.var_lab,
                 "Total Codes": len(self.codebook),
                 "Language": self.language,
@@ -214,7 +229,7 @@ class ThemeOrganizerReasoning:
             
             processing_time = time.time() - start_time
             
-            self.reporter.subsection("Organization Complete", {
+            self.reporter.summary("Organization Complete", {
                 "Total Themes": len(themes_summary),
                 "Codes Mapped": len(code_to_theme_mapping),
                 "Processing Time": f"{processing_time:.2f}s",

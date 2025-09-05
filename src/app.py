@@ -403,6 +403,9 @@ def show_advanced_settings():
             st.session_state.hdbscan_config = HDBSCANConfig()
             st.session_state.code_designer_config = CodeDesignerConfig()
             st.session_state.code_assignment_config = CodeAssignmentConfig()
+            # Clear stored variable key to ensure fresh cache naming
+            if 'current_variable_key' in st.session_state:
+                del st.session_state.current_variable_key
             st.rerun()
 
 
@@ -831,7 +834,24 @@ def show_preprocessing_page():
             st.write(f"- is_merged_variable: {st.session_state.get('is_merged_variable')}")
         return
     
-    if st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
+    # Check if we're waiting for debug continue
+    if st.session_state.get('waiting_for_debug_continue_preprocessing'):
+        # Display the stored debug information
+        debug_capture = st.session_state.get('debug_capture_preprocessing')
+        if debug_capture:
+            display_all_debug_info(debug_capture)
+        
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="preprocessing_continue"):
+                # Clear the waiting state and advance
+                del st.session_state['waiting_for_debug_continue_preprocessing'] 
+                if 'debug_capture_preprocessing' in st.session_state:
+                    del st.session_state['debug_capture_preprocessing']
+                st.session_state.step = 2
+                st.rerun()
+    elif st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
         progress_container = st.empty()
         
         # Create debug capture from session state
@@ -893,13 +913,22 @@ def show_preprocessing_page():
                 debug_capture=debug_capture
             )
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
-            st.session_state.step = 2
             
-            # Display debug information if enabled
-            if debug_capture and (debug_capture.show_verbose or debug_capture.capture_prompts or debug_capture.show_samples):
-                display_all_debug_info(debug_capture)
+            # Check if debug features are enabled and have captured data
+            debug_has_data = (debug_capture and 
+                            (debug_capture.verbose_outputs or 
+                             debug_capture.first_prompts or 
+                             debug_capture.sample_results))
             
-            st.rerun()
+            if debug_has_data:
+                # Store debug capture and set waiting state
+                st.session_state['debug_capture_preprocessing'] = debug_capture
+                st.session_state['waiting_for_debug_continue_preprocessing'] = True
+                st.rerun()  # Rerun to show the continue button interface
+            else:
+                # No debug data - advance automatically
+                st.session_state.step = 2
+                st.rerun()
         except Exception as e:
             progress_container.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
@@ -942,7 +971,24 @@ def show_idea_extraction_page():
     """
     st.markdown(info_text)
     
-    if st.button("Start Idee Extractie" if lang == "nl" else "Start Idea Extraction", type="primary"):
+    # Check if we're waiting for debug continue
+    if st.session_state.get('waiting_for_debug_continue_idea_extraction'):
+        # Display the stored debug information
+        debug_capture = st.session_state.get('debug_capture_idea_extraction')
+        if debug_capture:
+            display_all_debug_info(debug_capture)
+        
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="idea_extraction_continue"):
+                # Clear the waiting state and advance
+                del st.session_state['waiting_for_debug_continue_idea_extraction']
+                if 'debug_capture_idea_extraction' in st.session_state:
+                    del st.session_state['debug_capture_idea_extraction']
+                st.session_state.step = 4
+                st.rerun()
+    elif st.button("Start Idee Extractie" if lang == "nl" else "Start Idea Extraction", type="primary"):
         progress_container = st.empty()
         
         # Create debug capture from session state
@@ -959,8 +1005,22 @@ def show_idea_extraction_page():
                 debug_capture=debug_capture
             )
             st.session_state.pipeline_results['encoded_text'] = encoded_text
-            st.session_state.step = 4
-            st.rerun()
+            
+            # Check if debug features are enabled and have captured data
+            debug_has_data = (debug_capture and 
+                            (debug_capture.verbose_outputs or 
+                             debug_capture.first_prompts or 
+                             debug_capture.sample_results))
+            
+            if debug_has_data:
+                # Store debug capture and set waiting state
+                st.session_state['debug_capture_idea_extraction'] = debug_capture
+                st.session_state['waiting_for_debug_continue_idea_extraction'] = True
+                st.rerun()  # Rerun to show the continue button interface
+            else:
+                # No debug data - advance automatically
+                st.session_state.step = 4
+                st.rerun()
         except Exception as e:
             progress_container.error(f"Extractie fout: {str(e)}" if lang == "nl" else f"Extraction error: {str(e)}")
 
@@ -1021,7 +1081,24 @@ def show_clustering_page():
         alpha = st.slider("Alpha Parameter", 0.5, 2.0, 1.0, 0.1,
                          help="Balance between cluster size and distance")
     
-    if st.button(ui.get_text("BTN_CLUSTER", lang), type="primary"):
+    # Check if we're waiting for debug continue
+    if st.session_state.get('waiting_for_debug_continue_clustering'):
+        # Display the stored debug information
+        debug_capture = st.session_state.get('debug_capture_clustering')
+        if debug_capture:
+            display_all_debug_info(debug_capture)
+        
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="clustering_continue"):
+                # Clear the waiting state and advance
+                del st.session_state['waiting_for_debug_continue_clustering']
+                if 'debug_capture_clustering' in st.session_state:
+                    del st.session_state['debug_capture_clustering']
+                st.session_state.step = 6
+                st.rerun()
+    elif st.button(ui.get_text("BTN_CLUSTER", lang), type="primary"):
         progress_container = st.empty()
         
         # Create debug capture from session state
@@ -1041,8 +1118,22 @@ def show_clustering_page():
                 debug_capture=debug_capture
             )
             st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
-            st.session_state.step = 6
-            st.rerun()
+            
+            # Check if debug features are enabled and have captured data
+            debug_has_data = (debug_capture and 
+                            (debug_capture.verbose_outputs or 
+                             debug_capture.first_prompts or 
+                             debug_capture.sample_results))
+            
+            if debug_has_data:
+                # Store debug capture and set waiting state
+                st.session_state['debug_capture_clustering'] = debug_capture
+                st.session_state['waiting_for_debug_continue_clustering'] = True
+                st.rerun()  # Rerun to show the continue button interface
+            else:
+                # No debug data - advance automatically
+                st.session_state.step = 6
+                st.rerun()
         except Exception as e:
             progress_container.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
 
@@ -1165,7 +1256,24 @@ def show_code_assignment_page():
         if lang == "nl" else "Direct LLM Processing" if x == "direct_llm" else "Embedding Similarity"
     )
     
-    if st.button("Wijs Codes Toe" if lang == "nl" else "Assign Codes", type="primary"):
+    # Check if we're waiting for debug continue
+    if st.session_state.get('waiting_for_debug_continue_code_assignment'):
+        # Display the stored debug information
+        debug_capture = st.session_state.get('debug_capture_code_assignment')
+        if debug_capture:
+            display_all_debug_info(debug_capture)
+        
+        st.markdown("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="code_assignment_continue"):
+                # Clear the waiting state and advance
+                del st.session_state['waiting_for_debug_continue_code_assignment']
+                if 'debug_capture_code_assignment' in st.session_state:
+                    del st.session_state['debug_capture_code_assignment']
+                st.session_state.step = 9
+                st.rerun()
+    elif st.button("Wijs Codes Toe" if lang == "nl" else "Assign Codes", type="primary"):
         progress_container = st.empty()
         
         # Create debug capture from session state
@@ -1184,8 +1292,22 @@ def show_code_assignment_page():
                 debug_capture=debug_capture
             )
             st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
-            st.session_state.step = 9
-            st.rerun()
+            
+            # Check if debug features are enabled and have captured data
+            debug_has_data = (debug_capture and 
+                            (debug_capture.verbose_outputs or 
+                             debug_capture.first_prompts or 
+                             debug_capture.sample_results))
+            
+            if debug_has_data:
+                # Store debug capture and set waiting state
+                st.session_state['debug_capture_code_assignment'] = debug_capture
+                st.session_state['waiting_for_debug_continue_code_assignment'] = True
+                st.rerun()  # Rerun to show the continue button interface
+            else:
+                # No debug data - advance automatically
+                st.session_state.step = 9
+                st.rerun()
         except Exception as e:
             progress_container.error(f"Toewijzing fout: {str(e)}" if lang == "nl" else f"Assignment error: {str(e)}")
 

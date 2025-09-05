@@ -177,7 +177,7 @@ class ModelConfig:
     
     # Step 4: Embedding model
     embedding_model: str = "text-embedding-3-large"
-    embedding_model: str = "gemini-embedding-001"
+    #embedding_model: str = "gemini-embedding-001"
     
     # Step 6: Codebook generation
     speculative_codes_model: str = DEFAULT_MODEL  
@@ -423,11 +423,26 @@ class SpellCheckConfig:
     enable_early_termination: bool = True  # Allow early termination for large datasets
     
     # Aggressive parallel processing settings for suggestion generation
-    max_concurrent_suggestion_chunks: int = 5  # Number of concurrent chunks for OOV processing
+    max_concurrent_suggestion_chunks: int = 20  # Number of concurrent chunks for OOV processing (increased for better parallelism)
     max_words_per_chunk: int = 1200  # Maximum words per chunk
     enable_adaptive_chunking: bool = True  # Dynamic chunk sizing based on performance
     chunk_progress_reporting: bool = True  # Show progress per chunk
-    suggestion_processing_semaphore_limit: int = 50  # Limit concurrent Hunspell processes
+    suggestion_processing_semaphore_limit: int = 100  # Limit concurrent Hunspell processes (increased for aggressive parallelism)
+    
+    # New optimization parameters
+    hunspell_concurrent_sessions: int = 20  # Number of concurrent Hunspell sessions for OOV detection (increased from 5)
+    hunspell_batch_size: int = 1000  # Words per Hunspell batch (reduced from 1000 for better distribution)
+    enable_streaming_oov_detection: bool = True  # Enable producer-consumer pattern for OOV detection
+    oov_detection_queue_size: int = 10000  # Size of queue for streaming OOV detection
+    
+    # Rate limiting optimization parameters
+    rate_limit_safety_factor: float = 0.95  # Use 95% of theoretical maximum (was 0.85)
+    rate_limit_utilization: float = 0.98  # Use 98% of actual rate limits (was 0.95)
+    concurrent_burst_multiplier: float = 3.0  # Burst capacity multiplier (was 2.0)
+    
+    # Suggestion validation parameters
+    enable_suggestion_pre_validation: bool = True  # Pre-validate suggestions before LLM calls
+    enable_suggestion_caching: bool = True  # Cache validated suggestions
 
 # =============================================================================
 # SEGMENT CONFIGURATION
@@ -663,7 +678,7 @@ class CodeAssignmentConfig:
     retries: int = 3
     retry_delay: int = 2
     max_concurrent_requests: int = 20  # Increased from 5 (though semaphore removed)
-    top_k_similar_codes: int = 5  # Number of most similar codes to present
+    top_k_similar_codes: int = 10  # Number of most similar codes to present
     min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
     # Model configuration - will be overridden by ModelConfig
     model: str = DEFAULT_MODEL  # Fallback model

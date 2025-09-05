@@ -35,9 +35,10 @@ class VerboseLoggingHandler(logging.Handler):
 class VerboseReporter:
     """Handles formatted verbose output for pipeline operations with optional logging capture."""
     
-    def __init__(self, enabled: bool = True, capture_logging: bool = False, 
+    def __init__(self, enabled: bool = True, capture_callback=None, capture_logging: bool = False, 
                  log_level: int = logging.WARNING):
         self.enabled = enabled
+        self.capture_callback = capture_callback  # Optional callback for Streamlit capture
         self.start_time = None
         self.capture_logging = capture_logging
         self.log_level = log_level
@@ -46,6 +47,12 @@ class VerboseReporter:
         
         if capture_logging:
             self._setup_logging_capture()
+    
+    def _output(self, text: str):
+        """Centralized output method that handles both terminal and capture"""
+        print(text)  # Always print to terminal (existing behavior)
+        if self.capture_callback:
+            self.capture_callback(text)  # Also capture for Streamlit if callback provided
     
     def _setup_logging_capture(self):
         """Set up logging capture for common noisy libraries."""
@@ -82,14 +89,14 @@ class VerboseReporter:
         """Print a formatted section header."""
         if not self.enabled:
             return
-        print(f"\n{emoji} {title.upper()}")
-        print("=" * (len(title) + 4))
+        self._output(f"\n{emoji} {title.upper()}")
+        self._output("=" * (len(title) + 4))
     
     def step_start(self, step_name: str, emoji: str = "[START]") -> None:
         """Start timing a processing step."""
         if not self.enabled:
             return
-        print(f"\n{emoji} {step_name}")
+        self._output(f"\n{emoji} {step_name}")
         self.start_time = time.time()
     
     def step_complete(self, message: str = "", emoji: str = "[DONE]") -> None:
@@ -98,42 +105,42 @@ class VerboseReporter:
             return
         elapsed = time.time() - self.start_time if self.start_time else 0
         timing = f" ({elapsed:.1f}s)" if elapsed > 0.1 else ""
-        print(f"{emoji} {message}{timing}")
+        self._output(f"{emoji} {message}{timing}")
     
     def stat_line(self, message: str, bullet: str = "-", indent: int = 0) -> None:
         """Print a statistics line with bullet point and optional indentation."""
         if not self.enabled:
             return
         indent_str = "  " * indent  # 2 spaces per indent level
-        print(f"{indent_str}{bullet} {message}")
+        self._output(f"{indent_str}{bullet} {message}")
     
     def warning(self, message: str, source: Optional[str] = None) -> None:
         """Print a warning message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"[WARNING] {source_text}{message}")
+        self._output(f"[WARNING] {source_text}{message}")
     
     def error(self, message: str, source: Optional[str] = None) -> None:
         """Print an error message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"[ERROR] {source_text}{message}")
+        self._output(f"[ERROR] {source_text}{message}")
     
     def info(self, message: str, source: Optional[str] = None) -> None:
         """Print an info message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"[INFO] {source_text}{message}")
+        self._output(f"[INFO] {source_text}{message}")
     
     def debug(self, message: str, source: Optional[str] = None) -> None:
         """Print a debug message."""
         if not self.enabled:
             return
         source_text = f"[{source}] " if source else ""
-        print(f"🔍 {source_text}{message}")
+        self._output(f"🔍 {source_text}{message}")
     
     def library_retry(self, attempt: int, max_attempts: int, reason: str, 
                      wait_time: Optional[float] = None) -> None:
@@ -141,13 +148,13 @@ class VerboseReporter:
         if not self.enabled:
             return
         wait_text = f" (waiting {wait_time:.1f}s)" if wait_time else ""
-        print(f"🔄 Retry {attempt}/{max_attempts}: {reason}{wait_text}")
+        self._output(f"🔄 Retry {attempt}/{max_attempts}: {reason}{wait_text}")
     
     def rate_limit(self, service: str, wait_time: float) -> None:
         """Special method for rate limit notifications."""
         if not self.enabled:
             return
-        print(f"⏳ Rate limit reached for {service}, waiting {wait_time:.1f}s...")
+        self._output(f"⏳ Rate limit reached for {service}, waiting {wait_time:.1f}s...")
     
     def __enter__(self):
         """Context manager entry."""
@@ -163,31 +170,31 @@ class VerboseReporter:
         if not self.enabled or not samples:
             return
         
-        print(f"\n📋 {title}:")
+        self._output(f"\n📋 {title}:")
         display_samples = random.sample(samples, min(len(samples), max_samples))
         for sample in display_samples:
-            print(f'  "{sample}"')
+            self._output(f'  "{sample}"')
     
     def correction_samples(self, corrections: List[Tuple[str, str]], max_samples: int = 5) -> None:
         """Print before/after correction samples."""
         if not self.enabled or not corrections:
             return
             
-        print("\n📋 Sample corrections:")
+        self._output("\n📋 Sample corrections:")
         display_corrections = random.sample(corrections, min(len(corrections), max_samples))
         for before, after in display_corrections:
-            print(f'  "{before}" → "{after}"')
+            self._output(f'  "{before}" → "{after}"')
     
     def summary(self, title: str, stats: Dict[str, Any], emoji: str = "[STATS]") -> None:
         """Print a formatted summary section."""
         if not self.enabled:
             return
         
-        print(f"\n{emoji} {title.upper()}")
-        print("=" * (len(title) + 4))
+        self._output(f"\n{emoji} {title.upper()}")
+        self._output("=" * (len(title) + 4))
         
         for key, value in stats.items():
-            print(f"{key}: {value}")
+            self._output(f"{key}: {value}")
     
     def progress_line(self, current: int, total: int, operation: str = "") -> None:
         """Print a progress indicator."""
@@ -196,13 +203,13 @@ class VerboseReporter:
         
         percentage = (current / total * 100) if total > 0 else 0
         operation_text = f" {operation}" if operation else ""
-        print(f"Processing{operation_text}... {current}/{total} ({percentage:.1f}%)")
+        self._output(f"Processing{operation_text}... {current}/{total} ({percentage:.1f}%)")
     
     def empty_line(self) -> None:
         """Print an empty line for spacing between sections."""
         if not self.enabled:
             return
-        print()
+        self._output("")
 
 
 class ProcessingStats:

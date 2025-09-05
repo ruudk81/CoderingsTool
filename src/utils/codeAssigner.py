@@ -13,6 +13,7 @@ import instructor
 from openai import AsyncOpenAI, RateLimitError
 import tiktoken
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
 
@@ -26,6 +27,7 @@ from prompts import CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter
+from .embedder import Embedder
 
 async_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
 
@@ -303,6 +305,10 @@ class CodeAssigner:
         # Cache for idea embeddings if provided (for compatibility)
         self._cached_idea_embeddings = cached_idea_embeddings
         
+        # Code embedding cache and embedder
+        self._code_embeddings = None
+        self.embedder = Embedder(model_config=self.model_config)
+        
         # Theme mapping for code-to-theme assignments
         self.code_to_theme_mapping = code_to_theme_mapping or {}
         
@@ -317,6 +323,59 @@ class CodeAssigner:
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {self.rpm_limit} RPM, {self.tpm_limit:,} TPM")
 
+    async def _get_code_embeddings(self) -> np.ndarray:
+        """Generate or retrieve cached embeddings for all codes in codebook"""
+        if self._code_embeddings is not None:
+            return self._code_embeddings
+        
+        self.verbose_reporter.stat_line(f"Generating embeddings for {len(self.codebook)} codes...")
+        
+        # Create temporary models for embedding generation
+        temp_models = []
+        for i, code in enumerate(self.codebook):
+            # Create a simple model with the code definition as response text
+            temp_model = models.PreprocessModel(
+                respondent_id=f"code_{i}",
+                response=code.definition,  # Use definition for embedding
+                response_ideas=[models.IdeaSubmodel(
+                    idea_id="1",
+                    idea=code.definition
+                )]
+            )
+            temp_models.append(temp_model)
+        
+        # Generate embeddings using async method directly
+        embedded_codes = await self.embedder._process_embeddings_with_id_tracking(temp_models)
+        
+        # Extract embeddings array
+        embeddings = []
+        for model in embedded_codes:
+            if hasattr(model, 'response_ideas') and model.response_ideas and len(model.response_ideas) > 0:
+                embedding = model.response_ideas[0].idea_embedding
+                if embedding is not None:
+                    embeddings.append(embedding)
+                else:
+                    embeddings.append(np.zeros(1536))  # text-embedding-3-large dimension
+            else:
+                embeddings.append(np.zeros(1536))
+        
+        self._code_embeddings = np.array(embeddings)
+        return self._code_embeddings
+
+    def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 10) -> List[models.Codebook]:
+        """Find the top_k most similar codes to an idea based on embedding similarity"""
+        if self._code_embeddings is None:
+            raise ValueError("Code embeddings not initialized. Call _get_code_embeddings first.")
+        
+        # Calculate cosine similarity
+        similarities = cosine_similarity([idea_embedding], self._code_embeddings)[0]
+        
+        # Get top_k most similar indices
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        
+        # Return corresponding codes
+        return [self.codebook[i] for i in top_indices]
+
 
     def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
         """Map assigned codes to their themes using cached mapping"""
@@ -328,7 +387,7 @@ class CodeAssigner:
         return themes
 
     def _extract_all_ideas(self) -> List[tuple]:
-        """Extract all individual ideas for processing (no embeddings needed)"""
+        """Extract all individual ideas for processing with embeddings"""
         # Use cached embeddings if provided (for compatibility)
         if self._cached_idea_embeddings:
             all_ideas = []
@@ -336,9 +395,10 @@ class CodeAssigner:
                 all_ideas.append((
                     cached_idea['respondent_id'],
                     cached_idea['idea_id'],
-                    cached_idea['idea']
+                    cached_idea['idea'],
+                    cached_idea['embedding']
                 ))
-            self.verbose_reporter.stat_line(f"Using {len(all_ideas)} cached ideas")
+            self.verbose_reporter.stat_line(f"Using {len(all_ideas)} cached ideas with embeddings")
             return all_ideas
         
         # Otherwise extract from cluster models
@@ -347,22 +407,29 @@ class CodeAssigner:
         for model in self.cluster_models:
             if hasattr(model, 'response_ideas') and model.response_ideas:
                 for idea_submodel in model.response_ideas:
-                    all_ideas.append((
-                        model.respondent_id,
-                        idea_submodel.idea_id,
-                        idea_submodel.idea
-                    ))
+                    if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
+                        all_ideas.append((
+                            model.respondent_id,
+                            idea_submodel.idea_id,
+                            idea_submodel.idea,
+                            idea_submodel.idea_embedding
+                        ))
+                    else:
+                        self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
             else:
                 self.verbose_reporter.stat_line(f"Warning: No response_ideas found for respondent {model.respondent_id}")
         
         return all_ideas
 
-    def _create_prompt(self, idea_id: str, idea_text: str) -> str:
-        """Create prompt for a single idea with ALL codes from codebook"""
-        # Format ALL codes for prompt
+    def _create_prompt(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray) -> str:
+        """Create prompt for a single idea with most similar codes"""
+        # Find most similar codes
+        similar_codes = self._find_similar_codes(idea_embedding, top_k=self.config.top_k_similar_codes)
+        
+        # Format candidate codes for prompt
         candidate_codes_text = "\n".join([
             f"Code label: {code.code}\nCode description: {code.definition}\n" 
-            for code in self.codebook
+            for code in similar_codes
         ])
         
         # Create prompt
@@ -378,11 +445,11 @@ class CodeAssigner:
 
     async def _process_single_idea(self, idea_data: tuple, api_client: SmartAPIClient) -> CodeAssignmentResponse:
         """Process a single idea assignment"""
-        respondent_id, idea_id, idea_text = idea_data
+        respondent_id, idea_id, idea_text, idea_embedding = idea_data
         
         try:
             # Create prompt
-            prompt = self._create_prompt(idea_id, idea_text)
+            prompt = self._create_prompt(idea_id, idea_text, idea_embedding)
             
             # Capture prompt for debugging if enabled
             if self.prompt_printer and not self._captured_prompt:
@@ -518,8 +585,11 @@ class CodeAssigner:
     async def _process_with_optimal_strategy(self, all_ideas: List[tuple]) -> List[CodeAssignmentResponse]:
         """Process all ideas using evidence-based optimal strategy"""
         
+        # Step 0: Initialize code embeddings
+        await self._get_code_embeddings()
+        
         # Step 1: Analyze workload and calculate optimal strategy
-        sample_prompts = [self._create_prompt(idea[1], idea[2]) for idea in all_ideas[:10]]
+        sample_prompts = [self._create_prompt(idea[1], idea[2], idea[3]) for idea in all_ideas[:10]]
         avg_tokens = self.workload_analyzer.measure_token_usage(sample_prompts)
         strategy = self.workload_analyzer.calculate_optimal_strategy(len(all_ideas), avg_tokens)
         

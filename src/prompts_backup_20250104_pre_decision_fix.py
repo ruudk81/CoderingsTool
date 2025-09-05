@@ -295,7 +295,7 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 
 CLUSTER_SUMMARY_PROMPT = """
 You are a {language} qualitative researcher trained in thematic analysis by Braun & Clarke.
-Your task is to identify and construct a theme or themes from descriptive codes that have been derived from written responses to an open-ended survey question.
+Your task is to interpretively construct a theme or themes from descriptive codes that have been derived from written responses to an open-ended survey question.
 
 <inputs>
 Cluster ID: {cluster_id}
@@ -307,64 +307,79 @@ Cluster of descriptive codes to analyze:
 {cluster_text}
 </inputs>
 
+Conceptual guidance:
+<conceptual_guidance>
+- Each theme must be built around exactly one Central Organizing Concept (COC), underpinned by a shared pattern of meaning across multiple codes.
+- A shared pattern of meaning reflects a common viewpoint, rationale, or concern that emerges across different codes and helps to make sense of the responses in relation to the research question.
+- The COC is the core analytic idea that holds the pattern together. It should capture what the theme is really about — not just what the descriptive codes say on the surface, but how and why they matter in the context of the research question.
+- All codes within a theme should relate clearly and meaningfully to the COC, and the theme must not include codes that do not fit this conceptual unity.
+- If a single coherent COC cannot be identified, the cluster should be split into multiple COCs, each with its own shared pattern of meaning.
+- If you cannot summarize the theme in a single sentence around a COC, you probably have more than one theme.
+</conceptual_guidance>
+
+
 Follow these steps exactly and in order. Do not skip or reorder any step.
+- Always use your analytical judgment and reflexivity
+- Themes are not discovered in the data — they are actively constructed.
 
 1. Understand the context:
-   - Read the research question carefully.
+   - Read the research question carefully. 
    - Review all descriptive codes thoroughly.
+   - Consider the broader meaning of codes in light of the resarch question
 
-2. Determine number of patterns:
-   - If all relevant codes can be explained by ONE coherent shared pattern of meaning, proceed with one.
-   - Otherwise, identify two or more patterns.
+2. Identify number of COCs
+   - Assess whether all descriptive codes can be organized around one coherent COC, following <conceptual_guidance>.
+   - If you can identify one clear COC that unifies the cluster, proceed with that COC.
+   - If the cluster contains multiple distinct rationales, viewpoints, or concerns that cannot be summarized in a single sentence, identify multiple COCs instead.
+   - Avoid vague or overly general terms. COCs must be interpretive, specific, and explanatory.
 
-3. Filter patterns:
-   - A shared pattern cannot consist of only one code.
-   - Exclude all isolated singletons (patterns with only one code) from further analysis.
-    
-4. Identify central organizing concepts (COCs):
-   - For each pattern of shared meaning, determine exactly one central organizing concept (COC).
-   - A valid pattern must have exactly one COC.
+3. Filter COCs:
+   - Exclude all potential COCs that rest on a single code (singletons).
+   - Exclude all potential COCs that lack conceptual overlap between multiple codes.
+   - Only retain COCs that reflect a shared pattern of meaning across at least two codes.
 
-5. Document your analysis:
-   - Clearly state how many COCs were identified.
-   - Justify why you split into multiple themes or merged into one.
-   - Reference the descriptive codes in your explanation.
+4. Document your analysis:
+  - Clearly state how many COCs you identified.
+  - If only one COC is retained, explain why it is sufficient to account for the shared meaning across the cluster.
+  - If multiple COCs are retained, justify why it is not possible to work with a single COC.
+  - For each COC, explain how it helps to answer the research question.
+  - Support your explanation by referencing the descriptive codes that exemplify each COC.
 
 6. Construct themes:
    - Create exactly one theme per COC.
    - A valid theme MUST:
-     - Express a clear analytic idea.
-     - Explain how and why the responses belong together.
+     - Express a clear analytic idea, not just a topic.
+     - Explain how and why the responses hang together around a shared meaning.
+     - Be grounded in the data but go beyond mere description.
    - A theme MUST NOT be:
      - A raw list of responses.
      - A purely descriptive label.
      - A speculation beyond the data.
      - A mix of unrelated or conflicting ideas.
-   - If no COC and shared meaning can be identified, do not create a theme.
-
+ 
 7. Create theme labels:
-   - Must be ≤ 10 words.
-   - Must express exactly one unifying analytic idea.
-   - Must include the COC.
-
+   - Each label must:
+ 	- contain ≤ 10 words.
+ 	- Express exactly one unifying analytic idea.
+   	- State the central organizing concept.
+   - Labels must go beyond surface-level categories (e.g., not just "lack of attention").
+   
 8. Write theme descriptions:
-   - Must be ≤ 30 words.
-   - Must state the strongest shared pattern of meaning.
-   - Must explain how this meaning relates to the research question.
+   - each description must 
+	- contain ≤ 30 words words.
+   	- State the strongest shared pattern of meaning.
+   	- Explain how the pattern relates to the research question.
 
 Checklist (before finalizing)
-[ ] Isolated singletons (patterns with only one code) are excluded from further output.
-[ ]  Label ≤10 words
-[ ]  Label is a noun phrase
-[ ] Label has only one concept (not combined ideas)
-[ ]  Description ≤30 words
-[ ]  NO repeat of the subject from the survey question (e.g., avoid canonical subjects already present in the question).
-[ ]  NO canonical actors mentioned (e.g., avoid actors implied by the research setting, such as "respondents" or "target group").  
-
+[ ] Invalid patterns with single codes or codes without conceptual overlap are excluded
+[ ] Label is a noun phrase
+[ ] Label expresses only one concept (no combined ideas)
+[ ] Description does not repeat the canonical subjects already present in the question
+[ ] Description does not mention canonical actors implied by the research setting (e.g. “respondents” or “target group”)
+[ ] Each theme can be summarized in one coherent sentence around a COC
 
 Output instructions:
-- Return your output as a valid JSON dictionary with one or more theme objects.
-- Each object must have this structure:
+- Return your output as a valid JSON dictionary with the following structure:
 
 {{
   "exact cluster_id as string here": {{
@@ -382,8 +397,6 @@ Output instructions:
 
 Critical requirements:
 - Output must ONLY be valid JSON — no extra text before or after.
-
-
 """
 
 
@@ -412,11 +425,12 @@ Now, review the existing codebook:
 When matching codes to theme(s), follow these guidelines:
 
 1. Review EACH theme in <themes> carefully in relation to codes in <existing_codebook>.
-2. Match based primarily on the theme NAME; the theme DESCRIPTION is supporting context only.
-3. Match based on semantic meaning, not word overlap. Focus on meaning, scope, and level of abstraction in the context of the survey question. Ignore superficial or surface-level matches.
-4. Include only codes with conceptual overlap. Return all codes that meaningfully reflect the theme.
-5. Preserve codebook integrity. Copy code names and definitions exactly as provided. Do not add, remove, or alter any fields or wording.
+2. Match based primarily on the theme NAME; use the DESCRIPTION as supporting context only.
+3. Match on semantic meaning, not word overlap. Focus on meaning, scope, and level of abstraction in the context of the survey question. Ignore superficial matches.
+4. Include only codes with clear conceptual overlap. Do not force matches.
+5. Preserve codebook integrity. Copy code names and definitions exactly as provided, including spelling, capitalization, and punctuation. Do not add, remove, or alter any fields or wording.
 6. If a code matches multiple themes, include it only once in the final output.
+
 
 Your output should be in the following JSON format, strictly in {language}:
 
@@ -438,13 +452,14 @@ Your output should be in the following JSON format, strictly in {language}:
 
 Critical requirements:
 - You may return ZERO, ONE, or MULTIPLE codes, depending on theme relevance.
+- If no codes match, return an empty JSON array: [].
 - Output must be a SINGLE JSON array combining matches across ALL theme statements (no per-theme lists).
-- Do not create new codes or modify existing ones.
+- Do not create, remove, or modify codes.
 - Do not duplicate codes if they apply to multiple themes.
 - Output ONLY the JSON array — no explanation, headers, or extra text.
-- All values must be in {language}.
-- No comments, no trailing commas.
 - Each object must include ONLY the fields: "code" and "definition".
+- No comments, no trailing commas, no additional fields.
+- All objects must be unique by code name.
 """
 
 CODE_GENERATION_PROMPT = """
@@ -500,7 +515,7 @@ Failsafes:
 - If in doubt between MODIFY and CREATE, choose CREATE.
 
 LABELLING RULES:
-
+    
 When creating or modifying codes:
 
 - Labels: ≤10 words; atomic; no compound structures; avoid "and," "or," "with," "including," "/," "&," ",:;–-".
@@ -512,7 +527,7 @@ When creating or modifying codes:
 - Definitions: ≤25 words; operational, observable, aligned with the label; avoid vague or interpretive language.
 
 OUTPUT:
-
+    
 Return ONLY valid JSON, in {language}. No extra text. No trailing commas. Each theme maps to exactly one decision. The justification must explain both the abstraction relationship and the coverage rule applied.
 
 Required schema:
@@ -521,22 +536,14 @@ Required schema:
   "coding_decisions": [
     {{
       "theme_number": 1,
-      "theme_name": "Exact name theme",
-      "decision": "use | modify | create",
-      "final_code_label": "label of the code to be used/modified/created",
-      "final_code_definition": "≤25 words, operational definition",
+      "theme_name": "Exact name of the theme from <themes>",
+      "decision": "Must be exactly one of: 'use', 'modify', or 'create'",
+      "final_code_label": "label of the code to be used/modified/created in {language}",
+      "final_code_definition": "≤25 words, operational definition in {language}",
       "source_code": "exact name of reused/modified existing code, or null if new",
-      "justification": "explicit abstraction relationship + coverage rule applied"
-    }},
-    {{
-      "theme_number": 2,
-      "theme_name": "Exact name theme",
-      "decision": "...",
-      "final_code_label": "...",
-      "final_code_definition": "...",
-      "source_code": "...",
-      "justification": "..."
+      "justification": "Single sentence stating abstraction relationship and coverage rule applied, in {language}"
     }}
+    /* Repeat this object structure for each subsequent theme, incrementing theme_number by 1 */
   ]
 }}
 </output_format>
@@ -575,7 +582,7 @@ Follow these step-by-step instructions:
    a. Review the proposed code and definition against the following validation criteria.
     - Semantic fit: Code must capture the theme's meaning and scope.
     - Atomicity:
-        • Code and definition must express one idea only — no compounds or merged themes.
+        • Code label and definition must express one idea only — no compounds or merged themes.
         • Forbidden punctuation: "/", "&", "+", ",", ";", ":", "-", "–" (except in lexicalized words).
         • At most ONE main action (verb).
     - Naming rules:
@@ -612,11 +619,11 @@ Provide your output in strict JSON format, in {language} , ensuring all validati
 {{
   "code_validations": [
     {{
-      "theme_number": 1,
-      "theme_name": "Exact name theme",
+      "theme_number": [exact theme number in <coding_recommendation>],
+      "theme_name": "Exact name theme in <themes_to_code> ",
       "original_recommendation": {{
-        "code": "label originally proposed",
-        "definition": "definition originally proposed"
+        "code": "Exact code label recommended",
+        "definition": "Exact label definition recommended"
       }},
       "decision": "APPROVE | REJECT",
       "decision_rationale": "Include a brief explanation AND the self-audit summary in this format: Conjunctions=PASS/FAIL; Punctuation=PASS/FAIL; SingleIdea=PASS/FAIL; SingleAction=PASS/FAIL; NameLen=PASS/FAIL; DefLen=PASS/FAIL.",
@@ -624,21 +631,8 @@ Provide your output in strict JSON format, in {language} , ensuring all validati
         "code": "final validated label (atomic, rule-compliant, ≤10 words)",
         "definition": "final validated definition (≤25 words, operational, grounded)"
       }}
-    }},
-    {{
-      "theme_number": 2,
-      "theme_name": "Exact name theme",
-      "original_recommendation": {{
-        "code": "...",
-        "definition": "..."
-      }},
-      "decision": "...",
-      "decision_rationale": "...",
-      "validated_code": {{
-        "code": "...",
-        "definition": "..."
-      }}
     }}
+    /* Repeat this object structure for each subsequent theme, incrementing theme_number by 1 */
   ]
 }}
 
@@ -768,7 +762,6 @@ Follow these steps carefully:
 {codes_text}
 </clustered_codes>
 
-
 4. Check whether the codes in this cluster can be grouped together. Ask yourself:
    - Do all the codes in the cluster conceptually share an overarching, unifying and ATOMIC idea, concept or theme?
    - Do all the codes express similar sentiment (all positive, all negative, or all neutral)?
@@ -856,59 +849,128 @@ OUTPUT FORMAT (JSON):
   "rationale": "[detailed explanation of why this code belongs with this theme or remains miscellaneous]"
 }}
 
-CRITICAL: Focus ONLY on this single code. Give it your complete analytical attention.
-
 Return ONLY the JSON object with all content in {language}."""
+
+# =============================================================================
+# STEP 8B: THEME ORGANIZATION WITH REASONING MODELS
+# =============================================================================
+
+THEME_ORGANIZATION_REASONING_PROMPT = """
+You are a {language} qualitative specialist with expertise in curating codebooks and organizing themes using systematic thematic analysis principles.
+
+You will be given a codebook with codes and definitions. Your task is to organize these codes into a 2 or 3 level hierarchical structure where each level represents another abstraction level - from broad conceptual themes to more specific sub-themes to very concrete codes.
+
+Here are the codes for you to work with:
+<codebook>
+{codebook}
+</codebook>
+
+Here is the research question as meaningful context from which the codes are derived:
+<research_question>
+{research_question}
+</research_question>
+
+Follow these rules/criteria:
+
+1. **Theme labels must be atomic** - No compounding of ideas in theme labels is allowed. Each theme should represent one clear, unified concept.
+
+2. **Theme labels must be relevant and meaningful** - All themes must be directly relevant to and meaningful in light of the research question context.
+
+3. **Theme labels must group similar concepts** - Group codes that share similar ideas, thoughts, or concepts specifically in light of the research question.
+
+4. **Hierarchical organization** - Organize themes in 2-3 levels:
+   - Level 1: Broad, overarching themes (most abstract)
+   - Level 2: More specific sub-themes (intermediate abstraction)  
+   - Level 3: Very specific themes (most concrete, closest to original codes)
+
+5. **Comprehensive coverage** - Every code must be assigned to exactly one theme. No codes should be left unassigned.
+
+6. **Logical hierarchy** - Higher level themes should logically contain and encompass lower level themes.
+
+7. **Language consistency** - All theme names and descriptions must be in {language}.
+
+8. **Avoid redundancy** - Each theme should be distinct with no conceptual overlap between themes at the same level.
+
+9. **Miscellaneous handling** - If some codes truly don't fit well together, create a "Miscellaneous" or "Other" theme, but minimize its use.
+
+10. **Balanced distribution** - Aim for reasonably balanced theme sizes where practical, avoiding one theme with most codes.
+
+Return this exact JSON output format:
+
+{{
+  "themes": [
+    {{
+      "theme_name": "[Atomic theme name in {language}]",
+      "theme_description": "[Detailed description of what this theme represents in {language}]",
+      "level": 1,
+      "codes": [
+        {{
+          "code": "[Original code name]",
+          "definition": "[Original code definition]",
+          "source_cluster": "[Original source cluster if available]"
+        }}
+      ],
+      "is_miscellaneous": false
+    }}
+  ],
+  "methodology": "Single-prompt hierarchical theme organization using reasoning model",
+  "total_codes_organized": {codes_count},
+  "language": "{language}"
+}}
+
+Critical requirements:
+- Return ONLY the JSON format above, no additional text
+- All fields must be in {language} where specified
+- Every code from the input must appear in exactly one theme
+- Theme names must be atomic (single concept only)
+- Organize logically from broad (level 1) to specific (level 2-3)
+- Ensure themes are meaningful in context of the research question"""
 
 # =============================================================================
 # STEP 9: CODE ASSIGNMENT
 # =============================================================================
 
 CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses.
+You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 5 candidate codes to a specific response segment.
 
-Your task is to assign the **single most appropriate code** from a focused list of 5 candidate codes to a specific response segment.
-
----
-
-You are working with a **pre-selected set of 5 candidate codes** that are most likely to fit this response. This reduces ambiguity and improves accuracy. **You must assign exactly ONE code**, even if fit is low — choose the best available option based on semantic meaning.
-
----
-
-Step 1: Review the original survey question:
+First, review the original survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Step 2: Examine the response segment:
+Next, examine the response segment you need to analyze:
 <idea_to_analyze>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-Step 3: Review the 5 candidate codes and their descriptions:
+Now, review the 5 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
+
+Note:
+- Prioritize the CODE LABEL; Use the CODE DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </candidate_codes>
 
----
+Your goal is to select the single best fitting code for the response segment. Follow these steps:
 
-**Assignment Instructions**:
+1. Carefully read and understand each candidate code's definition.
+2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
+3. Identify which code best captures the core concept expressed in the response.
+4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
 
-1. **Select the best fitting code**:
-   - Prioritize **exact conceptual matches** based on meaning.
-   - Do **not** rely on surface keywords — base your choice on **semantic alignment** with the code's definition.
+When selecting the best fitting code:
+- Prioritize exact conceptual matches based on meaning.
+- Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
 
-2. **Rate the strength of the fit** using this scale:
-   - **Excellent (0.9–1.0)** – The idea directly expresses the code definition.
-   - **Good (0.7–0.8)** – Strong match, minor interpretation needed.
-   - **Moderate (0.5–0.6)** – Somewhat related, but requires reasonable interpretation.
-   - **Poor (0.3–0.4)** – Weak fit, conceptually strained but closest available.
-   - **Very Poor (0.0–0.2)** – Barely applicable, forced fit due to lack of better options.
+After selecting the code, rate the strength of the fit using this scale:
+- Excellent (0.9–1.0): The idea directly expresses the code definition.
+- Good (0.7–0.8): Strong match, minor interpretation needed.
+- Moderate (0.5–0.6): Somewhat related, but requires reasonable interpretation.
+- Poor (0.3–0.4): Weak fit, conceptually strained but closest available.
+- Very Poor (0.0–0.2): Barely applicable, forced fit due to lack of better options.
 
----
-
-**Return your response in the following JSON format:**
+Provide your response in the following JSON format:
 <output_format>
 {{
   "idea_id": "{idea_id}",
@@ -919,95 +981,12 @@ Step 3: Review the 5 candidate codes and their descriptions:
 }}
 </output_format>
 
----
-
-**Critical Requirements**:
-- Use **exact code names** as provided
-- Assign **one and only one** code per response
-- The **confidence score must reflect conceptual fit**, not how likely the model feels
-- The **rationale must explain the semantic connection** to the code definition
-- Return **ONLY the JSON object** in {language}
+Critical requirements:
+- Use exact code names as provided in the candidate codes list.
+- Assign one and only one code per response.
+- The confidence score must reflect conceptual fit, not how likely you feel about the assignment.
+- The rationale must explain the semantic connection to the code definition.
+- Return ONLY the JSON object in {language}.
 
 Begin the code assignment now.
 """
-
-# =============================================================================
-# DEDUPLICATION PROMPT
-# =============================================================================
-
-DEDUPLICATION_PROMPT = """
-You are a {language} qualitative data analyst creating the MOST EFFICIENT, MINIMAL codebook for analyzing this research question.
-
-Your mission: Create a codebook where every code is ESSENTIAL and IRREPLACEABLE for analysis.
-Think like a researcher analyzing 1000+ responses - codes that are too similar create confusion and inconsistent coding.
-
-────────────────────────────────────────
-SURVEY CONTEXT
-────────────────────────────────────────
-Survey Question: {survey_question}
-
-Language: {language}
-
-────────────────────────────────────────
-CODES TO ANALYZE
-────────────────────────────────────────
-{codes_batch}
-
-────────────────────────────────────────
-EFFICIENCY-FOCUSED PRINCIPLES
-────────────────────────────────────────
-Create a codebook optimized for:
-
-🎯 RESEARCH EFFICIENCY: Minimal codes that capture maximum analytical insight
-🧠 CODER CLARITY: Codes so distinct that human coders never hesitate between options
-📊 ANALYTICAL POWER: Each code must justify its separate existence for this research question
-⚡ PRACTICAL USE: Designed for coding hundreds of real survey responses
-
-────────────────────────────────────────
-AGGRESSIVE MERGING MANDATE
-────────────────────────────────────────
-You are tasked with creating the MOST CONDENSED possible codebook.
-
-MERGE codes that express the same core concept, even if they differ in:
-- Specific wording
-- Minor details  
-- Slight emphasis differences
-
-Default to MERGING. Only keep codes separate if they represent fundamentally different concepts that cannot be combined.
-
-────────────────────────────────────────
-MERGE DECISION PROCESS
-────────────────────────────────────────
-For ANY two codes that seem related:
-
-1. Do they address the same basic respondent concern? → MERGE
-2. Would survey responses fit under both codes? → MERGE  
-3. Is the difference mainly in wording, not meaning? → MERGE
-
-ONLY keep separate if codes represent completely different themes that cannot be logically combined.
-
-────────────────────────────────────────
-OUTPUT FORMAT (JSON only, no other text)
-────────────────────────────────────────
-{{
-  "merge_decisions": [
-    {{
-      "codes_to_merge": ["exact code name 1", "exact code name 2"],
-      "final_code_name": "best merged code name",
-      "final_definition": "clear combined definition in 1-2 sentences",
-      "justification": "why these codes are semantically identical for this survey"
-    }}
-  ],
-  "codes_to_keep_unchanged": ["exact code name 3", "exact code name 4", ...]
-}}
-
-Rules:
-- All field values must be in {language}
-- Use exact code names as they appear above
-- Only merge codes that are truly duplicates
-- If no duplicates found, return empty merge_decisions array
-- Output ONLY valid JSON, no other text
-"""
-
-
-
