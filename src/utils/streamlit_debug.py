@@ -12,7 +12,7 @@ Integration with VerboseReporter, PromptPrinter, and sample generation.
 import streamlit as st
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional #, Union
 import io
 import sys
 from contextlib import contextmanager

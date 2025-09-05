@@ -8,9 +8,9 @@ from typing import Dict, List, Optional, Union
 from dataclasses import dataclass
 from collections import deque
 
-import instructor
-from openai import AsyncOpenAI, RateLimitError
-import tiktoken
+# import instructor
+# from openai import AsyncOpenAI, RateLimitError
+# import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
 

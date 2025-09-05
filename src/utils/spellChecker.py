@@ -14,29 +14,22 @@ from dataclasses import dataclass
 
 import nest_asyncio
 from pydantic import BaseModel
-#from openai import RateLimitError
-#from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
-#from openai import AsyncOpenAI
-#import instructor
-#import tiktoken
-#import spacy
-
-# === MODELS ========================================================================================================
-import models
-
-# === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, DEFAULT_MODEL_CONFIG, get_openai_rate_limits
-from prompts import SPELLCHECK_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
-logger = logging.getLogger(__name__)
+# === CONFIG ========================================================================================================
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, DEFAULT_MODEL_CONFIG, get_openai_rate_limits
+from prompts import SPELLCHECK_INSTRUCTIONS
 
-# Nederlands or Engels
+logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
+
+
+# === STRUCTURED DATA MODELS ========================================================================================================
+import models
 
 class SpellCheckModel(BaseModel):
     respondent_id: Any
@@ -59,10 +52,9 @@ class CorrectionItem(BaseModel):
 
 class LLMCorrectionResponse(BaseModel):
     corrections: List[CorrectionItem] 
-
+    
 @dataclass
 class SpellCheckOptimalStrategy:
-    """Evidence-based optimal processing strategy for spell checking"""
     target_time_seconds: float
     launch_rate_per_second: float
     concurrent_limit: int
@@ -70,18 +62,17 @@ class SpellCheckOptimalStrategy:
     total_requests: int
     total_tokens: int
     safety_factor: float
-    batch_size: int
+    batch_size: int    
+
+# === DATA PROCESSING HELPERS  ========================================================================================================
 
 class SpellCheckWorkloadAnalyzer:
-    """Analyzes spell checking workload and calculates optimal processing strategy"""
-    
     def __init__(self, model_name: str, encoding, config: SpellCheckConfig):
         self.model_name = model_name
         self.encoding = encoding
         self.config = config
     
     def measure_token_usage(self, sample_batches: List[List[Any]], base_prompt_template: str, var_lab: str) -> float:
-        """Measure actual token usage from real spell checking prompts"""
         if not sample_batches:
             return 550  
         
@@ -110,7 +101,6 @@ class SpellCheckWorkloadAnalyzer:
         return statistics.mean(token_counts) if token_counts else 550
     
     def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float) -> SpellCheckOptimalStrategy:
-        """Calculate evidence-based strategy for spell checking with rate smoothing"""
         # Get API limits from config
         rate_limits = get_openai_rate_limits(self.model_name)
         
@@ -229,6 +219,7 @@ class SpellCheckSlidingWindowMonitor:
                 'elapsed_time': time.time() - self.start_time
             }
     
+# === HUNSPELL ========================================================================================================
 class HunspellSession:
     def __init__(self, hunspell_path, dict_path):
         self.process = subprocess.Popen(
@@ -259,6 +250,7 @@ class HunspellSession:
         self.process.stderr.close()
         self.process.terminate()
 
+# === MAIN UTIL  ========================================================================================================
 class SpellChecker:
     def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None, verbose_reporter: Optional['VerboseReporter'] = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
@@ -766,7 +758,7 @@ class SpellChecker:
         
         # Use inverted index if available, otherwise fall back to regex search
         if word_to_responses is not None:
-            print(f"  • Creating correction tasks using optimized inverted index...")
+            print("  • Creating correction tasks using optimized inverted index...")
             
             # Pre-compute suggestion strings for all OOV words to avoid redundant processing
             word_to_suggestion_str = {}
@@ -872,7 +864,7 @@ class SpellChecker:
             
         else:
             # Fallback to original implementation
-            print(f"  • Creating correction tasks using standard regex search...")
+            print("  • Creating correction tasks using standard regex search...")
             for item in responses_with_ids:
                 response = item['response']
                 response_oov_words = []
@@ -957,7 +949,10 @@ class SpellChecker:
         
         batches = self.create_correction_batches(filtered_tasks, prompt_header, max_tokens, completion_reserve)
         
-        # === WORKLOAD ANALYSIS & RATE LIMITING SETUP ===
+        # =================================================================
+        # WORKLOAD ANALYSIS & RATE LIMITING SETUP 
+        # =================================================================
+        
         if len(batches) > 1:  # Only use rate limiting for multiple batches
             # Initialize workload analyzer
             encoding = get_tiktoken_encoding(self.model)
@@ -985,13 +980,13 @@ class SpellChecker:
             throttler = Throttler(rate_limit=strategy.launch_rate_per_second)
             
             # Display strategy summary
-            print(f"[SPELL CHECK ANALYSIS]")
+            print("[SPELL CHECK ANALYSIS]")
             print(f"- Model: {self.model} (Limits: {rate_limits.requests_per_minute:,} RPM, {rate_limits.tokens_per_minute:,} TPM)")
             print(f"- Correction batches to process: {len(batches):,}")
             print(f"- Avg tokens per batch: {avg_tokens_per_batch:.0f}")
             print(f"- Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
             print(f"- Estimated time: {strategy.target_time_seconds:.1f}s ({strategy.bottleneck_type} bottleneck)")
-            print(f"Processing correction batches...")
+            print("Processing correction batches...")
         
         async def process_batch_with_rate_limiting(batch: SpellCorrectionBatch, var_lab: str, batch_index: int, 
                                                 use_rate_limiting: bool = False, throttler=None, monitor=None, 

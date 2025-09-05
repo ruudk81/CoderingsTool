@@ -5,7 +5,7 @@ Provides cached property access and efficient state validation
 
 import time
 from typing import Optional, Any, Dict
-from .bare_mode_utils import conditional_cache_resource, get_session_state, is_streamlit_context
+from .bare_mode_utils import conditional_cache_resource, get_session_state #, is_streamlit_context
 import hashlib
 import json
 
