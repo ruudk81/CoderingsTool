@@ -406,17 +406,22 @@ class SharedCodebook:
                     })
                     return True, self._version
             
-            # Original code not found - fail gracefully instead of creating duplicate
+            # If original not found, add as new code with cluster tracking
+            code_entry = {'code': new_code, 'definition': new_definition}
+            if cluster_id is not None:
+                code_entry['source_cluster_id'] = str(cluster_id)
+                
+            self._codes.append(code_entry)
+            self._version += 1
             self._update_log.append({
                 'version': self._version,
-                'action': 'replace_failed',
+                'action': 'add_as_fallback',
                 'original_code': original_code,
                 'new_code': new_code,
                 'cluster_id': cluster_id,
-                'timestamp': time.time(),
-                'reason': 'original_code_not_found'
+                'timestamp': time.time()
             })
-            return False, self._version
+            return True, self._version
     
     async def get_version_info(self) -> Dict[str, Any]:
         """Get codebook version information"""
@@ -443,83 +448,35 @@ class SharedCodebook:
                 oldest_version = min(self._embedding_cache.keys())
                 del self._embedding_cache[oldest_version]
     
-    def _normalize_code_name(self, code: str) -> str:
-        """Normalize code name for consistent comparison"""
-        return code.strip().lower().replace('-', ' ').replace('_', ' ')
-    
-    def _is_duplicate(self, code1: str, code2: str) -> bool:
-        """Check if two codes are duplicates using normalized comparison"""
-        norm1 = self._normalize_code_name(code1)
-        norm2 = self._normalize_code_name(code2)
-        return norm1 == norm2
-    
     async def batch_update(self, new_codes: List[Dict[str, str]], expected_base_version: int) -> bool:
-        """Phase 3: Batch update multiple codes atomically with comprehensive duplicate detection"""
+        """Phase 3: Batch update multiple codes atomically"""
         async with self._lock:
-            # Version conflict check with retry logic
+            # Version conflict check (defensive programming)
             if self._version != expected_base_version:
-                version_conflict_info = {
-                    'expected_version': expected_base_version,
-                    'actual_version': self._version,
-                    'codes_to_add': len(new_codes),
-                    'timestamp': time.time()
-                }
-                
-                # Log version conflict
+                # Log version conflict but proceed (dissimilar batches should rarely conflict)
                 self._update_log.append({
                     'version': self._version,
-                    'action': 'version_conflict_detected',
-                    **version_conflict_info
+                    'action': 'version_conflict_resolved',
+                    'expected_version': expected_base_version,
+                    'actual_version': self._version,
+                    'timestamp': time.time()
                 })
-                
-                # For safety, validate that proceeding won't cause issues
-                # Check if any of the new codes would conflict with recent additions
-                recent_adds = [log for log in self._update_log[-10:] 
-                              if log.get('action') in ['add', 'batch_add'] and 
-                              log.get('version', 0) > expected_base_version]
-                
-                potential_conflicts = 0
-                for code_dict in new_codes:
-                    for recent_add in recent_adds:
-                        if self._is_duplicate(code_dict['code'], recent_add.get('code', '')):
-                            potential_conflicts += 1
-                
-                if potential_conflicts > 0:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_blocked',
-                        'potential_conflicts': potential_conflicts,
-                        **version_conflict_info
-                    })
-                    return False  # Refuse to proceed with conflicting update
-                else:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_resolved',
-                        'reason': 'no_potential_conflicts',
-                        **version_conflict_info
-                    })
             
-            # Batch add all new codes with enhanced duplicate detection
+            # Batch add all new codes
             added_count = 0
-            duplicates_prevented = 0
-            
             for code_dict in new_codes:
                 code = code_dict['code']
                 definition = code_dict['definition']
                 cluster_id = code_dict.get('cluster_id', 'unknown')
                 
-                # Enhanced duplicate check - normalize and compare
-                is_duplicate = False
-                duplicate_of = None
-                
+                # Check if code already exists
+                exists = False
                 for existing in self._codes:
-                    if self._is_duplicate(existing['code'], code):
-                        is_duplicate = True
-                        duplicate_of = existing['code']
+                    if existing['code'].lower() == code.lower():
+                        exists = True
                         break
                 
-                if not is_duplicate:
+                if not exists:
                     code_entry = {'code': code, 'definition': definition}
                     if cluster_id and cluster_id != 'unknown':
                         code_entry['source_cluster_id'] = str(cluster_id)
@@ -533,31 +490,10 @@ class SharedCodebook:
                         'cluster_id': cluster_id,
                         'timestamp': time.time()
                     })
-                else:
-                    # Log prevented duplicate
-                    duplicates_prevented += 1
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'duplicate_prevented',
-                        'attempted_code': code,
-                        'duplicate_of': duplicate_of,
-                        'cluster_id': cluster_id,
-                        'timestamp': time.time()
-                    })
             
             # Update version once for the entire batch
             if added_count > 0:
                 self._version += 1
-            
-            # Log summary if duplicates were prevented
-            if duplicates_prevented > 0:
-                self._update_log.append({
-                    'version': self._version,
-                    'action': 'batch_summary',
-                    'added_count': added_count,
-                    'duplicates_prevented': duplicates_prevented,
-                    'timestamp': time.time()
-                })
             
             return added_count > 0
 
@@ -1056,7 +992,6 @@ class InductiveCodeGenerator:
         verbose_detailed: bool = False,
         prompt_printer = None,
         config = None,
-        verbose_reporter: Optional['VerboseReporter'] = None,
         **kwargs  # For backward compatibility
     ):
         self.cluster_results = cluster_results
@@ -1069,7 +1004,7 @@ class InductiveCodeGenerator:
         
         # Initialize components
         self.model_config = ModelConfig()
-        self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         
         # Initialize config-aware concurrency control
         self.concurrency_semaphore = asyncio.Semaphore(self.config.async_concurrency_limit)
@@ -2010,24 +1945,12 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"Theme extraction success: {themes_extracted}/{clusters_found} ({theme_success_rate:.1f}%)")
             self.verbose_reporter.stat_line(f"Overall processing success: {clusters_processed}/{clusters_found} ({processing_success_rate:.1f}%)")
         
-        # Codebook growth and decision statistics
+        # Codebook growth
         initial_codes = len(self.starter_codes)
         final_codes = self._processing_stats.get('final_codebook_size', initial_codes)
         codes_added = final_codes - initial_codes
         
         self.verbose_reporter.stat_line(f"Codebook growth: {initial_codes} → {final_codes} (+{codes_added} codes)")
-        
-        # Decision tracking statistics
-        codes_used = self._processing_stats.get('codes_used', 0)
-        codes_modified = self._processing_stats.get('codes_modified', 0)
-        codes_created = self._processing_stats.get('codes_added', 0)
-        total_decisions = codes_used + codes_modified + codes_created
-        
-        if total_decisions > 0:
-            self.verbose_reporter.stat_line("Decision breakdown:")
-            self.verbose_reporter.stat_line(f"  USE decisions: {codes_used} ({codes_used/total_decisions*100:.1f}%)")
-            self.verbose_reporter.stat_line(f"  MODIFY decisions: {codes_modified} ({codes_modified/total_decisions*100:.1f}%)")
-            self.verbose_reporter.stat_line(f"  CREATE decisions: {codes_created} ({codes_created/total_decisions*100:.1f}%)")
         
         # Quality indicators
         validation_failures = self._processing_stats.get('validation_failures', 0)
@@ -2196,127 +2119,44 @@ class InductiveCodeGenerator:
             return None
     
     async def _merge_codebook_updates(self, results: List[Dict[str, Any]], base_version: int):
-        """Merge all codebook updates from sub-batch atomically - respects USE/MODIFY/CREATE decisions"""
+        """Merge all codebook updates from sub-batch atomically (Phase 3)"""
         
-        # Collect updates by decision type
-        create_codes = []
-        modify_operations = []
-        use_count = 0
-        decision_stats = {'use': 0, 'modify': 0, 'create': 0, 'errors': 0}
-        
+        # Collect all new codes from the sub-batch results
+        all_new_codes = []
         for result in results:
             cluster_id = result.get('cluster_id', 'unknown')
             
             # Debug: Check result structure
             if not result:
                 self.verbose_reporter.error(f"C{cluster_id}: Empty result in merge_codebook_updates")
-                decision_stats['errors'] += 1
                 continue
                 
-            if not result.get('validation') or not result.get('code_generation'):
-                self.verbose_reporter.error(f"C{cluster_id}: Missing validation or code_generation in result")
-                decision_stats['errors'] += 1
+            if not result.get('validation'):
+                self.verbose_reporter.error(f"C{cluster_id}: No validation in result")
                 continue
                 
-            validation = result['validation']
-            code_generation = result['code_generation']
-            
-            if not hasattr(validation, 'code_validations') or not hasattr(code_generation, 'coding_decisions'):
-                self.verbose_reporter.error(f"C{cluster_id}: Missing code_validations or coding_decisions")
-                decision_stats['errors'] += 1
+            if not hasattr(result['validation'], 'code_validations'):
+                self.verbose_reporter.error(f"C{cluster_id}: No code_validations in validation")
                 continue
             
-            # Process each validation with its corresponding decision
-            for i, code_validation in enumerate(validation.code_validations):
-                if i < len(code_generation.coding_decisions):
-                    coding_decision = code_generation.coding_decisions[i]
-                    
-                    if code_validation.validated_code and coding_decision:
-                        decision = coding_decision.decision.lower()
-                        validated_code = code_validation.validated_code
-                        
-                        if decision == "create":
-                            create_codes.append({
-                                'code': validated_code.code,
-                                'definition': validated_code.definition,
-                                'cluster_id': cluster_id
-                            })
-                            decision_stats['create'] += 1
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE decision - will add '{validated_code.code}'")
-                        
-                        elif decision == "modify" and coding_decision.source_code:
-                            modify_operations.append({
-                                'original_code': coding_decision.source_code,
-                                'new_code': validated_code.code,
-                                'new_definition': validated_code.definition,
-                                'cluster_id': cluster_id
-                            })
-                            decision_stats['modify'] += 1
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY decision - will replace '{coding_decision.source_code}' with '{validated_code.code}'")
-                        
-                        elif decision == "use":
-                            decision_stats['use'] += 1
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision - no codebook update for '{validated_code.code}'")
-                        
-                        else:
-                            self.verbose_reporter.error(f"C{cluster_id}: Unknown decision '{decision}' or missing source_code for modify")
-                            decision_stats['errors'] += 1
-                    else:
-                        self.verbose_reporter.error(f"C{cluster_id}: Missing validated_code or coding_decision[{i}]")
-                        decision_stats['errors'] += 1
+            # Process each code validation
+            for i, code_validation in enumerate(result['validation'].code_validations):
+                if code_validation.validated_code:
+                    all_new_codes.append({
+                        'code': code_validation.validated_code.code,
+                        'definition': code_validation.validated_code.definition,
+                        'cluster_id': cluster_id
+                    })
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: Validated_code '{code_validation.validated_code.code}' - codebook updated")
                 else:
-                    self.verbose_reporter.error(f"C{cluster_id}: Validation/decision mismatch at index {i}")
-                    decision_stats['errors'] += 1
+                    self.verbose_reporter.error(f"C{cluster_id}: code_validation[{i}] has no validated_code")
         
-        # Execute batch operations with fresh version checking
-        updates_made = False
-        
-        # Process CREATE operations with fresh base version
-        if create_codes:
-            # Get fresh snapshot to ensure atomic operation
-            _, current_version = await self.shared_codebook.get_current_snapshot()
-            self.verbose_reporter.stat_line(f"Batch adding {len(create_codes)} new codes to SharedCodebook")
-            await self.shared_codebook.batch_update(create_codes, current_version)
-            updates_made = True
-        
-        # Process MODIFY operations individually with validation
-        for modify_op in modify_operations:
-            # Get fresh snapshot before each modify to ensure consistency
-            current_codes, current_version = await self.shared_codebook.get_current_snapshot()
-            
-            replaced, new_version = await self.shared_codebook.replace_code(
-                modify_op['original_code'],
-                modify_op['new_code'],
-                modify_op['new_definition'],
-                modify_op['cluster_id']
-            )
-            if replaced:
-                updates_made = True
-                self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: Replaced '{modify_op['original_code']}' with '{modify_op['new_code']}'")
-                
-                # Post-MODIFY validation: Check if new code creates duplicate
-                final_codes, _ = await self.shared_codebook.get_current_snapshot()
-                duplicate_count = sum(1 for code in final_codes 
-                                    if self.shared_codebook._is_duplicate(code['code'], modify_op['new_code']))
-                
-                if duplicate_count > 1:
-                    self.verbose_reporter.error(f"C{modify_op['cluster_id']}: MODIFY created duplicate! '{modify_op['new_code']}' now exists {duplicate_count} times")
-                
-            else:
-                self.verbose_reporter.error(f"C{modify_op['cluster_id']}: Failed to replace '{modify_op['original_code']}' - original not found")
-        
-        # Report decision statistics
-        total_decisions = sum(decision_stats.values())
-        if total_decisions > 0:
-            self.verbose_reporter.stat_line(f"Decision summary: USE={decision_stats['use']}, MODIFY={decision_stats['modify']}, CREATE={decision_stats['create']}, ERRORS={decision_stats['errors']}")
-            
-            # Track in processing stats for global reporting
-            self._processing_stats['codes_used'] = self._processing_stats.get('codes_used', 0) + decision_stats['use']
-            self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + decision_stats['modify']  
-            self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + decision_stats['create']
-        
-        if not updates_made:
-            self.verbose_reporter.stat_line("No codebook updates needed from this sub-batch")
+        # Single atomic update to SharedCodebook if there are new codes
+        if all_new_codes:
+            self.verbose_reporter.stat_line(f"Batch updating SharedCodebook with {len(all_new_codes)} new codes")
+            await self.shared_codebook.batch_update(all_new_codes, base_version)
+        else:
+            self.verbose_reporter.stat_line("No new codes to add to SharedCodebook from this sub-batch")
     
     #########################################################################################################
     # Stage 2: Prompt Formatting & LLM Calling for CANDIDATE CODE SELECTION  
@@ -2540,7 +2380,148 @@ class InductiveCodeGenerator:
                     ]
                 }
             
-            # Note: Codebook updates are now handled in _merge_codebook_updates() after batch completion
+            # Update SharedCodebook based on validation decisions  
+            if response and response.code_validations:
+                codebook_updated = False
+                new_version = None
+                changed_codes = []  # Track (action, code_label) for incremental embedding
+                
+                # Process each validation decision
+                for i, validation in enumerate(response.code_validations):
+                    # Get corresponding coding decision
+                    if (hasattr(code_generation, 'coding_decisions') and 
+                        code_generation.coding_decisions and 
+                        i < len(code_generation.coding_decisions)):
+                        coding_decision = code_generation.coding_decisions[i]
+                        
+                        # Complete decision matrix: Both APPROVE and REJECT are actionable
+                        if validation.decision in ["APPROVE", "REJECT"] and validation.validated_code:
+                            #action_source = "ORIGINAL" if validation.decision == "APPROVE" else "VALIDATED"
+                            
+                            # Handle create decisions (both APPROVE and REJECT add new codes)
+                            if coding_decision.decision == "create":
+                                added, new_version = await self.shared_codebook.add_code_if_new(
+                                    validation.validated_code.code, validation.validated_code.definition,
+                                    cluster_id  # Pass current cluster_id (sub-cluster)
+                                )
+                                if added:
+                                    self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
+                                    codebook_updated = True
+                                    changed_codes.append(('create', validation.validated_code.code))
+                                    #self.verbose_reporter.stat_line(f"C{cluster_id}: CREATE+{validation.decision} - Added new code '{validation.validated_code.code}' ({action_source})")
+                            
+                            # Handle modify decisions (both APPROVE and REJECT replace original)
+                            elif coding_decision.decision == "modify" and coding_decision.source_code:
+                                replaced, new_version = await self.shared_codebook.replace_code(
+                                    coding_decision.source_code, 
+                                    validation.validated_code.code, validation.validated_code.definition,
+                                    cluster_id  # Pass current cluster_id (sub-cluster)
+                                )
+                                if replaced:
+                                    self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
+                                    codebook_updated = True
+                                    changed_codes.append(('modify', validation.validated_code.code))
+                                    #self.verbose_reporter.stat_line(f"C{cluster_id}: MODIFY+{validation.decision} - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' ({action_source})")
+                            
+                            # Handle use decisions
+                            elif coding_decision.decision == "use":
+                                #if validation.decision == "APPROVE":
+                                    # use + APPROVE = no update (existing code stays as-is)
+                                    # self.verbose_reporter.stat_line(f"C{cluster_id}: USE+APPROVE - No codebook update needed")
+                                if validation.decision == "REJECT":
+                                    # use + REJECT = replace existing with validated_code
+                                    # Need to get the original code name that was being used
+                                    if hasattr(coding_decision, 'source_code') and coding_decision.source_code:
+                                        replaced, new_version = await self.shared_codebook.replace_code(
+                                            coding_decision.source_code,
+                                            validation.validated_code.code, validation.validated_code.definition,
+                                            cluster_id  # Pass current cluster_id (sub-cluster)
+                                        )
+                                        if replaced:
+                                            self._processing_stats['codes_modified'] = self._processing_stats.get('codes_modified', 0) + 1
+                                            codebook_updated = True
+                                            changed_codes.append(('modify', validation.validated_code.code))
+                                            #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Replaced '{coding_decision.source_code}' with '{validation.validated_code.code}' (VALIDATED)")
+                                    else:
+                                        # Fallback: add as new code if we can't identify original
+                                        added, new_version = await self.shared_codebook.add_code_if_new(
+                                            validation.validated_code.code, validation.validated_code.definition,
+                                            cluster_id  # Pass current cluster_id (sub-cluster)
+                                        )
+                                        if added:
+                                            self._processing_stats['codes_added'] = self._processing_stats.get('codes_added', 0) + 1
+                                            codebook_updated = True
+                                            changed_codes.append(('create', validation.validated_code.code))
+                                            #self.verbose_reporter.stat_line(f"C{cluster_id}: USE+REJECT - Added validated code '{validation.validated_code.code}' (no original identified)")
+                        else:
+                            self.verbose_reporter.error(f"C{cluster_id}: UNHANDLED validation decision '{validation.decision}' or missing validated_code")
+                
+                # Generate embeddings for new/modified codes ONLY (smart incremental approach)
+                if codebook_updated and new_version is not None and changed_codes:
+                    # Get updated codebook
+                    updated_codes, _ = await self.shared_codebook.get_current_snapshot()
+                    
+                    # Check if embeddings already exist (shouldn't happen with proper version tracking)
+                    cached_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version)
+                    if cached_embeddings is None:
+                        # Get previous version's embeddings to reuse
+                        previous_embeddings = await self.shared_codebook.get_embeddings_for_version(new_version - 1)
+                        
+                        if previous_embeddings and len(changed_codes) < len(updated_codes):
+                            # Smart incremental embedding: only embed changed codes
+                            if self.verbose_detailed: 
+                                self.verbose_reporter.stat_line(f"C{cluster_id}: Smart incremental embedding - {len(changed_codes)} changed codes out of {len(updated_codes)} total")
+                            
+                            # Start with previous embeddings
+                            new_embeddings = list(previous_embeddings)
+                            
+                            # Build list of changed codes to embed
+                            codes_to_embed = []
+                            code_indices = []
+                            
+                            for action, code_label in changed_codes:
+                                # Find index of this code in updated codebook
+                                for idx, code in enumerate(updated_codes):
+                                    if code['code'] == code_label:
+                                        codes_to_embed.append(f"{code['code']}")
+                                        code_indices.append(idx)
+                                        break
+                            
+                            # Embed only the changed codes
+                            if codes_to_embed:
+                                try:
+                                    changed_embeddings = await self.similarity_engine._embed_openai_batch(codes_to_embed)
+                                    
+                                    # Update embeddings at correct positions
+                                    for i, idx in enumerate(code_indices):
+                                        if idx < len(new_embeddings):
+                                            new_embeddings[idx] = changed_embeddings[i]
+                                        else:
+                                            # Extend if needed (for new codes at end)
+                                            while len(new_embeddings) < idx:
+                                                new_embeddings.append(None)
+                                            new_embeddings.append(changed_embeddings[i])
+                                    
+                                    # Cache the updated embeddings
+                                    await self.shared_codebook.cache_embeddings(new_version, new_embeddings)
+                                    if self.verbose_detailed:
+                                        self.verbose_reporter.stat_line(f"C{cluster_id}: Successfully cached incremental embeddings for version {new_version}")
+                                except Exception as e:
+                                    self.verbose_reporter.error(f"C{cluster_id}: Failed incremental embedding, falling back to full: {e}")
+                                    # Fall through to full embedding below
+                                else:
+                                    # Success - skip full embedding
+                                    return response
+                        
+                        # Fallback: embed all codes (first time or incremental failed)
+                        if self.verbose_detailed: 
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: Full embedding for {len(updated_codes)} codes (fallback)")
+                        code_texts = [f"{code['code']}" for code in updated_codes]
+                        try:
+                            code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
+                            await self.shared_codebook.cache_embeddings(new_version, code_embeddings)
+                        except Exception as e:
+                            self.verbose_reporter.error(f"C{cluster_id}: Failed to generate embeddings: {e}")
             
             return response
             

@@ -18,7 +18,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from utils import dataLoader
-from utils.cacheManager import CacheManager
+from utils.cacheManager import CacheManager, generate_variable_key
 from config import (
     CacheConfig, 
     ModelConfig,
@@ -205,10 +205,43 @@ class StreamlitPipelineRunner:
         self.cache_manager = CacheManager(self.cache_config)
         self.data_loader = dataLoader.DataLoader(verbose=False)
         
-    def create_verbose_reporter(self, streamlit_container=None) -> VerboseReporter:
-        """Create verbose reporter that can optionally stream to Streamlit"""
-        # TODO: Implement streaming to Streamlit container
-        return VerboseReporter(self.verbose)
+    def create_verbose_reporter(self, streamlit_container=None, debug_capture=None, step_name=None) -> VerboseReporter:
+        """Create verbose reporter with optional debug capture for Streamlit"""
+        capture_callback = None
+        
+        # Set up debug capture if requested
+        if debug_capture and debug_capture.show_verbose and step_name:
+            from utils.streamlit_debug import VerboseCapture
+            verbose_capture = VerboseCapture(debug_capture, step_name)
+            capture_callback = verbose_capture.capture_output
+        
+        return VerboseReporter(self.verbose, capture_callback)
+    
+    def get_variable_key(self) -> str:
+        """Extract variable key from session state for caching"""
+        try:
+            session_state = get_session_state()
+            
+            # First, check if we have a stored variable key from Step 1
+            stored_variable_key = session_state.get('current_variable_key')
+            if stored_variable_key:
+                return stored_variable_key
+            
+            # Fallback: generate from session state variables (for backward compatibility)
+            # Check if we have multiple variables (merged)
+            selected_variables = session_state.get('selected_variables_confirmed') or session_state.get('selected_variables')
+            is_merged = session_state.get('is_merged_variable', False) or session_state.get('variable_mode_confirmed') == 'multiple'
+            
+            # Fall back to single variable if no multiple variables found
+            if not selected_variables:
+                selected_variables = [session_state.get('selected_variable', 'unknown')]
+                is_merged = False
+            
+            return generate_variable_key(selected_variables, is_merged)
+            
+        except Exception:
+            # Fallback for when session state is not available
+            return "unknown"
     
     def step_1_load_data(self, filename: str, id_column: str, var_name: str = None, var_names: list = None,
                         force_recalc: bool = False, 
@@ -216,7 +249,16 @@ class StreamlitPipelineRunner:
         """Step 1: Load data from SPSS file (single or multiple variables)"""
         
         step_name = "data"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)  # No debug_capture in step 1
+        
+        # Generate variable key for caching
+        if var_names and len(var_names) > 1:
+            selected_variables = var_names
+            is_merged = True
+        else:
+            selected_variables = [var_name] if var_name else ["unknown"]
+            is_merged = False
+        variable_key = generate_variable_key(selected_variables, is_merged)
         
         if streamlit_container:
             if var_names and len(var_names) > 1:
@@ -224,8 +266,8 @@ class StreamlitPipelineRunner:
             else:
                 streamlit_container.text("🔄 Loading data from SPSS file...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            raw_text_list = self.cache_manager.load_from_cache(filename, step_name, models.ResponseModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            raw_text_list = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ResponseModel)
             verbose_reporter.summary("DATA FROM CACHE", {"Input": f"{len(raw_text_list)} responses"})
         else:
             verbose_reporter.section_header("DATA LOADING SUMMARY")
@@ -287,10 +329,14 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(raw_text_list, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 streamlit_container.success(f"✅ Loaded {len(raw_text_list)} responses in {elapsed_time:.2f}s")
+        
+        # Store variable key in session state for subsequent steps
+        session_state = get_session_state()
+        session_state['current_variable_key'] = variable_key
         
         return raw_text_list
     
@@ -303,13 +349,14 @@ class StreamlitPipelineRunner:
         """Step 2: Preprocess text data"""
         
         step_name = "preprocessed"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, debug_capture, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Preprocessing text data...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            preprocessed_text = self.cache_manager.load_from_cache(filename, step_name, models.PreprocessedModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            preprocessed_text = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.PreprocessedModel)
             verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {"Input": f"{len(raw_text_list)} responses"})
         else:
             verbose_reporter.section_header("PREPROCESSING PHASE")
@@ -324,7 +371,8 @@ class StreamlitPipelineRunner:
             spell_checker = spellChecker.SpellChecker(
                 config=spellcheck_config,
                 model_config=model_config,
-                verbose=self.verbose
+                verbose=self.verbose,
+                verbose_reporter=verbose_reporter
             )
             text_finalizer = textFinalizer.TextFinalizer(verbose=self.verbose)
             
@@ -397,7 +445,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(preprocessed_text, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(preprocessed_text, filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 streamlit_container.success(f"✅ Preprocessed {len(preprocessed_text)} responses in {elapsed_time:.2f}s")
@@ -412,13 +460,14 @@ class StreamlitPipelineRunner:
         """Step 3: Quality filter responses"""
         
         step_name = "quality_filter"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Filtering low-quality responses...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            quality_filtered_text = self.cache_manager.load_from_cache(filename, step_name, models.QualityFilteredModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            quality_filtered_text = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.QualityFilteredModel)
             verbose_reporter.summary("QUALIFIED RESPONSES FROM CACHE", {"Input": f"{len(preprocessed_text)} responses"})
         else:
             verbose_reporter.section_header("QUALITY FILTERING PHASE")
@@ -437,7 +486,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(quality_filtered_text, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(quality_filtered_text, filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 filtered_count = len([item for item in quality_filtered_text if not item.quality_filter])
@@ -454,13 +503,14 @@ class StreamlitPipelineRunner:
         """Step 4: Extract ideas from responses"""
         
         step_name = "extracted_ideas"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, debug_capture, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Extracting ideas from responses...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            encoded_text = self.cache_manager.load_from_cache(filename, step_name, models.IdeasExtractedModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            encoded_text = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.IdeasExtractedModel)
             segments = sum(item.idea_count for item in encoded_text)
             verbose_reporter.summary("IDEAS FROM CACHE", {"Input": f"{len(encoded_text)} responses", "Output": f"{segments} segments"})
         else:
@@ -476,13 +526,14 @@ class StreamlitPipelineRunner:
                 var_lab=var_lab,
                 config=segmentation_config,
                 model_config=model_config,
-                verbose=self.verbose
+                verbose=self.verbose,
+                verbose_reporter=verbose_reporter
             )
             encoded_text = encoder.extract()
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(encoded_text, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
             
             # Debug capture: idea extraction samples
             if debug_capture and debug_capture.show_samples and encoded_text:
@@ -508,13 +559,14 @@ class StreamlitPipelineRunner:
         """Step 5: Generate embeddings"""
         
         step_name = "embeddings"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text(f"🔄 Generating embeddings using {provider}...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            embedded_text = self.cache_manager.load_from_cache(filename, step_name, models.EmbeddingsModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            embedded_text = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.EmbeddingsModel)
             total_embeddings = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
             verbose_reporter.summary("EMBEDDINGS FROM CACHE", {"Input": f"{len(encoded_text)} responses", "Total embeddings": f"{total_embeddings}"})
         else:
@@ -534,7 +586,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(embedded_text, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 total_embeddings = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
@@ -550,13 +602,14 @@ class StreamlitPipelineRunner:
         """Step 6: Cluster embeddings"""
         
         step_name = "initial_clusters"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, debug_capture, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Clustering similar responses...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            initial_cluster_results = self.cache_manager.load_from_cache(filename, step_name, models.ClusterModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            initial_cluster_results = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ClusterModel)
             cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
             verbose_reporter.summary("CLUSTERS FROM CACHE", {"Input": f"{len(embedded_text)} responses", "Clusters": f"{len(cluster_ids)}"})
         else:
@@ -565,13 +618,13 @@ class StreamlitPipelineRunner:
             
             # Lazy load clusterer
             Clusterer = _get_clusterer()
-            clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=self.verbose)
+            clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=self.verbose, verbose_reporter=verbose_reporter)
             clusterer.run()
             initial_cluster_results = clusterer.to_cluster_model()
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(initial_cluster_results, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time)
             
             # Debug capture: cluster content samples
             if debug_capture and debug_capture.show_samples and initial_cluster_results:
@@ -597,14 +650,15 @@ class StreamlitPipelineRunner:
         """Step 7: Generate codebook"""
         
         step_name = "codebook_generation"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Generating codebook from clusters...")
         
         reasoning_results = None
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            codebook_models = self.cache_manager.load_from_cache(filename, step_name, models.CodebookModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            codebook_models = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.CodebookModel)
             if codebook_models and len(codebook_models) > 0:
                 codebook_main = codebook_models[0]
                 verbose_reporter.summary("CODEBOOK FROM CACHE", {"Total codes": len(codebook_main.codes)})
@@ -613,7 +667,7 @@ class StreamlitPipelineRunner:
                 try:
                     CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
                     reasoning_models = self.cache_manager.load_from_cache(
-                        filename, f"{step_name}_reasoning", CodeGeneratorReasoningResults
+                        filename, f"{step_name}_reasoning", variable_key, CodeGeneratorReasoningResults
                     )
                     if reasoning_models and len(reasoning_models) > 0:
                         reasoning_results = reasoning_models[0]
@@ -644,7 +698,8 @@ class StreamlitPipelineRunner:
                 config=code_designer_config,
                 model_config=model_config,
                 verbose=True,
-                verbose_detailed=False
+                verbose_detailed=False,
+                verbose_reporter=verbose_reporter
             )
             results = generator.generate()
             reasoning_results = results  # Store reasoning results for return
@@ -673,12 +728,12 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache([codebook_main], filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time)
             
             # Always cache reasoning results for export consistency
             if reasoning_results:
                 try:
-                    self.cache_manager.save_to_cache([reasoning_results], filename, f"{step_name}_reasoning", elapsed_time)
+                    self.cache_manager.save_to_cache([reasoning_results], filename, f"{step_name}_reasoning", variable_key, elapsed_time)
                 except Exception as e:
                     print(f"⚠️ Warning: Failed to cache reasoning results: {e}")
             
@@ -693,13 +748,14 @@ class StreamlitPipelineRunner:
         """Step 8: Identify themes"""
         
         step_name = "theme_identification"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Identifying themes in codebook...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
             if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
                 theme_enriched_codebook = theme_enriched_codebooks[0]
                 verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
@@ -723,7 +779,8 @@ class StreamlitPipelineRunner:
                 theme_identifier = ThemeIdentifier(
                     codebook=codebook,
                     var_lab=var_lab,
-                    verbose=self.verbose
+                    verbose=self.verbose,
+                    verbose_reporter=verbose_reporter
                 )
                 
                 async def run_theme_identification():
@@ -781,7 +838,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
@@ -798,7 +855,7 @@ class StreamlitPipelineRunner:
         """Step 8b: Organize themes using OpenAI reasoning models (alternative to step 8)"""
         
         step_name = "theme_organization_reasoning"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
         
         if streamlit_container:
             streamlit_container.text("🔄 Organizing themes with reasoning model...")
@@ -890,7 +947,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
             
             if streamlit_container:
                 theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
@@ -909,14 +966,15 @@ class StreamlitPipelineRunner:
         """Step 9a: Assign codes to ideas"""
         
         step_name = "code_assignment_direct" if method == "direct_llm" else "code_assignment"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, debug_capture, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             method_name = "Direct LLM" if method == "direct_llm" else "Embedding Similarity"
             streamlit_container.text(f"🔄 Assigning codes using {method_name}...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            code_assigned_results = self.cache_manager.load_from_cache(filename, step_name, models.CodeAssignedModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            code_assigned_results = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeAssignedModel)
             total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
             verbose_reporter.summary("CODE ASSIGNMENTS FROM CACHE", {"Input responses": len(code_assigned_results), "Ideas processed": total_ideas})
         else:
@@ -987,7 +1045,7 @@ class StreamlitPipelineRunner:
             
             end_time = time.time()
             elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache(code_assigned_results, filename, step_name, elapsed_time)
+            self.cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time)
             
             # Debug capture: code assignment samples
             if debug_capture and debug_capture.show_samples and code_assigned_results:
@@ -1047,7 +1105,7 @@ class StreamlitPipelineRunner:
         if streamlit_container:
             streamlit_container.text("🔄 Exporting results with consistent format...")
         
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, "export_consistent")
         verbose_reporter.section_header("EXCEL EXPORT WITH CONSISTENT FORMAT")
         
         # Try to get reasoning data from parameter, cache, or fallback to empty reasoning
@@ -1057,7 +1115,7 @@ class StreamlitPipelineRunner:
             try:
                 CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
                 reasoning_models = self.cache_manager.load_from_cache(
-                    filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
+                    filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults
                 )
                 if reasoning_models and len(reasoning_models) > 0:
                     final_reasoning_results = reasoning_models[0]
@@ -1106,7 +1164,7 @@ class StreamlitPipelineRunner:
                                            streamlit_container=None) -> str:
         """Step 10: Export Excel with reasoning data from step 7"""
         
-        verbose_reporter = self.create_verbose_reporter(streamlit_container)
+        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, "export_reasoning")
         
         if streamlit_container:
             streamlit_container.text("🔄 Exporting results with reasoning data...")
@@ -1120,7 +1178,7 @@ class StreamlitPipelineRunner:
             try:
                 CodeGeneratorReasoningResults = _get_code_generator_reasoning_results()
                 reasoning_models = self.cache_manager.load_from_cache(
-                    filename, "codebook_generation_reasoning", CodeGeneratorReasoningResults
+                    filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults
                 )
                 if reasoning_models and len(reasoning_models) > 0:
                     reasoning_results = reasoning_models[0]

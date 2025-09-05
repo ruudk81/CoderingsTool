@@ -20,6 +20,30 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
 
 
+def generate_variable_key(selected_variables: List[str], is_merged: bool = False) -> str:
+    """
+    Generate a cache key based on selected variables
+    
+    Args:
+        selected_variables: List of variable names (e.g., ['Q18'] or ['Q18', 'Q19', 'Q20'])
+        is_merged: Whether this represents merged variables
+    
+    Returns:
+        str: Variable key for caching (e.g., 'Q18' or 'Q18+Q19+Q20')
+    """
+    if not selected_variables:
+        return "unknown"
+    
+    # For single variable or if not merged, return first variable
+    if not is_merged or len(selected_variables) == 1:
+        return selected_variables[0]
+    
+    # For multiple merged variables, sort for consistency and join with +
+    # This ensures Q18+Q19 is the same as Q19+Q18
+    sorted_vars = sorted(selected_variables)
+    return "+".join(sorted_vars)
+
+
 class CacheDatabase:
     """Simple SQLite database for cache metadata tracking"""
     
@@ -51,6 +75,7 @@ class CacheDatabase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     filename TEXT NOT NULL,
                     step_name TEXT NOT NULL,
+                    variable_key TEXT NOT NULL,
                     cache_path TEXT NOT NULL,
                     file_hash TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -58,11 +83,11 @@ class CacheDatabase:
                     file_size INTEGER,
                     processing_time FLOAT,
                     status TEXT DEFAULT 'valid',
-                    UNIQUE(filename, step_name)
+                    UNIQUE(filename, step_name, variable_key)
                 );
                 
-                CREATE INDEX IF NOT EXISTS idx_cache_filename_step 
-                ON cache_metadata(filename, step_name);
+                CREATE INDEX IF NOT EXISTS idx_cache_filename_step_var 
+                ON cache_metadata(filename, step_name, variable_key);
                 
                 CREATE INDEX IF NOT EXISTS idx_cache_status 
                 ON cache_metadata(status);
@@ -71,6 +96,7 @@ class CacheDatabase:
     def record_cache_entry(self, 
                           filename: str, 
                           step_name: str,
+                          variable_key: str,
                           cache_path: str,
                           file_hash: str,
                           file_size: int,
@@ -79,20 +105,20 @@ class CacheDatabase:
         with self._get_connection() as conn:
             cursor = conn.execute('''
                 INSERT OR REPLACE INTO cache_metadata 
-                (filename, step_name, cache_path, file_hash, file_size, 
+                (filename, step_name, variable_key, cache_path, file_hash, file_size, 
                  processing_time, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (filename, step_name, cache_path, file_hash, file_size, processing_time))
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (filename, step_name, variable_key, cache_path, file_hash, file_size, processing_time))
             
             return cursor.lastrowid
     
-    def get_cache_info(self, filename: str, step_name: str) -> Optional[Dict]:
-        """Get cache metadata for a specific file and step"""
+    def get_cache_info(self, filename: str, step_name: str, variable_key: str) -> Optional[Dict]:
+        """Get cache metadata for a specific file, step, and variable"""
         with self._get_connection() as conn:
             cursor = conn.execute('''
                 SELECT * FROM cache_metadata 
-                WHERE filename = ? AND step_name = ? AND status = 'valid'
-            ''', (filename, step_name))
+                WHERE filename = ? AND step_name = ? AND variable_key = ? AND status = 'valid'
+            ''', (filename, step_name, variable_key))
             
             row = cursor.fetchone()
             if row:
@@ -109,9 +135,10 @@ class CacheDatabase:
     def is_cache_valid(self, 
                       filename: str, 
                       step_name: str,
+                      variable_key: str,
                       max_age_days: Optional[int] = None) -> bool:
         """Check if cache entry is valid based on age"""
-        cache_info = self.get_cache_info(filename, step_name)
+        cache_info = self.get_cache_info(filename, step_name, variable_key)
         
         if not cache_info:
             return False
@@ -119,7 +146,7 @@ class CacheDatabase:
         # Check if cache file exists
         cache_path = Path(cache_info['cache_path'])
         if not cache_path.exists():
-            self.invalidate_cache(filename, step_name)
+            self.invalidate_cache(filename, step_name, variable_key)
             return False
         
         # Check age
@@ -133,10 +160,17 @@ class CacheDatabase:
     
     def invalidate_cache(self, 
                         filename: Optional[str] = None, 
-                        step_name: Optional[str] = None):
+                        step_name: Optional[str] = None,
+                        variable_key: Optional[str] = None):
         """Mark cache entries as invalid"""
         with self._get_connection() as conn:
-            if filename and step_name:
+            if filename and step_name and variable_key:
+                conn.execute('''
+                    UPDATE cache_metadata 
+                    SET status = 'invalid' 
+                    WHERE filename = ? AND step_name = ? AND variable_key = ?
+                ''', (filename, step_name, variable_key))
+            elif filename and step_name:
                 conn.execute('''
                     UPDATE cache_metadata 
                     SET status = 'invalid' 
@@ -170,28 +204,29 @@ class CacheManager:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
     
-    def get_cache_path(self, filename: str, step: str) -> Path:
-        """Get the cache file path for a given step"""
+    def get_cache_path(self, filename: str, step: str, variable_key: str) -> Path:
+        """Get the cache file path for a given step and variable"""
         base_name = Path(filename).stem
         prefix = self.config.get_step_prefix(step)
-        cache_filename = f"{prefix}_{step}_{base_name}.pkl"
+        cache_filename = f"{prefix}_{step}_{base_name}_{variable_key}.pkl"
         return self.config.cache_dir / cache_filename
     
-    def is_cache_valid(self, filename: str, step: str) -> bool:
+    def is_cache_valid(self, filename: str, step: str, variable_key: str) -> bool:
         """Check if cached data exists and is valid"""
-        return self.db.is_cache_valid(filename, step)
+        return self.db.is_cache_valid(filename, step, variable_key)
     
     def save_to_cache(self, 
                      data: List[T], 
                      filename: str, 
                      step: str,
+                     variable_key: str,
                      processing_time: float = None) -> bool:
         """Save list of Pydantic models to cache using pickle"""
         if not data:
-            logger.warning(f"No data to save for {filename} at step {step}")
+            logger.warning(f"No data to save for {filename} at step {step} with variable {variable_key}")
             return False
         
-        cache_path = self.get_cache_path(filename, step)
+        cache_path = self.get_cache_path(filename, step, variable_key)
         
         try:
             # Convert Pydantic models to dictionaries for serialization
@@ -209,17 +244,18 @@ class CacheManager:
             self.db.record_cache_entry(
                 filename=filename,
                 step_name=step,
+                variable_key=variable_key,
                 cache_path=str(cache_path),
                 file_hash=file_hash,
                 file_size=file_size,
                 processing_time=processing_time
             )
             
-            logger.info(f"Saved {len(data)} items to cache for {filename} at step {step}")
+            logger.info(f"Saved {len(data)} items to cache for {filename} at step {step} with variable {variable_key}")
             return True
             
         except Exception as e:
-            logger.error(f"Error saving cache for {filename} at step {step}: {e}")
+            logger.error(f"Error saving cache for {filename} at step {step} with variable {variable_key}: {e}")
             # Clean up partial file if it exists
             if cache_path.exists():
                 cache_path.unlink()
@@ -228,19 +264,20 @@ class CacheManager:
     def load_from_cache(self, 
                        filename: str, 
                        step: str, 
+                       variable_key: str,
                        model_cls: Type[T]) -> Optional[List[T]]:
         """Load data from cache and reconstruct Pydantic models"""
-        cache_info = self.db.get_cache_info(filename, step)
+        cache_info = self.db.get_cache_info(filename, step, variable_key)
         
         if not cache_info:
-            logger.info(f"No cache found for {filename} at step {step}")
+            logger.info(f"No cache found for {filename} at step {step} with variable {variable_key}")
             return None
         
         cache_path = Path(cache_info['cache_path'])
         
         if not cache_path.exists():
             logger.warning(f"Cache file missing: {cache_path}")
-            self.db.invalidate_cache(filename, step)
+            self.db.invalidate_cache(filename, step, variable_key)
             return None
         
         try:
@@ -251,17 +288,17 @@ class CacheManager:
             # Reconstruct Pydantic models
             result = [model_cls.model_validate(item_data) for item_data in serializable_data]
             
-            logger.info(f"Loaded {len(result)} items from cache for {filename} at step {step}")
+            logger.info(f"Loaded {len(result)} items from cache for {filename} at step {step} with variable {variable_key}")
             return result
             
         except Exception as e:
-            logger.error(f"Error loading cache for {filename} at step {step}: {e}")
-            self.db.invalidate_cache(filename, step)
+            logger.error(f"Error loading cache for {filename} at step {step} with variable {variable_key}: {e}")
+            self.db.invalidate_cache(filename, step, variable_key)
             return None
     
-    def invalidate_cache(self, filename: str = None, step: str = None):
+    def invalidate_cache(self, filename: str = None, step: str = None, variable_key: str = None):
         """Invalidate cache entries"""
-        self.db.invalidate_cache(filename, step)
+        self.db.invalidate_cache(filename, step, variable_key)
     
     def cleanup_old_cache(self) -> int:
         """Remove old cache entries and files"""

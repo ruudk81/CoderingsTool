@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 import nest_asyncio
 from pydantic import BaseModel
-from openai import RateLimitError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+#from openai import RateLimitError
+#from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from asyncio_throttle import Throttler
 #from openai import AsyncOpenAI
 #import instructor
@@ -75,14 +75,15 @@ class SpellCheckOptimalStrategy:
 class SpellCheckWorkloadAnalyzer:
     """Analyzes spell checking workload and calculates optimal processing strategy"""
     
-    def __init__(self, model_name: str, encoding):
+    def __init__(self, model_name: str, encoding, config: SpellCheckConfig):
         self.model_name = model_name
         self.encoding = encoding
+        self.config = config
     
     def measure_token_usage(self, sample_batches: List[List[Any]], base_prompt_template: str, var_lab: str) -> float:
         """Measure actual token usage from real spell checking prompts"""
         if not sample_batches:
-            return 2000  # Conservative fallback for spell checking
+            return 550  
         
         token_counts = []
         for batch in sample_batches[:3]:  # Sample first 3 batches
@@ -106,7 +107,7 @@ class SpellCheckWorkloadAnalyzer:
             total_tokens = prompt_tokens + completion_tokens
             token_counts.append(total_tokens)
         
-        return statistics.mean(token_counts) if token_counts else 2000
+        return statistics.mean(token_counts) if token_counts else 550
     
     def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float) -> SpellCheckOptimalStrategy:
         """Calculate evidence-based strategy for spell checking with rate smoothing"""
@@ -129,15 +130,15 @@ class SpellCheckWorkloadAnalyzer:
         bottleneck_time = max(time_by_requests, time_by_tokens)
         bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
         
-        # Apply conservative utilization for spell checking (85%)
-        safety_factor = 0.85
+        # Apply configurable utilization for spell checking
+        safety_factor = self.config.rate_limit_safety_factor
         target_time = bottleneck_time / safety_factor
         
         # Calculate launch rate
         optimal_launch_rate = total_requests / target_time
         
-        # Conservative concurrent limit for spell checking (2-second burst capacity)
-        concurrent_limit = int(optimal_launch_rate * 2)
+        # Aggressive concurrent limit for spell checking (configurable burst capacity)
+        concurrent_limit = int(optimal_launch_rate * self.config.concurrent_burst_multiplier)
         
         return SpellCheckOptimalStrategy(
             target_time_seconds=target_time,
@@ -153,10 +154,11 @@ class SpellCheckWorkloadAnalyzer:
 class SpellCheckSlidingWindowMonitor:
     """Real-time monitoring of API usage for spell checking with sliding windows"""
     
-    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60):
+    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60, rate_limit_utilization: float = 0.98):
         self.rpm_limit = rpm_limit
         self.tpm_limit = tpm_limit
         self.window_seconds = window_seconds
+        self.rate_limit_utilization = rate_limit_utilization
         
         # Thread-safe tracking across all concurrent operations
         self._lock = asyncio.Lock()
@@ -189,9 +191,9 @@ class SpellCheckSlidingWindowMonitor:
             current_rpm = len(self.requests_window)
             current_tpm = sum(tokens for _, tokens in self.tokens_window)
             
-            # Use 95% of limits for spell checking
-            would_exceed_rpm = (current_rpm + 1) > (self.rpm_limit * 0.95)
-            would_exceed_tpm = (current_tpm + estimated_tokens) > (self.tpm_limit * 0.95)
+            # Use configurable percentage of limits for spell checking
+            would_exceed_rpm = (current_rpm + 1) > (self.rpm_limit * self.rate_limit_utilization)
+            would_exceed_tpm = (current_tpm + estimated_tokens) > (self.tpm_limit * self.rate_limit_utilization)
             
             return not (would_exceed_rpm or would_exceed_tpm)
     
@@ -258,11 +260,15 @@ class HunspellSession:
         self.process.terminate()
 
 class SpellChecker:
-    def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None):
+    def __init__(self, config: SpellCheckConfig = None, model_config: ModelConfig = None, openai_api_key: Optional[str] = None, verbose: bool = False, prompt_printer = None, verbose_reporter: Optional['VerboseReporter'] = None):
         self.config = config or DEFAULT_SPELLCHECK_CONFIG
         self.model_config = model_config or ModelConfig()
         self.openai_api_key = openai_api_key or OPENAI_API_KEY
         self.model = self.model_config.get_model_for_stage('spell_check')
+        
+        # Initialize suggestion cache
+        self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
+        self.suggestion_cache_hits = 0
         
         # Instructor-patched async OpenAI client for structured output (cached)
         self.client = get_openai_client(self.openai_api_key)
@@ -270,7 +276,7 @@ class SpellChecker:
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
         self.prompt_printer = prompt_printer 
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
         
         # Configuration reporting (verbose only)
         if self.verbose_reporter.enabled:
@@ -281,11 +287,7 @@ class SpellChecker:
             self.verbose_reporter.stat_line(f"Dictionary: {self.dict_path}", indent=1)
             self.verbose_reporter.stat_line(f"Hunspell path: {self.hunspell_path}", indent=1)
             self.verbose_reporter.stat_line(f"Batch size: {self.config.batch_size}", indent=1)
-            self.verbose_reporter.stat_line(f"Performance optimizations:", indent=1)
-            self.verbose_reporter.stat_line(f"  Max words to check: {self.config.max_words_to_check:,}", indent=1)
-            self.verbose_reporter.stat_line(f"  Max unique OOV words: {self.config.max_unique_oov_words:,}", indent=1)
-            self.verbose_reporter.stat_line(f"  Word frequency caching: {'enabled' if self.config.enable_word_frequency_cache else 'disabled'}", indent=1)
-            self.verbose_reporter.stat_line(f"  Early termination: {'enabled' if self.config.enable_early_termination else 'disabled'}", indent=1)
+            
         
         # Installation check with verbose error reporting
         if not self.check_hunspell_installation():
@@ -313,7 +315,9 @@ class SpellChecker:
             'corrections_rejected_validation': 0,
             'corrections_no_response': 0,
             'dictionary_verifications': 0,
-            'processing_time': 0.0
+            'processing_time': 0.0,
+            'suggestion_cache_hits': 0,
+            'suggestion_cache_size': 0
         }
     
     @staticmethod 
@@ -398,6 +402,20 @@ class SpellChecker:
         result = await self.run_hunspell_word_async(word)
         self.stats['dictionary_verifications'] += 1
         return bool(result and result[0] == word)
+    
+    async def pre_validate_suggestions(self, suggestions: List[str]) -> List[str]:
+        """Pre-validate suggestions against dictionary to filter out invalid ones"""
+        if not suggestions:
+            return []
+        
+        # Validate all suggestions in parallel
+        validation_tasks = [self.verify_correction_with_dictionary(sug.strip('.,!?;:"\'()[]{}')) 
+                           for sug in suggestions if sug and sug != "OOV"]
+        validation_results = await asyncio.gather(*validation_tasks)
+        
+        # Return only valid suggestions
+        valid_suggestions = [sug for sug, is_valid in zip(suggestions, validation_results) if is_valid]
+        return valid_suggestions
           
     async def find_best_split_for_spellcheck(self, oov_word: str) -> Tuple[str, str]:    
         excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
@@ -468,13 +486,47 @@ class SpellChecker:
         return left_part, right_part
 
     async def find_best_suggestions_batch_async(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Process unique OOV words with aggressive parallel processing"""
+        """Process unique OOV words with aggressive parallel processing and caching"""
+        # Check cache first if enabled
+        if self.suggestion_cache is not None:
+            cached_suggestions = {}
+            uncached_words = []
+            
+            for word in unique_oov_words:
+                if word in self.suggestion_cache:
+                    cached_suggestions[word] = self.suggestion_cache[word]
+                    self.suggestion_cache_hits += 1
+                else:
+                    uncached_words.append(word)
+            
+            # If all words are cached, return immediately
+            if not uncached_words:
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.stat_line(f"All {len(unique_oov_words)} words found in suggestion cache")
+                return cached_suggestions
+            
+            # Process only uncached words
+            unique_oov_words = uncached_words
+            if self.verbose_reporter.enabled and cached_suggestions:
+                self.verbose_reporter.stat_line(f"Found {len(cached_suggestions)} words in cache, processing {len(uncached_words)} new words")
+        
+        # Process uncached words
         if len(unique_oov_words) <= self.config.max_words_per_chunk:
             # Small dataset - use original method
-            return await self._process_suggestions_single_batch(unique_oov_words)
+            new_suggestions = await self._process_suggestions_single_batch(unique_oov_words)
         else:
             # Large dataset - use aggressive parallel processing
-            return await self._process_suggestions_parallel_chunks(unique_oov_words)
+            new_suggestions = await self._process_suggestions_parallel_chunks(unique_oov_words)
+        
+        # Update cache if enabled
+        if self.suggestion_cache is not None:
+            self.suggestion_cache.update(new_suggestions)
+            
+            # Merge with cached suggestions
+            if 'cached_suggestions' in locals():
+                new_suggestions.update(cached_suggestions)
+        
+        return new_suggestions
     
     async def _process_suggestions_single_batch(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
         """Original single-batch processing for small datasets"""
@@ -482,8 +534,13 @@ class SpellChecker:
 
         async def process_word(word):
             try:
-                unsplit_suggestions = await self.run_hunspell_word_async(word)
-                left_part, right_part = await self.find_best_split_for_spellcheck(word)
+                # Parallel Hunspell and splitting operations for better performance
+                unsplit_task = self.run_hunspell_word_async(word)
+                split_task = self.find_best_split_for_spellcheck(word)
+                
+                # Execute both operations concurrently
+                unsplit_suggestions, (left_part, right_part) = await asyncio.gather(unsplit_task, split_task)
+                
                 split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
                 unsplit_suggestion = (
                     min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
@@ -506,7 +563,7 @@ class SpellChecker:
         """Quality Filter style aggressive parallel processing with workload analysis"""
         
         # WORKLOAD ANALYSIS (Quality Filter Style)
-        print(f"[SUGGESTION GENERATION ANALYSIS]")
+        print("[SUGGESTION GENERATION ANALYSIS]")
         sorted_oov_words = sorted(unique_oov_words)
         total_operations = len(sorted_oov_words)
         
@@ -530,8 +587,7 @@ class SpellChecker:
         print(f"- Total batches: {total_batches}")
         print(f"- Estimated parallel time: {estimated_time_parallel:.1f}s (speedup: {estimated_time_sequential/estimated_time_parallel:.1f}x)")
         print("Processing suggestion generation...")
-        
-        # QUALITY FILTER STYLE BATCH PROCESSING
+
         start_time = time.time()
         semaphore = asyncio.Semaphore(max_concurrent)
         
@@ -626,11 +682,31 @@ class SpellChecker:
             
         token_budget = max_tokens - len(encoding.encode(prompt_header)) - completion_reserve
         
+        # Calculate optimal batch size based on rate limits and task count
+        total_tasks = len(tasks)
+        rate_limits = get_openai_rate_limits(self.model)
+        
+        # Target processing time of 60 seconds for optimal rate distribution
+        target_time_seconds = 60
+        optimal_requests = int(rate_limits.requests_per_minute * 0.9)  # Use 90% of RPM
+        
+        # Calculate optimal batch size
+        if total_tasks <= optimal_requests:
+            # Can process all in one minute - use larger batches
+            optimal_batch_size = min(self.config.max_batch_size * 2, 20)
+        else:
+            # Need multiple minutes - optimize for steady flow
+            optimal_batch_size = max(5, min(self.config.max_batch_size, total_tasks // optimal_requests))
+        
+        # Verbose reporting of batch optimization
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Batch optimization: {total_tasks} tasks, target batch size: {optimal_batch_size}", indent=1)
+        
         batches = []
         current_batch_tasks = []
         current_batch_tokens = 0
         
-        max_batch_size = self.config.max_batch_size
+        max_batch_size = optimal_batch_size
         
         for task in tasks:
             correction_task = SpellCorrectionTask(
@@ -666,8 +742,8 @@ class SpellChecker:
         
         return batches
 
-    async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str) -> Dict[str, str]:
-        """Native async OpenAI client with validation"""
+    async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str, word_to_responses: Dict[str, List[int]] = None) -> Dict[str, str]:
+        """Native async OpenAI client with validation - optimized with word-to-response mapping"""
         oov_words = list(best_suggestions_dict.keys())
         
         max_tokens = self.config.max_tokens  
@@ -682,44 +758,181 @@ class SpellChecker:
         
         responses_with_ids = [{'respondent_id': response.respondent_id, 'response': response.original_response} for response in responses]
     
-        # Create tasks for sentences with OOV words
-        for item in responses_with_ids:
-            response = item['response']
-            response_oov_words = []
-            for word in oov_words:
-                if len(word) > 2:
-                    pattern = rf'\b{re.escape(word)}\b'
-                    if re.search(pattern, response):
-                        response_oov_words.append(word)
-              
-            if response_oov_words:
-                # FIXED: Replace ALL occurrences of each OOV word, not just first
-                response_with_placeholders = response
-                for word in response_oov_words:
-                    pattern = rf'\b{re.escape(word)}\b'
-                    # Remove count=1 to replace ALL occurrences
-                    response_with_placeholders = re.sub(pattern, '<oov_word>', response_with_placeholders)
+        # Pre-validation tracking
+        pre_validation_filtered = 0
+        
+        # Performance tracking for task creation
+        task_creation_start = time.time()
+        
+        # Use inverted index if available, otherwise fall back to regex search
+        if word_to_responses is not None:
+            print(f"  • Creating correction tasks using optimized inverted index...")
+            
+            # Pre-compute suggestion strings for all OOV words to avoid redundant processing
+            word_to_suggestion_str = {}
+            validation_cache = {}  # Cache validation results
+            
+            # Batch pre-validation if enabled
+            if self.config.enable_suggestion_pre_validation:
+                print(f"  • Pre-validating suggestions for {len(oov_words)} OOV words...")
+                all_suggestions_to_validate = set()
                 
-                # Get suggestions for all OOV words
-                all_suggestions = []
-                for word in response_oov_words:
+                # Collect all unique suggestions
+                for word in oov_words:
+                    if len(word) > 2 and word in best_suggestions_dict:
+                        suggestions = best_suggestions_dict.get(word, ["OOV"])
+                        for sug in suggestions:
+                            if isinstance(sug, tuple):
+                                all_suggestions_to_validate.update([s for s in sug if s and s != "OOV"])
+                            else:
+                                all_suggestions_to_validate.add(sug)
+                
+                # Validate all suggestions in one batch
+                if all_suggestions_to_validate:
+                    validation_tasks = [self.verify_correction_with_dictionary(sug.strip('.,!?;:"\'()[]{}')) 
+                                       for sug in all_suggestions_to_validate if sug and sug != "OOV"]
+                    validation_results = await asyncio.gather(*validation_tasks)
+                    
+                    # Build validation cache
+                    for sug, is_valid in zip(all_suggestions_to_validate, validation_results):
+                        validation_cache[sug] = is_valid
+            
+            # Process suggestions with cached validation results
+            for word in oov_words:
+                if len(word) > 2 and word in best_suggestions_dict:
                     suggestions = best_suggestions_dict.get(word, ["OOV"])
-                    # Clean up suggestion format
                     cleaned_suggestions = []
                     for sug in suggestions:
                         if isinstance(sug, tuple):
-                            cleaned_suggestions.extend([s for s in sug if s and s != "OOV"])
+                            for s in sug:
+                                if s and s != "OOV":
+                                    # Use cached validation result if available
+                                    if self.config.enable_suggestion_pre_validation:
+                                        if validation_cache.get(s, False):
+                                            cleaned_suggestions.append(s)
+                                    else:
+                                        cleaned_suggestions.append(s)
                         else:
-                            cleaned_suggestions.append(sug)
-                    all_suggestions.append(", ".join(cleaned_suggestions))
+                            if sug and sug != "OOV":
+                                # Use cached validation result if available
+                                if self.config.enable_suggestion_pre_validation:
+                                    if validation_cache.get(sug, False):
+                                        cleaned_suggestions.append(sug)
+                                else:
+                                    cleaned_suggestions.append(sug)
+                    word_to_suggestion_str[word] = cleaned_suggestions
+            
+            # Create tasks using inverted index
+            for idx, item in enumerate(responses_with_ids):
+                response = item['response']
+                response_oov_words = []
                 
-                tasks.append({
-                    "respondent_id": item['respondent_id'],
-                    "response": response,
-                    "response_with_placeholders": response_with_placeholders,
-                    "oov_words": ", ".join(response_oov_words),
-                    "suggestions": " | ".join(all_suggestions)
-                    })
+                # Get all OOV words for this response index from inverted mapping
+                for word, response_indices in word_to_responses.items():
+                    if idx in response_indices and len(word) > 2 and word in word_to_suggestion_str:
+                        response_oov_words.append(word)
+                
+                if response_oov_words:
+                    # FIXED: Replace ALL occurrences of each OOV word, not just first
+                    response_with_placeholders = response
+                    for word in response_oov_words:
+                        pattern = rf'\b{re.escape(word)}\b'
+                        # Remove count=1 to replace ALL occurrences
+                        response_with_placeholders = re.sub(pattern, '<oov_word>', response_with_placeholders)
+                    
+                    # Get suggestions for all OOV words - use pre-computed suggestions
+                    all_suggestions = []
+                    has_valid_suggestions = False
+                    
+                    for word in response_oov_words:
+                        # Get pre-validated suggestions (already validated in batch)
+                        cleaned_suggestions = word_to_suggestion_str.get(word, [])
+                        
+                        if cleaned_suggestions:
+                            has_valid_suggestions = True
+                            all_suggestions.append(", ".join(cleaned_suggestions))
+                        else:
+                            all_suggestions.append("OOV")  # No valid suggestions
+                    
+                    # Only create task if we have at least one valid suggestion
+                    if has_valid_suggestions or not self.config.enable_suggestion_pre_validation:
+                        tasks.append({
+                            "respondent_id": item['respondent_id'],
+                            "response": response,
+                            "response_with_placeholders": response_with_placeholders,
+                            "oov_words": ", ".join(response_oov_words),
+                            "suggestions": " | ".join(all_suggestions)
+                        })
+                    else:
+                        pre_validation_filtered += 1
+            
+            # Report performance improvement
+            task_creation_time = time.time() - task_creation_start
+            print(f"  • Task creation completed in {task_creation_time:.1f}s using inverted index (optimized)")
+            
+        else:
+            # Fallback to original implementation
+            print(f"  • Creating correction tasks using standard regex search...")
+            for item in responses_with_ids:
+                response = item['response']
+                response_oov_words = []
+                for word in oov_words:
+                    if len(word) > 2:
+                        pattern = rf'\b{re.escape(word)}\b'
+                        if re.search(pattern, response):
+                            response_oov_words.append(word)
+                      
+                if response_oov_words:
+                        # FIXED: Replace ALL occurrences of each OOV word, not just first
+                        response_with_placeholders = response
+                        for word in response_oov_words:
+                            pattern = rf'\b{re.escape(word)}\b'
+                            # Remove count=1 to replace ALL occurrences
+                            response_with_placeholders = re.sub(pattern, '<oov_word>', response_with_placeholders)
+                        
+                        # Get suggestions for all OOV words with pre-validation
+                        all_suggestions = []
+                        has_valid_suggestions = False
+                        
+                        for word in response_oov_words:
+                            suggestions = best_suggestions_dict.get(word, ["OOV"])
+                            # Clean up suggestion format
+                            cleaned_suggestions = []
+                            for sug in suggestions:
+                                if isinstance(sug, tuple):
+                                    cleaned_suggestions.extend([s for s in sug if s and s != "OOV"])
+                                else:
+                                    cleaned_suggestions.append(sug)
+                            
+                            # Pre-validate suggestions if enabled
+                            if self.config.enable_suggestion_pre_validation and cleaned_suggestions:
+                                validated_suggestions = await self.pre_validate_suggestions(cleaned_suggestions)
+                                if validated_suggestions:
+                                    has_valid_suggestions = True
+                                    all_suggestions.append(", ".join(validated_suggestions))
+                                else:
+                                    all_suggestions.append("OOV")  # No valid suggestions
+                            else:
+                                # Skip validation or no suggestions
+                                if cleaned_suggestions and any(s != "OOV" for s in cleaned_suggestions):
+                                    has_valid_suggestions = True
+                                all_suggestions.append(", ".join(cleaned_suggestions))
+                        
+                        # Only create task if we have at least one valid suggestion
+                        if has_valid_suggestions or not self.config.enable_suggestion_pre_validation:
+                            tasks.append({
+                                "respondent_id": item['respondent_id'],
+                                "response": response,
+                                "response_with_placeholders": response_with_placeholders,
+                                "oov_words": ", ".join(response_oov_words),
+                                "suggestions": " | ".join(all_suggestions)
+                            })
+                        else:
+                            pre_validation_filtered += 1
+            
+            # Report performance
+            task_creation_time = time.time() - task_creation_start
+            print(f"  • Task creation completed in {task_creation_time:.1f}s using regex search (fallback)")
          
         repeated_char_pattern = re.compile(rf'^(.)\1{{{self.config.repeated_char_threshold-1},}}$')
         single_word_pattern = re.compile(r'^[A-Za-z]+$')
@@ -733,6 +946,7 @@ class SpellChecker:
         # Track task creation and filtering stats
         self.stats['responses_with_tasks'] = len(tasks)
         self.stats['tasks_filtered_out'] = len(tasks) - len(filtered_tasks)
+        self.stats['pre_validation_filtered'] = pre_validation_filtered
         
         # Count unique OOV words that made it into tasks
         oov_words_in_tasks = set()
@@ -747,7 +961,7 @@ class SpellChecker:
         if len(batches) > 1:  # Only use rate limiting for multiple batches
             # Initialize workload analyzer
             encoding = get_tiktoken_encoding(self.model)
-            analyzer = SpellCheckWorkloadAnalyzer(self.model, encoding)
+            analyzer = SpellCheckWorkloadAnalyzer(self.model, encoding, self.config)
             
             # Measure actual token usage from sample batches
             sample_batches_for_analysis = []
@@ -759,9 +973,13 @@ class SpellChecker:
             # Calculate optimal strategy
             strategy = analyzer.calculate_optimal_strategy(len(batches), avg_tokens_per_batch)
             
-            # Initialize rate monitoring
+            # Initialize rate monitoring with configurable utilization
             rate_limits = get_openai_rate_limits(self.model)
-            monitor = SpellCheckSlidingWindowMonitor(rate_limits.requests_per_minute, rate_limits.tokens_per_minute)
+            monitor = SpellCheckSlidingWindowMonitor(
+                rate_limits.requests_per_minute, 
+                rate_limits.tokens_per_minute,
+                rate_limit_utilization=self.config.rate_limit_utilization
+            )
             
             # Initialize throttler for rate limiting
             throttler = Throttler(rate_limit=strategy.launch_rate_per_second)
@@ -1001,15 +1219,14 @@ class SpellChecker:
         
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
-        # BATCH HUNSPELL PROCESSING (Quality Filter Style)
         if all_words_to_check:
-            batch_size = 1000  # Process 1000 words per Hunspell batch
+            batch_size = self.config.hunspell_batch_size  # Configurable batch size
             total_batches = (len(all_words_to_check) + batch_size - 1) // batch_size
             
             print(f"  • Processing {len(all_words_to_check):,} words in {total_batches} Hunspell batches...")
             
             # Use multiple concurrent Hunspell sessions for parallel processing
-            max_concurrent_sessions = min(5, total_batches)  # Up to 5 concurrent sessions
+            max_concurrent_sessions = min(self.config.hunspell_concurrent_sessions, total_batches)  # Configurable concurrent sessions
             semaphore = asyncio.Semaphore(max_concurrent_sessions)
             
             async def process_hunspell_batch(batch_words, batch_index):
@@ -1096,7 +1313,8 @@ class SpellChecker:
         # Step 2: Get suggestions for unique OOV words only
         if unique_oov_words:
             best_suggestions_dict = await self.find_best_suggestions_batch_async(unique_oov_words)
-            corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab)
+            # Pass the word_to_responses mapping for optimized task creation
+            corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab, word_to_responses)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
         else:
             if self.verbose_reporter.enabled:
@@ -1130,7 +1348,9 @@ class SpellChecker:
 
         stats.end_timing()
         stats.output_count = len(updated_responses)
-        self.stats['processing_time'] = stats.get_duration() 
+        self.stats['processing_time'] = stats.get_duration()
+        self.stats['suggestion_cache_hits'] = self.suggestion_cache_hits
+        self.stats['suggestion_cache_size'] = len(self.suggestion_cache) if self.suggestion_cache is not None else 0 
         
         # Performance summary for large datasets
         if total_words > 10000:
@@ -1148,6 +1368,10 @@ class SpellChecker:
                 cache_size = len(word_frequency_cache)
                 cache_efficiency = (cache_size / max(self.stats['words_checked'], 1)) * 100
                 self.verbose_reporter.stat_line(f"Word cache efficiency: {cache_efficiency:.1f}% ({cache_size} unique words cached)")
+            
+            # Suggestion cache statistics  
+            if self.suggestion_cache is not None and self.stats['suggestion_cache_hits'] > 0:
+                self.verbose_reporter.stat_line(f"Suggestion cache hits: {self.stats['suggestion_cache_hits']} ({self.stats['suggestion_cache_size']} cached)")
           
         print(f"• Corrections applied: {self.stats['corrections_applied']}")
         

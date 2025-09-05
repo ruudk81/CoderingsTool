@@ -406,17 +406,22 @@ class SharedCodebook:
                     })
                     return True, self._version
             
-            # Original code not found - fail gracefully instead of creating duplicate
+            # If original not found, add as new code with cluster tracking
+            code_entry = {'code': new_code, 'definition': new_definition}
+            if cluster_id is not None:
+                code_entry['source_cluster_id'] = str(cluster_id)
+                
+            self._codes.append(code_entry)
+            self._version += 1
             self._update_log.append({
                 'version': self._version,
-                'action': 'replace_failed',
+                'action': 'add_as_fallback',
                 'original_code': original_code,
                 'new_code': new_code,
                 'cluster_id': cluster_id,
-                'timestamp': time.time(),
-                'reason': 'original_code_not_found'
+                'timestamp': time.time()
             })
-            return False, self._version
+            return True, self._version
     
     async def get_version_info(self) -> Dict[str, Any]:
         """Get codebook version information"""
@@ -443,83 +448,35 @@ class SharedCodebook:
                 oldest_version = min(self._embedding_cache.keys())
                 del self._embedding_cache[oldest_version]
     
-    def _normalize_code_name(self, code: str) -> str:
-        """Normalize code name for consistent comparison"""
-        return code.strip().lower().replace('-', ' ').replace('_', ' ')
-    
-    def _is_duplicate(self, code1: str, code2: str) -> bool:
-        """Check if two codes are duplicates using normalized comparison"""
-        norm1 = self._normalize_code_name(code1)
-        norm2 = self._normalize_code_name(code2)
-        return norm1 == norm2
-    
     async def batch_update(self, new_codes: List[Dict[str, str]], expected_base_version: int) -> bool:
-        """Phase 3: Batch update multiple codes atomically with comprehensive duplicate detection"""
+        """Phase 3: Batch update multiple codes atomically"""
         async with self._lock:
-            # Version conflict check with retry logic
+            # Version conflict check (defensive programming)
             if self._version != expected_base_version:
-                version_conflict_info = {
-                    'expected_version': expected_base_version,
-                    'actual_version': self._version,
-                    'codes_to_add': len(new_codes),
-                    'timestamp': time.time()
-                }
-                
-                # Log version conflict
+                # Log version conflict but proceed (dissimilar batches should rarely conflict)
                 self._update_log.append({
                     'version': self._version,
-                    'action': 'version_conflict_detected',
-                    **version_conflict_info
+                    'action': 'version_conflict_resolved',
+                    'expected_version': expected_base_version,
+                    'actual_version': self._version,
+                    'timestamp': time.time()
                 })
-                
-                # For safety, validate that proceeding won't cause issues
-                # Check if any of the new codes would conflict with recent additions
-                recent_adds = [log for log in self._update_log[-10:] 
-                              if log.get('action') in ['add', 'batch_add'] and 
-                              log.get('version', 0) > expected_base_version]
-                
-                potential_conflicts = 0
-                for code_dict in new_codes:
-                    for recent_add in recent_adds:
-                        if self._is_duplicate(code_dict['code'], recent_add.get('code', '')):
-                            potential_conflicts += 1
-                
-                if potential_conflicts > 0:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_blocked',
-                        'potential_conflicts': potential_conflicts,
-                        **version_conflict_info
-                    })
-                    return False  # Refuse to proceed with conflicting update
-                else:
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'version_conflict_resolved',
-                        'reason': 'no_potential_conflicts',
-                        **version_conflict_info
-                    })
             
-            # Batch add all new codes with enhanced duplicate detection
+            # Batch add all new codes
             added_count = 0
-            duplicates_prevented = 0
-            
             for code_dict in new_codes:
                 code = code_dict['code']
                 definition = code_dict['definition']
                 cluster_id = code_dict.get('cluster_id', 'unknown')
                 
-                # Enhanced duplicate check - normalize and compare
-                is_duplicate = False
-                duplicate_of = None
-                
+                # Check if code already exists
+                exists = False
                 for existing in self._codes:
-                    if self._is_duplicate(existing['code'], code):
-                        is_duplicate = True
-                        duplicate_of = existing['code']
+                    if existing['code'].lower() == code.lower():
+                        exists = True
                         break
                 
-                if not is_duplicate:
+                if not exists:
                     code_entry = {'code': code, 'definition': definition}
                     if cluster_id and cluster_id != 'unknown':
                         code_entry['source_cluster_id'] = str(cluster_id)
@@ -533,31 +490,10 @@ class SharedCodebook:
                         'cluster_id': cluster_id,
                         'timestamp': time.time()
                     })
-                else:
-                    # Log prevented duplicate
-                    duplicates_prevented += 1
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'duplicate_prevented',
-                        'attempted_code': code,
-                        'duplicate_of': duplicate_of,
-                        'cluster_id': cluster_id,
-                        'timestamp': time.time()
-                    })
             
             # Update version once for the entire batch
             if added_count > 0:
                 self._version += 1
-            
-            # Log summary if duplicates were prevented
-            if duplicates_prevented > 0:
-                self._update_log.append({
-                    'version': self._version,
-                    'action': 'batch_summary',
-                    'added_count': added_count,
-                    'duplicates_prevented': duplicates_prevented,
-                    'timestamp': time.time()
-                })
             
             return added_count > 0
 
@@ -2268,22 +2204,17 @@ class InductiveCodeGenerator:
                     self.verbose_reporter.error(f"C{cluster_id}: Validation/decision mismatch at index {i}")
                     decision_stats['errors'] += 1
         
-        # Execute batch operations with fresh version checking
+        # Execute batch operations
         updates_made = False
         
-        # Process CREATE operations with fresh base version
+        # Process CREATE operations
         if create_codes:
-            # Get fresh snapshot to ensure atomic operation
-            _, current_version = await self.shared_codebook.get_current_snapshot()
             self.verbose_reporter.stat_line(f"Batch adding {len(create_codes)} new codes to SharedCodebook")
-            await self.shared_codebook.batch_update(create_codes, current_version)
+            await self.shared_codebook.batch_update(create_codes, base_version)
             updates_made = True
         
-        # Process MODIFY operations individually with validation
+        # Process MODIFY operations individually (SharedCodebook doesn't have batch replace)
         for modify_op in modify_operations:
-            # Get fresh snapshot before each modify to ensure consistency
-            current_codes, current_version = await self.shared_codebook.get_current_snapshot()
-            
             replaced, new_version = await self.shared_codebook.replace_code(
                 modify_op['original_code'],
                 modify_op['new_code'],
@@ -2293,17 +2224,8 @@ class InductiveCodeGenerator:
             if replaced:
                 updates_made = True
                 self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: Replaced '{modify_op['original_code']}' with '{modify_op['new_code']}'")
-                
-                # Post-MODIFY validation: Check if new code creates duplicate
-                final_codes, _ = await self.shared_codebook.get_current_snapshot()
-                duplicate_count = sum(1 for code in final_codes 
-                                    if self.shared_codebook._is_duplicate(code['code'], modify_op['new_code']))
-                
-                if duplicate_count > 1:
-                    self.verbose_reporter.error(f"C{modify_op['cluster_id']}: MODIFY created duplicate! '{modify_op['new_code']}' now exists {duplicate_count} times")
-                
             else:
-                self.verbose_reporter.error(f"C{modify_op['cluster_id']}: Failed to replace '{modify_op['original_code']}' - original not found")
+                self.verbose_reporter.error(f"C{modify_op['cluster_id']}: Failed to replace '{modify_op['original_code']}'")
         
         # Report decision statistics
         total_decisions = sum(decision_stats.values())

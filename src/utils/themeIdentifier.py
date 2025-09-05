@@ -233,12 +233,13 @@ class ThemeIdentifier:
                  codebook: List[Dict[str, str]], 
                  var_lab: str,
                  verbose: bool = False, 
-                 prompt_printer = None):
+                 prompt_printer = None,
+                 verbose_reporter: Optional['VerboseReporter'] = None):
         
         self.codebook = codebook
         self.var_lab = var_lab
         self.verbose = verbose
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
         self.prompt_printer = prompt_printer
         self.model_config = ModelConfig()
         self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))

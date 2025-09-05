@@ -16,7 +16,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from asyncio_throttle import Throttler
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import models
 
 # === CONFIG ========================================================================================================
@@ -215,9 +215,9 @@ class SmartAPIClient:
 
 
 class IdeaResponse(BaseModel):
-    respondent_id: str
-    idea_id: str
-    idea: str
+    respondent_id: str = Field(alias_choices=['respondent_id', 'respond_id', 'respondent', 'respondrespondent_id'])
+    idea_id: str = Field(default="1", alias_choices=['idea_id', 'id'])
+    idea: str = Field(default="", alias_choices=['idea', 'content'])
 
 
 class IdeaExtractor:
@@ -228,7 +228,8 @@ class IdeaExtractor:
         config: Optional[SegmentationConfig] = None,
         model_config: Optional[ModelConfig] = None,
         verbose: bool = False,
-        prompt_printer=None):
+        prompt_printer=None,
+        verbose_reporter: Optional['VerboseReporter'] = None):
         
         self.responses = responses
         self.var_lab = var_lab
@@ -237,7 +238,7 @@ class IdeaExtractor:
         self.model = self.model_config.get_model_for_stage('segmentation')
         self.language = DEFAULT_LANGUAGE
         self._results: List[models.IdeasExtractedModel] = []
-        self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+        self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
@@ -292,10 +293,14 @@ class IdeaExtractor:
             # Process response - array of IdeaResponse objects
             ideas = []
             for i, idea_response in enumerate(response_data_list):
-                if idea_response.idea:
+                # Handle missing or empty ideas with validation
+                idea_text = idea_response.idea.strip() if idea_response.idea else ""
+                if idea_text and idea_text not in ["", "NA", "N/A"]:
+                    # Use the idea_id from response if available, otherwise generate
+                    response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                     ideas.append(models.IdeasExtractedSubmodel(
-                        idea_id=f"{respondent_id}_{i+1}",
-                        idea=idea_response.idea
+                        idea_id=f"{respondent_id}_{response_idea_id}",
+                        idea=idea_text
                     ))
             
             return models.IdeasExtractedModel(

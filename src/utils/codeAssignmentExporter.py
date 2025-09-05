@@ -21,6 +21,20 @@ class CodeAssignmentExporter:
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
+    
+    def _sanitize_excel_text(self, text):
+        """Remove or replace control characters that Excel cannot handle"""
+        if text is None or not isinstance(text, str):
+            return text
+        
+        # Remove all control characters (0x00-0x1F) except tab, newline, carriage return
+        # These are characters that openpyxl/Excel cannot handle
+        sanitized = ''.join(char if ord(char) > 31 or char in '\t\n\r' else ' ' for char in text)
+        
+        # Also handle the specific problematic character we saw (0x08 - backspace)
+        sanitized = sanitized.replace('\x08', '')
+        
+        return sanitized
         
     def export_to_excel(self,
                        code_assigned_results: List[models.CodeAssignedModel],
@@ -137,6 +151,12 @@ class CodeAssignmentExporter:
         output_filename = f"{base_name}_{var_name}_code_assignments.xlsx"
         output_path = os.path.join(export_dir, output_filename)
         
+        print(f"About to export DataFrame with shape: {df.shape}")
+        #print(f"DataFrame columns: {list(df.columns)}")
+        # if len(df) > 0:
+        #     print(f"Sample data - original_response: {str(df.iloc[0]['original_response'])[:100]}...")
+        #     print(f"Sample data - idea_text: {str(df.iloc[0]['idea_text'])[:100]}...")
+        
         # Export to Excel with formatting
         self._write_formatted_excel(df, output_path, var_name)
         
@@ -145,7 +165,6 @@ class CodeAssignmentExporter:
         self.verbose_reporter.stat_line(f"Unique respondents: {df['respondent_id'].nunique()}")
         self.verbose_reporter.stat_line(f"Unique ideas: {df['idea_id'].nunique()}")
         self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()}")
-        self.verbose_reporter.stat_line(f"Excel file saved: {output_path}")
         
         return output_path
     
@@ -291,7 +310,7 @@ class CodeAssignmentExporter:
         # Create workbook and worksheet
         wb = Workbook()
         ws = wb.active
-        ws.title = f"{var_name}_Assignments"
+        ws.title = "codering"
         
         # Define styles
         header_font = Font(bold=True, color="FFFFFF")
@@ -328,18 +347,35 @@ class CodeAssignmentExporter:
             cell.border = border
         
         # Write data
-        for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=False), 2):
-            for c_idx, value in enumerate(row, 1):
-                cell = ws.cell(row=r_idx, column=c_idx, value=value)
-                cell.border = border
-                
-                # Format confidence values
-                if c_idx == 10 and value is not None:  # Assignment confidence column (shifted by 1 due to new column)
+        try:
+            for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=False), 2):
+                 for c_idx, value in enumerate(row, 1):
+                    # Handle None values for Excel
+                    if value is None:
+                        value = ""
+                    
+                    # Sanitize string values to remove control characters
+                    if isinstance(value, str):
+                        value = self._sanitize_excel_text(value)    
                     try:
-                        cell.value = float(value)
-                        cell.number_format = '0.00'
-                    except:
-                        pass
+                        cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                        cell.border = border
+                    except Exception as cell_error:
+                        print(f"DEBUG: Error writing cell at row {r_idx}, col {c_idx}")
+                        print(f"DEBUG: Cell value: {str(value)[:200]}...")
+                        print(f"DEBUG: Cell error: {cell_error}")
+                        raise
+                    
+                    # Format confidence values
+                    if c_idx == 10 and value is not None:  # Assignment confidence column (shifted by 1 due to new column)
+                        try:
+                            cell.value = float(value)
+                            cell.number_format = '0.00'
+                        except:
+                            pass
+        except Exception as e:
+            print(f"DEBUG: Error during data writing: {e}")
+            raise
         
         # Adjust column widths
         column_widths = {
@@ -399,7 +435,11 @@ class CodeAssignmentExporter:
         summary_ws.column_dimensions['B'].width = 15
         
         # Save workbook
-        wb.save(output_path)
+        try:
+            wb.save(output_path)
+        except Exception as e:
+            print(f"DEBUG: Error saving workbook: {e}")
+            raise
     
     def _create_reasoning_mapping(self, reasoning_results: CodeGeneratorReasoningResults) -> Dict[str, Dict[str, str]]:
         """Create a mapping from cluster IDs to reasoning data"""
@@ -469,7 +509,7 @@ class CodeAssignmentExporter:
         # Create workbook and worksheet
         wb = Workbook()
         ws = wb.active
-        ws.title = f"{var_name}_Assignments_Reasoning"
+        ws.title = "codering"
         
         # Define styles
         header_font = Font(bold=True, color="FFFFFF")
@@ -511,6 +551,17 @@ class CodeAssignmentExporter:
         # Write data
         for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=False), 2):
             for c_idx, value in enumerate(row, 1):
+                # Handle None values for Excel
+                if value is None:
+                    value = ""
+                
+                # Sanitize string values to remove control characters
+                if isinstance(value, str):
+                    value = self._sanitize_excel_text(value)
+                    # Also apply length limit to avoid openpyxl bugs
+                    if len(value) > 255:  # Much shorter limit to avoid openpyxl bugs
+                        value = value[:255] + "..."
+                    
                 cell = ws.cell(row=r_idx, column=c_idx, value=value)
                 cell.border = border
                 
@@ -593,4 +644,8 @@ class CodeAssignmentExporter:
         summary_ws.column_dimensions['B'].width = 15
         
         # Save workbook
-        wb.save(output_path)
+        try:
+            wb.save(output_path)
+        except Exception as e:
+            print(f"DEBUG: Error saving workbook: {e}")
+            raise
