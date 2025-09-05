@@ -142,7 +142,9 @@ class CodeAssignmentExporter:
         
         # Create export directory if not provided
         if export_dir is None:
-            export_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'exports')
+            # Get project root (3 levels up from utils folder)
+            project_root = Path(__file__).parent.parent.parent
+            export_dir = os.path.join(project_root, 'exports')
         
         Path(export_dir).mkdir(parents=True, exist_ok=True)
         
@@ -283,7 +285,9 @@ class CodeAssignmentExporter:
         
         # Create export directory if not provided
         if export_dir is None:
-            export_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'exports')
+            # Get project root (3 levels up from utils folder)
+            project_root = Path(__file__).parent.parent.parent
+            export_dir = os.path.join(project_root, 'exports')
         
         Path(export_dir).mkdir(parents=True, exist_ok=True)
         
