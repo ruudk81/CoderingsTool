@@ -495,7 +495,7 @@ def show_upload_page():
             with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
                 try:
                     # Save uploaded file
-                    file_path = Path("data") / uploaded_file.name
+                    file_path = project_root / "data" / uploaded_file.name
                     file_path.parent.mkdir(exist_ok=True)
                     
                     with open(file_path, "wb") as f:
