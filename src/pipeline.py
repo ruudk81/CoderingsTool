@@ -128,12 +128,18 @@ else:
 # === STEP 2 ========================================================================================================
 """preprocess data"""
 
+# raw_text_list0 = raw_text_list
+# raw_text_list = raw_text_list[:100]
+#raw_text_list = raw_text_list0
+
 from utils import textNormalizer, spellChecker, textFinalizer
 from utils import verboseReporter
 from utils import promptPrinter
 
-FORCE = False
+FORCE = True
 VERBOSE = True
+PROMPT_PRINTER = False
+
 
 step_name        = "preprocessed"
 if  FORCE:
@@ -147,7 +153,6 @@ code_meanings = {
     99999997: "User missing: Don't know/only expressing uncertainty", 
     99999998: "System missing: NA",
     99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
-
 
 if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
     preprocessed_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.PreprocessedModel)
@@ -181,6 +186,7 @@ else:
     if string_responses:
         normalized_text = text_normalizer.normalize_responses(string_responses)
         normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
+        #HIER
         corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
         finalized_text = text_finalizer.finalize_responses(corrected_text)
     else:

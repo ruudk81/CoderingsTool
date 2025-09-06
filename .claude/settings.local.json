@@ -28,7 +28,8 @@
       "Bash(copy codeGenerator.py codeGenerator_backup_20250814_171500.py)",
       "Bash(Get-Date -Format \"yyyyMMdd_HHmmss\")",
       "Bash(awk:*)",
-      "Bash(del test_step8b.py)"
+      "Bash(del test_step8b.py)",
+      "Bash($timestamp = Get-Date -Format \"yyyyMMdd_HHmmss\")"
     ],
     "deny": []
   }

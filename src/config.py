@@ -49,7 +49,6 @@ class OpenAIRateLimits:
     requests_per_minute: int
     tokens_per_day: int
 
-# Rate limits for different models (Tier 4/5 paid accounts)
 OPENAI_RATE_LIMITS = {
     "gpt-5": OpenAIRateLimits(
         tokens_per_minute=800_000,
@@ -106,11 +105,9 @@ OPENAI_RATE_LIMITS = {
 
 def get_openai_rate_limits(model: str) -> OpenAIRateLimits:
     """Get rate limits for a specific OpenAI model"""
-    # Handle model variations (e.g., gpt-4o-mini-2024-07-18)
-    base_model = model.split('-')[0:2]  # Get base model name
+    base_model = model.split('-')[0:3]  # Get base model name with 3 or less koppeltekens
     base_model_str = '-'.join(base_model)
-    
-    # Try exact match first, then base model, then default
+
     if model in OPENAI_RATE_LIMITS:
         return OPENAI_RATE_LIMITS[model]
     elif base_model_str in OPENAI_RATE_LIMITS:

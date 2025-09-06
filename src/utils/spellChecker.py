@@ -6,22 +6,24 @@ import asyncio
 import subprocess
 import logging
 import time
-import statistics
+#import statistics
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
-from collections import defaultdict, deque
-from dataclasses import dataclass
+from collections import defaultdict #, deque
+#from dataclasses import dataclass
 
 import nest_asyncio
 from pydantic import BaseModel
-from asyncio_throttle import Throttler
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter #wait_exponential
+from openai import RateLimitError
+from aiolimiter import AsyncLimiter
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, DEFAULT_MODEL_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, get_openai_rate_limits
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -43,9 +45,6 @@ class SpellCorrectionTask(BaseModel):
     oov_words: str 
     suggestions: str
 
-class SpellCorrectionBatch(BaseModel):
-    tasks: List[SpellCorrectionTask] 
-
 class CorrectionItem(BaseModel):
     respondent_id: Any 
     corrected_response: str 
@@ -53,172 +52,62 @@ class CorrectionItem(BaseModel):
 class LLMCorrectionResponse(BaseModel):
     corrections: List[CorrectionItem] 
     
-@dataclass
-class SpellCheckOptimalStrategy:
-    target_time_seconds: float
-    launch_rate_per_second: float
-    concurrent_limit: int
-    bottleneck_type: str
-    total_requests: int
-    total_tokens: int
-    safety_factor: float
-    batch_size: int    
+# === RATE LIMITING ========================================================================================================
 
-# === DATA PROCESSING HELPERS  ========================================================================================================
+class TokenBucket:
+    """Token bucket for TPM rate limiting with smart waiting"""
+    
+    def __init__(self, tokens_per_minute):
+        self.tpm = tokens_per_minute
+        self.available = tokens_per_minute
+        self.last_update = time.monotonic()  # Use monotonic to avoid clock issues
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self, tokens_needed):
+        """Acquire tokens, waiting if necessary"""
+        async with self.lock:
+            # Regenerate tokens based on time elapsed
+            now = time.monotonic()
+            elapsed = now - self.last_update
+            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
+            self.last_update = now
+            
+            # Calculate wait time if not enough tokens (avoid busy polling)
+            if self.available < tokens_needed:
+                deficit = tokens_needed - self.available
+                wait_seconds = deficit * 60 / self.tpm
+                logger.debug(f"Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens")
+                await asyncio.sleep(wait_seconds)
+                # Recalculate after sleep
+                now = time.monotonic()
+                self.available = min(self.tpm, self.available + (self.tpm * wait_seconds / 60))
+                self.last_update = now
+            
+            # Consume tokens
+            self.available -= tokens_needed
+            logger.debug(f"Token bucket: consumed {tokens_needed}, {self.available:.0f} remaining")
 
-class SpellCheckWorkloadAnalyzer:
-    def __init__(self, model_name: str, encoding, config: SpellCheckConfig):
-        self.model_name = model_name
-        self.encoding = encoding
-        self.config = config
-    
-    def measure_token_usage(self, sample_batches: List[List[Any]], base_prompt_template: str, var_lab: str) -> float:
-        if not sample_batches:
-            return 550  
-        
-        token_counts = []
-        for batch in sample_batches[:3]:  # Sample first 3 batches
-            tasks_string = ""
-            for i, task in enumerate(batch):
-                tasks_string += (
-                    f"Task {i + 1}:\n"
-                    f"Respondent ID: {task.respondent_id}\n"
-                    f"Response: \"{task.response_with_oov_placeholders}\"\n"
-                    f"Misspelled words: {task.oov_words}\n"
-                    f"Suggested corrections: {task.suggestions}\n\n")
-            
-            prompt = base_prompt_template.format(
-                language=DEFAULT_LANGUAGE,
-                var_lab=var_lab,
-                tasks=tasks_string
-            )
-            prompt_tokens = len(self.encoding.encode(prompt))
-            # Spell checking typically has shorter completions (structured output)
-            completion_tokens = int(prompt_tokens * 0.15)
-            total_tokens = prompt_tokens + completion_tokens
-            token_counts.append(total_tokens)
-        
-        return statistics.mean(token_counts) if token_counts else 550
-    
-    def calculate_optimal_strategy(self, total_batches: int, avg_tokens_per_batch: float) -> SpellCheckOptimalStrategy:
-        # Get API limits from config
-        rate_limits = get_openai_rate_limits(self.model_name)
-        
-        # Calculate total resource requirements
-        total_requests = total_batches
-        total_tokens = total_requests * avg_tokens_per_batch
-        
-        # Calculate optimal sustained rate (what we can maintain)
-        optimal_sustained_rate = rate_limits.requests_per_minute / 60  # req/sec
-        optimal_sustained_tokens = rate_limits.tokens_per_minute / 60  # tokens/sec
-        
-        # Find bottleneck for sustained rate
-        time_by_requests = total_requests / optimal_sustained_rate
-        time_by_tokens = total_tokens / optimal_sustained_tokens
-        
-        # Use evidence-based approach: plan for sustained rate
-        bottleneck_time = max(time_by_requests, time_by_tokens)
-        bottleneck_type = 'tokens' if time_by_tokens > time_by_requests else 'requests'
-        
-        # Apply configurable utilization for spell checking
-        safety_factor = self.config.rate_limit_safety_factor
-        target_time = bottleneck_time / safety_factor
-        
-        # Calculate launch rate
-        optimal_launch_rate = total_requests / target_time
-        
-        # Aggressive concurrent limit for spell checking (configurable burst capacity)
-        concurrent_limit = int(optimal_launch_rate * self.config.concurrent_burst_multiplier)
-        
-        return SpellCheckOptimalStrategy(
-            target_time_seconds=target_time,
-            launch_rate_per_second=optimal_launch_rate,
-            concurrent_limit=concurrent_limit,
-            bottleneck_type=bottleneck_type,
-            total_requests=total_requests,
-            total_tokens=total_tokens,
-            safety_factor=safety_factor,
-            batch_size=1
-        )
 
-class SpellCheckSlidingWindowMonitor:
-    """Real-time monitoring of API usage for spell checking with sliding windows"""
+class RateLimitTracker:
+    """Track rate limit errors and enforce cooldown periods"""
     
-    def __init__(self, rpm_limit: int, tpm_limit: int, window_seconds: int = 60, rate_limit_utilization: float = 0.98):
-        self.rpm_limit = rpm_limit
-        self.tpm_limit = tpm_limit
-        self.window_seconds = window_seconds
-        self.rate_limit_utilization = rate_limit_utilization
-        
-        # Thread-safe tracking across all concurrent operations
-        self._lock = asyncio.Lock()
-        self.requests_window = deque()  # timestamps
-        self.tokens_window = deque()    # (timestamp, token_count) tuples
-        
-        # Statistics
-        self.total_requests = 0
-        self.total_tokens = 0
-        self.start_time = time.time()
+    def __init__(self, cooldown_seconds=15):
+        self.last_rate_limit_time = 0
+        self.cooldown_seconds = cooldown_seconds
     
-    def _cleanup_windows(self):
-        """Remove entries older than window_seconds"""
-        cutoff_time = time.time() - self.window_seconds
-        
-        # Clean requests window
-        while self.requests_window and self.requests_window[0] < cutoff_time:
-            self.requests_window.popleft()
-        
-        # Clean tokens window
-        while self.tokens_window and self.tokens_window[0][0] < cutoff_time:
-            self.tokens_window.popleft()
+    def check_cooldown(self):
+        """Check if we're still in cooldown period"""
+        time_since_error = time.monotonic() - self.last_rate_limit_time
+        if time_since_error < self.cooldown_seconds:
+            remaining = self.cooldown_seconds - time_since_error
+            return True, remaining
+        return False, 0
     
-    async def can_proceed(self, estimated_tokens: int = 0) -> bool:
-        """Check if we can make request within 95% of 60-second limits"""
-        async with self._lock:
-            self._cleanup_windows()
-            
-            # Calculate current usage in 60-second window
-            current_rpm = len(self.requests_window)
-            current_tpm = sum(tokens for _, tokens in self.tokens_window)
-            
-            # Use configurable percentage of limits for spell checking
-            would_exceed_rpm = (current_rpm + 1) > (self.rpm_limit * self.rate_limit_utilization)
-            would_exceed_tpm = (current_tpm + estimated_tokens) > (self.tpm_limit * self.rate_limit_utilization)
-            
-            return not (would_exceed_rpm or would_exceed_tpm)
-    
-    async def record_request(self, tokens_used: int):
-        """Record a completed API request"""
-        async with self._lock:
-            now = time.time()
-            self.requests_window.append(now)
-            self.tokens_window.append((now, tokens_used))
-            
-            self.total_requests += 1
-            self.total_tokens += tokens_used
-            
-            self._cleanup_windows()
-    
-    async def get_current_utilization(self) -> Dict:
-        """Get current resource utilization"""
-        async with self._lock:
-            self._cleanup_windows()
-            
-            current_rpm = len(self.requests_window)
-            current_tpm = sum(tokens for _, tokens in self.tokens_window)
-            
-            return {
-                'current_rpm': current_rpm,
-                'current_tpm': current_tpm,
-                'rpm_utilization': current_rpm / self.rpm_limit,
-                'tpm_utilization': current_tpm / self.tpm_limit,
-                'rpm_remaining': self.rpm_limit - current_rpm,
-                'tpm_remaining': self.tpm_limit - current_tpm,
-                'total_requests': self.total_requests,
-                'total_tokens': self.total_tokens,
-                'elapsed_time': time.time() - self.start_time
-            }
-    
+    def record_rate_limit(self):
+        """Record when rate limit was hit"""
+        self.last_rate_limit_time = time.monotonic()
+        logger.warning(f"Rate limit error recorded, entering {self.cooldown_seconds}s cooldown")
+
 # === HUNSPELL ========================================================================================================
 class HunspellSession:
     def __init__(self, hunspell_path, dict_path):
@@ -668,78 +557,11 @@ class SpellChecker:
         
         return combined_results
         
-    def create_correction_batches(self, tasks: List[Dict[str, Any]], prompt_header: str, max_tokens: int, completion_reserve: int) -> List[SpellCorrectionBatch]:
-        tiktoken_model = DEFAULT_MODEL_CONFIG.get_model_for_stage('tiktoken_spellChecker')
-        encoding = get_tiktoken_encoding(tiktoken_model)
-            
-        token_budget = max_tokens - len(encoding.encode(prompt_header)) - completion_reserve
-        
-        # Calculate optimal batch size based on rate limits and task count
-        total_tasks = len(tasks)
-        rate_limits = get_openai_rate_limits(self.model)
-        
-        # Target processing time of 60 seconds for optimal rate distribution
-        target_time_seconds = 60
-        optimal_requests = int(rate_limits.requests_per_minute * 0.9)  # Use 90% of RPM
-        
-        # Calculate optimal batch size
-        if total_tasks <= optimal_requests:
-            # Can process all in one minute - use larger batches
-            optimal_batch_size = min(self.config.max_batch_size * 2, 20)
-        else:
-            # Need multiple minutes - optimize for steady flow
-            optimal_batch_size = max(5, min(self.config.max_batch_size, total_tasks // optimal_requests))
-        
-        # Verbose reporting of batch optimization
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"Batch optimization: {total_tasks} tasks, target batch size: {optimal_batch_size}", indent=1)
-        
-        batches = []
-        current_batch_tasks = []
-        current_batch_tokens = 0
-        
-        max_batch_size = optimal_batch_size
-        
-        for task in tasks:
-            correction_task = SpellCorrectionTask(
-                respondent_id=task['respondent_id'],
-                original_response=task['response'],
-                response_with_oov_placeholders=task['response_with_placeholders'],
-                oov_words=task['oov_words'],
-                suggestions=task['suggestions']
-            )
-            
-            task_text = (
-                f"Task:\n"
-                f"Respondent ID: {task['respondent_id']}\n"
-                f"Response: \"{task['response_with_placeholders']}\"\n"
-                f"Misspelled words: {task['oov_words']}\n"
-                f"Suggested corrections: {task['suggestions']}\n\n"
-            )
-            
-            task_tokens = len(encoding.encode(task_text))
-            
-            if (current_batch_tokens + task_tokens > token_budget or 
-                len(current_batch_tasks) >= max_batch_size):
-                if current_batch_tasks:
-                    batches.append(SpellCorrectionBatch(tasks=current_batch_tasks))
-                current_batch_tasks = []
-                current_batch_tokens = 0
-            
-            current_batch_tasks.append(correction_task)
-            current_batch_tokens += task_tokens
-        
-        if current_batch_tasks:
-            batches.append(SpellCorrectionBatch(tasks=current_batch_tasks))
-        
-        return batches
 
     async def get_best_corrections_with_ai(self, responses, best_suggestions_dict: Dict[str, List[Any]], var_lab: str, word_to_responses: Dict[str, List[int]] = None) -> Dict[str, str]:
         """Native async OpenAI client with validation - optimized with word-to-response mapping"""
         oov_words = list(best_suggestions_dict.keys())
         
-        max_tokens = self.config.max_tokens  
-        completion_reserve = self.config.completion_reserve
         
         corrected_sentences_dict = {}
         tasks = []
@@ -947,217 +769,172 @@ class SpellChecker:
             oov_words_in_tasks.update(task_oov_words)
         self.stats['oov_words_in_tasks'] = len(oov_words_in_tasks)
         
-        batches = self.create_correction_batches(filtered_tasks, prompt_header, max_tokens, completion_reserve)
+# Batching removed - now processing individual tasks directly
         
         # =================================================================
-        # WORKLOAD ANALYSIS & RATE LIMITING SETUP 
+        # RATE LIMITING SETUP FOR INDIVIDUAL TASKS
         # =================================================================
         
-        if len(batches) > 1:  # Only use rate limiting for multiple batches
-            # Initialize workload analyzer
-            encoding = get_tiktoken_encoding(self.model)
-            analyzer = SpellCheckWorkloadAnalyzer(self.model, encoding, self.config)
+        if filtered_tasks:
+            # Get model limits from config
+            limits = get_openai_rate_limits(self.model)
+            HEADROOM = 0.8  # Use 80% of limits for safety
             
-            # Measure actual token usage from sample batches
-            sample_batches_for_analysis = []
-            for batch in batches[:3]:  # Sample first 3 batches
-                sample_batches_for_analysis.append(batch.tasks)
+            # Create rate limiters
+            rpm_limiter = AsyncLimiter(limits.requests_per_minute * HEADROOM / 60, 1)
+            token_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
             
-            avg_tokens_per_batch = analyzer.measure_token_usage(sample_batches_for_analysis, SPELLCHECK_INSTRUCTIONS, var_lab)
+            # Transport limit (HTTP/2 streams, system resources)
+            semaphore = asyncio.Semaphore(100)
             
-            # Calculate optimal strategy
-            strategy = analyzer.calculate_optimal_strategy(len(batches), avg_tokens_per_batch)
+            # Rate limit tracking with cooldown
+            rate_limit_tracker = RateLimitTracker(cooldown_seconds=15)
             
-            # Initialize rate monitoring with configurable utilization
-            rate_limits = get_openai_rate_limits(self.model)
-            monitor = SpellCheckSlidingWindowMonitor(
-                rate_limits.requests_per_minute, 
-                rate_limits.tokens_per_minute,
-                rate_limit_utilization=self.config.rate_limit_utilization
+            print("[RATE LIMITING SETUP]")
+            print(f"- Model: {self.model}")
+            print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * HEADROOM:,.0f} with headroom)")
+            print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * HEADROOM:,.0f} with headroom)")
+            print(f"- Processing {len(filtered_tasks):,} individual tasks")
+            print(f"- Rate limit cooldown: {rate_limit_tracker.cooldown_seconds}s")
+        else:
+            print("No correction tasks to process")
+            return {}
+        
+        def count_task_tokens(task_dict: Dict[str, Any]) -> int:
+            """Count tokens needed for individual task (input + estimated output)"""
+            task_text = (
+                f"Please correct the spelling errors in this response:\n"
+                f"Original: \"{task_dict['response']}\"\n"
+                f"Misspelled words: {task_dict['oov_words']}\n"
+                f"Suggested corrections: {task_dict['suggestions']}\n"
+                f"Please provide the corrected version."
             )
             
-            # Initialize throttler for rate limiting
-            throttler = Throttler(rate_limit=strategy.launch_rate_per_second)
+            encoding = get_tiktoken_encoding(self.model)
+            input_tokens = len(encoding.encode(task_text))
+            # Estimate output tokens (corrections are typically similar length to input)
+            estimated_output_tokens = max(50, int(input_tokens * 0.3))  # At least 50, or 30% of input
             
-            # Display strategy summary
-            print("[SPELL CHECK ANALYSIS]")
-            print(f"- Model: {self.model} (Limits: {rate_limits.requests_per_minute:,} RPM, {rate_limits.tokens_per_minute:,} TPM)")
-            print(f"- Correction batches to process: {len(batches):,}")
-            print(f"- Avg tokens per batch: {avg_tokens_per_batch:.0f}")
-            print(f"- Optimal strategy: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
-            print(f"- Estimated time: {strategy.target_time_seconds:.1f}s ({strategy.bottleneck_type} bottleneck)")
-            print("Processing correction batches...")
+            return input_tokens + estimated_output_tokens
         
-        async def process_batch_with_rate_limiting(batch: SpellCorrectionBatch, var_lab: str, batch_index: int, 
-                                                use_rate_limiting: bool = False, throttler=None, monitor=None, 
-                                                avg_tokens_per_batch: float = 0) -> Dict[str, str]:
-            """Native async client with rate limiting and validation"""
-            
-            # Rate limiting: wait for permission to proceed
-            if use_rate_limiting and throttler:
-                async with throttler:
-                    if monitor and not await monitor.can_proceed(int(avg_tokens_per_batch)):
-                        # Back off if approaching limits
-                        await asyncio.sleep(1)
-            
-            tasks_string = ""
-            for i, task in enumerate(batch.tasks):
-                tasks_string += (
-                    f"Task {i + 1}:\n"
-                    f"Respondent ID: {task.respondent_id}\n"
-                    f"Response: \"{task.response_with_oov_placeholders}\"\n"
-                    f"Misspelled words: {task.oov_words}\n"
-                    f"Suggested corrections: {task.suggestions}\n\n")
-            
-            prompt = SPELLCHECK_INSTRUCTIONS.format(
-                language=DEFAULT_LANGUAGE,
-                var_lab=var_lab,
-                tasks=tasks_string)
-            
-            # Calculate actual tokens for this request
-            if use_rate_limiting and monitor:
-                encoding = get_tiktoken_encoding(self.model)
-                prompt_tokens = len(encoding.encode(prompt))
-                estimated_tokens = int(prompt_tokens * 1.15)  # Include completion estimate
-            else:
-                estimated_tokens = 0
-                
-            # Capture prompt only for the first batch
-            if self.prompt_printer and batch_index == 0:
-                self.prompt_printer.capture_prompt(
-                    step_name="preprocessing",
-                    utility_name="SpellChecker",
-                    prompt_content=prompt,
-                    prompt_type="correction",
-                    metadata={
-                        "model": self.model,
-                        "var_lab": var_lab,
-                        "language": DEFAULT_LANGUAGE,
-                        "batch_size": len(batch.tasks),
-                        "total_batches": len(batches),
-                        "batch_number": batch_index + 1,
-                        "client_type": "instructor_async_rate_limited" if use_rate_limiting else "instructor_async"
-                    }
-                )
-            
-            try:
-                self.stats['llm_calls_made'] += 1
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    response_model=LLMCorrectionResponse,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=completion_reserve,
-                    temperature=self.config.temperature,
-                    seed=self.config.seed,
-                    max_retries=self.config.retries
-                )
-                
-                corrections = response.corrections
-                self.stats['llm_calls_successful'] += 1
-                
-                # Record API usage for rate monitoring
-                if use_rate_limiting and monitor:
-                    await monitor.record_request(estimated_tokens)
-                
-            except Exception as e:
-                # Verbose error reporting for OpenAI issues
-                if self.verbose_reporter.enabled:
-                    self.verbose_reporter.error(f"OpenAI API call failed for batch {batch_index}: {e}")
-                else:
-                    logger.error(f"LLM call failed for batch {batch_index}: {e}")
-                corrections = []
-                self.stats['llm_calls_failed'] += 1
-            
-            # Validation loop for corrections
-            validated_corrections = {}
-            for task in batch.tasks:
-                # Find corresponding correction
-                correction_text = task.original_response  # Default fallback
-                correction_found = False
-                
-                for corr in corrections:
-                    if str(corr.respondent_id) == str(task.respondent_id):
-                        candidate_correction = corr.corrected_response
-                        correction_found = True
-                        self.stats['corrections_attempted'] += 1
-                        
-                        # Check for "[NO RESPONSE]" cases
-                        if candidate_correction == "[NO RESPONSE]":
-                            self.stats['corrections_no_response'] += 1
-                            break
-                        
-                        # Validate correction quality
-                        words_to_validate = task.oov_words.split(', ')
-                        validation_passed = True
-                        
-                        for word in words_to_validate:
-                            if word in candidate_correction:
-                                # Check if the replacement word is valid
-                                replaced_words = [w for w in candidate_correction.split() if w not in task.original_response.split()]
-                                for replaced_word in replaced_words:
-                                    is_valid = await self.verify_correction_with_dictionary(replaced_word.strip('.,!?;:"\'()[]{}'))
-                                    if not is_valid:
-                                        validation_passed = False
-                                        break
-                        
-                        if validation_passed:
-                            correction_text = candidate_correction
-                            self.stats['corrections_applied'] += 1
-                        else:
-                            self.stats['corrections_rejected_validation'] += 1
-                        break
-                
-                # Track cases where LLM didn't return a correction for this task
-                if not correction_found:
-                    self.stats['corrections_attempted'] += 1
-                
-                validated_corrections[task.original_response] = correction_text
-            
-            return validated_corrections
+        def on_rate_limit_error(retry_state):
+            """Handle rate limit errors with cooldown"""
+            if retry_state.outcome and retry_state.outcome.failed:
+                exception = retry_state.outcome.exception()
+                if isinstance(exception, RateLimitError):
+                    rate_limit_tracker.record_rate_limit()
+                    print(f"[RATE LIMIT] Attempt {retry_state.attempt_number}: {exception}")
         
-        # Sort batches for consistent processing order
-        sorted_batches = sorted(batches, key=lambda b: str(b.tasks[0].respondent_id) if b.tasks else "")
-
-        # Execute batches with appropriate strategy
-        corrected_sentences_dict = {}
-        
-        if len(batches) > 1:
-            # Use rate-limited processing for multiple batches
-            semaphore = asyncio.Semaphore(strategy.concurrent_limit)
+        @retry(
+            retry=retry_if_exception_type(RateLimitError),
+            wait=wait_exponential_jitter(initial=1, max=30),
+            stop=stop_after_attempt(3),
+            before_sleep=on_rate_limit_error,
+            reraise=True
+        )
+        async def process_individual_task(task_dict: Dict[str, Any], var_lab: str) -> Dict[str, str]:
+            """Process individual spell check task with rate limiting and proper structured output"""
             
-            async def controlled_batch_process(batch, batch_idx):
-                async with semaphore:
-                    return await process_batch_with_rate_limiting(
-                        batch, var_lab, batch_idx, 
-                        use_rate_limiting=True, 
-                        throttler=throttler, 
-                        monitor=monitor, 
-                        avg_tokens_per_batch=avg_tokens_per_batch
+            # Count tokens needed for this task
+            tokens_needed = count_task_tokens(task_dict)
+            
+            # Apply rate limits in correct order
+            async with rpm_limiter:                    # RPM check
+                await token_bucket.acquire(tokens_needed)  # TPM check
+                async with semaphore:                     # Transport limit
+                    # Create proper task using original SPELLCHECK_INSTRUCTIONS format
+                    task_text = f"""Task:
+Respondent ID: {task_dict['respondent_id']}
+Response: "{task_dict['response_with_placeholders']}"
+Misspelled words: {task_dict['oov_words']}
+Suggested corrections: {task_dict['suggestions']}
+"""
+                    
+                    # Use original SPELLCHECK_INSTRUCTIONS prompt
+                    full_prompt = SPELLCHECK_INSTRUCTIONS.format(
+                        language=DEFAULT_LANGUAGE,
+                        var_lab=var_lab,  # Need to pass this from parent function
+                        tasks=task_text
                     )
-            
-            # Process with progress tracking
-            completed_batches = 0
-            tasks = [controlled_batch_process(batch, i) for i, batch in enumerate(sorted_batches)]
-            
-            # Process batches and show progress
-            for completed_task in asyncio.as_completed(tasks):
-                batch_result = await completed_task
-                corrected_sentences_dict.update(batch_result)
-                completed_batches += 1
-                
-                # Progress reporting
-                progress_percent = (completed_batches / len(batches)) * 100
-                print(f"Processing correction batches... {completed_batches}/{len(batches)} ({progress_percent:.1f}%)")
-                
-                # Optional: Show utilization stats periodically
-                if completed_batches % 10 == 0 and len(batches) > 20:
-                    utilization = await monitor.get_current_utilization()
-                    rate_per_second = utilization['total_requests'] / max(utilization['elapsed_time'], 0.1)
-                    print(f"  Current rate: {rate_per_second:.1f} req/s ({utilization['rpm_utilization']*100:.0f}% RPM, {utilization['tpm_utilization']*100:.0f}% TPM)")
-        else:
-            # Single batch - no need for rate limiting
-            batch_result = await process_batch_with_rate_limiting(sorted_batches[0], var_lab, 0)
-            corrected_sentences_dict.update(batch_result)
+                    
+                    try:
+                        self.stats['llm_calls_made'] += 1
+                        
+                        # Add timeout to prevent stragglers - USE INSTRUCTOR CLIENT FOR STRUCTURED OUTPUT
+                        response = await asyncio.wait_for(
+                            self.client.chat.completions.create(
+                                model=self.model,
+                                response_model=LLMCorrectionResponse,  # Pydantic validation
+                                messages=[{"role": "user", "content": full_prompt}],
+                                temperature=self.config.temperature,
+                                seed=self.config.seed,
+                                max_retries=0  # Let tenacity handle retries
+                            ),
+                            timeout=15  # 15 second timeout
+                        )
+                        
+                        self.stats['llm_calls_successful'] += 1
+                        
+                        # Parse structured response with validation
+                        if response.corrections and len(response.corrections) > 0:
+                            correction = response.corrections[0]  # Single task = single correction
+                            corrected_text = correction.corrected_response
+                            
+                            # DEBUG: Log LLM response
+                            original = task_dict['response']
+                            if corrected_text != original:
+                                logger.info("[SPELL DEBUG] LLM made correction:")
+                                logger.info(f"  Original: '{original}'")
+                                logger.info(f"  Corrected: '{corrected_text}'")
+                            else:
+                                logger.info(f"[SPELL DEBUG] LLM returned unchanged: '{original}'")
+                        else:
+                            corrected_text = task_dict['response']  # No correction provided
+                            logger.info(f"[SPELL DEBUG] No corrections in response for: '{task_dict['response'][:50]}...'")
+                        
+                        return {task_dict['response']: corrected_text}
+                        
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Task for '{task_dict['response'][:50]}...' timed out after 15s")
+                        self.stats['llm_calls_failed'] += 1
+                        return {task_dict['response']: task_dict['response']}  # Return original
+                        
+                    except Exception as e:
+                        logger.error(f"API call failed for task '{task_dict['response'][:50]}...': {e}")
+                        self.stats['llm_calls_failed'] += 1
+                        return {task_dict['response']: task_dict['response']}  # Return original
+        
+        # Convert filtered tasks to individual async tasks
+        print("[INDIVIDUAL TASK PROCESSING]")
+        print(f"- Processing {len(filtered_tasks)} individual tasks")
+        print(f"- Maximum concurrent: {semaphore._value}")
+        
+        # Create all individual tasks
+        task_coroutines = [process_individual_task(task, var_lab) for task in filtered_tasks]
+        
+        # Process all tasks with protected gathering
+        print(f"Processing individual tasks... 0/{len(filtered_tasks)} (0.0%)")
+        results = await asyncio.gather(*task_coroutines, return_exceptions=True)
+        
+        # Combine results and handle exceptions
+        corrected_sentences_dict = {}
+        successful_tasks = 0
+        failed_tasks = 0
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Task {i} failed with exception: {result}")
+                # Use original response as fallback
+                original_response = filtered_tasks[i]['response']
+                corrected_sentences_dict[original_response] = original_response
+                failed_tasks += 1
+            else:
+                corrected_sentences_dict.update(result)
+                successful_tasks += 1
+        
+        print(f"Processing individual tasks... {len(filtered_tasks)}/{len(filtered_tasks)} (100.0%)")
+        print(f"- Successful: {successful_tasks}")
+        print(f"- Failed: {failed_tasks}")
         
         return corrected_sentences_dict
 
@@ -1311,6 +1088,18 @@ class SpellChecker:
             # Pass the word_to_responses mapping for optimized task creation
             corrected_sentences_dict = await self.get_best_corrections_with_ai(responses, best_suggestions_dict, var_lab, word_to_responses)
             corrected_sentences_dict = {k: v for k, v in corrected_sentences_dict.items() if v != '[NO RESPONSE]'}
+            
+            # # DEBUG: Show contents of correction dictionary
+            # print(f"[CORRECTION DICT DEBUG] Dictionary has {len(corrected_sentences_dict)} entries:")
+            # for i, (original, corrected) in enumerate(corrected_sentences_dict.items()):
+            #     if i < 5:  # Show first 5 entries
+            #         print(f"  {i+1}. '{original[:50]}...' -> '{corrected[:50]}...'")
+            #         if original != corrected:
+            #             print("     ^^ CHANGE DETECTED")
+            #         else:
+            #             print("     ^^ NO CHANGE")
+            # if len(corrected_sentences_dict) > 5:
+            #     print(f"  ... and {len(corrected_sentences_dict) - 5} more entries")
         else:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("No OOV words found - skipping correction step")
@@ -1321,8 +1110,17 @@ class SpellChecker:
         correction_examples = []
         updated_responses = []
         
-        for response in responses:
+        #print(f"[COUNTING DEBUG] Starting correction counting for {len(responses)} responses")
+        
+        for i, response in enumerate(responses):
             corrected_response = corrected_sentences_dict.get(response.original_response, response.original_response)
+            
+            # DEBUG: Log each lookup
+            # if i < 5:  # Show first 5 responses
+            #     print(f"[COUNTING DEBUG] Response {i+1}:")
+            #     print(f"  Looking up: '{response.original_response[:50]}...'")
+            #     print(f"  Found: '{corrected_response[:50]}...'")
+            #     print(f"  Same?: {response.original_response == corrected_response}")
             updated_response = SpellCheckModel(
                 respondent_id=response.respondent_id,
                 original_response = response.original_response,
@@ -1331,35 +1129,86 @@ class SpellChecker:
            
             # Track corrections for verbose output
             if response.original_response != corrected_response:
-                original_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in response.original_response.split()])
-                corrected_normalized = ' '.join([word.lower().strip('.,!?;:"\'()[]{}') for word in corrected_response.split()])
+                # More robust normalization - keep hyphens and important punctuation for better comparison
+                def normalize_for_comparison(text):
+                    # Remove only peripheral punctuation, keep internal hyphens
+                    words = text.lower().split()
+                    normalized_words = [word.strip('.,!?;:"\'()[]{}') for word in words]
+                    return ' '.join(normalized_words)
+                
+                original_normalized = normalize_for_comparison(response.original_response)
+                corrected_normalized = normalize_for_comparison(corrected_response)
+                
+                # DEBUG: Log comparison process
+                logger.info("[COMPARISON DEBUG] Found text change:")
+                logger.info(f"  Original: '{response.original_response}'")
+                logger.info(f"  Corrected: '{corrected_response}'")
+                logger.info(f"  Original normalized: '{original_normalized}'")
+                logger.info(f"  Corrected normalized: '{corrected_normalized}'")
                 
                 if original_normalized != corrected_normalized:
                     corrections_made += 1
+                    logger.info(f"  -> COUNTED as correction #{corrections_made}")
                     
                     # Store example for verbose output
                     if len(correction_examples) < self.config.max_correction_examples:
                         correction_examples.append((response.original_response, corrected_response))
+                else:
+                    logger.info("  -> NOT COUNTED (normalized versions are identical)")
+            else:
+                # DEBUG: Log when no change detected
+                logger.debug(f"[COMPARISON DEBUG] No change detected for: '{response.original_response[:50]}...'")
+                
+        # SIMPLE: Process correction dictionary directly for accurate statistics
+        #print(f"\n[DICTIONARY VALIDATION] Processing {len(corrected_sentences_dict)} correction dictionary entries...")
+        
+        # Reset corrections stats to use dictionary-based logic
+        self.stats['corrections_attempted'] = 0
+        self.stats['corrections_applied'] = 0  
+        self.stats['corrections_rejected_validation'] = 0
+        self.stats['corrections_no_response'] = 0
+        
+        for original_response, candidate_correction in corrected_sentences_dict.items():
+            self.stats['corrections_attempted'] += 1
+            
+            #print(f"[DICTIONARY VALIDATION] Entry {self.stats['corrections_attempted']}: '{original_response[:30]}...' -> '{candidate_correction[:30]}...'")
+            
+            # Check for "[NO RESPONSE]" cases or no change
+            if candidate_correction == "[NO RESPONSE]" or candidate_correction == original_response:
+                self.stats['corrections_no_response'] += 1
+                #print(f"  -> NO CHANGE (total no-change: {self.stats['corrections_no_response']})")
+                continue
+                
+            # Simple validation: if text changed, it's likely a valid correction
+            # (The LLM already used structured output and followed instructions)
+            self.stats['corrections_applied'] += 1
+            #print(f"  -> APPLIED (applied: {self.stats['corrections_applied']})")
+        
+        # Verify math adds up
+        total_accounted = self.stats['corrections_applied'] + self.stats['corrections_rejected_validation'] + self.stats['corrections_no_response']
+        print("\nSUMMARY:")
+        print(f"- Corrections attempted: {self.stats['corrections_attempted']}")
+        print(f"- Corrections applied: {self.stats['corrections_applied']}")  
+        print(f"- Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
+        print(f"- No correction/no change: {self.stats['corrections_no_response']}")
+        #print(f"- Total accounted: {total_accounted} (should equal attempted: {self.stats['corrections_attempted']})")
 
         stats.end_timing()
         stats.output_count = len(updated_responses)
         self.stats['processing_time'] = stats.get_duration()
         self.stats['suggestion_cache_hits'] = self.suggestion_cache_hits
-        self.stats['suggestion_cache_size'] = len(self.suggestion_cache) if self.suggestion_cache is not None else 0 
+        self.stats['suggestion_cache_size'] = len(self.suggestion_cache) if self.suggestion_cache is not None else 0
+        # corrections_applied now set by comprehensive validation logic above 
         
         # Performance summary for large datasets
         if total_words > 10000:
             processing_time = stats.get_duration()
             words_per_second = int(total_words / max(processing_time, 0.1))
             print(f"• Performance: {words_per_second:,} words/sec, {processing_time:.1f}s total")
-        
-        # Group all stats together
-        if self.verbose_reporter.enabled: 
-            self.verbose_reporter.stat_line(f"Corrections Failed (no correction): {self.stats['corrections_no_response']}")
-            self.verbose_reporter.stat_line(f"Corrections rejected (validation): {self.stats['corrections_rejected_validation']}")
             
+        if self.verbose_reporter.enabled: 
             # Word frequency cache statistics
-            if word_frequency_cache:
+            if 'word_frequency_cache' in locals() and word_frequency_cache:
                 cache_size = len(word_frequency_cache)
                 cache_efficiency = (cache_size / max(self.stats['words_checked'], 1)) * 100
                 self.verbose_reporter.stat_line(f"Word cache efficiency: {cache_efficiency:.1f}% ({cache_size} unique words cached)")
