@@ -134,11 +134,194 @@ class HunspellSession:
             
         return result
 
+    def check_words_batch(self, words: List[str]) -> List[str]:
+        """Check multiple words in a single efficient batch operation"""
+        if not words:
+            return []
+        
+        # Send all words at once
+        for word in words:
+            self.process.stdin.write(word + '\n')
+        self.process.stdin.flush()  # Single flush for all words
+        
+        # Read all results at once
+        results = []
+        for _ in words:
+            result = self.process.stdout.readline().strip()
+            # Handle multi-line results
+            while True:
+                line = self.process.stdout.readline()
+                if not line or line.strip() == '':
+                    break
+                result += "\n" + line.strip()
+            results.append(result)
+        
+        return results
+
     def close(self):
         self.process.stdin.close()
         self.process.stdout.close()
         self.process.stderr.close()
         self.process.terminate()
+
+
+class HunspellPool:
+    """Pool of persistent Hunspell processes to avoid subprocess creation overhead"""
+    
+    def __init__(self, hunspell_path: str, dict_path: str, pool_size: int = 20):
+        self.hunspell_path = hunspell_path
+        self.dict_path = dict_path
+        self.pool_size = pool_size
+        self.sessions = []
+        self.session_locks = []
+        self.closed = False
+        
+        # Initialize the pool with persistent Hunspell sessions
+        print(f"Initializing HunspellPool with {pool_size} persistent processes...")
+        start_time = time.time()
+        for i in range(pool_size):
+            session = HunspellSession(hunspell_path, dict_path)
+            self.sessions.append(session)
+            self.session_locks.append(asyncio.Lock())
+        
+        init_time = time.time() - start_time
+        print(f"HunspellPool initialized: {pool_size} processes ready in {init_time:.1f}s")
+    
+    async def check_word(self, word: str) -> str:
+        """Check a single word using an available session from the pool"""
+        if self.closed:
+            raise RuntimeError("HunspellPool has been closed")
+        
+        # Try each session until we find an available one
+        for i in range(self.pool_size):
+            if self.session_locks[i].locked():
+                continue
+                
+            async with self.session_locks[i]:
+                try:
+                    # Run the check in executor to avoid blocking
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(None, self.sessions[i].check_word, word)
+                    return result
+                except Exception as e:
+                    logger.error(f"Error checking word '{word}' with session {i}: {e}")
+                    # Recreate the session if it failed
+                    self.sessions[i].close()
+                    self.sessions[i] = HunspellSession(self.hunspell_path, self.dict_path)
+                    raise
+        
+        # If all sessions are busy, wait for the first available
+        async with self.session_locks[0]:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self.sessions[0].check_word, word)
+    
+    async def check_words_batch(self, words: List[str], batch_size: int = 100) -> List[str]:
+        """Check multiple words efficiently using ALL available sessions in parallel"""
+        if self.closed:
+            raise RuntimeError("HunspellPool has been closed")
+        
+        if not words:
+            return []
+        
+        # AGGRESSIVE OPTIMIZATION: Use all available processes for maximum parallelism
+        # Calculate optimal batch size to utilize all processes
+        optimal_batch_size = max(batch_size, len(words) // self.pool_size + 1)
+        
+        # Split words into batches for parallel processing across ALL sessions
+        batches = []
+        for i in range(0, len(words), optimal_batch_size):
+            batch = words[i:i + optimal_batch_size]
+            batches.append(batch)
+        
+        # Limit batches to available sessions for optimal distribution
+        if len(batches) > self.pool_size:
+            # Merge smaller batches to fully utilize all processes
+            redistributed_batches = []
+            batch_per_process = len(batches) // self.pool_size
+            remainder = len(batches) % self.pool_size
+            
+            batch_idx = 0
+            for process_idx in range(self.pool_size):
+                process_batches = batch_per_process + (1 if process_idx < remainder else 0)
+                merged_batch = []
+                for _ in range(process_batches):
+                    if batch_idx < len(batches):
+                        merged_batch.extend(batches[batch_idx])
+                        batch_idx += 1
+                redistributed_batches.append(merged_batch)
+            batches = redistributed_batches
+        
+        print(f"    Distributing {len(words):,} words across {len(batches)} parallel batches ({self.pool_size} processes)")
+        
+        async def process_batch_parallel(batch: List[str], session_idx: int) -> List[str]:
+            """Process a batch using a specific session with error recovery"""
+            if not batch:
+                return []
+                
+            async with self.session_locks[session_idx]:
+                try:
+                    loop = asyncio.get_running_loop()
+                    start_time = time.time()
+                    result = await loop.run_in_executor(None, self.sessions[session_idx].check_words_batch, batch)
+                    batch_time = time.time() - start_time
+                    batch_rate = len(batch) / max(batch_time, 0.001)
+                    
+                    # Optional: Progress logging for very large batches
+                    if len(batch) > 1000:
+                        print(f"      Session {session_idx}: processed {len(batch):,} words in {batch_time:.1f}s ({batch_rate:.0f} words/sec)")
+                    
+                    return result
+                except Exception as e:
+                    logger.error(f"Error processing batch of {len(batch)} words with session {session_idx}: {e}")
+                    # Recreate the session if it failed
+                    try:
+                        self.sessions[session_idx].close()
+                    except:
+                        pass
+                    self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
+                    raise
+        
+        # Process ALL batches concurrently using ALL available sessions
+        start_time = time.time()
+        tasks = []
+        for i, batch in enumerate(batches):
+            session_idx = i % self.pool_size  # Round-robin across sessions
+            tasks.append(process_batch_parallel(batch, session_idx))
+        
+        # Execute all batches in parallel
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect results and handle exceptions
+        results = []
+        failed_batches = 0
+        for i, batch_result in enumerate(batch_results):
+            if isinstance(batch_result, Exception):
+                logger.error(f"Batch {i} failed: {batch_result}")
+                # Return empty results for failed batch words
+                results.extend([""] * len(batches[i]))
+                failed_batches += 1
+            else:
+                results.extend(batch_result)
+        
+        total_time = time.time() - start_time
+        total_rate = len(words) / max(total_time, 0.001)
+        
+        print(f"    Parallel processing completed: {len(words):,} words in {total_time:.1f}s ({total_rate:.0f} words/sec)")
+        if failed_batches > 0:
+            print(f"    Warning: {failed_batches} batches failed and returned empty results")
+        
+        return results
+    
+    def close(self):
+        """Close all Hunspell sessions in the pool"""
+        if not self.closed:
+            self.closed = True
+            for session in self.sessions:
+                try:
+                    session.close()
+                except Exception as e:
+                    logger.error(f"Error closing Hunspell session: {e}")
+            logger.info("HunspellPool closed")
 
 # === MAIN UTIL  ========================================================================================================
 class SpellChecker:
@@ -181,6 +364,9 @@ class SpellChecker:
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("OK Hunspell installation verified")
         
+        # Initialize Hunspell pool for performance
+        self.hunspell_pool = None
+        
         # Stats tracking
         self.stats = {
             'words_checked': 0,
@@ -201,6 +387,20 @@ class SpellChecker:
             'suggestion_cache_hits': 0,
             'suggestion_cache_size': 0
         }
+    
+    def _init_hunspell_pool(self):
+        """Initialize HunspellPool for efficient processing"""
+        if self.hunspell_pool is None:
+            pool_size = getattr(self.config, 'hunspell_pool_size', 20)
+            self.hunspell_pool = HunspellPool(self.hunspell_path, self.dict_path, pool_size)
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Initialized HunspellPool with {pool_size} persistent processes")
+    
+    def _close_hunspell_pool(self):
+        """Close the HunspellPool to free resources"""
+        if self.hunspell_pool is not None:
+            self.hunspell_pool.close()
+            self.hunspell_pool = None
     
     @staticmethod 
     def get_nlp(spell_check_enabled: bool = True):  
@@ -254,20 +454,11 @@ class SpellChecker:
         return dp[m][n]
     
     async def run_hunspell_word_async(self, word: str) -> List[str]:
-        """Simple subprocess approach for speed"""
-        def run_hunspell():
-            process = subprocess.Popen(
-                [HUNSPELL_PATH, "-a", "-d", self.dict_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True, encoding="utf-8"
-            )
-            output, _ = process.communicate(input=f"{word}\n")
-            return output
-
-        loop = asyncio.get_running_loop()
-        output = await loop.run_in_executor(None, run_hunspell)
+        """Efficient Hunspell lookup using persistent process pool"""
+        if self.hunspell_pool is None:
+            self._init_hunspell_pool()
+        
+        output = await self.hunspell_pool.check_word(word)
         lines = [line for line in output.splitlines() if line and not line.startswith("@")]
 
         if lines and lines[0].startswith("&"):
@@ -278,6 +469,36 @@ class SpellChecker:
         if lines and lines[0].startswith("*"):
             return [word]  # Word is correct
         return []
+    
+    async def run_hunspell_batch_async(self, words: List[str]) -> List[List[str]]:
+        """Efficient batch Hunspell lookup using persistent process pool"""
+        if self.hunspell_pool is None:
+            self._init_hunspell_pool()
+        
+        outputs = await self.hunspell_pool.check_words_batch(words)
+        results = []
+        
+        for output in outputs:
+            lines = [line for line in output.splitlines() if line and not line.startswith("@")]
+            
+            if lines and lines[0].startswith("&"):
+                match = re.search(r": (.+)", lines[0])
+                if match:
+                    suggestions = match.group(1).split(", ")
+                    results.append(suggestions)
+                else:
+                    results.append([])
+            elif lines and lines[0].startswith("*"):
+                # Word is correct - get the original word from the first few characters
+                word_match = re.search(r'^\*\s+(.+)', lines[0])
+                if word_match:
+                    results.append([word_match.group(1)])
+                else:
+                    results.append([])
+            else:
+                results.append([])
+        
+        return results
     
     async def verify_correction_with_dictionary(self, word: str) -> bool:
         """Verify LLM corrections against dictionary"""
@@ -392,13 +613,16 @@ class SpellChecker:
             if self.verbose_reporter.enabled and cached_suggestions:
                 self.verbose_reporter.stat_line(f"Found {len(cached_suggestions)} words in cache, processing {len(uncached_words)} new words")
         
-        # Process uncached words
-        if len(unique_oov_words) <= self.config.max_words_per_chunk:
-            # Small dataset - use original method
+        # Process uncached words with optimized strategy
+        if len(unique_oov_words) <= 100:
+            # Very small dataset - use original method
             new_suggestions = await self._process_suggestions_single_batch(unique_oov_words)
-        else:
-            # Large dataset - use aggressive parallel processing
+        elif len(unique_oov_words) <= self.config.ultra_batch_threshold:
+            # Medium dataset - use parallel chunks 
             new_suggestions = await self._process_suggestions_parallel_chunks(unique_oov_words)
+        else:
+            # Large dataset - use ultra-optimized batch processing
+            new_suggestions = await self._process_suggestions_ultra_optimized(unique_oov_words)
         
         # Update cache if enabled
         if self.suggestion_cache is not None:
@@ -409,6 +633,125 @@ class SpellChecker:
                 new_suggestions.update(cached_suggestions)
         
         return new_suggestions
+    
+    async def _process_suggestions_ultra_optimized(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
+        """Ultra-optimized batch suggestion generation eliminating subprocess overhead"""
+        
+        print("[ULTRA-OPTIMIZED SUGGESTION GENERATION]")
+        sorted_oov_words = sorted(unique_oov_words)
+        
+        # Initialize HunspellPool for batch processing
+        if self.hunspell_pool is None:
+            self._init_hunspell_pool()
+        
+        start_time = time.time()
+        
+        # STEP 1: Collect ALL words that need Hunspell checking (main words + all possible splits)
+        all_hunspell_candidates = []  # (original_word, candidate_word, candidate_type)
+        word_to_candidates = defaultdict(list)
+        
+        print(f"- Preparing candidates for {len(sorted_oov_words)} OOV words...")
+        
+        for word in sorted_oov_words:
+            # Add the main word
+            all_hunspell_candidates.append((word, word, 'main'))
+            word_to_candidates[word].append((word, 'main'))
+            
+            # Generate split candidates
+            if len(word) > 6:  # Only split longer words
+                # Left splits: word[:i] for i in range(4, len(word)-2)
+                for i in range(4, min(len(word)-2, len(word))):
+                    left_part = word[:i]
+                    right_part = word[i:]
+                    if len(left_part) >= 3 and len(right_part) >= 3:
+                        all_hunspell_candidates.append((word, left_part, 'left_split'))
+                        all_hunspell_candidates.append((word, right_part, 'right_split'))
+                        word_to_candidates[word].extend([
+                            (left_part, 'left_split'), 
+                            (right_part, 'right_split')
+                        ])
+        
+        print(f"- Generated {len(all_hunspell_candidates):,} candidates for batch processing")
+        
+        # STEP 2: Batch process ALL candidates in one massive operation
+        candidate_words = [item[1] for item in all_hunspell_candidates]
+        
+        print(f"- Processing all candidates using HunspellPool...")
+        batch_outputs = await self.hunspell_pool.check_words_batch(candidate_words, batch_size=self.config.ultra_batch_size)
+        
+        processing_time = time.time() - start_time
+        print(f"- Completed Hunspell batch processing: {len(candidate_words):,} candidates in {processing_time:.1f}s")
+        
+        # STEP 3: Parse results and organize by original word
+        candidate_results = {}
+        for i, (original_word, candidate_word, candidate_type) in enumerate(all_hunspell_candidates):
+            output = batch_outputs[i]
+            
+            # Parse Hunspell output
+            lines = [line for line in output.splitlines() if line and not line.startswith("@")]
+            suggestions = []
+            
+            if lines and lines[0].startswith("&"):
+                match = re.search(r": (.+)", lines[0])
+                if match:
+                    suggestions = match.group(1).split(", ")
+            elif lines and lines[0].startswith("*"):
+                suggestions = [candidate_word]  # Word is correct
+            
+            candidate_results[(original_word, candidate_word, candidate_type)] = suggestions
+        
+        # STEP 4: Construct final suggestions for each word
+        best_suggestions = defaultdict(list)
+        
+        for word in sorted_oov_words:
+            word_suggestions = []
+            
+            # Get main word suggestions
+            main_suggestions = candidate_results.get((word, word, 'main'), [])
+            if main_suggestions:
+                # Pick best suggestion using Levenshtein distance
+                best_main = min(main_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
+                word_suggestions.append(best_main)
+            
+            # Get split suggestions
+            split_candidates = []
+            for candidate_word, candidate_type in word_to_candidates[word]:
+                if candidate_type in ['left_split', 'right_split']:
+                    split_suggestions = candidate_results.get((word, candidate_word, candidate_type), [])
+                    if split_suggestions and split_suggestions != [candidate_word]:  # Has corrections
+                        best_split = min(split_suggestions, key=lambda s: self.cached_levenshtein_distance(candidate_word, s))
+                        split_candidates.append((candidate_word, best_split, candidate_type))
+            
+            # Try to construct meaningful split suggestions
+            left_splits = [(orig, corrected) for orig, corrected, type_ in split_candidates if type_ == 'left_split']
+            right_splits = [(orig, corrected) for orig, corrected, type_ in split_candidates if type_ == 'right_split']
+            
+            # Find best split combination
+            for left_orig, left_corrected in left_splits[:3]:  # Limit to avoid explosion
+                for right_orig, right_corrected in right_splits[:3]:
+                    if left_orig + right_orig == word:  # Valid split
+                        split_suggestion = f"{left_corrected} {right_corrected}"
+                        word_suggestions.append(split_suggestion)
+                        break  # Take first valid split
+                if word_suggestions and len(word_suggestions) > 1:  # Already have main + split
+                    break
+            
+            # Store results (convert to tuple format expected by caller)
+            if word_suggestions:
+                if len(word_suggestions) == 1:
+                    best_suggestions[word].append((word_suggestions[0], None))
+                else:
+                    best_suggestions[word].append((word_suggestions[0], word_suggestions[1]))
+            else:
+                best_suggestions[word].append((None, None))
+        
+        total_time = time.time() - start_time
+        rate = len(unique_oov_words) / max(total_time, 0.1)
+        
+        print(f"- Completed ultra-optimized suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
+        print(f"- Performance improvement: Eliminated thousands of subprocess calls using batch processing")
+        
+        return best_suggestions
     
     async def _process_suggestions_single_batch(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
         """Original single-batch processing for small datasets"""
@@ -1043,68 +1386,55 @@ Suggested corrections: {task_dict['suggestions']}
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
         if all_words_to_check:
-            batch_size = self.config.hunspell_batch_size  # Configurable batch size
-            total_batches = (len(all_words_to_check) + batch_size - 1) // batch_size
+            # OPTIMIZED: Use HunspellPool with much larger batches for massive speed improvement
+            # Use 10x larger batches to minimize process overhead
+            batch_size = self.config.hunspell_batch_size * 10  # 10,000 words per batch instead of 1,000
             
-            print(f"  • Processing {len(all_words_to_check):,} words in {total_batches} Hunspell batches...")
+            print(f"  • Processing {len(all_words_to_check):,} words using HunspellPool with large batches...")
             
-            # Use multiple concurrent Hunspell sessions for parallel processing
-            max_concurrent_sessions = min(self.config.hunspell_concurrent_sessions, total_batches)  # Configurable concurrent sessions
-            semaphore = asyncio.Semaphore(max_concurrent_sessions)
+            # Initialize HunspellPool for efficient processing
+            if self.hunspell_pool is None:
+                self._init_hunspell_pool()
             
-            async def process_hunspell_batch(batch_words, batch_index):
-                """Process a batch of words with dedicated Hunspell session"""
-                async with semaphore:
-                    session = HunspellSession(self.hunspell_path, self.dict_path)
-                    batch_oov_words = []
-                    
-                    try:
-                        for word_normalized, word_original, response_idx in batch_words:
-                            self.stats['words_checked'] += 1
-                            output = session.check_word(word_original)
-                            is_oov = output and output.startswith(('&', '#'))
-                            
-                            # Cache the result
-                            if word_frequency_cache is not None:
-                                word_frequency_cache[word_normalized] = is_oov
-                            
-                            if is_oov:
-                                batch_oov_words.append((word_original, response_idx))
-                                self.stats['oov_words_found'] += 1
-                        
-                        # Progress reporting
-                        progress = (batch_index + 1) / total_batches * 100
-                        print(f"    Hunspell batch {batch_index + 1}/{total_batches} ({progress:.1f}%) - found {len(batch_oov_words)} OOV words")
-                        
-                        return batch_oov_words
-                        
-                    finally:
-                        session.close()
-            
-            # Create batches and process concurrently
-            batches = []
-            for i in range(0, len(all_words_to_check), batch_size):
-                batch = all_words_to_check[i:i + batch_size]
-                batches.append(batch)
-            
-            # Process all batches concurrently
             start_time = time.time()
-            batch_tasks = [process_hunspell_batch(batch, idx) for idx, batch in enumerate(batches)]
-            batch_results = await asyncio.gather(*batch_tasks)
             
-            # Combine results and track response flagging
+            # Extract just the original words for batch processing
+            words_only = [item[1] for item in all_words_to_check]  # word_original
+            
+            # Process all words in efficient batches using HunspellPool
+            batch_outputs = await self.hunspell_pool.check_words_batch(words_only, batch_size)
+            
+            # Process results and update cache
             response_flagged = set()
-            for batch_result in batch_results:
-                for word_original, response_idx in batch_result:
+            for i, (word_normalized, word_original, response_idx) in enumerate(all_words_to_check):
+                self.stats['words_checked'] += 1
+                output = batch_outputs[i]
+                is_oov = output and output.startswith(('&', '#'))
+                
+                # Cache the result
+                if word_frequency_cache is not None:
+                    word_frequency_cache[word_normalized] = is_oov
+                
+                if is_oov:
                     oov_words.append(word_original)
                     word_to_responses[word_original].append(response_idx)
                     response_flagged.add(response_idx)
+                    self.stats['oov_words_found'] += 1
+                
+                # Progress reporting for very large datasets
+                if i > 0 and i % 20000 == 0:
+                    progress = (i / len(all_words_to_check)) * 100
+                    elapsed = time.time() - start_time
+                    rate = i / max(elapsed, 0.1)
+                    eta = (len(all_words_to_check) - i) / max(rate, 0.1)
+                    print(f"    OOV analysis progress: {i:,}/{len(all_words_to_check):,} ({progress:.1f}%) [{rate:.0f} words/sec, ETA: {eta:.1f}s]")
             
             docs_with_oov = len(response_flagged)
             processing_time = time.time() - start_time
             words_per_second = len(all_words_to_check) / max(processing_time, 0.1)
             
             print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
+            print(f"    Performance improvement: HunspellPool eliminated subprocess creation overhead")
             
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
@@ -1274,6 +1604,9 @@ Suggested corrections: {task_dict['suggestions']}
         self.correction_examples = correction_examples if correction_examples else []
 
         processed_responses = [models.PreprocessedModel(respondent_id=item.respondent_id, response=item.corrected_response) for item in updated_responses]
+        
+        # Clean up resources
+        self._close_hunspell_pool()
         
         return processed_responses
                   

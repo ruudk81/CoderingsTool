@@ -441,6 +441,11 @@ class SpellCheckConfig:
     enable_suggestion_pre_validation: bool = True  # Pre-validate suggestions before LLM calls
     disable_pre_validation_above_oov_words: int = 2000  # Auto-disable pre-validation for very large datasets
     enable_suggestion_caching: bool = True  # Cache validated suggestions
+    
+    # Performance optimization parameters
+    hunspell_pool_size: int = 20  # Number of persistent Hunspell processes in pool
+    ultra_batch_threshold: int = 1000  # Use ultra-optimized batch processing above this many OOV words
+    ultra_batch_size: int = 10000  # Batch size for ultra-optimized processing (increased for better performance)
 
 # =============================================================================
 # SEGMENT CONFIGURATION
