@@ -29,7 +29,8 @@
       "Bash(Get-Date -Format \"yyyyMMdd_HHmmss\")",
       "Bash(awk:*)",
       "Bash(del test_step8b.py)",
-      "Bash($timestamp = Get-Date -Format \"yyyyMMdd_HHmmss\")"
+      "Bash($timestamp = Get-Date -Format \"yyyyMMdd_HHmmss\")",
+      "Bash(powershell:*)"
     ],
     "deny": []
   }
