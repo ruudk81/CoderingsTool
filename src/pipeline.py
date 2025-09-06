@@ -128,15 +128,16 @@ else:
 # === STEP 2 ========================================================================================================
 """preprocess data"""
 
+# debug
 # raw_text_list0 = raw_text_list
 # raw_text_list = raw_text_list[:100]
-#raw_text_list = raw_text_list0
+# raw_text_list = raw_text_list0
 
 from utils import textNormalizer, spellChecker, textFinalizer
 from utils import verboseReporter
 from utils import promptPrinter
 
-FORCE = True
+FORCE = False
 VERBOSE = True
 PROMPT_PRINTER = False
 
@@ -294,7 +295,7 @@ else:
 """quality filter"""
 from utils import qualityFilter
 
-FORCE = False
+FORCE = True
 VERBOSE = True
 PROMPT_PRINTER = False
 

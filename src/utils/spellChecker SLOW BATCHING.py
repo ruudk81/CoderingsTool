@@ -76,7 +76,8 @@ class TokenBucket:
             if self.available < tokens_needed:
                 deficit = tokens_needed - self.available
                 wait_seconds = deficit * 60 / self.tpm
-                logger.debug(f"Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens")
+                if wait_seconds > 1.0:  # Only log significant waits
+                    print(f"[RATE LIMIT] Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens (deficit: {deficit:.0f})")
                 await asyncio.sleep(wait_seconds)
                 # Recalculate after sleep
                 now = time.monotonic()
@@ -586,8 +587,16 @@ class SpellChecker:
             word_to_suggestion_str = {}
             validation_cache = {}  # Cache validation results
             
+            # Smart pre-validation: automatically disable for very large datasets
+            enable_pre_validation = self.config.enable_suggestion_pre_validation
+            if enable_pre_validation and len(oov_words) > self.config.disable_pre_validation_above_oov_words:
+                print(f"⚠️  Large dataset detected: {len(oov_words)} OOV words > {self.config.disable_pre_validation_above_oov_words} threshold")
+                print("⚠️  Automatically disabling pre-validation to avoid excessive wait times")
+                print("⚠️  (You can adjust 'disable_pre_validation_above_oov_words' in config to change this threshold)")
+                enable_pre_validation = False
+            
             # Batch pre-validation if enabled
-            if self.config.enable_suggestion_pre_validation:
+            if enable_pre_validation:
                 print(f"  • Pre-validating suggestions for {len(oov_words)} OOV words...")
                 all_suggestions_to_validate = set()
                 
@@ -601,11 +610,39 @@ class SpellChecker:
                             else:
                                 all_suggestions_to_validate.add(sug)
                 
-                # Validate all suggestions in one batch
+                # Validate all suggestions in one batch with concurrency control
                 if all_suggestions_to_validate:
-                    validation_tasks = [self.verify_correction_with_dictionary(sug.strip('.,!?;:"\'()[]{}')) 
+                    print(f"    Validating {len(all_suggestions_to_validate)} unique suggestions against dictionary...")
+                    
+                    # Limit concurrent validations to prevent system overload
+                    validation_semaphore = asyncio.Semaphore(100)  # Max 100 concurrent validations
+                    completed_validations = 0
+                    start_time = time.time()
+                    
+                    async def validate_with_semaphore(suggestion):
+                        nonlocal completed_validations
+                        async with validation_semaphore:
+                            result = await self.verify_correction_with_dictionary(suggestion.strip('.,!?;:"\'()[]{}'))
+                            completed_validations += 1
+                            
+                            # Show progress every 10% or every 500 validations
+                            if completed_validations % max(1, len(all_suggestions_to_validate) // 10) == 0 or completed_validations % 500 == 0:
+                                progress_percent = (completed_validations / len(all_suggestions_to_validate)) * 100
+                                elapsed = time.time() - start_time
+                                rate = completed_validations / max(elapsed, 0.1)
+                                remaining = len(all_suggestions_to_validate) - completed_validations
+                                eta = remaining / max(rate, 0.1)
+                                print(f"    Validation progress: {completed_validations}/{len(all_suggestions_to_validate)} ({progress_percent:.1f}%) [{rate:.1f} validations/sec, ETA: {eta:.1f}s]")
+                            
+                            return result
+                    
+                    validation_tasks = [validate_with_semaphore(sug) 
                                        for sug in all_suggestions_to_validate if sug and sug != "OOV"]
                     validation_results = await asyncio.gather(*validation_tasks)
+                    
+                    validation_time = time.time() - start_time
+                    validation_rate = len(all_suggestions_to_validate) / max(validation_time, 0.1)
+                    print(f"    Completed validation: {len(all_suggestions_to_validate)} suggestions in {validation_time:.1f}s ({validation_rate:.1f} validations/sec)")
                     
                     # Build validation cache
                     for sug, is_valid in zip(all_suggestions_to_validate, validation_results):
@@ -621,7 +658,7 @@ class SpellChecker:
                             for s in sug:
                                 if s and s != "OOV":
                                     # Use cached validation result if available
-                                    if self.config.enable_suggestion_pre_validation:
+                                    if enable_pre_validation:
                                         if validation_cache.get(s, False):
                                             cleaned_suggestions.append(s)
                                     else:
@@ -629,7 +666,7 @@ class SpellChecker:
                         else:
                             if sug and sug != "OOV":
                                 # Use cached validation result if available
-                                if self.config.enable_suggestion_pre_validation:
+                                if enable_pre_validation:
                                     if validation_cache.get(sug, False):
                                         cleaned_suggestions.append(sug)
                                 else:
@@ -669,7 +706,7 @@ class SpellChecker:
                             all_suggestions.append("OOV")  # No valid suggestions
                     
                     # Only create task if we have at least one valid suggestion
-                    if has_valid_suggestions or not self.config.enable_suggestion_pre_validation:
+                    if has_valid_suggestions or not enable_pre_validation:
                         tasks.append({
                             "respondent_id": item['respondent_id'],
                             "response": response,
@@ -719,7 +756,7 @@ class SpellChecker:
                                     cleaned_suggestions.append(sug)
                             
                             # Pre-validate suggestions if enabled
-                            if self.config.enable_suggestion_pre_validation and cleaned_suggestions:
+                            if enable_pre_validation and cleaned_suggestions:
                                 validated_suggestions = await self.pre_validate_suggestions(cleaned_suggestions)
                                 if validated_suggestions:
                                     has_valid_suggestions = True
@@ -733,7 +770,7 @@ class SpellChecker:
                                 all_suggestions.append(", ".join(cleaned_suggestions))
                         
                         # Only create task if we have at least one valid suggestion
-                        if has_valid_suggestions or not self.config.enable_suggestion_pre_validation:
+                        if has_valid_suggestions or not enable_pre_validation:
                             tasks.append({
                                 "respondent_id": item['respondent_id'],
                                 "response": response,
@@ -908,13 +945,18 @@ Suggested corrections: {task_dict['suggestions']}
         print("[INDIVIDUAL TASK PROCESSING]")
         print(f"- Processing {len(filtered_tasks)} individual tasks")
         print(f"- Maximum concurrent: {semaphore._value}")
+        print(f"- Rate limiting: RPM={limits.requests_per_minute * HEADROOM:,.0f}, TPM={limits.tokens_per_minute * HEADROOM:,.0f}")
         
         # Create all individual tasks
         task_coroutines = [process_individual_task(task, var_lab) for task in filtered_tasks]
         
         # Process all tasks with protected gathering
         print(f"Processing individual tasks... 0/{len(filtered_tasks)} (0.0%)")
+        print("  (Note: Initial delay may occur due to rate limiting initialization)")
+        
+        processing_start_time = time.time()
         results = await asyncio.gather(*task_coroutines, return_exceptions=True)
+        total_processing_time = time.time() - processing_start_time
         
         # Combine results and handle exceptions
         corrected_sentences_dict = {}
@@ -935,6 +977,15 @@ Suggested corrections: {task_dict['suggestions']}
         print(f"Processing individual tasks... {len(filtered_tasks)}/{len(filtered_tasks)} (100.0%)")
         print(f"- Successful: {successful_tasks}")
         print(f"- Failed: {failed_tasks}")
+        
+        # Rate limiting performance analysis
+        actual_rate = len(filtered_tasks) / max(total_processing_time, 0.1)
+        theoretical_max_rate = min(limits.requests_per_minute * HEADROOM / 60, 100)  # Limited by semaphore too
+        efficiency = (actual_rate / theoretical_max_rate) * 100 if theoretical_max_rate > 0 else 100
+        print(f"- Processing rate: {actual_rate:.1f} tasks/sec (efficiency: {efficiency:.1f}% of theoretical max)")
+        
+        if efficiency < 50:
+            print("⚠️  Low efficiency detected - likely due to rate limiting or network latency")
         
         return corrected_sentences_dict
 
@@ -992,68 +1043,117 @@ Suggested corrections: {task_dict['suggestions']}
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
         if all_words_to_check:
-            batch_size = self.config.hunspell_batch_size  # Configurable batch size
-            total_batches = (len(all_words_to_check) + batch_size - 1) // batch_size
+            # OPTIMIZED BATCH CONFIGURATION FOR BETTER PARALLELISM
+            # Smaller batches = more parallel tasks = better CPU utilization
+            optimal_batch_size = min(250, max(50, len(all_words_to_check) // 100))  # 50-250 words per batch
+            total_batches = (len(all_words_to_check) + optimal_batch_size - 1) // optimal_batch_size
             
-            print(f"  • Processing {len(all_words_to_check):,} words in {total_batches} Hunspell batches...")
+            # Increased concurrent sessions for better parallelism  
+            max_concurrent_sessions = min(40, total_batches)  # Allow up to 40 concurrent sessions
             
-            # Use multiple concurrent Hunspell sessions for parallel processing
-            max_concurrent_sessions = min(self.config.hunspell_concurrent_sessions, total_batches)  # Configurable concurrent sessions
+            print(f"  • Processing {len(all_words_to_check):,} words in {total_batches} optimized Hunspell batches...")
+            print(f"  • Batch size: {optimal_batch_size} words, Concurrent sessions: {max_concurrent_sessions}")
+            
             semaphore = asyncio.Semaphore(max_concurrent_sessions)
             
             async def process_hunspell_batch(batch_words, batch_index):
-                """Process a batch of words with dedicated Hunspell session"""
+                """Process a batch of words with dedicated Hunspell session and timeout protection"""
                 async with semaphore:
-                    session = HunspellSession(self.hunspell_path, self.dict_path)
+                    session = None
                     batch_oov_words = []
                     
                     try:
-                        for word_normalized, word_original, response_idx in batch_words:
-                            self.stats['words_checked'] += 1
-                            output = session.check_word(word_original)
-                            is_oov = output and output.startswith(('&', '#'))
+                        # Add timeout protection to prevent hanging sessions
+                        async def process_batch_with_timeout():
+                            nonlocal session
+                            session = HunspellSession(self.hunspell_path, self.dict_path)
                             
-                            # Cache the result
-                            if word_frequency_cache is not None:
-                                word_frequency_cache[word_normalized] = is_oov
+                            for word_normalized, word_original, response_idx in batch_words:
+                                self.stats['words_checked'] += 1
+                                output = session.check_word(word_original)
+                                is_oov = output and output.startswith(('&', '#'))
+                                
+                                # Cache the result
+                                if word_frequency_cache is not None:
+                                    word_frequency_cache[word_normalized] = is_oov
+                                
+                                if is_oov:
+                                    batch_oov_words.append((word_original, response_idx))
+                                    self.stats['oov_words_found'] += 1
                             
-                            if is_oov:
-                                batch_oov_words.append((word_original, response_idx))
-                                self.stats['oov_words_found'] += 1
+                            return batch_oov_words
                         
-                        # Progress reporting
-                        progress = (batch_index + 1) / total_batches * 100
-                        print(f"    Hunspell batch {batch_index + 1}/{total_batches} ({progress:.1f}%) - found {len(batch_oov_words)} OOV words")
+                        # Add 30-second timeout per batch to prevent hanging
+                        batch_oov_words = await asyncio.wait_for(process_batch_with_timeout(), timeout=30.0)
+                        
+                        # Less frequent progress reporting to reduce console spam
+                        if batch_index % 10 == 0 or batch_index == total_batches - 1:
+                            progress = (batch_index + 1) / total_batches * 100
+                            print(f"    Hunspell batch {batch_index + 1}/{total_batches} ({progress:.1f}%) - found {len(batch_oov_words)} OOV words")
                         
                         return batch_oov_words
                         
+                    except asyncio.TimeoutError:
+                        print(f"    ⚠️  Batch {batch_index + 1} timed out after 30s, skipping {len(batch_words)} words")
+                        return []
+                        
+                    except Exception as e:
+                        print(f"    ⚠️  Batch {batch_index + 1} failed: {e}")
+                        return []
+                        
                     finally:
-                        session.close()
+                        if session:
+                            try:
+                                session.close()
+                            except:
+                                pass  # Ignore cleanup errors
             
-            # Create batches and process concurrently
+            # Create smaller, more balanced batches for better parallelism
             batches = []
-            for i in range(0, len(all_words_to_check), batch_size):
-                batch = all_words_to_check[i:i + batch_size]
+            for i in range(0, len(all_words_to_check), optimal_batch_size):
+                batch = all_words_to_check[i:i + optimal_batch_size]
                 batches.append(batch)
             
-            # Process all batches concurrently
+            # Process all batches concurrently with progress tracking
             start_time = time.time()
-            batch_tasks = [process_hunspell_batch(batch, idx) for idx, batch in enumerate(batches)]
-            batch_results = await asyncio.gather(*batch_tasks)
+            print(f"  • Starting parallel processing of {len(batches)} batches...")
             
-            # Combine results and track response flagging
+            batch_tasks = [process_hunspell_batch(batch, idx) for idx, batch in enumerate(batches)]
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            # Combine results and track response flagging with exception handling
             response_flagged = set()
+            successful_batches = 0
+            failed_batches = 0
+            
             for batch_result in batch_results:
+                if isinstance(batch_result, Exception):
+                    failed_batches += 1
+                    print(f"    ⚠️  Batch failed with exception: {batch_result}")
+                    continue
+                    
+                successful_batches += 1
                 for word_original, response_idx in batch_result:
                     oov_words.append(word_original)
                     word_to_responses[word_original].append(response_idx)
                     response_flagged.add(response_idx)
             
+            if failed_batches > 0:
+                print(f"    ⚠️  Warning: {failed_batches} batches failed, {successful_batches} succeeded")
+            
             docs_with_oov = len(response_flagged)
             processing_time = time.time() - start_time
             words_per_second = len(all_words_to_check) / max(processing_time, 0.1)
             
-            print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
+            # Enhanced performance reporting
+            theoretical_sequential_time = len(all_words_to_check) / 100  # Estimate 100 words/sec sequential
+            speedup = theoretical_sequential_time / max(processing_time, 0.1)
+            efficiency = (max_concurrent_sessions / total_batches) * 100 if total_batches > 0 else 100
+            
+            print(f"  • Completed parallel OOV identification:")
+            print(f"    - {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
+            print(f"    - Speedup: {speedup:.1f}x over sequential, Parallel efficiency: {min(efficiency, 100):.1f}%")
+            print(f"    - Successful/Failed batches: {successful_batches}/{failed_batches}")
             
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
