@@ -223,33 +223,19 @@ class HunspellPool:
         if not words:
             return []
         
-        # AGGRESSIVE OPTIMIZATION: Use all available processes for maximum parallelism
-        # Calculate optimal batch size to utilize all processes
-        optimal_batch_size = max(batch_size, len(words) // self.pool_size + 1)
+        # SAFE PARALLEL PROCESSING: Use manageable batch sizes to prevent hanging
+        # Limit batch size to prevent subprocess communication deadlock
+        max_safe_batch_size = 500  # Conservative limit to prevent Hunspell process overload
+        optimal_batch_size = min(max_safe_batch_size, max(100, batch_size))
         
-        # Split words into batches for parallel processing across ALL sessions
+        # Split words into MANY small batches for parallel processing
         batches = []
         for i in range(0, len(words), optimal_batch_size):
             batch = words[i:i + optimal_batch_size]
             batches.append(batch)
         
-        # Limit batches to available sessions for optimal distribution
-        if len(batches) > self.pool_size:
-            # Merge smaller batches to fully utilize all processes
-            redistributed_batches = []
-            batch_per_process = len(batches) // self.pool_size
-            remainder = len(batches) % self.pool_size
-            
-            batch_idx = 0
-            for process_idx in range(self.pool_size):
-                process_batches = batch_per_process + (1 if process_idx < remainder else 0)
-                merged_batch = []
-                for _ in range(process_batches):
-                    if batch_idx < len(batches):
-                        merged_batch.extend(batches[batch_idx])
-                        batch_idx += 1
-                redistributed_batches.append(merged_batch)
-            batches = redistributed_batches
+        # With small batch sizes, we'll have many batches that can be distributed
+        # across all processes efficiently without causing deadlock
         
         print(f"    Distributing {len(words):,} words across {len(batches)} parallel batches ({self.pool_size} processes)")
         
@@ -262,15 +248,29 @@ class HunspellPool:
                 try:
                     loop = asyncio.get_running_loop()
                     start_time = time.time()
-                    result = await loop.run_in_executor(None, self.sessions[session_idx].check_words_batch, batch)
+                    
+                    # Add timeout protection to prevent infinite hangs
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, self.sessions[session_idx].check_words_batch, batch),
+                        timeout=30.0  # 30-second timeout per batch
+                    )
+                    
                     batch_time = time.time() - start_time
                     batch_rate = len(batch) / max(batch_time, 0.001)
                     
-                    # Optional: Progress logging for very large batches
-                    if len(batch) > 1000:
-                        print(f"      Session {session_idx}: processed {len(batch):,} words in {batch_time:.1f}s ({batch_rate:.0f} words/sec)")
-                    
                     return result
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Batch processing timed out for session {session_idx} after 30s ({len(batch)} words)")
+                    # Recreate the session after timeout
+                    try:
+                        self.sessions[session_idx].close()
+                    except:
+                        pass
+                    self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
+                    # Return empty results for timed-out batch
+                    return [""] * len(batch)
+                    
                 except Exception as e:
                     logger.error(f"Error processing batch of {len(batch)} words with session {session_idx}: {e}")
                     # Recreate the session if it failed
@@ -279,7 +279,8 @@ class HunspellPool:
                     except:
                         pass
                     self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
-                    raise
+                    # Return empty results for failed batch
+                    return [""] * len(batch)
         
         # Process ALL batches concurrently using ALL available sessions
         start_time = time.time()
@@ -288,27 +289,47 @@ class HunspellPool:
             session_idx = i % self.pool_size  # Round-robin across sessions
             tasks.append(process_batch_parallel(batch, session_idx))
         
-        # Execute all batches in parallel
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Collect results and handle exceptions
+        # Execute all batches in parallel with progress reporting
+        completed_batches = 0
         results = []
         failed_batches = 0
-        for i, batch_result in enumerate(batch_results):
-            if isinstance(batch_result, Exception):
-                logger.error(f"Batch {i} failed: {batch_result}")
-                # Return empty results for failed batch words
-                results.extend([""] * len(batches[i]))
-                failed_batches += 1
-            else:
+        timeout_batches = 0
+        
+        # Process batches with progress updates
+        for completed_task in asyncio.as_completed(tasks):
+            try:
+                batch_result = await completed_task
                 results.extend(batch_result)
+                completed_batches += 1
+                
+                # Progress reporting every 10% or every 50 batches
+                if completed_batches % max(1, len(batches) // 10) == 0 or completed_batches % 50 == 0:
+                    progress_percent = (completed_batches / len(batches)) * 100
+                    elapsed = time.time() - start_time
+                    rate = sum(len(batches[i]) for i in range(completed_batches)) / max(elapsed, 0.001)
+                    remaining_batches = len(batches) - completed_batches
+                    eta = (remaining_batches * elapsed / completed_batches) if completed_batches > 0 else 0
+                    print(f"    Parallel batch progress: {completed_batches}/{len(batches)} ({progress_percent:.1f}%) [{rate:.0f} words/sec, ETA: {eta:.1f}s]")
+                
+            except Exception as e:
+                # Count different types of failures
+                if "timed out" in str(e).lower():
+                    timeout_batches += 1
+                else:
+                    failed_batches += 1
+                
+                # Add empty results for failed batch
+                batch_idx = len(results) // 500  # Estimate batch index
+                if batch_idx < len(batches):
+                    results.extend([""] * len(batches[min(batch_idx, len(batches)-1)]))
+                completed_batches += 1
         
         total_time = time.time() - start_time
         total_rate = len(words) / max(total_time, 0.001)
         
         print(f"    Parallel processing completed: {len(words):,} words in {total_time:.1f}s ({total_rate:.0f} words/sec)")
-        if failed_batches > 0:
-            print(f"    Warning: {failed_batches} batches failed and returned empty results")
+        if failed_batches > 0 or timeout_batches > 0:
+            print(f"    Batch results: {len(batches) - failed_batches - timeout_batches} successful, {failed_batches} failed, {timeout_batches} timed out")
         
         return results
     
