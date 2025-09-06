@@ -113,7 +113,7 @@ class RateLimitTracker:
 class HunspellSession:
     def __init__(self, hunspell_path, dict_path):
         self.process = subprocess.Popen(
-            [hunspell_path, "-a", "-d", dict_path],
+            [hunspell_path, "-a", "-i", "utf-8", "-d", dict_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -159,18 +159,35 @@ class HunspellSession:
         return results
 
     def close(self):
-        self.process.stdin.close()
-        self.process.stdout.close()
-        self.process.stderr.close()
-        self.process.terminate()
+        try:
+            self.process.stdin.close()
+            self.process.stdout.close()
+            self.process.stderr.close()
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)  # Wait up to 5 seconds for graceful shutdown
+            except subprocess.TimeoutExpired:
+                # Force kill if process doesn't terminate gracefully
+                self.process.kill()
+                self.process.wait()  # Wait for forced termination
+        except Exception as e:
+            logger.error(f"Error closing Hunspell session: {e}")
+            # Try force kill as last resort
+            try:
+                self.process.kill()
+            except:
+                pass
 
 
 class HunspellPool:
     """Pool of persistent Hunspell processes to avoid subprocess creation overhead"""
     
-    def __init__(self, hunspell_path: str, dict_path: str, pool_size: int = 20):
+    def __init__(self, hunspell_path: str, dict_path: str, pool_size: int = None):
         self.hunspell_path = hunspell_path
         self.dict_path = dict_path
+        # Auto-tune pool size based on CPU count with sensible limits
+        if pool_size is None:
+            pool_size = min(os.cpu_count() * 2, 50)  # Max 50 processes to avoid system overload
         self.pool_size = pool_size
         self.sessions = []
         self.session_locks = []
@@ -223,26 +240,21 @@ class HunspellPool:
         if not words:
             return []
         
-        # SAFE PARALLEL PROCESSING: Use manageable batch sizes to prevent hanging
-        # Limit batch size to prevent subprocess communication deadlock
-        max_safe_batch_size = 500  # Conservative limit to prevent Hunspell process overload
+        # OPTIMIZED PARALLEL PROCESSING: Use larger batch sizes for persistent pipes
+        # Increased batch size for better throughput with persistent connections
+        max_safe_batch_size = 1000  # Increased from 500 - persistent pipes can handle more
         optimal_batch_size = min(max_safe_batch_size, max(100, batch_size))
         
-        # Split words into MANY small batches for parallel processing
-        batches = []
-        for i in range(0, len(words), optimal_batch_size):
-            batch = words[i:i + optimal_batch_size]
-            batches.append(batch)
-        
-        # With small batch sizes, we'll have many batches that can be distributed
-        # across all processes efficiently without causing deadlock
+        # Build batches with start indices to preserve order
+        batches = [(i, words[i:i+optimal_batch_size]) for i in range(0, len(words), optimal_batch_size)]
+        outputs = [None] * len(words)  # Preallocate output array
         
         print(f"    Distributing {len(words):,} words across {len(batches)} parallel batches ({self.pool_size} processes)")
         
-        async def process_batch_parallel(batch: List[str], session_idx: int) -> List[str]:
-            """Process a batch using a specific session with error recovery"""
+        async def process_batch_parallel(idx: int, batch: List[str], session_idx: int) -> Tuple[int, List[str]]:
+            """Process a batch using a specific session with error recovery - returns (start_idx, results)"""
             if not batch:
-                return []
+                return idx, []
                 
             async with self.session_locks[session_idx]:
                 try:
@@ -258,7 +270,7 @@ class HunspellPool:
                     batch_time = time.time() - start_time
                     batch_rate = len(batch) / max(batch_time, 0.001)
                     
-                    return result
+                    return idx, result
                     
                 except asyncio.TimeoutError:
                     logger.error(f"Batch processing timed out for session {session_idx} after 30s ({len(batch)} words)")
@@ -269,7 +281,7 @@ class HunspellPool:
                         pass
                     self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
                     # Return empty results for timed-out batch
-                    return [""] * len(batch)
+                    return idx, [""] * len(batch)
                     
                 except Exception as e:
                     logger.error(f"Error processing batch of {len(batch)} words with session {session_idx}: {e}")
@@ -280,35 +292,37 @@ class HunspellPool:
                         pass
                     self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
                     # Return empty results for failed batch
-                    return [""] * len(batch)
+                    return idx, [""] * len(batch)
         
         # Process ALL batches concurrently using ALL available sessions
         start_time = time.time()
         tasks = []
-        for i, batch in enumerate(batches):
+        for i, (idx, batch) in enumerate(batches):
             session_idx = i % self.pool_size  # Round-robin across sessions
-            tasks.append(process_batch_parallel(batch, session_idx))
+            tasks.append(process_batch_parallel(idx, batch, session_idx))
         
         # Execute all batches in parallel with progress reporting
         completed_batches = 0
-        results = []
+        words_processed = 0  # Track actual words processed for accurate progress
         failed_batches = 0
         timeout_batches = 0
         
         # Process batches with progress updates
         for completed_task in asyncio.as_completed(tasks):
             try:
-                batch_result = await completed_task
-                results.extend(batch_result)
+                idx, batch_result = await completed_task
+                # Place results at correct position to preserve original order
+                outputs[idx:idx+len(batch_result)] = batch_result
                 completed_batches += 1
+                words_processed += len(batch_result)
                 
                 # Progress reporting every 10% or every 50 batches
                 if completed_batches % max(1, len(batches) // 10) == 0 or completed_batches % 50 == 0:
                     progress_percent = (completed_batches / len(batches)) * 100
                     elapsed = time.time() - start_time
-                    rate = sum(len(batches[i]) for i in range(completed_batches)) / max(elapsed, 0.001)
-                    remaining_batches = len(batches) - completed_batches
-                    eta = (remaining_batches * elapsed / completed_batches) if completed_batches > 0 else 0
+                    rate = words_processed / max(elapsed, 0.001)
+                    remaining_words = len(words) - words_processed
+                    eta = remaining_words / max(rate, 0.001)
                     print(f"    Parallel batch progress: {completed_batches}/{len(batches)} ({progress_percent:.1f}%) [{rate:.0f} words/sec, ETA: {eta:.1f}s]")
                 
             except Exception as e:
@@ -318,10 +332,6 @@ class HunspellPool:
                 else:
                     failed_batches += 1
                 
-                # Add empty results for failed batch
-                batch_idx = len(results) // 500  # Estimate batch index
-                if batch_idx < len(batches):
-                    results.extend([""] * len(batches[min(batch_idx, len(batches)-1)]))
                 completed_batches += 1
         
         total_time = time.time() - start_time
@@ -331,7 +341,7 @@ class HunspellPool:
         if failed_batches > 0 or timeout_batches > 0:
             print(f"    Batch results: {len(batches) - failed_batches - timeout_batches} successful, {failed_batches} failed, {timeout_batches} timed out")
         
-        return results
+        return outputs
     
     def close(self):
         """Close all Hunspell sessions in the pool"""
@@ -412,10 +422,13 @@ class SpellChecker:
     def _init_hunspell_pool(self):
         """Initialize HunspellPool for efficient processing"""
         if self.hunspell_pool is None:
-            pool_size = getattr(self.config, 'hunspell_pool_size', 20)
+            pool_size = getattr(self.config, 'hunspell_pool_size', None)  # Use None to enable auto-tuning
             self.hunspell_pool = HunspellPool(self.hunspell_path, self.dict_path, pool_size)
+            actual_pool_size = self.hunspell_pool.pool_size
             if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Initialized HunspellPool with {pool_size} persistent processes")
+                self.verbose_reporter.stat_line(f"Initialized HunspellPool with {actual_pool_size} persistent processes (auto-tuned)")
+            else:
+                print(f"  • Initialized HunspellPool with {actual_pool_size} persistent processes (auto-tuned)")
     
     def _close_hunspell_pool(self):
         """Close the HunspellPool to free resources"""
