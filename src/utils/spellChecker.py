@@ -647,16 +647,13 @@ class SpellChecker:
             if self.verbose_reporter.enabled and cached_suggestions:
                 self.verbose_reporter.stat_line(f"Found {len(cached_suggestions)} words in cache, processing {len(uncached_words)} new words")
         
-        # Process uncached words with optimized strategy
+        # Process uncached words with proven parallel chunks method
         if len(unique_oov_words) <= 100:
-            # Very small dataset - use original method
+            # Very small dataset - use simple single batch method
             new_suggestions = await self._process_suggestions_single_batch(unique_oov_words)
-        elif len(unique_oov_words) <= self.config.ultra_batch_threshold:
-            # Medium dataset - use parallel chunks 
-            new_suggestions = await self._process_suggestions_parallel_chunks(unique_oov_words)
         else:
-            # Large dataset - use ultra-optimized batch processing
-            new_suggestions = await self._process_suggestions_ultra_optimized(unique_oov_words)
+            # All other datasets - use proven parallel chunks method (same logic as successful OOV identification)
+            new_suggestions = await self._process_suggestions_parallel_chunks(unique_oov_words)
         
         # Update cache if enabled
         if self.suggestion_cache is not None:
@@ -668,124 +665,6 @@ class SpellChecker:
         
         return new_suggestions
     
-    async def _process_suggestions_ultra_optimized(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Ultra-optimized batch suggestion generation eliminating subprocess overhead"""
-        
-        print("[ULTRA-OPTIMIZED SUGGESTION GENERATION]")
-        sorted_oov_words = sorted(unique_oov_words)
-        
-        # Initialize HunspellPool for batch processing
-        if self.hunspell_pool is None:
-            self._init_hunspell_pool()
-        
-        start_time = time.time()
-        
-        # STEP 1: Collect ALL words that need Hunspell checking (main words + all possible splits)
-        all_hunspell_candidates = []  # (original_word, candidate_word, candidate_type)
-        word_to_candidates = defaultdict(list)
-        
-        print(f"- Preparing candidates for {len(sorted_oov_words)} OOV words...")
-        
-        for word in sorted_oov_words:
-            # Add the main word
-            all_hunspell_candidates.append((word, word, 'main'))
-            word_to_candidates[word].append((word, 'main'))
-            
-            # Generate split candidates
-            if len(word) > 6:  # Only split longer words
-                # Left splits: word[:i] for i in range(4, len(word)-2)
-                for i in range(4, min(len(word)-2, len(word))):
-                    left_part = word[:i]
-                    right_part = word[i:]
-                    if len(left_part) >= 3 and len(right_part) >= 3:
-                        all_hunspell_candidates.append((word, left_part, 'left_split'))
-                        all_hunspell_candidates.append((word, right_part, 'right_split'))
-                        word_to_candidates[word].extend([
-                            (left_part, 'left_split'), 
-                            (right_part, 'right_split')
-                        ])
-        
-        print(f"- Generated {len(all_hunspell_candidates):,} candidates for batch processing")
-        
-        # STEP 2: Batch process ALL candidates in one massive operation
-        candidate_words = [item[1] for item in all_hunspell_candidates]
-        
-        print(f"- Processing all candidates using HunspellPool...")
-        batch_outputs = await self.hunspell_pool.check_words_batch(candidate_words, batch_size=self.config.ultra_batch_size)
-        
-        processing_time = time.time() - start_time
-        print(f"- Completed Hunspell batch processing: {len(candidate_words):,} candidates in {processing_time:.1f}s")
-        
-        # STEP 3: Parse results and organize by original word
-        candidate_results = {}
-        for i, (original_word, candidate_word, candidate_type) in enumerate(all_hunspell_candidates):
-            output = batch_outputs[i]
-            
-            # Parse Hunspell output
-            lines = [line for line in output.splitlines() if line and not line.startswith("@")]
-            suggestions = []
-            
-            if lines and lines[0].startswith("&"):
-                match = re.search(r": (.+)", lines[0])
-                if match:
-                    suggestions = match.group(1).split(", ")
-            elif lines and lines[0].startswith("*"):
-                suggestions = [candidate_word]  # Word is correct
-            
-            candidate_results[(original_word, candidate_word, candidate_type)] = suggestions
-        
-        # STEP 4: Construct final suggestions for each word
-        best_suggestions = defaultdict(list)
-        
-        for word in sorted_oov_words:
-            word_suggestions = []
-            
-            # Get main word suggestions
-            main_suggestions = candidate_results.get((word, word, 'main'), [])
-            if main_suggestions:
-                # Pick best suggestion using Levenshtein distance
-                best_main = min(main_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
-                word_suggestions.append(best_main)
-            
-            # Get split suggestions
-            split_candidates = []
-            for candidate_word, candidate_type in word_to_candidates[word]:
-                if candidate_type in ['left_split', 'right_split']:
-                    split_suggestions = candidate_results.get((word, candidate_word, candidate_type), [])
-                    if split_suggestions and split_suggestions != [candidate_word]:  # Has corrections
-                        best_split = min(split_suggestions, key=lambda s: self.cached_levenshtein_distance(candidate_word, s))
-                        split_candidates.append((candidate_word, best_split, candidate_type))
-            
-            # Try to construct meaningful split suggestions
-            left_splits = [(orig, corrected) for orig, corrected, type_ in split_candidates if type_ == 'left_split']
-            right_splits = [(orig, corrected) for orig, corrected, type_ in split_candidates if type_ == 'right_split']
-            
-            # Find best split combination
-            for left_orig, left_corrected in left_splits[:3]:  # Limit to avoid explosion
-                for right_orig, right_corrected in right_splits[:3]:
-                    if left_orig + right_orig == word:  # Valid split
-                        split_suggestion = f"{left_corrected} {right_corrected}"
-                        word_suggestions.append(split_suggestion)
-                        break  # Take first valid split
-                if word_suggestions and len(word_suggestions) > 1:  # Already have main + split
-                    break
-            
-            # Store results (convert to tuple format expected by caller)
-            if word_suggestions:
-                if len(word_suggestions) == 1:
-                    best_suggestions[word].append((word_suggestions[0], None))
-                else:
-                    best_suggestions[word].append((word_suggestions[0], word_suggestions[1]))
-            else:
-                best_suggestions[word].append((None, None))
-        
-        total_time = time.time() - start_time
-        rate = len(unique_oov_words) / max(total_time, 0.1)
-        
-        print(f"- Completed ultra-optimized suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
-        print(f"- Performance improvement: Eliminated thousands of subprocess calls using batch processing")
-        
-        return best_suggestions
     
     async def _process_suggestions_single_batch(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
         """Original single-batch processing for small datasets"""
