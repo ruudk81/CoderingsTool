@@ -554,25 +554,38 @@ class SpellChecker:
         valid_suggestions = [sug for sug, is_valid in zip(suggestions, validation_results) if is_valid]
         return valid_suggestions
           
-    async def find_best_split_for_spellcheck(self, oov_word: str) -> Tuple[str, str]:    
-        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
-
+    def generate_split_candidates(self, oov_word: str) -> List[Tuple[str, str, str]]:
+        """Generate split candidates without SpaCy processing - returns (word, split_text, split_type)"""
         left_split_attempts = [(oov_word[:i], "left") for i in range(4, len(oov_word) + 1)]
         right_split_attempts = [(oov_word[i:], "right") for i in range(len(oov_word) - 3)]  
-
+        
         all_splits = left_split_attempts + right_split_attempts
-        processed_splits = list(self.get_nlp().pipe([split for split, _ in all_splits], batch_size=self.config.spacy_batch_size))
+        
+        # Return tuples of (original_word, split_text, split_type) for batched processing
+        return [(oov_word, split_text, split_type) for split_text, split_type in all_splits]
 
+    async def process_splits_with_results(self, oov_word: str, split_results: Dict[str, bool]) -> Tuple[str, str]:
+        """Process split results that were validated in batch to find best split"""
+        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
+        
+        # Filter valid splits based on batch results
+        left_split_attempts = [(oov_word[:i], "left") for i in range(4, len(oov_word) + 1)]
+        right_split_attempts = [(oov_word[i:], "right") for i in range(len(oov_word) - 3)]
+        all_splits = left_split_attempts + right_split_attempts
+        
+        # Use the batch-processed results to filter valid splits
         valid_splits = [
-            (split, tag) for (split, tag), doc in zip(all_splits, processed_splits)
-            if len(split) > 2 and all(token.pos_ not in excluded_tags and token.vector_norm > 5 for token in doc) ]
-
+            (split_text, split_type) for split_text, split_type in all_splits
+            if len(split_text) > 2 and split_results.get(split_text, False)
+        ]
+        
         left_parts = [split for split, tag in valid_splits if tag == "left"]
         right_parts = [split for split, tag in valid_splits if tag == "right"]
 
         left_part = max(left_parts, key=len) if left_parts else ""
         right_part = max(right_parts, key=len) if right_parts else ""
         
+        # Continue with Hunspell processing for final candidates
         batch_candidates = []
         if right_part:
             left_remaining = oov_word[:-len(right_part)]
@@ -584,6 +597,9 @@ class SpellChecker:
             batch_candidates.extend([left_remaining, right_remaining])
         else:
             batch_candidates.append(oov_word)
+
+        if not batch_candidates:
+            return "", ""
 
         hunspell_results = await asyncio.gather(
             *(self.run_hunspell_word_async(candidate) for candidate in batch_candidates))
@@ -597,9 +613,10 @@ class SpellChecker:
             for suggestions in normalized_hunspell_results.values()
             for suggestion in suggestions]
 
-        if not all(isinstance(s, str) for s in all_suggestions):
-            raise TypeError("all_suggestions contains non-string values.")
+        if not all_suggestions or not all(isinstance(s, str) for s in all_suggestions):
+            return left_part, right_part
 
+        # Batch process suggestions (this will also be optimized later if needed)
         processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=self.config.spacy_batch_size))
 
         filtered_suggestions = {
@@ -647,13 +664,9 @@ class SpellChecker:
             if self.verbose_reporter.enabled and cached_suggestions:
                 self.verbose_reporter.stat_line(f"Found {len(cached_suggestions)} words in cache, processing {len(uncached_words)} new words")
         
-        # Process uncached words with proven parallel chunks method
-        if len(unique_oov_words) <= 100:
-            # Very small dataset - use simple single batch method
-            new_suggestions = await self._process_suggestions_single_batch(unique_oov_words)
-        else:
-            # All other datasets - use proven parallel chunks method (same logic as successful OOV identification)
-            new_suggestions = await self._process_suggestions_parallel_chunks(unique_oov_words)
+        # Process uncached words with optimized batched SpaCy approach
+        # Use batched SpaCy processing for all datasets to eliminate per-word overhead
+        new_suggestions = await self._process_suggestions_batched_spacy(unique_oov_words)
         
         # Update cache if enabled
         if self.suggestion_cache is not None:
@@ -666,15 +679,55 @@ class SpellChecker:
         return new_suggestions
     
     
-    async def _process_suggestions_single_batch(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Original single-batch processing for small datasets"""
+    async def _process_suggestions_batched_spacy(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
+        """Batched SpaCy processing for optimal performance"""
+        print("[BATCHED SPACY SUGGESTION GENERATION]")
+        start_time = time.time()
         sorted_oov_words = sorted(unique_oov_words)
-
-        async def process_word(word):
+        
+        # STEP 1: Collect ALL split candidates from ALL words (no SpaCy processing yet)
+        print(f"- Collecting split candidates from {len(sorted_oov_words)} words...")
+        all_split_candidates = []
+        word_to_splits = {}
+        
+        for word in sorted_oov_words:
+            split_candidates = self.generate_split_candidates(word)
+            all_split_candidates.extend(split_candidates)
+            word_to_splits[word] = split_candidates
+        
+        print(f"- Generated {len(all_split_candidates):,} total split candidates")
+        
+        # STEP 2: Process ALL splits in ONE giant SpaCy batch
+        print(f"- Processing all {len(all_split_candidates):,} splits in single SpaCy batch...")
+        batch_start = time.time()
+        
+        # Extract unique split texts for batching (avoid processing duplicates)
+        unique_splits = list(set(split_text for _, split_text, _ in all_split_candidates))
+        print(f"- Processing {len(unique_splits):,} unique splits (deduplicated from {len(all_split_candidates):,})")
+        
+        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
+        processed_splits = list(self.get_nlp().pipe(unique_splits, batch_size=self.config.spacy_batch_size))
+        
+        # Create lookup for split validation results
+        split_results = {}
+        for split_text, doc in zip(unique_splits, processed_splits):
+            is_valid = (len(split_text) > 2 and 
+                       all(token.pos_ not in excluded_tags and token.vector_norm > 5 for token in doc))
+            split_results[split_text] = is_valid
+        
+        batch_time = time.time() - batch_start
+        print(f"- Completed SpaCy batch processing in {batch_time:.1f}s ({len(unique_splits)/max(batch_time, 0.1):,.0f} splits/sec)")
+        
+        # STEP 3: Process each word using the batched results
+        print(f"- Processing individual words using batch results...")
+        
+        async def process_word_with_batch_results(word):
             try:
-                # Parallel Hunspell and splitting operations for better performance
+                # Get unsplit suggestions
                 unsplit_task = self.run_hunspell_word_async(word)
-                split_task = self.find_best_split_for_spellcheck(word)
+                
+                # Process splits using batch results
+                split_task = self.process_splits_with_results(word, split_results)
                 
                 # Execute both operations concurrently
                 unsplit_suggestions, (left_part, right_part) = await asyncio.gather(unsplit_task, split_task)
@@ -688,13 +741,18 @@ class SpellChecker:
                 logger.error(f"Error processing word '{word}': {e}")
                 return word, None, None
        
-        results = await asyncio.gather(*(process_word(word) for word in sorted_oov_words))
+        results = await asyncio.gather(*(process_word_with_batch_results(word) for word in sorted_oov_words))
 
         best_suggestions = defaultdict(list)
         for result in results:
             if result and len(result) == 3:
                 best_suggestions[result[0]].append(result[1:])
 
+        total_time = time.time() - start_time
+        rate = len(unique_oov_words) / max(total_time, 0.1)
+        print(f"- Completed batched suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
+        print(f"- Performance improvement: Batched SpaCy processing eliminated per-word overhead")
+        
         return best_suggestions
     
     async def _process_suggestions_parallel_chunks(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:

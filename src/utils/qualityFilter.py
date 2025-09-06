@@ -41,28 +41,30 @@ class TokenBucket:
     
     async def acquire(self, tokens_needed):
         """Acquire tokens, waiting if necessary"""
-        async with self.lock:
-            # Regenerate tokens based on time elapsed
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-            self.last_update = now
-            
-            # Calculate wait time if not enough tokens (avoid busy polling)
-            if self.available < tokens_needed:
+        while True:
+            async with self.lock:
+                # Regenerate tokens based on time elapsed
+                now = time.monotonic()
+                elapsed = now - self.last_update
+                self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
+                self.last_update = now
+                
+                # Check if we have enough tokens
+                if self.available >= tokens_needed:
+                    # Consume tokens and exit
+                    self.available -= tokens_needed
+                    logger.debug(f"Token bucket: consumed {tokens_needed}, {self.available:.0f} remaining")
+                    return
+                
+                # Calculate wait time if not enough tokens
                 deficit = tokens_needed - self.available
                 wait_seconds = deficit * 60 / self.tpm
-                if wait_seconds > 1.0:  # Only log significant waits
-                    print(f"[RATE LIMIT] Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens (deficit: {deficit:.0f})")
-                await asyncio.sleep(wait_seconds)
-                # Recalculate after sleep
-                now = time.monotonic()
-                self.available = min(self.tpm, self.available + (self.tpm * wait_seconds / 60))
-                self.last_update = now
             
-            # Consume tokens
-            self.available -= tokens_needed
-            logger.debug(f"Token bucket: consumed {tokens_needed}, {self.available:.0f} remaining")
+            # CRITICAL FIX: Release lock before sleeping
+            if wait_seconds > 1.0:  # Only log significant waits
+                print(f"[RATE LIMIT] Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens (deficit: {deficit:.0f})")
+            await asyncio.sleep(wait_seconds)
+            # Loop back to reacquire lock and check again
 
 
 class RateLimitTracker:
@@ -177,6 +179,9 @@ class SmartConcurrencyManager:
         self.min_limit = min_limit
         self.max_limit = max_limit
         
+        # CRITICAL FIX: Store shared semaphore as instance variable
+        self.semaphore = asyncio.Semaphore(initial_limit)
+        
         # Monitoring data
         self.recent_timeouts = []  # Track recent timeout events
         self.timeout_window = 60  # seconds
@@ -229,16 +234,23 @@ class SmartConcurrencyManager:
         if timeout_rate > 0.15:  # >15% timeout rate - reduce concurrency
             self.current_limit = max(self.min_limit, int(self.current_limit * 0.7))
             logger.info(f"High timeout rate ({timeout_rate:.1%}), reducing concurrency: {old_limit} → {self.current_limit}")
+            self._resize_semaphore(self.current_limit)
             self.last_adjustment = now
             
         elif timeout_rate < 0.05 and self.current_limit < self.max_limit:  # <5% timeout rate - can increase
             self.current_limit = min(self.max_limit, int(self.current_limit * 1.2))
             logger.info(f"Low timeout rate ({timeout_rate:.1%}), increasing concurrency: {old_limit} → {self.current_limit}")
+            self._resize_semaphore(self.current_limit)
             self.last_adjustment = now
     
+    def _resize_semaphore(self, new_limit):
+        """Resize the shared semaphore to new limit"""
+        # Create new semaphore with new limit
+        self.semaphore = asyncio.Semaphore(new_limit)
+    
     def get_current_semaphore(self):
-        """Get semaphore with current limit"""
-        return asyncio.Semaphore(self.current_limit)
+        """Get the shared semaphore"""
+        return self.semaphore
     
     def get_stats(self):
         """Get concurrency manager statistics"""
@@ -350,7 +362,7 @@ class Grader:
         limits = get_openai_rate_limits(self.model)
         HEADROOM = 0.8
         
-        self.rpm_limiter = AsyncLimiter(limits.requests_per_minute * HEADROOM / 60, 1)
+        self.rpm_limiter = AsyncLimiter(int(limits.requests_per_minute * HEADROOM), 60)
         self.token_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
         
         # Smart management systems
@@ -540,28 +552,32 @@ class Grader:
                 except RateLimitError as e:
                     logger.warning(f"Task {task['task_id']} hit rate limit: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
+                    # CRITICAL FIX: Re-raise for tenacity retry
+                    raise
                     
                 except (APIConnectionError, ConnectionError) as e:
                     logger.warning(f"Task {task['task_id']} connection failed: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    # This will be retried by tenacity decorator
-                    return self.create_fallback_response(task)
+                    # CRITICAL FIX: Re-raise for tenacity retry
+                    raise
                     
                 except (APITimeoutError, TimeoutError) as e:
                     logger.warning(f"Task {task['task_id']} request timeout: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
+                    # CRITICAL FIX: Re-raise for tenacity retry
+                    raise
                     
                 except InternalServerError as e:
                     logger.warning(f"Task {task['task_id']} server error: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
+                    # CRITICAL FIX: Re-raise for tenacity retry
+                    raise
                     
                 except InstructorRetryException as e:
                     logger.warning(f"Task {task['task_id']} instructor retry failed: {e}")
                     self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
+                    # CRITICAL FIX: Re-raise for tenacity retry
+                    raise
                     
                 except ValueError as e:
                     # Data type or parsing errors
