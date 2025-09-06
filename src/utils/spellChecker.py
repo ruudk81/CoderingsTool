@@ -718,8 +718,8 @@ class SpellChecker:
         batch_time = time.time() - batch_start
         print(f"- Completed SpaCy batch processing in {batch_time:.1f}s ({len(unique_splits)/max(batch_time, 0.1):,.0f} splits/sec)")
         
-        # STEP 3: Process each word using the batched results
-        print(f"- Processing individual words using batch results...")
+        # STEP 3: Process words in smaller batches to avoid overwhelming HunspellPool
+        print(f"- Processing {len(sorted_oov_words)} words in smaller batches to avoid overwhelming system...")
         
         async def process_word_with_batch_results(word):
             try:
@@ -741,7 +741,32 @@ class SpellChecker:
                 logger.error(f"Error processing word '{word}': {e}")
                 return word, None, None
        
-        results = await asyncio.gather(*(process_word_with_batch_results(word) for word in sorted_oov_words))
+        # Process words in manageable batches to avoid overwhelming HunspellPool
+        batch_size = 50  # Process 50 words concurrently at a time
+        total_batches = (len(sorted_oov_words) + batch_size - 1) // batch_size
+        results = []
+        
+        word_processing_start = time.time()
+        
+        for batch_idx in range(total_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(sorted_oov_words))
+            batch_words = sorted_oov_words[start_idx:end_idx]
+            
+            print(f"  Processing batch {batch_idx + 1}/{total_batches} ({len(batch_words)} words)...")
+            batch_start = time.time()
+            
+            # Process this batch concurrently
+            batch_results = await asyncio.gather(*(process_word_with_batch_results(word) for word in batch_words))
+            results.extend(batch_results)
+            
+            batch_time = time.time() - batch_start
+            batch_rate = len(batch_words) / max(batch_time, 0.1)
+            print(f"  Batch {batch_idx + 1} completed in {batch_time:.1f}s ({batch_rate:.1f} words/sec)")
+        
+        word_processing_time = time.time() - word_processing_start
+        word_processing_rate = len(sorted_oov_words) / max(word_processing_time, 0.1)
+        print(f"- Completed word processing in {word_processing_time:.1f}s ({word_processing_rate:.1f} words/sec)")
 
         best_suggestions = defaultdict(list)
         for result in results:
