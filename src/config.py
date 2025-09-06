@@ -439,6 +439,7 @@ class SpellCheckConfig:
     
     # Suggestion validation parameters
     enable_suggestion_pre_validation: bool = True  # Pre-validate suggestions before LLM calls
+    disable_pre_validation_above_oov_words: int = 2000  # Auto-disable pre-validation for very large datasets
     enable_suggestion_caching: bool = True  # Cache validated suggestions
 
 # =============================================================================
