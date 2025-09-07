@@ -542,11 +542,20 @@ class SpellChecker:
         return dp[m][n]
     
     async def run_hunspell_word_async(self, word: str) -> List[str]:
-        """Efficient Hunspell lookup using persistent process pool"""
-        if self.hunspell_pool is None:
-            self._init_hunspell_pool()
-        
-        output = await self.hunspell_pool.check_word(word)
+        """Simple subprocess approach for reliable suggestion generation"""
+        def run_hunspell():
+            process = subprocess.Popen(
+                [HUNSPELL_PATH, "-a", "-d", self.dict_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True, encoding="utf-8"
+            )
+            output, _ = process.communicate(input=f"{word}\n")
+            return output
+
+        loop = asyncio.get_running_loop()
+        output = await loop.run_in_executor(None, run_hunspell)
         lines = [line for line in output.splitlines() if line and not line.startswith("@")]
 
         if lines and lines[0].startswith("&"):
@@ -646,8 +655,77 @@ Suggested corrections: {task['suggestions']}
         # Return tuples of (original_word, split_text, split_type) for batched processing
         return [(oov_word, split_text, split_type) for split_text, split_type in all_splits]
 
-    # REMOVED: process_splits_with_results() function that was causing per-word async bottlenecks
-    # This functionality is now handled efficiently in the fully batched _process_suggestions_batched_spacy method
+    async def find_best_split_for_spellcheck(self, oov_word: str) -> Tuple[str, str]:    
+        """Working split processing from old version - simple and reliable"""
+        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
+
+        left_split_attempts = [(oov_word[:i], "left") for i in range(4, len(oov_word) + 1)]
+        right_split_attempts = [(oov_word[i:], "right") for i in range(len(oov_word) - 3)]  
+
+        all_splits = left_split_attempts + right_split_attempts
+        processed_splits = list(self.get_nlp().pipe([split for split, _ in all_splits], batch_size=self.config.spacy_batch_size))
+
+        valid_splits = [
+            (split, tag) for (split, tag), doc in zip(all_splits, processed_splits)
+            if len(split) > 2 and all(token.pos_ not in excluded_tags and token.vector_norm > 5 for token in doc) ]
+
+        left_parts = [split for split, tag in valid_splits if tag == "left"]
+        right_parts = [split for split, tag in valid_splits if tag == "right"]
+
+        left_part = max(left_parts, key=len) if left_parts else ""
+        right_part = max(right_parts, key=len) if right_parts else ""
+        
+        batch_candidates = []
+        if right_part:
+            left_remaining = oov_word[:-len(right_part)]
+            right_remaining = right_part
+            batch_candidates.extend([left_remaining, right_remaining])
+        elif left_part:
+            left_remaining = left_part
+            right_remaining = oov_word[len(left_part):]
+            batch_candidates.extend([left_remaining, right_remaining])
+        else:
+            batch_candidates.append(oov_word)
+
+        if not batch_candidates:
+            return "", ""
+
+        hunspell_results = await asyncio.gather(
+            *(self.run_hunspell_word_async(candidate) for candidate in batch_candidates))
+
+        normalized_hunspell_results = {
+            candidate: result if isinstance(result, list) else [result]
+            for candidate, result in zip(batch_candidates, hunspell_results)}
+
+        all_suggestions = [
+            suggestion
+            for suggestions in normalized_hunspell_results.values()
+            for suggestion in suggestions]
+
+        if not all_suggestions or not all(isinstance(s, str) for s in all_suggestions):
+            return left_part, right_part
+
+        processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=self.config.spacy_batch_size))
+
+        filtered_suggestions = {
+            candidate: [suggestion for suggestion, doc in zip(normalized_hunspell_results[candidate], processed_suggestions) if doc.vector_norm > 5]
+            for candidate in batch_candidates}
+
+        if left_part:
+            right_remaining = oov_word[len(left_part):]
+            right_part_suggestions = filtered_suggestions.get(right_remaining, [])
+            right_part = (
+                min(right_part_suggestions, key=lambda s: self.cached_levenshtein_distance(right_remaining, s))
+                if right_part_suggestions else right_part)
+
+        if right_part:
+            left_remaining = oov_word[:-len(right_part)]
+            left_part_suggestions = filtered_suggestions.get(left_remaining, [])
+            left_part = (
+                min(left_part_suggestions, key=lambda s: self.cached_levenshtein_distance(left_remaining, s))
+                if left_part_suggestions else left_part)
+
+        return left_part, right_part
 
     async def find_best_suggestions_batch_async(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
         """Process unique OOV words with aggressive parallel processing and caching"""
@@ -698,185 +776,64 @@ Suggested corrections: {task['suggestions']}
     
     
     async def _process_suggestions_batched_spacy(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Fully batched processing to eliminate resource contention and hanging"""
-        print("[FULLY BATCHED SUGGESTION GENERATION]")
+        """Simple reliable suggestion generation using working functions"""
+        print("[SIMPLE RELIABLE SUGGESTION GENERATION]")
         start_time = time.time()
         sorted_oov_words = sorted(unique_oov_words)
         
-        # STEP 1: Collect ALL split candidates from ALL words (no async operations yet)
-        print(f"- Collecting split candidates from {len(sorted_oov_words)} words...")
-        all_split_candidates = []
-        word_to_splits = {}
-        
-        for word in sorted_oov_words:
-            split_candidates = self.generate_split_candidates(word)
-            all_split_candidates.extend(split_candidates)
-            word_to_splits[word] = split_candidates
-        
-        print(f"- Generated {len(all_split_candidates):,} total split candidates")
-        
-        # STEP 2: Process ALL splits in ONE giant SpaCy batch
-        print(f"- Processing all {len(all_split_candidates):,} splits in single SpaCy batch...")
-        batch_start = time.time()
-        
-        # Extract unique split texts for batching (avoid processing duplicates)
-        unique_splits = list(set(split_text for _, split_text, _ in all_split_candidates))
-        print(f"- Processing {len(unique_splits):,} unique splits (deduplicated from {len(all_split_candidates):,})")
-        
-        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
-        processed_splits = list(self.get_nlp().pipe(unique_splits, batch_size=self.config.spacy_batch_size))
-        
-        # Create lookup for split validation results
-        split_results = {}
-        for split_text, doc in zip(unique_splits, processed_splits):
-            is_valid = (len(split_text) > 2 and 
-                       all(token.pos_ not in excluded_tags and token.vector_norm > 5 for token in doc))
-            split_results[split_text] = is_valid
-        
-        batch_time = time.time() - batch_start
-        print(f"- Completed SpaCy batch processing in {batch_time:.1f}s ({len(unique_splits)/max(batch_time, 0.1):,.0f} splits/sec)")
-        
-        # STEP 3: Collect ALL Hunspell candidates from ALL words (no async operations yet)
-        print(f"- Collecting ALL Hunspell candidates from {len(sorted_oov_words)} words...")
-        all_hunspell_candidates = []
-        word_to_hunspell_map = {}
-        
-        for word in sorted_oov_words:
-            # Add the word itself for unsplit suggestions
-            all_hunspell_candidates.append(word)
-            word_candidates_start = len(all_hunspell_candidates) - 1
-            
-            # Process splits using batch results to find additional candidates
-            left_split_attempts = [(word[:i], "left") for i in range(4, len(word) + 1)]
-            right_split_attempts = [(word[i:], "right") for i in range(len(word) - 3)]
-            all_splits = left_split_attempts + right_split_attempts
-            
-            # Use pre-computed split validation results
-            valid_splits = [
-                (split_text, split_type) for split_text, split_type in all_splits
-                if len(split_text) > 2 and split_results.get(split_text, False)
-            ]
-            
-            left_parts = [split for split, tag in valid_splits if tag == "left"]
-            right_parts = [split for split, tag in valid_splits if tag == "right"]
-            
-            left_part = max(left_parts, key=len) if left_parts else ""
-            right_part = max(right_parts, key=len) if right_parts else ""
-            
-            # Add split candidates to batch
-            if right_part:
-                left_remaining = word[:-len(right_part)]
-                right_remaining = right_part
-                all_hunspell_candidates.extend([left_remaining, right_remaining])
-            elif left_part:
-                left_remaining = left_part
-                right_remaining = word[len(left_part):]
-                all_hunspell_candidates.extend([left_remaining, right_remaining])
-            
-            word_candidates_end = len(all_hunspell_candidates)
-            word_to_hunspell_map[word] = (word_candidates_start, word_candidates_end, left_part, right_part)
-        
-        print(f"- Collected {len(all_hunspell_candidates):,} total Hunspell candidates")
-        
-        # STEP 4: Make ONE large HunspellPool batch call for ALL candidates
-        print(f"- Processing ALL {len(all_hunspell_candidates):,} candidates in single HunspellPool batch...")
-        hunspell_start = time.time()
-        
-        if self.hunspell_pool is None:
-            self._init_hunspell_pool()
-        
-        try:
-            # Single batch call with timeout protection
-            all_hunspell_results = await asyncio.wait_for(
-                self.hunspell_pool.check_words_batch(all_hunspell_candidates, batch_size=1000),
-                timeout=30.0  # 30-second timeout
-            )
-            
-            hunspell_time = time.time() - hunspell_start
-            hunspell_rate = len(all_hunspell_candidates) / max(hunspell_time, 0.1)
-            print(f"- Completed HunspellPool batch processing in {hunspell_time:.1f}s ({hunspell_rate:.0f} candidates/sec)")
-            
-        except asyncio.TimeoutError:
-            logger.error("HunspellPool batch processing timed out after 30s")
-            print("⚠️  HunspellPool timeout - using fallback processing")
-            # Fallback: return basic suggestions without splitting
-            best_suggestions = defaultdict(list)
-            for word in sorted_oov_words:
-                best_suggestions[word] = [(None, None)]  # Basic fallback
-            return best_suggestions
-        
-        # STEP 5: Process results efficiently (no more async operations)
-        print(f"- Processing results for {len(sorted_oov_words)} words...")
-        processing_start = time.time()
+        print(f"- Processing {len(sorted_oov_words)} words with reliable subprocess approach...")
         
         best_suggestions = defaultdict(list)
         
-        for word in sorted_oov_words:
-            try:
-                start_idx, end_idx, left_part, right_part = word_to_hunspell_map[word]
-                
-                # Get unsplit suggestion (first candidate is always the original word)
-                word_result = all_hunspell_results[start_idx]
-                unsplit_suggestion = None
-                
-                if word_result:
-                    lines = [line for line in word_result.splitlines() if line and not line.startswith("@")]
-                    if lines and lines[0].startswith("&"):
-                        match = re.search(r": (.+)", lines[0])
-                        if match:
-                            suggestions = match.group(1).split(", ")
-                            unsplit_suggestion = min(suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
-                
-                # Get split suggestion if we have split candidates
-                split_suggestion = None
-                if end_idx > start_idx + 1:  # We have split candidates
-                    split_candidates_results = all_hunspell_results[start_idx + 1:end_idx]
-                    
-                    # Process split results similar to original logic but without async
-                    if left_part and right_part:
-                        split_suggestion = f"{left_part} {right_part}"
-                    elif len(split_candidates_results) >= 2:
-                        # Try to build better suggestions from split results
-                        left_candidate_result = split_candidates_results[0] if len(split_candidates_results) > 0 else ""
-                        right_candidate_result = split_candidates_results[1] if len(split_candidates_results) > 1 else ""
-                        
-                        # Extract suggestions from results
-                        left_suggestions = []
-                        right_suggestions = []
-                        
-                        for result_idx, result in enumerate([left_candidate_result, right_candidate_result]):
-                            if result:
-                                lines = [line for line in result.splitlines() if line and not line.startswith("@")]
-                                if lines and lines[0].startswith("&"):
-                                    match = re.search(r": (.+)", lines[0])
-                                    if match:
-                                        suggestions = match.group(1).split(", ")
-                                        if result_idx == 0:
-                                            left_suggestions = suggestions
-                                        else:
-                                            right_suggestions = suggestions
-                        
-                        if left_suggestions and right_suggestions:
-                            # Use best suggestions from each part
-                            best_left = left_suggestions[0] if left_suggestions else left_part
-                            best_right = right_suggestions[0] if right_suggestions else right_part
-                            if best_left and best_right:
-                                split_suggestion = f"{best_left} {best_right}"
-                
-                best_suggestions[word].append((unsplit_suggestion, split_suggestion))
-                
-            except Exception as e:
-                logger.error(f"Error processing results for word '{word}': {e}")
-                best_suggestions[word].append((None, None))  # Fallback
+        # Process words with limited concurrency to avoid overwhelming system
+        semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent words
         
-        processing_time = time.time() - processing_start
-        processing_rate = len(sorted_oov_words) / max(processing_time, 0.1)
-        print(f"- Completed result processing in {processing_time:.1f}s ({processing_rate:.1f} words/sec)")
-
+        async def process_single_word(word):
+            async with semaphore:
+                try:
+                    # Use the working functions from old version
+                    unsplit_task = self.run_hunspell_word_async(word)
+                    split_task = self.find_best_split_for_spellcheck(word)
+                    
+                    # Execute both operations concurrently
+                    unsplit_suggestions, (left_part, right_part) = await asyncio.gather(unsplit_task, split_task)
+                    
+                    split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
+                    unsplit_suggestion = (
+                        min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
+                        if unsplit_suggestions else None)
+                    
+                    return word, unsplit_suggestion, split_suggestion
+                    
+                except Exception as e:
+                    logger.error(f"Error processing word '{word}': {e}")
+                    return word, None, None
+        
+        # Process all words with progress reporting
+        print(f"- Processing words with limited concurrency (max 10 concurrent)...")
+        word_tasks = [process_single_word(word) for word in sorted_oov_words]
+        
+        # Show progress as words complete
+        completed_words = 0
+        for completed_task in asyncio.as_completed(word_tasks):
+            result = await completed_task
+            if result and len(result) == 3:
+                word, unsplit_suggestion, split_suggestion = result
+                best_suggestions[word].append((unsplit_suggestion, split_suggestion))
+            
+            completed_words += 1
+            if completed_words % max(1, len(sorted_oov_words) // 10) == 0 or completed_words % 10 == 0:
+                progress_percent = (completed_words / len(sorted_oov_words)) * 100
+                elapsed = time.time() - start_time
+                rate = completed_words / max(elapsed, 0.1)
+                remaining = len(sorted_oov_words) - completed_words
+                eta = remaining / max(rate, 0.1)
+                print(f"  Progress: {completed_words}/{len(sorted_oov_words)} ({progress_percent:.1f}%) [{rate:.1f} words/sec, ETA: {eta:.1f}s]")
+        
         total_time = time.time() - start_time
         rate = len(unique_oov_words) / max(total_time, 0.1)
-        print(f"- Completed fully batched suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
-        print("- ✅ FIXED: Eliminated resource contention by batching ALL operations")
+        print(f"- Completed simple suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
+        print("- ✅ HYBRID APPROACH: Using reliable subprocess method for suggestions")
         
         return best_suggestions
     
