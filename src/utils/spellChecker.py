@@ -16,7 +16,7 @@ import nest_asyncio
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter #wait_exponential
 from openai import RateLimitError
-from aiolimiter import AsyncLimiter
+#from collections import deque
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -52,62 +52,118 @@ class CorrectionItem(BaseModel):
 class LLMCorrectionResponse(BaseModel):
     corrections: List[CorrectionItem] 
     
-# === RATE LIMITING ========================================================================================================
+# === RATE LIMITING HELPER CLASSES ========================================================================================================
+
+class RequestBucket:
+    """Simple request bucket for RPM limiting (from qualityFilter.py)"""
+    def __init__(self, requests_per_minute):
+        self.rpm = requests_per_minute
+        self.available = requests_per_minute
+        self.last_update = time.monotonic()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Acquire one request slot"""
+        async with self.lock:
+            now = time.monotonic()
+            elapsed = now - self.last_update
+            # Regenerate requests based on time elapsed
+            self.available = min(self.rpm, self.available + (self.rpm * elapsed / 60))
+            self.last_update = now
+            
+            if self.available >= 1:
+                self.available -= 1
+                return True
+            else:
+                # Calculate wait time
+                wait_seconds = (1 - self.available) * 60 / self.rpm
+                return wait_seconds
+    
+    async def wait_and_acquire(self):
+        """Wait if necessary and acquire a request slot"""
+        while True:
+            result = await self.acquire()
+            if result is True:
+                return
+            else:
+                # result is wait_seconds
+                await asyncio.sleep(result)
+
 
 class TokenBucket:
-    """Token bucket for TPM rate limiting with smart waiting"""
-    
+    """Simple token bucket for TPM limiting (from qualityFilter.py)"""
     def __init__(self, tokens_per_minute):
         self.tpm = tokens_per_minute
         self.available = tokens_per_minute
-        self.last_update = time.monotonic()  # Use monotonic to avoid clock issues
+        self.last_update = time.monotonic()
         self.lock = asyncio.Lock()
     
     async def acquire(self, tokens_needed):
-        """Acquire tokens, waiting if necessary"""
+        """Acquire tokens, returning wait time if not available"""
         async with self.lock:
-            # Regenerate tokens based on time elapsed
             now = time.monotonic()
             elapsed = now - self.last_update
+            # Regenerate tokens based on time elapsed
             self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
             self.last_update = now
             
-            # Calculate wait time if not enough tokens (avoid busy polling)
-            if self.available < tokens_needed:
+            if self.available >= tokens_needed:
+                self.available -= tokens_needed
+                return True
+            else:
+                # Calculate wait time
                 deficit = tokens_needed - self.available
                 wait_seconds = deficit * 60 / self.tpm
-                if wait_seconds > 1.0:  # Only log significant waits
-                    print(f"[RATE LIMIT] Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens (deficit: {deficit:.0f})")
-                await asyncio.sleep(wait_seconds)
-                # Recalculate after sleep
-                now = time.monotonic()
-                self.available = min(self.tpm, self.available + (self.tpm * wait_seconds / 60))
-                self.last_update = now
-            
-            # Consume tokens
-            self.available -= tokens_needed
-            logger.debug(f"Token bucket: consumed {tokens_needed}, {self.available:.0f} remaining")
+                return wait_seconds
+    
+    async def wait_and_acquire(self, tokens_needed):
+        """Wait if necessary and acquire tokens"""
+        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
+        
+        while True:
+            result = await self.acquire(tokens_needed)
+            if result is True:
+                logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
+                return
+            else:
+                # result is wait_seconds
+                logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
+                await asyncio.sleep(result)
+    
+    async def reconcile(self, delta_tokens):
+        """Reconcile actual vs estimated tokens"""
+        # If we overestimated (delta < 0), return tokens
+        # If we underestimated (delta > 0), we already used them
+        if delta_tokens < 0:
+            async with self.lock:
+                old_available = self.available
+                self.available = min(self.tpm, self.available - delta_tokens)
+                logger.debug(f"[TOKEN BUCKET] Reconciled {-delta_tokens} tokens back, {old_available:.0f} → {self.available:.0f}")
+        else:
+            logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
 
 
-class RateLimitTracker:
-    """Track rate limit errors and enforce cooldown periods"""
+class LeakyPacer:
+    """Smooth request spacing across time (from qualityFilter.py)"""
+    def __init__(self, rpm_limit, avg_tokens, tpm_limit):
+        # Calculate interval based on both RPM and TPM constraints
+        rpm_interval = 60.0 / rpm_limit
+        tpm_interval = (60.0 * avg_tokens) / tpm_limit
+        self.interval = max(rpm_interval, tpm_interval)
+        self.last_request = 0
+        self.lock = asyncio.Lock()
     
-    def __init__(self, cooldown_seconds=15):
-        self.last_rate_limit_time = 0
-        self.cooldown_seconds = cooldown_seconds
-    
-    def check_cooldown(self):
-        """Check if we're still in cooldown period"""
-        time_since_error = time.monotonic() - self.last_rate_limit_time
-        if time_since_error < self.cooldown_seconds:
-            remaining = self.cooldown_seconds - time_since_error
-            return True, remaining
-        return False, 0
-    
-    def record_rate_limit(self):
-        """Record when rate limit was hit"""
-        self.last_rate_limit_time = time.monotonic()
-        logger.warning(f"Rate limit error recorded, entering {self.cooldown_seconds}s cooldown")
+    async def wait(self):
+        """Wait until next request slot is available"""
+        async with self.lock:
+            now = time.monotonic()
+            elapsed = now - self.last_request
+            if elapsed < self.interval:
+                wait_time = self.interval - elapsed
+                await asyncio.sleep(wait_time)
+                self.last_request = time.monotonic()
+            else:
+                self.last_request = now
 
 # === HUNSPELL ========================================================================================================
 class HunspellSession:
@@ -185,9 +241,9 @@ class HunspellPool:
     def __init__(self, hunspell_path: str, dict_path: str, pool_size: int = None):
         self.hunspell_path = hunspell_path
         self.dict_path = dict_path
-        # Auto-tune pool size based on CPU count with sensible limits
+        # Auto-tune pool size based on CPU count with more conservative limits
         if pool_size is None:
-            pool_size = min(os.cpu_count() * 2, 50)  # Max 50 processes to avoid system overload
+            pool_size = min(os.cpu_count(), 20)  # Max 20 processes to prevent resource exhaustion
         self.pool_size = pool_size
         self.sessions = []
         self.session_locks = []
@@ -240,9 +296,7 @@ class HunspellPool:
         if not words:
             return []
         
-        # OPTIMIZED PARALLEL PROCESSING: Use larger batch sizes for persistent pipes
-        # Increased batch size for better throughput with persistent connections
-        max_safe_batch_size = 1000  # Increased from 500 - persistent pipes can handle more
+        max_safe_batch_size = 1000  
         optimal_batch_size = min(max_safe_batch_size, max(100, batch_size))
         
         # Build batches with start indices to preserve order
@@ -259,7 +313,7 @@ class HunspellPool:
             async with self.session_locks[session_idx]:
                 try:
                     loop = asyncio.get_running_loop()
-                    start_time = time.time()
+                    #start_time = time.time()
                     
                     # Add timeout protection to prevent infinite hangs
                     result = await asyncio.wait_for(
@@ -267,8 +321,8 @@ class HunspellPool:
                         timeout=30.0  # 30-second timeout per batch
                     )
                     
-                    batch_time = time.time() - start_time
-                    batch_rate = len(batch) / max(batch_time, 0.001)
+                    #batch_time = time.time() - start_time
+                    #batch_rate = len(batch) / max(batch_time, 0.001)
                     
                     return idx, result
                     
@@ -460,7 +514,7 @@ class SpellChecker:
             return False
     
     @staticmethod
-    @lru_cache(maxsize=10000)
+    @lru_cache(maxsize=1000000)
     def cached_levenshtein_distance(word1: str, word2: str) -> int:
         if word1 == word2:
             return 0
@@ -504,41 +558,69 @@ class SpellChecker:
             return [word]  # Word is correct
         return []
     
-    async def run_hunspell_batch_async(self, words: List[str]) -> List[List[str]]:
-        """Efficient batch Hunspell lookup using persistent process pool"""
-        if self.hunspell_pool is None:
-            self._init_hunspell_pool()
+    # async def run_hunspell_batch_async(self, words: List[str]) -> List[List[str]]:
+    #     """Efficient batch Hunspell lookup using persistent process pool"""
+    #     if self.hunspell_pool is None:
+    #         self._init_hunspell_pool()
         
-        outputs = await self.hunspell_pool.check_words_batch(words)
-        results = []
+    #     outputs = await self.hunspell_pool.check_words_batch(words)
+    #     results = []
         
-        for output in outputs:
-            lines = [line for line in output.splitlines() if line and not line.startswith("@")]
+    #     for output in outputs:
+    #         lines = [line for line in output.splitlines() if line and not line.startswith("@")]
             
-            if lines and lines[0].startswith("&"):
-                match = re.search(r": (.+)", lines[0])
-                if match:
-                    suggestions = match.group(1).split(", ")
-                    results.append(suggestions)
-                else:
-                    results.append([])
-            elif lines and lines[0].startswith("*"):
-                # Word is correct - get the original word from the first few characters
-                word_match = re.search(r'^\*\s+(.+)', lines[0])
-                if word_match:
-                    results.append([word_match.group(1)])
-                else:
-                    results.append([])
-            else:
-                results.append([])
+    #         if lines and lines[0].startswith("&"):
+    #             match = re.search(r": (.+)", lines[0])
+    #             if match:
+    #                 suggestions = match.group(1).split(", ")
+    #                 results.append(suggestions)
+    #             else:
+    #                 results.append([])
+    #         elif lines and lines[0].startswith("*"):
+    #             # Word is correct - get the original word from the first few characters
+    #             word_match = re.search(r'^\*\s+(.+)', lines[0])
+    #             if word_match:
+    #                 results.append([word_match.group(1)])
+    #             else:
+    #                 results.append([])
+    #         else:
+    #             results.append([])
         
-        return results
+    #     return results
     
     async def verify_correction_with_dictionary(self, word: str) -> bool:
         """Verify LLM corrections against dictionary"""
         result = await self.run_hunspell_word_async(word)
         self.stats['dictionary_verifications'] += 1
         return bool(result and result[0] == word)
+
+    def _estimate_avg_tokens_for_tasks(self, tasks: List[Dict]) -> int:
+        """Estimate average tokens for spell correction tasks (following qualityFilter.py pattern)"""
+        sample_size = min(10, len(tasks))
+        if sample_size == 0:
+            return 200  # Default estimate
+        
+        encoding = get_tiktoken_encoding(self.model)
+        total_tokens = 0
+        
+        for i in range(sample_size):
+            task = tasks[i]
+            task_text = f"""Task:
+Respondent ID: {task['respondent_id']}
+Response: "{task['response_with_placeholders']}"
+Misspelled words: {task['oov_words']}
+Suggested corrections: {task['suggestions']}
+"""
+            full_prompt = SPELLCHECK_INSTRUCTIONS.format(
+                language=DEFAULT_LANGUAGE,
+                var_lab="sample_var",
+                tasks=task_text
+            )
+            total_tokens += len(encoding.encode(full_prompt))
+        
+        avg_input = total_tokens / sample_size
+        # Assume 15% output ratio for spell correction
+        return int(avg_input * 1.15)
     
     async def pre_validate_suggestions(self, suggestions: List[str]) -> List[str]:
         """Pre-validate suggestions against dictionary to filter out invalid ones"""
@@ -564,80 +646,8 @@ class SpellChecker:
         # Return tuples of (original_word, split_text, split_type) for batched processing
         return [(oov_word, split_text, split_type) for split_text, split_type in all_splits]
 
-    async def process_splits_with_results(self, oov_word: str, split_results: Dict[str, bool]) -> Tuple[str, str]:
-        """Process split results that were validated in batch to find best split"""
-        excluded_tags = {"SYM", "PUNCT", "X", "SPACE", "NUM"}
-        
-        # Filter valid splits based on batch results
-        left_split_attempts = [(oov_word[:i], "left") for i in range(4, len(oov_word) + 1)]
-        right_split_attempts = [(oov_word[i:], "right") for i in range(len(oov_word) - 3)]
-        all_splits = left_split_attempts + right_split_attempts
-        
-        # Use the batch-processed results to filter valid splits
-        valid_splits = [
-            (split_text, split_type) for split_text, split_type in all_splits
-            if len(split_text) > 2 and split_results.get(split_text, False)
-        ]
-        
-        left_parts = [split for split, tag in valid_splits if tag == "left"]
-        right_parts = [split for split, tag in valid_splits if tag == "right"]
-
-        left_part = max(left_parts, key=len) if left_parts else ""
-        right_part = max(right_parts, key=len) if right_parts else ""
-        
-        # Continue with Hunspell processing for final candidates
-        batch_candidates = []
-        if right_part:
-            left_remaining = oov_word[:-len(right_part)]
-            right_remaining = right_part
-            batch_candidates.extend([left_remaining, right_remaining])
-        elif left_part:
-            left_remaining = left_part
-            right_remaining = oov_word[len(left_part):]
-            batch_candidates.extend([left_remaining, right_remaining])
-        else:
-            batch_candidates.append(oov_word)
-
-        if not batch_candidates:
-            return "", ""
-
-        hunspell_results = await asyncio.gather(
-            *(self.run_hunspell_word_async(candidate) for candidate in batch_candidates))
-
-        normalized_hunspell_results = {
-            candidate: result if isinstance(result, list) else [result]
-            for candidate, result in zip(batch_candidates, hunspell_results)}
-
-        all_suggestions = [
-            suggestion
-            for suggestions in normalized_hunspell_results.values()
-            for suggestion in suggestions]
-
-        if not all_suggestions or not all(isinstance(s, str) for s in all_suggestions):
-            return left_part, right_part
-
-        # Batch process suggestions (this will also be optimized later if needed)
-        processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=self.config.spacy_batch_size))
-
-        filtered_suggestions = {
-            candidate: [suggestion for suggestion, doc in zip(normalized_hunspell_results[candidate], processed_suggestions) if doc.vector_norm > 5]
-            for candidate in batch_candidates}
-
-        if left_part:
-            right_remaining = oov_word[len(left_part):]
-            right_part_suggestions = filtered_suggestions.get(right_remaining, [])
-            right_part = (
-                min(right_part_suggestions, key=lambda s: self.cached_levenshtein_distance(right_remaining, s))
-                if right_part_suggestions else right_part)
-
-        if right_part:
-            left_remaining = oov_word[:-len(right_part)]
-            left_part_suggestions = filtered_suggestions.get(left_remaining, [])
-            left_part = (
-                min(left_part_suggestions, key=lambda s: self.cached_levenshtein_distance(left_remaining, s))
-                if left_part_suggestions else left_part)
-
-        return left_part, right_part
+    # REMOVED: process_splits_with_results() function that was causing per-word async bottlenecks
+    # This functionality is now handled efficiently in the fully batched _process_suggestions_batched_spacy method
 
     async def find_best_suggestions_batch_async(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
         """Process unique OOV words with aggressive parallel processing and caching"""
@@ -664,9 +674,17 @@ class SpellChecker:
             if self.verbose_reporter.enabled and cached_suggestions:
                 self.verbose_reporter.stat_line(f"Found {len(cached_suggestions)} words in cache, processing {len(uncached_words)} new words")
         
-        # Process uncached words with optimized batched SpaCy approach
-        # Use batched SpaCy processing for all datasets to eliminate per-word overhead
-        new_suggestions = await self._process_suggestions_batched_spacy(unique_oov_words)
+        # Add timeout protection to prevent infinite hangs
+        try:
+            new_suggestions = await asyncio.wait_for(
+                self._process_suggestions_batched_spacy(unique_oov_words),
+                timeout=300.0  # 5-minute timeout for large datasets
+            )
+        except asyncio.TimeoutError:
+            logger.error("Suggestion generation timed out after 5 minutes")
+            print("⚠️  Suggestion generation timeout - using fallback")
+            # Return empty suggestions as fallback
+            new_suggestions = {word: [(None, None)] for word in unique_oov_words}
         
         # Update cache if enabled
         if self.suggestion_cache is not None:
@@ -680,12 +698,12 @@ class SpellChecker:
     
     
     async def _process_suggestions_batched_spacy(self, unique_oov_words: List[str]) -> Dict[str, List[Any]]:
-        """Batched SpaCy processing for optimal performance"""
-        print("[BATCHED SPACY SUGGESTION GENERATION]")
+        """Fully batched processing to eliminate resource contention and hanging"""
+        print("[FULLY BATCHED SUGGESTION GENERATION]")
         start_time = time.time()
         sorted_oov_words = sorted(unique_oov_words)
         
-        # STEP 1: Collect ALL split candidates from ALL words (no SpaCy processing yet)
+        # STEP 1: Collect ALL split candidates from ALL words (no async operations yet)
         print(f"- Collecting split candidates from {len(sorted_oov_words)} words...")
         all_split_candidates = []
         word_to_splits = {}
@@ -718,65 +736,147 @@ class SpellChecker:
         batch_time = time.time() - batch_start
         print(f"- Completed SpaCy batch processing in {batch_time:.1f}s ({len(unique_splits)/max(batch_time, 0.1):,.0f} splits/sec)")
         
-        # STEP 3: Process words in smaller batches to avoid overwhelming HunspellPool
-        print(f"- Processing {len(sorted_oov_words)} words in smaller batches to avoid overwhelming system...")
+        # STEP 3: Collect ALL Hunspell candidates from ALL words (no async operations yet)
+        print(f"- Collecting ALL Hunspell candidates from {len(sorted_oov_words)} words...")
+        all_hunspell_candidates = []
+        word_to_hunspell_map = {}
         
-        async def process_word_with_batch_results(word):
-            try:
-                # Get unsplit suggestions
-                unsplit_task = self.run_hunspell_word_async(word)
-                
-                # Process splits using batch results
-                split_task = self.process_splits_with_results(word, split_results)
-                
-                # Execute both operations concurrently
-                unsplit_suggestions, (left_part, right_part) = await asyncio.gather(unsplit_task, split_task)
-                
-                split_suggestion = f"{left_part} {right_part}" if (left_part and right_part) else None
-                unsplit_suggestion = (
-                    min(unsplit_suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
-                    if unsplit_suggestions else None)
-                return word, unsplit_suggestion, split_suggestion
-            except Exception as e:
-                logger.error(f"Error processing word '{word}': {e}")
-                return word, None, None
-       
-        # Process words in manageable batches to avoid overwhelming HunspellPool
-        batch_size = 50  # Process 50 words concurrently at a time
-        total_batches = (len(sorted_oov_words) + batch_size - 1) // batch_size
-        results = []
-        
-        word_processing_start = time.time()
-        
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(sorted_oov_words))
-            batch_words = sorted_oov_words[start_idx:end_idx]
+        for word in sorted_oov_words:
+            # Add the word itself for unsplit suggestions
+            all_hunspell_candidates.append(word)
+            word_candidates_start = len(all_hunspell_candidates) - 1
             
-            print(f"  Processing batch {batch_idx + 1}/{total_batches} ({len(batch_words)} words)...")
-            batch_start = time.time()
+            # Process splits using batch results to find additional candidates
+            left_split_attempts = [(word[:i], "left") for i in range(4, len(word) + 1)]
+            right_split_attempts = [(word[i:], "right") for i in range(len(word) - 3)]
+            all_splits = left_split_attempts + right_split_attempts
             
-            # Process this batch concurrently
-            batch_results = await asyncio.gather(*(process_word_with_batch_results(word) for word in batch_words))
-            results.extend(batch_results)
+            # Use pre-computed split validation results
+            valid_splits = [
+                (split_text, split_type) for split_text, split_type in all_splits
+                if len(split_text) > 2 and split_results.get(split_text, False)
+            ]
             
-            batch_time = time.time() - batch_start
-            batch_rate = len(batch_words) / max(batch_time, 0.1)
-            print(f"  Batch {batch_idx + 1} completed in {batch_time:.1f}s ({batch_rate:.1f} words/sec)")
+            left_parts = [split for split, tag in valid_splits if tag == "left"]
+            right_parts = [split for split, tag in valid_splits if tag == "right"]
+            
+            left_part = max(left_parts, key=len) if left_parts else ""
+            right_part = max(right_parts, key=len) if right_parts else ""
+            
+            # Add split candidates to batch
+            if right_part:
+                left_remaining = word[:-len(right_part)]
+                right_remaining = right_part
+                all_hunspell_candidates.extend([left_remaining, right_remaining])
+            elif left_part:
+                left_remaining = left_part
+                right_remaining = word[len(left_part):]
+                all_hunspell_candidates.extend([left_remaining, right_remaining])
+            
+            word_candidates_end = len(all_hunspell_candidates)
+            word_to_hunspell_map[word] = (word_candidates_start, word_candidates_end, left_part, right_part)
         
-        word_processing_time = time.time() - word_processing_start
-        word_processing_rate = len(sorted_oov_words) / max(word_processing_time, 0.1)
-        print(f"- Completed word processing in {word_processing_time:.1f}s ({word_processing_rate:.1f} words/sec)")
-
+        print(f"- Collected {len(all_hunspell_candidates):,} total Hunspell candidates")
+        
+        # STEP 4: Make ONE large HunspellPool batch call for ALL candidates
+        print(f"- Processing ALL {len(all_hunspell_candidates):,} candidates in single HunspellPool batch...")
+        hunspell_start = time.time()
+        
+        if self.hunspell_pool is None:
+            self._init_hunspell_pool()
+        
+        try:
+            # Single batch call with timeout protection
+            all_hunspell_results = await asyncio.wait_for(
+                self.hunspell_pool.check_words_batch(all_hunspell_candidates, batch_size=1000),
+                timeout=30.0  # 30-second timeout
+            )
+            
+            hunspell_time = time.time() - hunspell_start
+            hunspell_rate = len(all_hunspell_candidates) / max(hunspell_time, 0.1)
+            print(f"- Completed HunspellPool batch processing in {hunspell_time:.1f}s ({hunspell_rate:.0f} candidates/sec)")
+            
+        except asyncio.TimeoutError:
+            logger.error("HunspellPool batch processing timed out after 30s")
+            print("⚠️  HunspellPool timeout - using fallback processing")
+            # Fallback: return basic suggestions without splitting
+            best_suggestions = defaultdict(list)
+            for word in sorted_oov_words:
+                best_suggestions[word] = [(None, None)]  # Basic fallback
+            return best_suggestions
+        
+        # STEP 5: Process results efficiently (no more async operations)
+        print(f"- Processing results for {len(sorted_oov_words)} words...")
+        processing_start = time.time()
+        
         best_suggestions = defaultdict(list)
-        for result in results:
-            if result and len(result) == 3:
-                best_suggestions[result[0]].append(result[1:])
+        
+        for word in sorted_oov_words:
+            try:
+                start_idx, end_idx, left_part, right_part = word_to_hunspell_map[word]
+                
+                # Get unsplit suggestion (first candidate is always the original word)
+                word_result = all_hunspell_results[start_idx]
+                unsplit_suggestion = None
+                
+                if word_result:
+                    lines = [line for line in word_result.splitlines() if line and not line.startswith("@")]
+                    if lines and lines[0].startswith("&"):
+                        match = re.search(r": (.+)", lines[0])
+                        if match:
+                            suggestions = match.group(1).split(", ")
+                            unsplit_suggestion = min(suggestions, key=lambda s: self.cached_levenshtein_distance(word, s))
+                
+                # Get split suggestion if we have split candidates
+                split_suggestion = None
+                if end_idx > start_idx + 1:  # We have split candidates
+                    split_candidates_results = all_hunspell_results[start_idx + 1:end_idx]
+                    
+                    # Process split results similar to original logic but without async
+                    if left_part and right_part:
+                        split_suggestion = f"{left_part} {right_part}"
+                    elif len(split_candidates_results) >= 2:
+                        # Try to build better suggestions from split results
+                        left_candidate_result = split_candidates_results[0] if len(split_candidates_results) > 0 else ""
+                        right_candidate_result = split_candidates_results[1] if len(split_candidates_results) > 1 else ""
+                        
+                        # Extract suggestions from results
+                        left_suggestions = []
+                        right_suggestions = []
+                        
+                        for result_idx, result in enumerate([left_candidate_result, right_candidate_result]):
+                            if result:
+                                lines = [line for line in result.splitlines() if line and not line.startswith("@")]
+                                if lines and lines[0].startswith("&"):
+                                    match = re.search(r": (.+)", lines[0])
+                                    if match:
+                                        suggestions = match.group(1).split(", ")
+                                        if result_idx == 0:
+                                            left_suggestions = suggestions
+                                        else:
+                                            right_suggestions = suggestions
+                        
+                        if left_suggestions and right_suggestions:
+                            # Use best suggestions from each part
+                            best_left = left_suggestions[0] if left_suggestions else left_part
+                            best_right = right_suggestions[0] if right_suggestions else right_part
+                            if best_left and best_right:
+                                split_suggestion = f"{best_left} {best_right}"
+                
+                best_suggestions[word].append((unsplit_suggestion, split_suggestion))
+                
+            except Exception as e:
+                logger.error(f"Error processing results for word '{word}': {e}")
+                best_suggestions[word].append((None, None))  # Fallback
+        
+        processing_time = time.time() - processing_start
+        processing_rate = len(sorted_oov_words) / max(processing_time, 0.1)
+        print(f"- Completed result processing in {processing_time:.1f}s ({processing_rate:.1f} words/sec)")
 
         total_time = time.time() - start_time
         rate = len(unique_oov_words) / max(total_time, 0.1)
-        print(f"- Completed batched suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
-        print(f"- Performance improvement: Batched SpaCy processing eliminated per-word overhead")
+        print(f"- Completed fully batched suggestion generation: {len(unique_oov_words):,} words in {total_time:.1f}s ({rate:.1f} words/sec)")
+        print("- ✅ FIXED: Eliminated resource contention by batching ALL operations")
         
         return best_suggestions
     
@@ -905,10 +1005,10 @@ class SpellChecker:
         
         corrected_sentences_dict = {}
         tasks = []
-        prompt_header = SPELLCHECK_INSTRUCTIONS.format(
-            language=DEFAULT_LANGUAGE,
-            var_lab=var_lab,
-            tasks="")   
+        # prompt_header = SPELLCHECK_INSTRUCTIONS.format(
+        #     language=DEFAULT_LANGUAGE,
+        #     var_lab=var_lab,
+        #     tasks="")   
         
         responses_with_ids = [{'respondent_id': response.respondent_id, 'response': response.original_response} for response in responses]
     
@@ -1148,30 +1248,39 @@ class SpellChecker:
 # Batching removed - now processing individual tasks directly
         
         # =================================================================
-        # RATE LIMITING SETUP FOR INDIVIDUAL TASKS
+        # RATE LIMITING SETUP (following qualityFilter.py patterns)
         # =================================================================
         
         if filtered_tasks:
             # Get model limits from config
             limits = get_openai_rate_limits(self.model)
-            HEADROOM = 0.8  # Use 80% of limits for safety
+            HEADROOM = 0.9  # Increased from 0.8 to 0.9 for higher throughput
             
-            # Create rate limiters
-            rpm_limiter = AsyncLimiter(limits.requests_per_minute * HEADROOM / 60, 1)
-            token_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
+            # Calculate average tokens for pacer
+            avg_tokens = self._estimate_avg_tokens_for_tasks(filtered_tasks)
             
-            # Transport limit (HTTP/2 streams, system resources)
-            semaphore = asyncio.Semaphore(100)
+            # Create unified rate limiting system (following qualityFilter.py order)
+            self.rpm_bucket = RequestBucket(limits.requests_per_minute * HEADROOM)
+            self.tpm_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM) 
+            self.pacer = LeakyPacer(
+                limits.requests_per_minute * HEADROOM,
+                avg_tokens,
+                limits.tokens_per_minute * HEADROOM
+            )
             
-            # Rate limit tracking with cooldown
-            rate_limit_tracker = RateLimitTracker(cooldown_seconds=15)
+            # Calculate optimal concurrency based on API limits and latency
+            rpm_concurrency = limits.requests_per_minute * HEADROOM / 60 * 2.0  # Assume 2s avg latency
+            tpm_concurrency = (limits.tokens_per_minute * HEADROOM / avg_tokens) * 2.0
+            optimal_concurrency = min(rpm_concurrency, tpm_concurrency, 100)  # Cap at 100 for spell checker
+            
+            semaphore = asyncio.Semaphore(int(optimal_concurrency))
             
             print("[RATE LIMITING SETUP]")
             print(f"- Model: {self.model}")
             print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * HEADROOM:,.0f} with headroom)")
             print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * HEADROOM:,.0f} with headroom)")
             print(f"- Processing {len(filtered_tasks):,} individual tasks")
-            print(f"- Rate limit cooldown: {rate_limit_tracker.cooldown_seconds}s")
+            #print(f"- Rate limit cooldown: {rate_limit_tracker.cooldown_seconds}s")
         else:
             print("No correction tasks to process")
             return {}
@@ -1198,7 +1307,7 @@ class SpellChecker:
             if retry_state.outcome and retry_state.outcome.failed:
                 exception = retry_state.outcome.exception()
                 if isinstance(exception, RateLimitError):
-                    rate_limit_tracker.record_rate_limit()
+                    #rate_limit_tracker.record_rate_limit()
                     print(f"[RATE LIMIT] Attempt {retry_state.attempt_number}: {exception}")
         
         @retry(
@@ -1214,10 +1323,18 @@ class SpellChecker:
             # Count tokens needed for this task
             tokens_needed = count_task_tokens(task_dict)
             
-            # Apply rate limits in correct order
-            async with rpm_limiter:                    # RPM check
-                await token_bucket.acquire(tokens_needed)  # TPM check
-                async with semaphore:                     # Transport limit
+            # ADMISSION CONTROLS (in order per qualityFilter.py guide)
+            # 1. Leaky pacer
+            await self.pacer.wait()
+            
+            # 2. RPM bucket
+            await self.rpm_bucket.wait_and_acquire()
+            
+            # 3. TPM bucket
+            await self.tpm_bucket.wait_and_acquire(tokens_needed)
+            
+            # 4. Semaphore
+            async with semaphore:
                     # Create proper task using original SPELLCHECK_INSTRUCTIONS format
                     task_text = f"""Task:
 Respondent ID: {task_dict['respondent_id']}
@@ -1250,6 +1367,15 @@ Suggested corrections: {task_dict['suggestions']}
                         )
                         
                         self.stats['llm_calls_successful'] += 1
+                        
+                        # Track actual token usage for reconciliation
+                        if hasattr(response, '_raw_response'):
+                            usage = response._raw_response.usage
+                            if usage:
+                                actual_total_tokens = usage.total_tokens
+                                # Reconcile token difference with bucket
+                                delta = actual_total_tokens - tokens_needed
+                                await self.tpm_bucket.reconcile(delta)
                         
                         # Parse structured response with validation
                         if response.corrections and len(response.corrections) > 0:
@@ -1382,7 +1508,6 @@ Suggested corrections: {task_dict['suggestions']}
         print(f"  • Cached words processed, {len(all_words_to_check):,} words need Hunspell verification")
         
         if all_words_to_check:
-            # OPTIMIZED: Use HunspellPool with much larger batches for massive speed improvement
             # Use 10x larger batches to minimize process overhead
             batch_size = self.config.hunspell_batch_size * 10  # 10,000 words per batch instead of 1,000
             
@@ -1430,7 +1555,7 @@ Suggested corrections: {task_dict['suggestions']}
             words_per_second = len(all_words_to_check) / max(processing_time, 0.1)
             
             print(f"  • Completed OOV identification: {len(all_words_to_check):,} words in {processing_time:.1f}s ({words_per_second:.1f} words/sec)")
-            print(f"    Performance improvement: HunspellPool eliminated subprocess creation overhead")
+            print("    Performance improvement: HunspellPool eliminated subprocess creation overhead")
             
         # FIXED: Process only unique OOV words to avoid duplicates
         unique_oov_words = list(set(oov_words))
