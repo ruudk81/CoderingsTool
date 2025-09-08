@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, RootModel
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, wait_exponential, retry_if_exception_type
 from pydantic import ValidationError
-from asyncio_throttle import Throttler
+from collections import deque
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === MODELS ========================================================================================================
@@ -26,7 +26,7 @@ from prompts import CLUSTER_SUMMARY_PROMPT, CANDIDATE_CODE_SELECTION_PROMPT, COD
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter
-from .qualityFilter import WorkloadAnalyzer, SlidingWindowMonitor
+from .qualityFilter import TokenBucket, LatencyTracker, bootstrap_measure_async, compute_optimal_concurrency, ApiLimits
 
 try:
     import nest_asyncio
@@ -138,6 +138,116 @@ class CodeGeneratorReasoningResults(BaseModel):
         return getattr(self, key, default)
 
 # ============================================================================
+# UNIFIED RATE LIMITING CLASSES (following qualityFilter.py patterns)
+# ============================================================================
+
+class RequestBucket:
+    """Simple request bucket for RPM limiting (from qualityFilter.py)"""
+    def __init__(self, requests_per_minute):
+        self.rpm = requests_per_minute
+        self.available = requests_per_minute
+        self.last_update = time.time()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Acquire one request slot"""
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_update
+            # Regenerate requests based on time elapsed
+            self.available = min(self.rpm, self.available + (self.rpm * elapsed / 60))
+            self.last_update = now
+            
+            if self.available >= 1:
+                self.available -= 1
+                return True
+            else:
+                # Calculate wait time
+                wait_seconds = (1 - self.available) * 60 / self.rpm
+                return wait_seconds
+    
+    async def wait_and_acquire(self):
+        """Wait if necessary and acquire a request slot"""
+        while True:
+            result = await self.acquire()
+            if result is True:
+                return
+            else:
+                # result is wait_seconds
+                await asyncio.sleep(result)
+
+
+class TokenBucket:
+    """Simple token bucket for TPM limiting (from qualityFilter.py)"""
+    def __init__(self, tokens_per_minute):
+        self.tpm = tokens_per_minute
+        self.available = tokens_per_minute
+        self.last_update = time.time()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self, tokens_needed):
+        """Acquire tokens, returning wait time if not available"""
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_update
+            # Regenerate tokens based on time elapsed
+            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
+            self.last_update = now
+            
+            if self.available >= tokens_needed:
+                self.available -= tokens_needed
+                return True
+            else:
+                # Calculate wait time
+                deficit = tokens_needed - self.available
+                wait_seconds = deficit * 60 / self.tpm
+                return wait_seconds
+    
+    async def wait_and_acquire(self, tokens_needed):
+        """Wait if necessary and acquire tokens"""
+        while True:
+            result = await self.acquire(tokens_needed)
+            if result is True:
+                return
+            else:
+                # result is wait_seconds
+                await asyncio.sleep(result)
+    
+    async def reconcile(self, delta_tokens):
+        """Reconcile actual vs estimated tokens"""
+        # If we overestimated (delta < 0), return tokens
+        # If we underestimated (delta > 0), we already used them
+        if delta_tokens < 0:
+            async with self.lock:
+                old_available = self.available
+                self.available = min(self.tpm, self.available - delta_tokens)
+        else:
+            pass  # No reconciliation needed for underestimation
+
+
+class LeakyPacer:
+    """Smooth request spacing across time (from qualityFilter.py)"""
+    def __init__(self, rpm_limit, avg_tokens, tpm_limit):
+        # Calculate interval based on both RPM and TPM constraints
+        rpm_interval = 60.0 / rpm_limit
+        tpm_interval = (60.0 * avg_tokens) / tpm_limit
+        self.interval = max(rpm_interval, tpm_interval)
+        self.last_request = 0
+        self.lock = asyncio.Lock()
+    
+    async def wait(self):
+        """Wait until next request slot is available"""
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_request
+            if elapsed < self.interval:
+                wait_time = self.interval - elapsed
+                await asyncio.sleep(wait_time)
+                self.last_request = time.time()
+            else:
+                self.last_request = now
+
+# ============================================================================
 # ASYNC WRAPPERS FOR TRUE CONCURRENCY
 # ============================================================================
 
@@ -156,7 +266,9 @@ async def async_responses_create_with_json_retry(
     reasoning_effort: str = "minimal", 
     text_verbosity: str = "low", 
     semaphore = None,
-    max_retries: int = 3
+    rate_limiter = None,
+    max_retries: int = 3,
+    timeout: float = 30.0
     ):
     """Async wrapper with JSON validation retry logic"""
     
@@ -170,7 +282,9 @@ async def async_responses_create_with_json_retry(
                 prompt=prompt,
                 reasoning_effort=reasoning_effort,
                 text_verbosity=text_verbosity,
-                semaphore=semaphore
+                semaphore=semaphore,
+                rate_limiter=rate_limiter,
+                timeout=timeout
             )
             
             # Try to parse JSON
@@ -238,8 +352,8 @@ async def async_responses_create_with_json_retry(
     wait=wait_exponential_jitter(initial=0.5, max=8),
     retry=retry_if_exception_type(RetryableError)
 )
-def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
-    """Sync wrapper for responses.create with retry logic"""
+def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0):
+    """Sync wrapper for responses.create with retry logic and adaptive timeout"""
     try:
         # Import ModelConfig here to avoid circular imports
         from config import ModelConfig
@@ -251,7 +365,8 @@ def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "min
         # Build request parameters based on model type
         request_params = {
             "model": model,
-            "input": [{"role": "user", "content": prompt}]
+            "input": [{"role": "user", "content": prompt}],
+            "timeout": timeout  # Add adaptive timeout
         }
         
         # Only add reasoning parameters for GPT-5 models
@@ -266,9 +381,9 @@ def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "min
             raise RetryableError(str(e)) from e
         raise  # Re-raise non-retryable errors immediately
 
-async def async_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low"):
-    """Async wrapper using asyncio.to_thread for true concurrency"""
-    return await asyncio.to_thread(_sync_responses_create, model, prompt, reasoning_effort, text_verbosity)
+async def async_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0):
+    """Async wrapper using asyncio.to_thread for true concurrency with adaptive timeout"""
+    return await asyncio.to_thread(_sync_responses_create, model, prompt, reasoning_effort, text_verbosity, timeout)
 
 # Global semaphore for concurrency control - will be replaced with config-based approach
 _concurrency_semaphore = None
@@ -280,12 +395,46 @@ def _get_concurrency_semaphore():
         _concurrency_semaphore = asyncio.Semaphore(16)  # Default fallback
     return _concurrency_semaphore
 
-async def async_responses_create_with_semaphore(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", semaphore: asyncio.Semaphore = None):
-    """Async wrapper with semaphore-based concurrency control"""
+async def async_responses_create_with_semaphore(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", semaphore: asyncio.Semaphore = None, rate_limiter=None, timeout: float = 30.0):
+    """Async wrapper with unified rate limiting (following qualityFilter.py patterns)"""
     if semaphore is None:
         semaphore = _get_concurrency_semaphore()
-    async with semaphore:
-        return await async_responses_create(model, prompt, reasoning_effort, text_verbosity)
+    
+    # Apply unified admission controls if rate_limiter is provided
+    if rate_limiter and hasattr(rate_limiter, 'pacer'):
+        # Estimate tokens for this request
+        import tiktoken
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+            est_tokens = len(encoding.encode(prompt)) * 1.2  # Add 20% for output
+        except:
+            est_tokens = 400  # Fallback estimate
+        
+        # ADMISSION CONTROLS (in order per qualityFilter.py guide)
+        # 1. Leaky pacer
+        await rate_limiter.pacer.wait()
+        
+        # 2. RPM bucket
+        await rate_limiter.rpm_bucket.wait_and_acquire()
+        
+        # 3. TPM bucket
+        await rate_limiter.tpm_bucket.wait_and_acquire(int(est_tokens))
+        
+        # 4. Semaphore
+        async with semaphore:
+            response = await async_responses_create(model, prompt, reasoning_effort, text_verbosity, timeout)
+            
+            # Token reconciliation (if possible)
+            if hasattr(response, 'usage') and response.usage:
+                actual_tokens = response.usage.total_tokens
+                delta = actual_tokens - int(est_tokens)
+                await rate_limiter.tpm_bucket.reconcile(delta)
+            
+            return response
+    else:
+        # Fallback to original semaphore-only approach
+        async with semaphore:
+            return await async_responses_create(model, prompt, reasoning_effort, text_verbosity, timeout)
 
 
 # ============================================================================
@@ -293,49 +442,8 @@ async def async_responses_create_with_semaphore(model: str, prompt: str, reasoni
 #  TODO: currently only used in stage 1/"theme extraction". Check if api client can be used for stage 2-4.
 # ============================================================================
 
-class CodeDesignerAPIClient:
-    
-    def __init__(self, throttler: Throttler, monitor: SlidingWindowMonitor, config, encoding, model_config: ModelConfig, verbose_reporter: VerboseReporter, async_client):
-        self.throttler = throttler
-        self.monitor = monitor
-        self.config = config
-        self.client = async_client #TODO: is not async client, change to client. Globally defined
-        self.model_config = model_config
-        self.encoding = encoding
-        self.verbose_reporter = verbose_reporter
-        self.concurrency_semaphore = asyncio.Semaphore(getattr(config, 'async_concurrency_limit', 16))
-    
-    @retry(
-        retry=retry_if_exception_type(RateLimitError),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=60)
-    )
-    async def make_request(self, task_coro, task_info: str, prompt: str = None):
-        """Make API request with intelligent retry and accurate token tracking"""
-        
-        # Apply precision rate limiting
-        async with self.throttler:
-            try:
-                # Execute the task coroutine
-                result = await task_coro
-                
-                # Record successful request with accurate token count
-                if prompt:
-                    # Count actual tokens
-                    estimated_tokens = len(self.encoding.encode(prompt))
-                else:
-                    # Fallback to conservative estimate
-                    estimated_tokens = 800
-                
-                await self.monitor.record_request(estimated_tokens)
-                
-                return result
-                
-            except Exception as e:
-                self.verbose_reporter.error(f"API request failed for {task_info}: {str(e)}")
-                if hasattr(self.verbose_reporter, '_parent_stats'):
-                    self.verbose_reporter._parent_stats['api_errors'] = self.verbose_reporter._parent_stats.get('api_errors', 0) + 1
-                raise
+# class CodeDesignerAPIClient:
+    # Removed - replaced with optimized qualityFilter patterns integrated directly into InductiveCodeGenerator
 
 # ============================================================================
 # SHARED CODEBOOK 
@@ -1101,14 +1209,38 @@ class InductiveCodeGenerator:
                 self.encoding = tiktoken.get_encoding("cl100k_base")
                 self.verbose_reporter.warning(f"Fallback to cl100k_base encoding for {self.config.model}")
         
-        # Initialize workload analyzer and rate limits
+        # Initialize unified rate limiting system (following qualityFilter.py patterns)
         rate_limits = get_openai_rate_limits(self.config.model)
-        self.workload_analyzer = WorkloadAnalyzer(self.config.model, self.encoding)
+        HEADROOM = 0.9  # Use 90% of limits for safety
+        
+        # Calculate average tokens for pacer
+        self.avg_tokens = self._calculate_avg_tokens()
+        
+        # Create unified rate limiting system
+        self.rpm_bucket = RequestBucket(rate_limits.requests_per_minute * HEADROOM)
+        self.tpm_bucket = TokenBucket(rate_limits.tokens_per_minute * HEADROOM)
+        self.pacer = LeakyPacer(
+            rate_limits.requests_per_minute * HEADROOM,
+            self.avg_tokens,
+            rate_limits.tokens_per_minute * HEADROOM
+        )
+        
+        # Calculate optimal concurrency based on API limits and latency
+        rpm_concurrency = rate_limits.requests_per_minute * HEADROOM / 60 * 2.0  # Assume 2s avg latency
+        tpm_concurrency = (rate_limits.tokens_per_minute * HEADROOM / self.avg_tokens) * 2.0
+        optimal_concurrency = min(rpm_concurrency, tpm_concurrency, self.config.async_concurrency_limit)
+        
+        # Replace old semaphore with optimized one
+        self.concurrency_semaphore = asyncio.Semaphore(int(optimal_concurrency))
+        
+        # Store limits for reporting
         self.rpm_limit = rate_limits.requests_per_minute
         self.tpm_limit = rate_limits.tokens_per_minute
         
-        # Initialize global rate limiting components
-        self.global_monitor = SlidingWindowMonitor(self.rpm_limit, self.tpm_limit)
+        # Removed WorkloadAnalyzer - now using qualityFilter patterns directly
+        
+        # Initialize latency tracking (following qualityFilter pattern)
+        self.latency_tracker = LatencyTracker()
         
         # Initialize components
         self.similarity_engine = SimilarityEngine(similarity_threshold=self.config.similarity_threshold, verbose_reporter=self.verbose_reporter)
@@ -1129,6 +1261,128 @@ class InductiveCodeGenerator:
         self.step4_validations = {}      # Validation results
         self.step4_validated_codes = {}  # Final validated codes
         self.cluster_assignments = {}    # Cluster-to-code mappings
+
+    def _calculate_avg_tokens(self) -> int:
+        """Calculate average token count for requests (following qualityFilter.py pattern)"""
+        # Sample a few clusters to estimate average token usage
+        sample_size = min(5, len(self.cluster_results))
+        if sample_size == 0:
+            return 400  # Default estimate for code generation tasks
+        
+        total_tokens = 0
+        for i in range(sample_size):
+            cluster_result = self.cluster_results[i]
+            ideas_list = cluster_result.response_ideas or []
+            ideas_text = "\n".join([f"- {idea}" for idea in ideas_list[:10]])  # Sample first 10 ideas
+            
+            # Estimate tokens for typical cluster summary prompt
+            sample_prompt = CLUSTER_SUMMARY_PROMPT.format(
+                cluster_id="sample",
+                survey_question=self.var_lab or "sample question",
+                language=DEFAULT_LANGUAGE,
+                cluster_text=ideas_text
+            )
+            total_tokens += len(self.encoding.encode(sample_prompt))
+        
+        avg_input = total_tokens / sample_size
+        # Assume 20% output ratio for code generation (more complex than quality filtering)
+        return int(avg_input * 1.2)
+
+    async def _bootstrap_probe_theme_extraction(self) -> Dict:
+        """Bootstrap probe for theme extraction - returns usage dict"""
+        if not self.cluster_results:
+            return {"prompt_tokens": 200, "completion_tokens": 50}
+        
+        # Use first cluster for probe
+        cluster_result = self.cluster_results[0]
+        ideas_list = cluster_result.response_ideas or ["sample idea"]
+        ideas_text = "\n".join([f"- {idea}" for idea in ideas_list[:10]])
+        
+        try:
+            response = await self.async_client.chat.completions.create(
+                model=self.config.model,
+                messages=[
+                    {"role": "user", "content": CLUSTER_SUMMARY_PROMPT.format(
+                        cluster_id="bootstrap_probe",
+                        survey_question=self.var_lab or "sample question",
+                        language=DEFAULT_LANGUAGE,
+                        cluster_text=ideas_text
+                    )}
+                ],
+                temperature=0.1,
+                timeout=30.0
+            )
+            return {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens
+            }
+        except Exception as e:
+            self.verbose_reporter.warning(f"Bootstrap probe failed: {e}")
+            return {"prompt_tokens": 400, "completion_tokens": 100}
+
+    async def _bootstrap_probe_cluster_processing(self) -> Dict:
+        """Bootstrap probe for cluster processing (Prompts 2-4 chain) - returns usage dict"""
+        if not self.cluster_results:
+            return {"prompt_tokens": 600, "completion_tokens": 200}
+        
+        # Use first cluster for probe with minimal processing
+        cluster_result = self.cluster_results[0]
+        cluster_data = {
+            'ideas': cluster_result.response_ideas[:5] if cluster_result.response_ideas else ["sample idea"]
+        }
+        
+        # Create minimal theme data for probe
+        theme_data = type('ThemeData', (), {
+            'root': [type('Theme', (), {
+                'theme_label': 'Bootstrap Theme',
+                'theme_description': 'Bootstrap probe theme'
+            })()]
+        })()
+        
+        try:
+            # Test candidate selection prompt as representative of the chain
+            nearest_codes = self.starter_codes[:3] if self.starter_codes else [
+                {"code": "SAMPLE", "definition": "Sample code for bootstrap"}
+            ]
+            codes_text = "\n".join([f"Code: {code['code']}\nDefinition: {code['definition']}\n" for code in nearest_codes])
+            
+            response = await self.async_client.chat.completions.create(
+                model=self.config.model,
+                messages=[
+                    {"role": "user", "content": CANDIDATE_CODE_SELECTION_PROMPT.format(
+                        cluster_id="bootstrap_probe",
+                        survey_question=self.var_lab or "sample question",
+                        language=DEFAULT_LANGUAGE,
+                        cluster_summary="Bootstrap probe cluster for theme identification",
+                        available_codes=codes_text
+                    )}
+                ],
+                temperature=0.1,
+                timeout=30.0
+            )
+            
+            # Multiply by 3 to account for the full chain (candidate + generation + validation)
+            return {
+                "prompt_tokens": response.usage.prompt_tokens * 3,
+                "completion_tokens": response.usage.completion_tokens * 3
+            }
+        except Exception as e:
+            self.verbose_reporter.warning(f"Bootstrap probe failed: {e}")
+            return {"prompt_tokens": 900, "completion_tokens": 300}
+    
+    def _get_adaptive_timeout(self) -> float:
+        """Get adaptive timeout based on latency tracking (following qualityFilter pattern)"""
+        if self.latency_tracker.ema is None:
+            return 30.0  # Default timeout
+        
+        # Use 95th percentile + 50% margin for timeouts
+        if len(self.latency_tracker.values) >= 10:
+            import numpy as np
+            p95 = np.percentile(self.latency_tracker.values, 95)
+            return min(max(p95 * 1.5, 15.0), 120.0)  # Between 15s and 120s
+        else:
+            # Use EMA + 50% margin for early stages
+            return min(max(self.latency_tracker.ema * 1.5, 15.0), 60.0)  # Between 15s and 60s
     
     def _capture_prompt_params(self, cluster_id: Union[int, str], step: str, **kwargs):
         """Capture exact parameters used in prompt.format() for debugging/testing"""
@@ -1218,24 +1472,88 @@ class InductiveCodeGenerator:
         return {cid: cdata for cid, cdata in clusters.items() if len(cdata['embeddings']) > 0}
     
     async def extract_themes(self, clusters: Dict[int, Dict[str, Any]]) -> Dict[int, ClusterSummaryOutput]:
-        """Stage 1: Extract themes from all clusters with rate limiting"""
+        """Stage 1: Extract themes from all clusters with bootstrap measurement and optimized rate limiting"""
+        if not clusters:
+            return {}
+        
+        # Setup with bootstrap measurement (following qualityFilter pattern)
+        limits = get_openai_rate_limits(self.config.model)
+        HEADROOM = 0.9  # Use 90% of limits for safety
+        
         self.verbose_reporter.step_start("Theme Extraction")
         self.verbose_reporter.stat_line(f"Processing {len(clusters)} clusters")
         
-        # Create tasks for all clusters
-        tasks = []
-        for cluster_id, cluster_data in clusters.items():
-            task = self._extract_single_theme(cluster_id, cluster_data['ideas'])
-            tasks.append(task)
+        # Bootstrap measurement with probe calls
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
         
-        # Process with rate limiting using measured tokens
-        results = await self._process_with_optimal_strategy(tasks, "theme_extraction", clusters)
+        start_time = time.time()
+        avg_latency_s, avg_tokens = await bootstrap_measure_async(
+            self._bootstrap_probe_theme_extraction, n_probes=3
+        )
         
-        # Convert to dictionary
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
+            self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
+        
+        # Initialize latency tracker with bootstrap measurements
+        for i in range(3):  # Add 3 samples to get started
+            self.latency_tracker.add(avg_latency_s)
+        
+        # Calculate optimal concurrency using Little's Law
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, cap=10000, min_conc=0)
+        optimal = min(200, max(Little, 50))  # Constrained to range 50-200 for theme extraction
+        
+        # Initialize rate limiting components
+        arrival_rate = min(
+            limits.requests_per_minute * HEADROOM / 60,
+            limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+        )
+        
+        from aiolimiter import AsyncLimiter
+        limiter = AsyncLimiter(arrival_rate, 1)
+        semaphore = asyncio.Semaphore(optimal)
+        tpm_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
+        
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Optimized processing: {arrival_rate:.1f} req/s, {optimal} concurrent, {avg_tokens:.0f} avg tokens")
+        
+        # Process all tasks with optimized concurrency
+        async def process_cluster_theme(cluster_id, ideas):
+            async with semaphore, limiter:
+                # Estimate tokens and wait for token bucket
+                estimated_tokens = int(avg_tokens)
+                await tpm_bucket.wait_and_acquire(estimated_tokens)
+                
+                # Track latency
+                start_time = time.perf_counter()
+                try:
+                    result = await self._extract_single_theme(cluster_id, ideas)
+                    # Track latency for continuous optimization
+                    latency = time.perf_counter() - start_time
+                    self.latency_tracker.add(latency)
+                    return (cluster_id, result)
+                except Exception as e:
+                    self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {e}")
+                    return (cluster_id, None)
+        
+        # Create and execute all tasks
+        tasks = [
+            process_cluster_theme(cluster_id, cluster_data['ideas'])
+            for cluster_id, cluster_data in clusters.items()
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Convert to dictionary and filter out failed results
         theme_results = {}
-        for result_tuple in results:
-            if result_tuple is not None:
-                cluster_id, theme_result = result_tuple
+        for result in results:
+            if isinstance(result, Exception):
+                self.verbose_reporter.error(f"Theme extraction task failed: {result}")
+                continue
+            if result is not None:
+                cluster_id, theme_result = result
                 if theme_result is not None:
                     theme_results[cluster_id] = theme_result
         
@@ -1360,14 +1678,17 @@ class InductiveCodeGenerator:
             )
         
         try:
-            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            # Use async wrapper with JSON retry logic and adaptive timeout
+            adaptive_timeout = self._get_adaptive_timeout()
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
                 response_model=ClusterSummaryOutput,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self,
+                timeout=adaptive_timeout
             )
             
             # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
@@ -1422,12 +1743,7 @@ class InductiveCodeGenerator:
         
         self.verbose_reporter.stat_line(f"Optimal strategy for {stage_name}: {strategy.launch_rate_per_second:.1f} req/s, max {strategy.concurrent_limit} concurrent")
         
-        # Initialize throttling and monitoring
-        throttler = Throttler(rate_limit=strategy.launch_rate_per_second, period=1.0)
-        api_client = CodeDesignerAPIClient(
-            throttler, self.global_monitor, self.config, self.encoding, 
-            self.model_config, self.verbose_reporter, self.async_client
-        )
+        # Use unified rate limiting system (replaces old throttler approach)
         
         # Process all tasks with sophisticated rate limiting
         results = []
@@ -1664,13 +1980,58 @@ class InductiveCodeGenerator:
     
     async def _process_sub_batch_with_stagger(self, sub_batch: List[str], clusters: Dict, themes: Dict, 
                                             stagger_delay: float) -> List[Dict[str, Any]]:
-        """Process sub-batch with initial stagger delay and rate limiting"""
+        """Process sub-batch with optimized concurrency, rate limiting, and bootstrap measurement"""
         
         # Apply stagger delay for smooth distribution
         if stagger_delay > 0:
             await asyncio.sleep(stagger_delay)
-      
-        # Process all clusters in sub-batch with unlimited concurrency
+        
+        if not sub_batch:
+            return []
+        
+        # Bootstrap measurement for cluster processing chain (Prompts 2-4)
+        limits = get_openai_rate_limits(self.config.model)
+        HEADROOM = 0.9
+        
+        # Use cached bootstrap measurement or run new one
+        if not hasattr(self, '_cluster_bootstrap_cache'):
+            start_time = time.time()
+            avg_latency_s, avg_tokens = await bootstrap_measure_async(
+                self._bootstrap_probe_cluster_processing, n_probes=2  # Reduced for chain processing
+            )
+            
+            self._cluster_bootstrap_cache = {
+                'avg_latency_s': avg_latency_s,
+                'avg_tokens': avg_tokens,
+                'timestamp': start_time
+            }
+            
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Cluster chain bootstrap: {avg_latency_s:.3f}s, {avg_tokens:.0f} tokens")
+        else:
+            # Use cached values
+            avg_latency_s = self._cluster_bootstrap_cache['avg_latency_s']
+            avg_tokens = self._cluster_bootstrap_cache['avg_tokens']
+        
+        # Calculate optimal concurrency for the 3-prompt chain
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, cap=300, min_conc=10)
+        optimal = min(100, max(Little, 20))  # Constrained for complex chain processing
+        
+        # Initialize rate limiting for cluster processing
+        arrival_rate = min(
+            limits.requests_per_minute * HEADROOM / 60 / 3,  # Divided by 3 for 3-prompt chain
+            limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+        )
+        
+        from aiolimiter import AsyncLimiter
+        limiter = AsyncLimiter(arrival_rate, 1)
+        semaphore = asyncio.Semaphore(optimal)
+        tpm_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
+        
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Sub-batch optimization: {arrival_rate:.1f} req/s, {optimal} concurrent")
+        
         # Get current codebook snapshot for consistent processing
         codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
         
@@ -1678,7 +2039,6 @@ class InductiveCodeGenerator:
         # This prevents multiple clusters from generating the same embeddings simultaneously
         cached_embeddings = await self.shared_codebook.get_embeddings_for_version(base_version)
         if cached_embeddings is None and codebook_snapshot:
-            #code_texts = [f"{code['code']}: {code['definition']}" for code in codebook_snapshot] 
             code_texts = [f"{code['code']}" for code in codebook_snapshot]
             try:
                 code_embeddings = await self.similarity_engine._embed_openai_batch(code_texts)
@@ -1687,22 +2047,43 @@ class InductiveCodeGenerator:
             except Exception as e:
                 self.verbose_reporter.error(f"Failed to pre-compute embeddings for version {base_version}: {e}")
         
-        cluster_tasks = []
-        for cluster_id in sub_batch:
-            task = self._process_single_cluster(
-                cluster_id, clusters, themes, codebook_snapshot, base_version
-            )
-            cluster_tasks.append(task)
+        # Optimized cluster processing with rate limiting
+        async def process_cluster_with_limits(cluster_id):
+            async with semaphore, limiter:
+                # Estimate tokens for the full chain and wait for token bucket
+                estimated_tokens = int(avg_tokens)
+                await tpm_bucket.wait_and_acquire(estimated_tokens)
+                
+                # Track latency for the full chain
+                start_time = time.perf_counter()
+                try:
+                    result = await self._process_single_cluster(
+                        cluster_id, clusters, themes, codebook_snapshot, base_version
+                    )
+                    # Track latency for continuous optimization
+                    latency = time.perf_counter() - start_time
+                    self.latency_tracker.add(latency)
+                    return result
+                except Exception as e:
+                    self.verbose_reporter.error(f"Cluster processing failed for {cluster_id}: {e}")
+                    return None
         
-        # Process with unlimited concurrency  
+        # Create optimized tasks
+        cluster_tasks = [
+            process_cluster_with_limits(cluster_id) 
+            for cluster_id in sub_batch
+        ]
+        
+        # Process with optimized concurrency and gather results  
         results = []
-        for coro in asyncio.as_completed(cluster_tasks):
-            try:
-                result = await coro
-                if result is not None:
-                    results.append(result)
-            except Exception as e:
-                self.verbose_reporter.error(f"Cluster processing failed: {e}")
+        completed_results = await asyncio.gather(*cluster_tasks, return_exceptions=True)
+        
+        for result in completed_results:
+            if isinstance(result, Exception):
+                self.verbose_reporter.error(f"Cluster task failed: {result}")
+                continue
+            if result is not None:
+                results.append(result)
         
         # Update SharedCodebook with any new codes from this sub-batch
         if results:
@@ -2351,14 +2732,17 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Available codes: {len(nearest_codes)}")
             
-            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            # Use async wrapper with JSON retry logic and adaptive timeout
+            adaptive_timeout = self._get_adaptive_timeout()
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('candidate_selection'),
                 prompt=prompt,
                 response_model=CandidateCodeSelectionOutput,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('candidate_selection'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('candidate_selection'),
-                semaphore=self.concurrency_semaphore
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self,
+                timeout=adaptive_timeout
             )
             
             # # Capture step2_analysis - the actual candidate codes used in pipeline
@@ -2414,14 +2798,17 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
             
-            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            # Use async wrapper with JSON retry logic and adaptive timeout
+            adaptive_timeout = self._get_adaptive_timeout()
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('code_recommendation'),
                 prompt=prompt,
                 response_model=CodeRecommendation,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('code_recommendation'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('code_recommendation'),
-                semaphore=self.concurrency_semaphore
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self,
+                timeout=adaptive_timeout
             )
                 
             # Capture step3_recommendations (code generation results)
@@ -2508,14 +2895,17 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP3 - Has code_generation: {code_generation is not None}")
             
-            # Use async wrapper with JSON retry logic for GPT-5 reasoning parameters
+            # Use async wrapper with JSON retry logic and adaptive timeout
+            adaptive_timeout = self._get_adaptive_timeout()
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('recommendation_validation'),
                 prompt=prompt,
                 response_model=ValidationResult,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('recommendation_validation'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('recommendation_validation'),
-                semaphore=self.concurrency_semaphore
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self,
+                timeout=adaptive_timeout
             )
          
             
