@@ -1,12 +1,7 @@
 import streamlit as st
-#import os
 import sys
-#import asyncio
 import pandas as pd
 from pathlib import Path
-#from typing import Dict, List, Optional, Any
-#import traceback
-#import time
 import random
 
 # Add project paths
@@ -16,7 +11,6 @@ sys.path.append(str(project_root / "src" / "utils"))
 
 import models
 from config import (
-    #ALLOWED_EXTENSIONS, 
     CacheConfig,
     ModelConfig,
     SpellCheckConfig,
@@ -25,26 +19,16 @@ from config import (
     EmbeddingConfig,
     HDBSCANConfig,
     CodeDesignerConfig,
-    CodeAssignmentConfig,
-    # DEFAULT_SPELLCHECK_CONFIG,
-    # DEFAULT_QUALITY_FILTER_CONFIG,
-    # DEFAULT_SEGMENTATION_CONFIG,
-    # DEFAULT_EMBEDDING_CONFIG,
-    # DEFAULT_HDBSCAN_CONFIG,
-    # DEFAULT_CODEDESIGNER_CONFIG,
-    # DEFAULT_CODE_ASSIGNMENT_CONFIG
-)
+    CodeAssignmentConfig)
+
 from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager
 import ui_text as ui
 
-# Debug imports - commented out as requested
-# from utils.streamlit_debug import display_debug_controls, create_debug_capture_from_session, display_all_debug_info
-
 # Lazy loading functions to improve startup performance
 def _get_pipeline_runner():
     if st.session_state.pipeline_runner is None:
-        from pipeline_runner import get_pipeline_runner
+        from pipelineRunner import get_pipeline_runner
         st.session_state.pipeline_runner = get_pipeline_runner()
     return st.session_state.pipeline_runner
 
@@ -414,7 +398,7 @@ def main():
         st.markdown(ui.get_text("SIDEBAR_DESCRIPTION", st.session_state.language))
         
         # Progress indicator - Updated to 10 steps
-        progress = st.progress(st.session_state.step / 10)
+        #progress = st.progress(st.session_state.step / 10)
         st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step + 1}/10")
         
         st.markdown("---")
@@ -613,31 +597,31 @@ def show_upload_page():
             )
             
             # Advanced encoding options
-            with st.expander("🔧 " + ("Geavanceerde Opties" if lang == "nl" else "Advanced Options"), expanded=False):
-                encoding_options = [
-                    ("Automatisch detecteren", "auto"),
-                    ("UTF-8", "utf-8"),
-                    ("Windows-1252 (West-Europees)", "windows-1252"),
-                    ("ISO-8859-1 (Latin-1)", "iso-8859-1"),
-                    ("CP1252 (Windows West-Europees)", "cp1252"),
-                    ("ISO-8859-15 (Latin-9, Euro)", "iso-8859-15"),
-                    ("Windows-1250 (Centraal-Europees)", "windows-1250")
-                ]
+            # with st.expander("🔧 " + ("Geavanceerde Opties" if lang == "nl" else "Advanced Options"), expanded=False):
+            #     encoding_options = [
+            #         ("Automatisch detecteren", "auto"),
+            #         ("UTF-8", "utf-8"),
+            #         ("Windows-1252 (West-Europees)", "windows-1252"),
+            #         ("ISO-8859-1 (Latin-1)", "iso-8859-1"),
+            #         ("CP1252 (Windows West-Europees)", "cp1252"),
+            #         ("ISO-8859-15 (Latin-9, Euro)", "iso-8859-15"),
+            #         ("Windows-1250 (Centraal-Europees)", "windows-1250")
+            #     ]
                 
-                encoding_choice = st.selectbox(
-                    "Bestandscodering" if lang == "nl" else "File Encoding",
-                    options=[opt[1] for opt in encoding_options],
-                    format_func=lambda x: next(opt[0] for opt in encoding_options if opt[1] == x),
-                    index=0,  # Default to auto-detect
-                    key="file_encoding",
-                    help="Kies een specifieke codering als het bestand niet correct wordt geladen" if lang == "nl" 
-                         else "Choose a specific encoding if the file is not loading correctly"
-                )
+                # encoding_choice = st.selectbox(
+                #     "Bestandscodering" if lang == "nl" else "File Encoding",
+                #     options=[opt[1] for opt in encoding_options],
+                #     format_func=lambda x: next(opt[0] for opt in encoding_options if opt[1] == x),
+                #     index=0,  # Default to auto-detect
+                #     key="file_encoding",
+                #     help="Kies een specifieke codering als het bestand niet correct wordt geladen" if lang == "nl" 
+                #          else "Choose a specific encoding if the file is not loading correctly"
+                # )
                 
                 # Show encoding success message if available
-                if hasattr(st.session_state, 'encoding_success_message'):
-                    st.success(st.session_state.encoding_success_message)
-                    del st.session_state.encoding_success_message  # Clear after showing
+                # if hasattr(st.session_state, 'encoding_success_message'):
+                #     st.success(st.session_state.encoding_success_message)
+                #     del st.session_state.encoding_success_message  # Clear after showing
             
         # Preview selected variable(s)
         preview_button_label = "Voorbeeld Bekijken" if lang == "nl" else "Preview Variables"
@@ -831,7 +815,7 @@ def show_preprocessing_page():
         if st.session_state.get('selected_sample_size'):
             sample_info = f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
         else:
-            sample_info = f"\n\n**Dataset:** Volledig" if lang == "nl" else f"\n\n**Dataset:** Full"
+            sample_info = "\n\n**Dataset:** Volledig" if lang == "nl" else "\n\n**Dataset:** Full"
         
         if is_multiple_mode and len(selected_vars) > 1:
             merge_config = (st.session_state.get('merge_config') or 
@@ -1082,18 +1066,10 @@ def show_embedding_page():
     with col1:
         provider = st.selectbox(
             "Embedding Provider",
-            options=["gemini", "openai"],
+            options=["openai", "gemini"],
             index=0
         )
-    with col2:
-        model = st.selectbox(
-            "Model",
-            options=[
-                "gemini-embedding-001" if provider == "gemini" else "text-embedding-3-large",
-                "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
-            ] if provider == "openai" else ["gemini-embedding-001"]
-        )
-    
+  
     if st.button(ui.get_text("BTN_EMBED", lang), type="primary"):
         progress_container = st.empty()
         try:
@@ -1403,7 +1379,7 @@ def show_export_page():
             
             if code_assigned_results and theme_enriched_codebook:
                 st.success("✅ " + ("Resultaten geladen uit cache!" if lang == "nl" else "Results loaded from cache!"))
-                st.info(f"📊 " + (f"Gevonden: {len(code_assigned_results)} responsen met {len(theme_enriched_codebook.codes)} codes" 
+                st.info("📊 " + ("Gevonden: {len(code_assigned_results)} responsen met {len(theme_enriched_codebook.codes)} codes" 
                         if lang == "nl" else f"Found: {len(code_assigned_results)} responses with {len(theme_enriched_codebook.codes)} codes"))
             else:
                 st.warning("⚠️ " + ("Geen volledige resultaten gevonden in cache" if lang == "nl" else "No complete results found in cache"))
@@ -1416,16 +1392,16 @@ def show_export_page():
     # Show export options only if we have data
     if code_assigned_results and theme_enriched_codebook:
         # Export options
-        export_format = st.selectbox(
-            "Export Formaat" if lang == "nl" else "Export Format",
-            options=["excel", "csv"],
-            format_func=lambda x: "Excel (.xlsx)" if x == "excel" else "CSV (.csv)"
-        )
+        # export_format = st.selectbox(
+        #     "Export Formaat" if lang == "nl" else "Export Format",
+        #     options=["excel", "csv"],
+        #     format_func=lambda x: "Excel (.xlsx)" if x == "excel" else "CSV (.csv)"
+        # )
         
-        include_rationale = st.checkbox(
-            "Rationales opnemen" if lang == "nl" else "Include rationales",
-            value=True
-        )
+        # include_rationale = st.checkbox(
+        #     "Rationales opnemen" if lang == "nl" else "Include rationales",
+        #     value=True
+        # )
         
         # Add option for enhanced export with reasoning data
         include_reasoning = st.checkbox(
@@ -1877,48 +1853,128 @@ def show_assignment_samples(code_assigned_results):
         st.write("-" * 40)
 
 def show_step_samples(step_number):
-    """Master function to route to appropriate sampling function"""
-    # Check if pipeline_results exists
-    if 'pipeline_results' not in st.session_state:
-        st.write("No pipeline data available yet")
+    """Master function to route to appropriate sampling function - loads data from cache"""
+    
+    # Check if we have the required info to load from cache
+    if not st.session_state.get('filename') or not st.session_state.get('selected_variable'):
+        st.write("❌ No filename or variable selected - cannot load data")
         return
     
-    pipeline_results = st.session_state.pipeline_results
+    # Get cache manager
+    cache_manager = _get_cache_manager()
+    filename = st.session_state.filename
     
-    # Step 1: Preprocessing - raw data available after preprocessing
-    if step_number == 1 and pipeline_results.get('raw_text_list'):
-        show_raw_samples(pipeline_results['raw_text_list'])
+    # Get variable key for cache lookup (similar to pipeline_runner)
+    try:
+        # Try to get variable key from session state or generate it
+        variable_key = None
+        if hasattr(_get_pipeline_runner(), 'get_variable_key'):
+            variable_key = _get_pipeline_runner().get_variable_key()
+        else:
+            # Fallback: generate basic variable key
+            selected_variables = [st.session_state.selected_variable]
+            from utils.cacheManager import generate_variable_key
+            variable_key = generate_variable_key(selected_variables, False)
+    except Exception as e:
+        st.write(f"❌ Error generating variable key: {e}")
+        return
     
-    # Step 2: Quality Filtered Data
-    elif step_number == 2 and pipeline_results.get('quality_filtered_text'):
-        show_filtered_samples(pipeline_results['quality_filtered_text'])
+    # DEBUG: Show current state
+    st.write("🔍 **CACHE DEBUG INFO:**")
+    st.write(f"- Current step: {st.session_state.step}")
+    st.write(f"- Requested step_number: {step_number}")
+    st.write(f"- Filename: {filename}")
+    st.write(f"- Selected variable: {st.session_state.selected_variable}")
+    st.write(f"- Variable key: {variable_key}")
+    st.write("---")
     
-    # Step 3: Ideas - extracted ideas
-    elif step_number == 3 and pipeline_results.get('encoded_text'):
-        show_idea_samples(pipeline_results['encoded_text'])
-    
-    # Step 4: Embeddings - no visual samples, but we could show stats
-    elif step_number == 4 and pipeline_results.get('embedded_text'):
-        st.write(f"✅ Embeddings generated for {len(pipeline_results['embedded_text'])} items")
-    
-    # Step 5: Clusters
-    elif step_number == 5 and pipeline_results.get('initial_cluster_results'):
-        show_cluster_samples(pipeline_results['initial_cluster_results'])
-    
-    # Step 6: Codebook
-    elif step_number == 6 and pipeline_results.get('reasoning_results'):
-        show_codebook_samples(pipeline_results['reasoning_results'])
-    
-    # Step 7: Themes  
-    elif step_number == 7 and pipeline_results.get('theme_enriched_codebook'):
-        show_theme_samples(pipeline_results['theme_enriched_codebook'])
-    
-    # Step 8: Assignments
-    elif step_number == 8 and pipeline_results.get('code_assigned_results'):
-        show_assignment_samples(pipeline_results['code_assigned_results'])
-    
-    else:
-        st.write("No data available for sampling at this step")
+    # Load data from cache based on step
+    try:
+        if step_number == 1:
+            # Step 1: Raw data
+            data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
+            if data:
+                st.write(f"✅ Loaded {len(data)} raw responses from cache")
+                show_raw_samples(data)
+            else:
+                st.write("⏳ No raw data in cache - run preprocessing first")
+                
+        elif step_number == 2:
+            # Step 2: Quality filtered data
+            data = cache_manager.load_from_cache(filename, "quality_filter", variable_key, models.QualityFilteredModel)
+            if data:
+                st.write(f"✅ Loaded {len(data)} quality filtered responses from cache")
+                show_filtered_samples(data)
+            else:
+                st.write("⏳ No quality filtered data in cache - run quality filtering first")
+                
+        elif step_number == 3:
+            # Step 3: Extracted ideas
+            data = cache_manager.load_from_cache(filename, "extracted_ideas", variable_key, models.IdeasExtractedModel)
+            if data:
+                total_ideas = sum(item.idea_count for item in data)
+                st.write(f"✅ Loaded {len(data)} responses with {total_ideas} ideas from cache")
+                show_idea_samples(data)
+            else:
+                st.write("⏳ No extracted ideas in cache - run idea extraction first")
+                
+        elif step_number == 4:
+            # Step 4: Embeddings
+            data = cache_manager.load_from_cache(filename, "embeddings", variable_key, models.EmbeddingsModel)
+            if data:
+                total_embeddings = sum(len(resp.response_ideas) for resp in data if resp.response_ideas)
+                st.write(f"✅ Embeddings generated for {total_embeddings} items (from cache)")
+            else:
+                st.write("⏳ No embeddings in cache - run embedding generation first")
+                
+        elif step_number == 5:
+            # Step 5: Clusters
+            data = cache_manager.load_from_cache(filename, "initial_clusters", variable_key, models.ClusterModel)
+            if data:
+                cluster_ids = set([segment.initial_cluster for result in data for segment in result.response_ideas if segment.initial_cluster is not None])
+                st.write(f"✅ Loaded {len(cluster_ids)} clusters from cache")
+                show_cluster_samples(data)
+            else:
+                st.write("⏳ No clusters in cache - run clustering first")
+                
+        elif step_number == 6:
+            # Step 6: Codebook reasoning
+            try:
+                from utils.codeGenerator import CodeGeneratorReasoningResults
+                data = cache_manager.load_from_cache(filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults)
+                if data and len(data) > 0:
+                    st.write(f"✅ Loaded codebook reasoning from cache")
+                    show_codebook_samples(data[0])
+                else:
+                    st.write("⏳ No codebook reasoning in cache - run codebook generation first")
+            except Exception as e:
+                st.write(f"⚠️ Error loading codebook reasoning: {e}")
+                
+        elif step_number == 7:
+            # Step 7: Themes
+            data = cache_manager.load_from_cache(filename, "theme_identification", variable_key, models.ThemeEnrichedCodebookModel)
+            if data and len(data) > 0:
+                st.write(f"✅ Loaded {len(data[0].codes)} codes with themes from cache")
+                show_theme_samples(data[0])
+            else:
+                st.write("⏳ No themes in cache - run theme identification first")
+                
+        elif step_number == 8:
+            # Step 8: Code assignments
+            data = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, models.CodeAssignedModel)
+            if data:
+                total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in data if resp.response_ideas)
+                st.write(f"✅ Loaded {total_assignments} code assignments from cache")
+                show_assignment_samples(data)
+            else:
+                st.write("⏳ No code assignments in cache - run code assignment first")
+                
+        else:
+            st.write(f"❓ No sample display available for step {step_number}")
+            
+    except Exception as e:
+        st.write(f"❌ Error loading data from cache: {e}")
+        st.write("This might indicate a cache format issue or missing dependencies.")
 
 def show_info_panel():
     lang = st.session_state.language
@@ -1974,17 +2030,6 @@ def show_info_panel():
         
         with st.expander(f"📊 {'Bekijk data voorbeelden' if lang == 'nl' else 'View Data Samples'} - {step_names.get(st.session_state.step, '')}", expanded=True):
             show_step_samples(st.session_state.step)
-
-# Helper functions for pipeline integration
-def create_pipeline_progress_container():
-    """Create a container for showing pipeline progress"""
-    return st.empty()
-
-def show_pipeline_progress(container, step_name: str, progress: float, status: str):
-    """Update pipeline progress display"""
-    with container:
-        st.progress(progress)
-        st.text(f"{step_name}: {status}")
 
 if __name__ == "__main__":
     main()
