@@ -1,15 +1,10 @@
-"""
-Pipeline Runner for Streamlit Integration
-Provides callable functions for each pipeline step that can be used in Streamlit app
-"""
-
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 import time
 import asyncio
 import pandas as pd
 import nest_asyncio
-from typing import List, Dict, Optional, Any, Tuple, Union
+from typing import List, Optional, Any, Tuple #Dict, Union
 
 nest_asyncio.apply()
 
@@ -28,18 +23,18 @@ from config import (
     EmbeddingConfig,
     HDBSCANConfig,
     CodeDesignerConfig,
-    CodeAssignmentConfig
+    CodeAssignmentConfig,
+    DEFAULT_LANGUAGE
 )
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
-from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
-from utils.session_manager import get_session_manager
-from utils.streamlit_debug import DebugCapture, VerboseCapture, PromptCapture, SampleGenerator, StepSamplers
-from utils.bare_mode_utils import (
-    conditional_cache_resource, conditional_cache_data, get_session_state, 
-    conditional_error, conditional_info, conditional_success, conditional_warning
-)
+from utils.streamlit_debug import SampleGenerator, StepSamplers
+from utils.bare_mode_utils import conditional_cache_resource, conditional_cache_data, get_session_state, conditional_error, conditional_info #cconditional_success, conditional_warning
+
+# from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
+# from utils.session_manager import get_session_manager
+# DebugCapture, VerboseCapture, PromptCapture, 
 
 # Cached resource functions for heavy pipeline components
 @conditional_cache_resource
@@ -58,10 +53,10 @@ def _get_cached_clusterer(config_hash: str):
     """Cache clusterer class for session-wide reuse"""
     return _get_clusterer()
 
-@conditional_cache_resource  
-def _get_cached_theme_identifier():
-    """Cache theme identifier class for session-wide reuse"""
-    return _get_theme_identifier()
+# @conditional_cache_resource  
+# def _get_cached_theme_identifier():
+#     """Cache theme identifier class for session-wide reuse"""
+#     return _get_theme_identifier()
 
 # Cached data functions for processing results
 @conditional_cache_data(show_spinner="Loading SPSS data...")
@@ -176,25 +171,21 @@ def _get_code_generator():
     from utils import codeGenerator
     return codeGenerator
 
-def _get_theme_identifier():
-    from utils.themeIdentifier import ThemeIdentifier
-    return ThemeIdentifier
+def _get_theme_organizer_reasoning():
+    from utils.codeOrganizer import CodeOrganizer
+    return CodeOrganizer
 
 def _get_code_assigner():
     from utils import codeAssigner
     return codeAssigner
 
 def _get_code_assignment_exporter():
-    from utils.codeAssignmentExporter import CodeAssignmentExporter
-    return CodeAssignmentExporter
+    from utils.resultsExporter import ResultsExporter
+    return ResultsExporter
 
 def _get_code_generator_reasoning_results():
     from utils.codeGenerator import CodeGeneratorReasoningResults
     return CodeGeneratorReasoningResults
-
-def _get_theme_organizer_reasoning():
-    from utils.themeOrganizerReasoning import ThemeOrganizerReasoning
-    return ThemeOrganizerReasoning
 
 class StreamlitPipelineRunner:
     """Pipeline runner optimized for Streamlit with session state management"""
@@ -208,12 +199,6 @@ class StreamlitPipelineRunner:
     def create_verbose_reporter(self, streamlit_container=None, debug_capture=None, step_name=None) -> VerboseReporter:
         """Create verbose reporter with optional debug capture for Streamlit"""
         capture_callback = None
-        
-        # Set up debug capture if requested
-        if debug_capture and debug_capture.show_verbose and step_name:
-            from utils.streamlit_debug import VerboseCapture
-            verbose_capture = VerboseCapture(debug_capture, step_name)
-            capture_callback = verbose_capture.capture_output
         
         return VerboseReporter(self.verbose, capture_callback)
     
@@ -244,21 +229,24 @@ class StreamlitPipelineRunner:
             return "unknown"
     
     def step_1_load_data(self, filename: str, id_column: str, var_name: str = None, var_names: list = None,
-                        force_recalc: bool = False, 
+                        force_recalc: bool = False, sample_size: Optional[int] = None,
                         streamlit_container=None, encoding: str = None) -> List[models.ResponseModel]:
         """Step 1: Load data from SPSS file (single or multiple variables)"""
         
         step_name = "data"
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)  # No debug_capture in step 1
         
-        # Generate variable key for caching
+        # Generate enhanced variable key for caching (includes sample size)
         if var_names and len(var_names) > 1:
             selected_variables = var_names
             is_merged = True
         else:
             selected_variables = [var_name] if var_name else ["unknown"]
             is_merged = False
-        variable_key = generate_variable_key(selected_variables, is_merged)
+        
+        # Use enhanced cache key that includes sample size
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(selected_variables, is_merged, sample_size)
         
         if streamlit_container:
             if var_names and len(var_names) > 1:
@@ -327,6 +315,14 @@ class StreamlitPipelineRunner:
                     response_value = resp
                 raw_text_list.append(models.ResponseModel(respondent_id=resp_id, response=response_value, response_type=response_type))
             
+            # Apply sample size truncation if specified
+            original_count = len(raw_text_list)
+            if sample_size and len(raw_text_list) > sample_size:
+                raw_text_list = raw_text_list[:sample_size]
+                verbose_reporter.stat_line(f"Applied truncation: {len(raw_text_list)} of {original_count} responses (sample size: {sample_size})")
+            else:
+                verbose_reporter.stat_line(f"No truncation applied: {len(raw_text_list)} responses (full dataset)")
+            
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time)
@@ -345,7 +341,7 @@ class StreamlitPipelineRunner:
                          spellcheck_config: Optional[SpellCheckConfig] = None,
                          force_recalc: bool = False,
                          streamlit_container=None,
-                         debug_capture: Optional[DebugCapture] = None) -> List[models.PreprocessedModel]:
+                         debug_capture: Optional[Any] = None) -> List[models.PreprocessedModel]:
         """Step 2: Preprocess text data"""
         
         step_name = "preprocessed"
@@ -499,7 +495,7 @@ class StreamlitPipelineRunner:
                            segmentation_config: Optional[SegmentationConfig] = None,
                            force_recalc: bool = False,
                            streamlit_container=None,
-                           debug_capture: Optional[DebugCapture] = None) -> List[models.IdeasExtractedModel]:
+                           debug_capture: Optional[Any] = None) -> List[models.IdeasExtractedModel]:
         """Step 4: Extract ideas from responses"""
         
         step_name = "extracted_ideas"
@@ -598,7 +594,7 @@ class StreamlitPipelineRunner:
                       hdbscan_config: Optional[HDBSCANConfig] = None,
                       force_recalc: bool = False,
                       streamlit_container=None,
-                      debug_capture: Optional[DebugCapture] = None) -> List[models.ClusterModel]:
+                      debug_capture: Optional[Any] = None) -> List[models.ClusterModel]:
         """Step 6: Cluster embeddings"""
         
         step_name = "initial_clusters"
@@ -774,17 +770,25 @@ class StreamlitPipelineRunner:
             else:
                 codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
                 
-                # Lazy load theme identifier
-                ThemeIdentifier = _get_theme_identifier()
-                theme_identifier = ThemeIdentifier(
+                # Lazy load theme organizer (using reasoning-based approach)
+                CodeOrganizer = _get_theme_organizer_reasoning()
+                
+                # Get model and reasoning effort from config
+                model_config = ModelConfig()
+                model = getattr(model_config, 'thematic_organizer_model', 'gpt-5-mini')
+                reasoning_effort = getattr(model_config, 'theme_extraction_reasoning_effort', 'low')
+                
+                theme_organizer = CodeOrganizer(
                     codebook=codebook,
                     var_lab=var_lab,
+                    language=DEFAULT_LANGUAGE,
                     verbose=self.verbose,
-                    verbose_reporter=verbose_reporter
+                    model=model,
+                    reasoning_effort=reasoning_effort
                 )
                 
                 async def run_theme_identification():
-                    return await theme_identifier.identify_themes_by_clustering()
+                    return await theme_organizer.organize_themes_reasoning()
                 
                 result = asyncio.run(run_theme_identification())
                 
@@ -856,12 +860,13 @@ class StreamlitPipelineRunner:
         
         step_name = "theme_organization_reasoning"
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Organizing themes with reasoning model...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name):
-            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, models.ThemeEnrichedCodebookModel)
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
             if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
                 theme_enriched_codebook = theme_enriched_codebooks[0]
                 verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
@@ -889,8 +894,8 @@ class StreamlitPipelineRunner:
                     model_name = model_config.model
                 
                 # Initialize theme organizer (lazy loaded)
-                ThemeOrganizerReasoning = _get_theme_organizer_reasoning()
-                theme_organizer = ThemeOrganizerReasoning(
+                CodeOrganizer = _get_theme_organizer_reasoning()
+                theme_organizer = CodeOrganizer(
                     codebook=codebook,
                     var_lab=var_lab,
                     verbose=self.verbose,
@@ -962,7 +967,7 @@ class StreamlitPipelineRunner:
                            code_assignment_config: Optional[CodeAssignmentConfig] = None,
                            force_recalc: bool = False,
                            streamlit_container=None,
-                           debug_capture: Optional[DebugCapture] = None) -> List[models.CodeAssignedModel]:
+                           debug_capture: Optional[Any] = None) -> List[models.CodeAssignedModel]:
         """Step 9a: Assign codes to ideas"""
         
         step_name = "code_assignment_direct" if method == "direct_llm" else "code_assignment"
@@ -1077,7 +1082,7 @@ class StreamlitPipelineRunner:
         
         # Lazy load code assignment exporter
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = CodeAssignmentExporter(verbose=self.verbose)
+        exporter = ResultsExporter(verbose=self.verbose)
         excel_path = exporter.export_to_excel(
             code_assigned_results=code_assigned_results,
             theme_enriched_codebook=theme_enriched_codebook,
@@ -1107,6 +1112,7 @@ class StreamlitPipelineRunner:
         
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, "export_consistent")
         verbose_reporter.section_header("EXCEL EXPORT WITH CONSISTENT FORMAT")
+        variable_key = self.get_variable_key()
         
         # Try to get reasoning data from parameter, cache, or fallback to empty reasoning
         final_reasoning_results = reasoning_results
@@ -1128,7 +1134,7 @@ class StreamlitPipelineRunner:
         # Always use the with_reasoning export for consistent format
         # If no reasoning data available, it will show empty reasoning columns
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = CodeAssignmentExporter(verbose=self.verbose)
+        exporter = ResultsExporter(verbose=self.verbose)
         
         if final_reasoning_results:
             output_path = exporter.export_to_excel_with_reasoning(
@@ -1190,7 +1196,7 @@ class StreamlitPipelineRunner:
         
         # Create exporter (lazy loaded)
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = CodeAssignmentExporter(verbose=self.verbose)
+        exporter = ResultsExporter(verbose=self.verbose)
         
         # Export with or without reasoning data
         if reasoning_results:

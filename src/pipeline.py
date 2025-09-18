@@ -1,6 +1,8 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # ===  MODULES ========================================================================================================
+import re
+import string 
 import time
 import asyncio
 import pandas as pd
@@ -12,7 +14,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from utils import dataLoader
-from utils.cacheManager import CacheManager, generate_variable_key
+from utils.cacheManager import CacheManager
 from config import CacheConfig, ModelConfig
 
 # Initialize cache manager
@@ -21,6 +23,7 @@ cache_manager = CacheManager(cache_config)
 
 # Initialize model configuration
 model_config = ModelConfig()
+
 
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
@@ -33,22 +36,35 @@ model_config = ModelConfig()
 # id_column = "DLNMID"
 # var_name = "Q20"
 
-# filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Qd1_combined"
-
-filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 id_column = "DLNMID"
-var_name = "Q15"
+var_name = "Qd1_combined"
+
+# filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+# id_column = "DLNMID"
+# var_name = "Q15"
 # var_name = "Q18Q19"
 
-# Generate variable key for caching (assuming single variable for this script)
-selected_variables = [var_name]
-is_merged = False  # Set to True if using merged variables
-variable_key = generate_variable_key(selected_variables, is_merged)
+# Generate variable key for caching
+selected_variables = globals().get('selected_variables', [var_name])
+is_merged = globals().get('is_merged', False)
+sample_size = globals().get('test_sample_size') if globals().get('is_test_mode') else None
+
+# Use enhanced variable key from pipeline_executor (single source of truth)
+if 'variable_key' in globals():
+    variable_key = globals()['variable_key']  # Enhanced key from executor like "Q18_250"
+else:
+    # This should not happen when running via app_v2.py -> pipeline_executor
+    # But keep fallback for standalone pipeline.py execution
+    from utils.cacheManager import generate_enhanced_variable_key
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size
+    )
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = ""  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
 VERBOSE = True  # Enable verbose output for debugging in Spyder
@@ -117,30 +133,37 @@ else:
         print(f"{data_type}: {count} items")
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
-# debug 
-# import random
-# n_samples = 5
-# indices = random.sample(range(len(raw_text_list)), n_samples)
-# for i in indices:
-#     print("Raw structured:", raw_text_list[i])
-#     print("---")        
+#debug 
+import random
+n_samples = 5
+indices = random.sample(range(len(raw_text_list)), n_samples)
+for i in indices:
+    print("Raw structured:", raw_text_list[i])
+    print("---")        
+
+
+# ===========================================================================================================
+"""truncate data"""
+# debug
+# raw_text_list0 = raw_text_list
+raw_text_list = raw_text_list[:250]
+# raw_text_list = raw_text_list0
+
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
-
-# debug
-# raw_text_list0 = raw_text_list
-# raw_text_list = raw_text_list[:100]
-# raw_text_list = raw_text_list0
-
 from utils import textNormalizer, spellChecker, textFinalizer
 from utils import verboseReporter
 from utils import promptPrinter
+from config import SpellCheckConfig
+
+spell_check_config = SpellCheckConfig(
+    minimum_timeout_seconds=15.0,   
+    maximum_timeout_seconds=60.0)   
 
 FORCE = False
 VERBOSE = True
 PROMPT_PRINTER = False
-
 
 step_name        = "preprocessed"
 if  FORCE:
@@ -170,7 +193,7 @@ else:
     verbose_reporter.section_header("PREPROCESSING PHASE")
     # intialize utils
     text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
-    spell_checker         = spellChecker.SpellChecker(model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
+    spell_checker         = spellChecker.SpellChecker(config=spell_check_config, model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
     text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
     start_time            = time.time()
     # preprocess strings 
@@ -187,7 +210,6 @@ else:
     if string_responses:
         normalized_text = text_normalizer.normalize_responses(string_responses)
         normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
-        #HIER
         corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
         finalized_text = text_finalizer.finalize_responses(corrected_text)
     else:
@@ -290,12 +312,14 @@ else:
     
     print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
-    
 # === STEP 3 ========================================================================================================
 """quality filter"""
 from utils import qualityFilter
 
-FORCE = True
+#preprocessed_text0 = preprocessed_text
+#preprocessed_text = preprocessed_text[:500]
+
+FORCE = False
 VERBOSE = True
 PROMPT_PRINTER = False
 
@@ -349,12 +373,12 @@ else:
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
 # # debug
-# import random
-# n_samples = 5
-# indices = random.sample(range(len(quality_filtered_text)), n_samples)
-# for i in indices:
-#     print("Filtered:", quality_filtered_text[i])
-#     print("---")    
+import random
+n_samples = 5
+indices = random.sample(range(len(quality_filtered_text)), n_samples)
+for i in indices:
+    print("Filtered:", quality_filtered_text[i])
+    print("---")    
 
 
 # === STEP 4 ========================================================================================================
@@ -460,6 +484,8 @@ else:
 #     for segment in item.response_ideas:
 #         print(f"- {segment.idea}")
 
+#len(embedded_text)
+
 # === STEP 6 =======================================================================================================
 """Reduce data/get clusters"""
 from utils.clusterer import Clusterer
@@ -520,42 +546,42 @@ else:
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
 # # #debug - print random clusters  
-# import random
-# cluster_ids = list(set([
-#     response_idea.initial_cluster 
-#     for result in initial_cluster_results 
-#     for response_idea in result.response_ideas   
-#     if response_idea.initial_cluster is not None]))
-# sampled_cluster = random.sample(cluster_ids, 1)[0]
-# print(f"\nCluster {sampled_cluster}:\n")
-# cluster_segments = []
-# for result in initial_cluster_results:
-#     for response_idea in result.response_ideas:   
-#         if response_idea.initial_cluster == sampled_cluster:
-#             cluster_segments.append(response_idea.idea)
-# sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-# for segment_desc in sampled_segments:
-#     print(f"-    {segment_desc}")
+import random
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas   
+    if response_idea.initial_cluster is not None]))
+sampled_cluster = random.sample(cluster_ids, 1)[0]
+print(f"\nCluster {sampled_cluster}:\n")
+cluster_segments = []
+for result in initial_cluster_results:
+    for response_idea in result.response_ideas:   
+        if response_idea.initial_cluster == sampled_cluster:
+            cluster_segments.append(response_idea.idea)
+sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+for segment_desc in sampled_segments:
+    print(f"-    {segment_desc}")
     
     
 #debug - print all clusters
-# cluster_ids = list(set([
-#     response_idea.initial_cluster 
-#     for result in initial_cluster_results 
-#     for response_idea in result.response_ideas  # This has initial_cluster
-#     if response_idea.initial_cluster is not None]))
-# for x in range(1, round(len(cluster_ids) / 1) + 1):
-#     y = x * 1
-#     print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
+cluster_ids = list(set([
+    response_idea.initial_cluster 
+    for result in initial_cluster_results 
+    for response_idea in result.response_ideas  # This has initial_cluster
+    if response_idea.initial_cluster is not None]))
+for x in range(1, round(len(cluster_ids) / 1) + 1):
+    y = x * 1
+    print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
 
-#     for z in range(y - 1, y):
-#         if z < len(cluster_ids):
-#             print(f"\nCluster {z}")
-#             for item in initial_cluster_results:
-#                 for subitem in item.response_ideas:
-#                     if subitem.initial_cluster == z:
-#                         print(subitem.idea)
-#     input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    for z in range(y - 1, y):
+        if z < len(cluster_ids):
+            print(f"\nCluster {z}")
+            for item in initial_cluster_results:
+                for subitem in item.response_ideas:
+                    if subitem.initial_cluster == z:
+                        print(subitem.idea)
+    input("\n🔸 Press Enter to continue to the next batch of clusters...")
 
 
 # === STEP 7 ========================================================================================================
@@ -563,7 +589,7 @@ else:
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
-FORCE = True
+FORCE = False
 VERBOSE = True
 VERBOSE_DETAILED = False
 PROMPT_PRINTER = False
@@ -725,12 +751,12 @@ else:
         try:
             codebook_reasoning = results
             cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time)
-            print("✓ Cached codebook reasoning for export consistency")
+            print("v Cached codebook reasoning for export consistency")
         except Exception as e:
-            print(f"⚠️ Warning: Failed to cache reasoning results: {e}")
+            print(f"WARNING: Failed to cache reasoning results: {e}")
             print("   Export will fall back to basic format without reasoning columns")
     else:
-        print("⚠️ Warning: No reasoning results generated to cache")
+        print("WARNING: No reasoning results generated to cache")
         print("   Export will fall back to basic format without reasoning columns")
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
@@ -745,16 +771,19 @@ if True and CACHE_CODEGENERATOR_REASONING:
     else:
         print("Note: codebook_reasoning not available for display")
 
-
-
+step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+step3_recommendations = codebook_reasoning.step3_recommendations
+available_ids = list(step3_recommendations.keys())
+cluster_id = random.choice(available_ids)
+ 
 #debug : prompts 
-cluster_id = "22-2"
+cluster_id = "33"
 if True:  
     from utils import codegenPromptTester    
     tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
-    #tester.test_prompt_1()
-    #tester.test_prompt_2()
-    #tester.test_prompt_3()
+    tester.test_prompt_1()
+    tester.test_prompt_2()
+    tester.test_prompt_3()
     tester.test_prompt_4()
     # codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
     
@@ -767,59 +796,30 @@ if True and CACHE_CODEGENERATOR_REASONING:
         print("Note: codebook_reasoning not available for display")
     
  
-# === STEP 8 ========================================================================================================
-"""Identify themes"""
-from utils.themeIdentifier import ThemeIdentifier
-
-
-USE_STEP_8B = False  
-STEP_8B_MODEL = "gpt-5-mini"  
-STEP_8B_REASONING_EFFORT = "medium"  
+# === STEP 8 =======================================================================================================
+"""Theme Organization """
+from utils.codeOrganizer import CodeOrganizer
+STEP_8B_MODEL = "gpt-5-mini"
+STEP_8B_REASONING_EFFORT = "low"
 
 FORCE = True
 VERBOSE = True
-PROMPT_PRINTER  = False
+PROMPT_PRINTER = False
 
-step_name = "theme_identification"
-if  FORCE:
-    FORCE_STEP      = step_name
+step_name = "theme_identification_reasoning"
+if FORCE:
+    FORCE_STEP = step_name
 
-verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
-prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+verbose_reporter = VerboseReporter(VERBOSE)
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-codebook =  [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
+codebook_for_reasoning = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
 
-if USE_STEP_8B:
-    verbose_reporter.summary("SKIPPING STEP 8 - Step 8b (Reasoning-based) will be used instead", {
-        "Step 8b Model": STEP_8B_MODEL,
-        "Reasoning Effort": STEP_8B_REASONING_EFFORT
-    })
-    
-    # Create minimal theme_enriched_codebook for Step 8b to use
-    theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-        codes=[models.ThemeEnrichedCodebookEntry(
-            code=entry.code,
-            definition=entry.definition,
-            source_cluster=entry.source_cluster,
-            theme=None,
-            theme_description=None,
-            theme_cluster_id=None,
-            is_miscellaneous=False
-        ) for entry in codebook_main.codes],
-        generation_metadata=codebook_main.generation_metadata,
-        source_variable=codebook_main.source_variable,
-        themes_summary=[],
-        code_to_theme_mapping={},
-        theme_methodology="Skipped - Step 8b will replace"
-    )
-    enriched_codebook = []
-
-elif not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-    theme_enriched_codebooks = cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
-    if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
-        theme_enriched_codebook = theme_enriched_codebooks[0]  # Extract the single model from the list
-        verbose_reporter.summary("THEME IDENTIFICATION FROM CACHE", {
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    theme_enriched_codebook_8b = cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
+    if theme_enriched_codebook_8b and len(theme_enriched_codebook_8b) > 0:
+        theme_enriched_codebook = theme_enriched_codebook_8b[0]  # Extract the single model from the list
+        verbose_reporter.summary("REASONING-BASED THEME ORGANIZATION FROM CACHE", {
             "Total codes": len(theme_enriched_codebook.codes),
             "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
             "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
@@ -832,389 +832,106 @@ elif not force_recalc and cache_manager.is_cache_valid(filename, step_name, vari
             theme_description=entry.theme_description
         ) for entry in theme_enriched_codebook.codes]
     else:
-        print("ERROR: Failed to load theme enriched codebook from cache")
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=[], 
-            source_variable=var_name,
-            themes_summary=[],
-            code_to_theme_mapping={},
-            theme_methodology="Error loading from cache"
-        )
-        enriched_codebook = []
+        print("ERROR: Failed to load reasoning-based theme enriched codebook from cache")
 else:
-    verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
+    verbose_reporter.section_header("REASONING-BASED THEME ORGANIZATION PHASE")
     start_time = time.time()
     
-    if not codebook:
-        print("Error: No codes available for theme identification.")
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=[],
-            generation_metadata={"error": "No codes available"},
-            source_variable=var_name,
-            themes_summary=[],
-            code_to_theme_mapping={},
-            theme_methodology="No theme identification performed"
-        )
-        enriched_codebook = []
+    if not codebook_for_reasoning:
+        print("Error: No codes available for reasoning-based theme organization.")
+        # Keep existing results from Step 8
     else:
-        theme_identifier = ThemeIdentifier(
-            codebook=codebook,
+        # Initialize ThemeOrganizerReasoning
+        theme_organizer = CodeOrganizer(
+            codebook=codebook_for_reasoning,
             var_lab=var_lab,
+            language=LANGUAGE,
             verbose=VERBOSE,
-            prompt_printer=prompt_printer
+            model=STEP_8B_MODEL,
+            reasoning_effort=STEP_8B_REASONING_EFFORT
         )
         
-        async def run_theme_identification():
-            return await theme_identifier.identify_themes_by_clustering()
-            
-        result = asyncio.run(run_theme_identification())    
+        # Run the reasoning-based theme organization
+        async def run_reasoning_theme_organization():
+            return await theme_organizer.organize_themes_reasoning()
         
-        # Process theme results into structured format
+        result = asyncio.run(run_reasoning_theme_organization())
+        
+        # Process theme results into structured format (same as Step 8)
         enriched_entries = []
         code_to_theme_mapping = {}
+        desc_to_theme_mapping = {}
         themes = result['themes']
 
         # Build code-to-theme mapping
         for theme in themes:
             theme_name = theme['theme_name']
+            #print(theme_name)
             theme_desc = theme.get('theme_description', '')
+            #print(theme_desc)
             cluster_id = theme.get('cluster_id', -1)
-            is_misc = theme.get('is_miscellaneous', False)
-            
+            #print(cluster_id)
+        
             for code_info in theme['codes']:
-                code_name = code_info['code_name']
-                code_to_theme_mapping[code_name] = theme_name
+                cleaned = re.sub(rf"[{string.digits}{re.escape(string.punctuation)}]", '', code_info['code_name'])
+                code_name = cleaned.strip().lower()
+                code_to_theme_mapping[code_name.lower()] = theme_name.lower()
+                desc_to_theme_mapping[code_name.lower()] = theme_desc.lower()
+            #print("\n")
                 
         # Enrich codebook entries with theme information
         for entry in codebook_main.codes:
-            theme_name = code_to_theme_mapping.get(entry.code)
-            theme_info = None
-            theme_cluster_id = None
-            is_misc = False
-            
-            if theme_name:
-                # Find theme details with normalized matching
-                theme_name_normalized = theme_name.strip().lower()
-                for theme in themes:
-                    if theme['theme_name'].strip().lower() == theme_name_normalized:
-                        theme_info = theme.get('theme_description', '')
-                        theme_cluster_id = theme.get('cluster_id', -1)
-                        is_misc = theme.get('is_miscellaneous', False)
-                        break
+            theme_name = code_to_theme_mapping.get(entry.code.lower(), 'None')
+            theme_info = desc_to_theme_mapping.get(entry.code.lower(),'None')
+            theme_cluster_id = theme.get('cluster_id', -1)
+            #print(theme_cluster_id)
 
             enriched_entry = models.ThemeEnrichedCodebookEntry(
                 code=entry.code,
                 definition=entry.definition,
-                source_cluster=entry.source_cluster,
-                theme=theme_name,
-                theme_description=theme_info,
-                theme_cluster_id=theme_cluster_id,
-                is_miscellaneous=is_misc
+                theme=theme_name.capitalize(),
+                theme_description=theme_info.capitalize(),
+                source_cluster=entry.source_cluster
             )
             enriched_entries.append(enriched_entry)
         
-        # Create structured theme-enriched codebook
         theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
             codes=enriched_entries,
             generation_metadata=codebook_main.generation_metadata,
             source_variable=codebook_main.source_variable,
             themes_summary=themes,
             code_to_theme_mapping=code_to_theme_mapping,
-            theme_methodology=result.get('methodology', 'Clustering-based theme identification')
+            theme_methodology=result.get('methodology', 'Single-prompt reasoning-based theme organization')
         )
         
         # Create legacy enriched codebook for backward compatibility
-        enriched_codebook = [models.Codebook(
-            code=entry.code, 
-            definition=entry.definition,
-            theme=entry.theme,
-            theme_description=entry.theme_description
-        ) for entry in enriched_entries]
-      
+        # enriched_codebook = [models.Codebook(
+        #     code=entry.code, 
+        #     definition=entry.definition,
+        #     theme=entry.theme,
+        #     theme_description=entry.theme_description
+        # ) for entry in enriched_entries]
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
-    # Cache the structured theme-enriched codebook (wrap in list as cache manager expects List[T])
     cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
-    print(f"\n'Hierarchical theme identification' completed in {elapsed_time:.2f} seconds.\n")
-
-# Update the main codebook with enriched data (for backward compatibility)
-if enriched_codebook:
-    codebook = enriched_codebook
-
-# Display theme-enriched codebook summary
-if theme_enriched_codebook and theme_enriched_codebook.codes:
-    print("\n=== THEME-ENRICHED CODEBOOK SUMMARY ===")
-    themes_found = {}
-    for entry in theme_enriched_codebook.codes:
-        if entry.theme:
-            if entry.theme not in themes_found:
-                themes_found[entry.theme] = {
-                    'description': entry.theme_description,
-                    'codes': []
-                }
-            themes_found[entry.theme]['codes'].append(entry.code)
+    print(f"\n'Reasoning-based theme organization' completed in {elapsed_time:.2f} seconds.\n")
     
-    for idx, (theme_name, theme_info) in enumerate(themes_found.items(), 1):
-        print(f"\n{idx}. {theme_name}")
-        if theme_info['description']:
-            print(f"{theme_info['description']}")
-        print(f"   Codes ({len(theme_info['codes'])}):")
-        for code in theme_info['codes']:
-            print(f"   - {code}")
+
+codebook=[models.Codebook(
+    code=entry.code, 
+    definition=entry.definition,
+    theme=entry.theme,
+    theme_description=entry.theme_description
+    ) for entry in theme_enriched_codebook.codes]    
+
+for theme in themes:
+    print(f"\n📂 {theme['theme_name'].upper()}")
+    print('-' * len(theme['theme_name']))
+    for code in theme['codes']:
+        print(f"  • {code['code_name']}")
+
     
-    # Show codes without themes
-    no_theme_codes = [entry.code for entry in theme_enriched_codebook.codes if not entry.theme]
-    if no_theme_codes:
-        print(f"\nUnthemed codes ({len(no_theme_codes)}):")
-        for code in no_theme_codes:
-            print(f"   - {code}")
-            
-# for entry in enriched_codebook:
-#     print(entry.code)
-#     print(entry.definition)
-#     print("\n")
-
-# === STEP 8b =======================================================================================================
-"""Alternative Theme Organization using Reasoning Models"""
-from utils.themeOrganizerReasoning import ThemeOrganizerReasoning
-USE_STEP_8B = False
-STEP_8B_MODEL = "gpt-5-mini"
-STEP_8B_REASONING_EFFORT = "medium"
-
-# Only run Step 8b if enabled
-if USE_STEP_8B:
-    
-    FORCE = False
-    VERBOSE = True
-    PROMPT_PRINTER = False
-    
-    step_name = "theme_identification_reasoning"
-    if FORCE:
-        FORCE_STEP = step_name
-    
-    verbose_reporter = VerboseReporter(VERBOSE)
-    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
-    
-    # Convert codebook to format expected by ThemeOrganizerReasoning
-    codebook_for_reasoning = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
-    
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        theme_enriched_codebook_8b = cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
-        if theme_enriched_codebook_8b and len(theme_enriched_codebook_8b) > 0:
-            theme_enriched_codebook = theme_enriched_codebook_8b[0]  # Extract the single model from the list
-            verbose_reporter.summary("REASONING-BASED THEME ORGANIZATION FROM CACHE", {
-                "Total codes": len(theme_enriched_codebook.codes),
-                "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
-                "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
-            })
-            # Extract legacy codebook for backward compatibility
-            enriched_codebook = [models.Codebook(
-                code=entry.code, 
-                definition=entry.definition, 
-                theme=entry.theme,
-                theme_description=entry.theme_description
-            ) for entry in theme_enriched_codebook.codes]
-        else:
-            print("ERROR: Failed to load reasoning-based theme enriched codebook from cache")
-    else:
-        verbose_reporter.section_header("REASONING-BASED THEME ORGANIZATION PHASE")
-        start_time = time.time()
-        
-        if not codebook_for_reasoning:
-            print("Error: No codes available for reasoning-based theme organization.")
-            # Keep existing results from Step 8
-        else:
-            # Initialize ThemeOrganizerReasoning
-            theme_organizer = ThemeOrganizerReasoning(
-                codebook=codebook_for_reasoning,
-                var_lab=var_lab,
-                language=LANGUAGE,
-                verbose=VERBOSE,
-                model=STEP_8B_MODEL,
-                reasoning_effort=STEP_8B_REASONING_EFFORT
-            )
-            
-            # Run the reasoning-based theme organization
-            async def run_reasoning_theme_organization():
-                return await theme_organizer.organize_themes_reasoning()
-            
-            result = asyncio.run(run_reasoning_theme_organization())
-            
-            # Process theme results into structured format (same as Step 8)
-            enriched_entries = []
-            code_to_theme_mapping = {}
-            themes = result['themes']
-
-            # Build code-to-theme mapping
-            for theme in themes:
-                theme_name = theme['theme_name']
-                theme_desc = theme.get('theme_description', '')
-                cluster_id = theme.get('cluster_id', -1)
-                is_misc = theme.get('is_miscellaneous', False)
-                
-                for code_info in theme['codes']:
-                    code_name = code_info['code_name']
-                    code_to_theme_mapping[code_name] = theme_name
-                    
-            # Enrich codebook entries with theme information
-            for entry in codebook_main.codes:
-                theme_name = code_to_theme_mapping.get(entry.code)
-                theme_info = None
-                theme_cluster_id = None
-                is_misc = False
-                
-                if theme_name:
-                    # Find theme details with normalized matching
-                    theme_name_normalized = theme_name.strip().lower()
-                    for theme in themes:
-                        if theme['theme_name'].strip().lower() == theme_name_normalized:
-                            theme_info = theme.get('theme_description', '')
-                            theme_cluster_id = theme.get('cluster_id', -1)
-                            is_misc = theme.get('is_miscellaneous', False)
-                            break
-
-                enriched_entry = models.ThemeEnrichedCodebookEntry(
-                    code=entry.code,
-                    definition=entry.definition,
-                    source_cluster=entry.source_cluster,
-                    theme=theme_name,
-                    theme_description=theme_info,
-                    theme_cluster_id=theme_cluster_id,
-                    is_miscellaneous=is_misc
-                )
-                enriched_entries.append(enriched_entry)
-            
-            # Create structured theme-enriched codebook (replacing Step 8 results)
-            theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                codes=enriched_entries,
-                generation_metadata=codebook_main.generation_metadata,
-                source_variable=codebook_main.source_variable,
-                themes_summary=themes,
-                code_to_theme_mapping=code_to_theme_mapping,
-                theme_methodology=result.get('methodology', 'Single-prompt reasoning-based theme organization')
-            )
-            
-            # Create legacy enriched codebook for backward compatibility
-            enriched_codebook = [models.Codebook(
-                code=entry.code, 
-                definition=entry.definition,
-                theme=entry.theme,
-                theme_description=entry.theme_description
-            ) for entry in enriched_entries]
-        
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        
-        # Cache the structured theme-enriched codebook (wrap in list as cache manager expects List[T])
-        cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
-        print(f"\n'Reasoning-based theme organization' completed in {elapsed_time:.2f} seconds.\n")
-
-    # Update the main codebook with enriched data (for backward compatibility)
-    if enriched_codebook:
-        codebook = enriched_codebook
-    
-    # Display 3-level hierarchical theme organization
-    if 'result' in locals() and result and result.get('themes'):
-        
-        def build_three_level(themes):
-            """Build 3-level hierarchy from flat themes list"""
-            result = []                    # list of domains
-            current_domain = None
-            misc_bucket = {"domain": "Overig/Onbekend", "themes": []}
-            root_bucket = {"domain": "Ongecategoriseerd", "themes": []}
-
-            def new_domain(name, desc, cluster_id):
-                return {"domain": name, "description": desc, "cluster_id": cluster_id, "themes": []}
-
-            i = 0
-            while i < len(themes):
-                t = themes[i]
-                # domain header = broad theme with empty codes
-                if len(t.get("codes", [])) == 0 and not t.get("is_miscellaneous", False):
-                    current_domain = new_domain(t["theme_name"], t.get("theme_description",""), t.get("cluster_id"))
-                    result.append(current_domain)
-                else:
-                    # miscellaneous themes
-                    if t.get("is_miscellaneous", False):
-                        misc_bucket["themes"].append(t)
-                    else:
-                        # attach to current domain if exists, else to root
-                        if current_domain is not None:
-                            current_domain["themes"].append(t)
-                        else:
-                            root_bucket["themes"].append(t)
-                i += 1
-
-            # append special buckets if non-empty
-            if root_bucket["themes"]:
-                result.insert(0, root_bucket)
-            if misc_bucket["themes"]:
-                result.append(misc_bucket)
-            return result
-        
-        print("\n=== REASONING-BASED 3-LEVEL HIERARCHICAL CODEBOOK ===")
-        
-        # Build the 3-level hierarchy
-        hierarchy = build_three_level(result['themes'])
-        
-        total_codes_organized = 0
-        total_themes = 0
-        
-        # Display each domain (Level 1)
-        for domain in hierarchy:
-            print(f"\n=== LEVEL 1: {domain['domain'].upper()} ===")
-            if domain.get('description'):
-                print(f"    {domain['description']}")
-            
-            # Display themes within domain (Level 2)
-            for theme in domain['themes']:
-                theme_name = theme['theme_name']
-                theme_desc = theme.get('theme_description', '')
-                codes = theme.get('codes', [])
-                
-                print(f"  +-- LEVEL 2: {theme_name}")
-                if theme_desc:
-                    print(f"  |   {theme_desc}")
-                
-                # Display codes within theme (Level 3)
-                if codes:
-                    for i, code in enumerate(codes):
-                        code_name = code.get('code_name', 'Unknown')
-                        # Remove numbering prefix if present
-                        clean_code_name = code_name.split('. ', 1)[-1] if '. ' in code_name else code_name
-                        
-                        # Use simple ASCII tree characters for Windows compatibility
-                        print(f"  |   +-- Level 3: {clean_code_name}")
-                    
-                    total_codes_organized += len(codes)
-                else:
-                    print("  |   +-- (No codes - domain header)")
-                
-                total_themes += 1
-                
-                # Add spacing between themes for readability
-                if theme != domain['themes'][-1]:  # Not the last theme in domain
-                    print("  |")
-        
-        # Summary statistics
-        methodology = result.get('methodology', 'Unknown')
-        processing_time = result.get('processing_time', 0)
-        
-        print("\n=== HIERARCHICAL ORGANIZATION SUMMARY ===")
-        print(f"Total domains (Level 1): {len(hierarchy)}")
-        print(f"Total themes (Level 2): {total_themes}")
-        print(f"Total codes organized (Level 3): {total_codes_organized}")
-        print(f"Methodology: {methodology}")
-        print(f"Processing time: {processing_time:.1f} seconds")
-        
-        # Check for any unorganized codes
-        original_code_count = len(codebook_main.codes) if 'codebook_main' in locals() else 0
-        if original_code_count > total_codes_organized:
-            print(f"⚠️  Warning: {original_code_count - total_codes_organized} codes may not have been organized")
-    else:
-        print("\n⚠️  No hierarchical theme organization results available to display")
-
 # === STEP 9 =======================================================================================================
 """Assign codes (and themes)"""
 from utils import codeAssigner
@@ -1266,7 +983,7 @@ else:
             ) for entry in theme_enriched_codebook.codes],
             var_lab=var_lab,
             code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
-            cached_idea_embeddings=None,  # No cached embeddings needed
+            cached_idea_embeddings=None,   
             model_config=model_config,
             verbose=VERBOSE,
             prompt_printer=prompt_printer
@@ -1407,10 +1124,10 @@ else:
    
 # === STEP 10  ========================================================================================================
 """Export Results"""
-from utils.codeAssignmentExporter import CodeAssignmentExporter
+from utils.resultsExporter import ResultsExporter
 
 try:
-    exporter = CodeAssignmentExporter(verbose=VERBOSE)
+    exporter = ResultsExporter(verbose=VERBOSE)
     excel_path = exporter.export_to_excel(
         code_assigned_results,
         theme_enriched_codebook,

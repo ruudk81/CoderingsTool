@@ -24,18 +24,6 @@ python app.py
 streamlit run app.py
 ```
 
-### Testing Prompt Chains
-```bash
-cd src/utils
-python promptTester.py
-```
-
-### Testing Code Deduplication
-```bash
-cd src/utils
-python codeBookDeduplicator.py
-```
-
 ### Environment Setup
 ```bash
 # Using pip
@@ -48,7 +36,7 @@ conda activate coderingtool
 
 ## High-Level Architecture
 
-### Pipeline Steps (1-9)
+### Pipeline Steps (1-10)
 1. **Data Loading** - Import SPSS files via pyreadstat
 2. **Preprocessing** - Text normalization, spell checking (Hunspell), finalization
 3. **Quality Filtering** - LLM-based filtering of meaningless responses
@@ -58,6 +46,7 @@ conda activate coderingtool
 7. **Code Generation** - 4-chain LLM prompt system for codebook creation
 8. **Theme Identification** - Hierarchical clustering of generated codes
 9. **Code Assignment** - Map codes back to original response segments
+10. **Export to excel** 
 
 ### Key Architecture Patterns  
 
@@ -67,10 +56,13 @@ conda activate coderingtool
 - **Model conversion** methods (e.g., `to_preprocess_model()`) for pipeline progression
 
 #### Async Processing Patterns
-- **Consistent async/await** for I/O operations
-- **Batch processing** with concurrency limits (aiolimiter) for API calls
-- **Instructor library** integration for structured LLM responses
-- **Retry logic** with tenacity for API resilience
+- **Aggressive prompt processing** within model limits as defined in config.py.
+- **Tokens** : token bucket + calculation of allowed token usage per minute (TPM).
+- **Requests** : allowed rate of requests per minute (RPM).
+- **RPM/TPM calculation**  using three probes (define what the “3 probes” are).
+- **Rate limiting** : semaphore for concurrency, worker pool size, and smooth throttling via aiolimiter.
+- **Adaptive timeouts**  based on p95 of the last 100 samples (samples = observed end-to-end latency).
+- **Retry logic**  with exponential backoff via tenacity.
 
 #### Unified Configuration System  
 - **Single config.py file** with all configuration classes:
@@ -97,9 +89,13 @@ conda activate coderingtool
 
 #### Critical Utils
 - `cacheManager.py` - SQLite cache operations
-- `codeGenerator.py` - 4-chain prompt system for code generation
+- `spellChecker.py` - Hunspell + ai system for correcting spelling mistakes
+- `qualityFilter.py` - LLM-based response quality assessment of responses
+- `ideaExtractor.py` - LLM-Based system of segmenting multiple responses into single responses as "ideas expressed in light of the survey question"
+- `embedder.py`  - Getting Openai/Gemini embeddings of extracted ideas
 - `clusterer.py` - UMAP/HDBSCAN clustering implementation
-- `qualityFilter.py` - LLM-based response quality assessment
+- `codeGenerator.py` - 4-chain prompt system for code generation
+- `codeAssigner.py` - LLM-based assigner of codes to individual "ideas expressed" 
 - `verboseReporter.py` - Detailed progress reporting system
 
 ### Dependencies & Integrations
@@ -112,13 +108,6 @@ conda activate coderingtool
 - **Pydantic v2**: Data validation with numpy support
 - **Streamlit**: Web interface framework
 
-### Code Generation System (codeGenerator.py)
-The code generation uses a sophisticated 4-chain prompt system:
-1. **Initial Analysis** - Understand cluster themes
-2. **Code Generation** - Create initial codebook
-3. **Refinement** - Improve code quality and coherence
-4. **Finalization** - Ensure consistency and completeness
-
 ### Collaboration Workflow
 - Our workflow: 
   * Users suggests ideas for modification
@@ -127,12 +116,3 @@ The code generation uses a sophisticated 4-chain prompt system:
   * Claude implements and adds, commits and pushes modification to the GitHub repo
   * User pulls to test modification locally
 
-### Important Development Notes
-- No formal linting setup - follow existing code style patterns
-- Manual testing through verbose reporting and prompt testing
-- Extensive backup system in place (check src/utils/old for history)
-- Web interface available via Streamlit for interactive testing
-- Configuration changes invalidate relevant cache entries automatically
-
-### Prompt Processing Considerations
-- Prompts are leading. So pydantic models and processing prompted responses from LLMs down the pipeline in codeGenerator need to facilitate prompts/instructed outputs

@@ -2,823 +2,669 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import os
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Optional
 from pathlib import Path
-import pyreadstat
-
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-
-from wordcloud import WordCloud
-import xlsxwriter
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # === MODELS ========================================================================================================
 import models
 
-# === CONFIG ========================================================================================================
-from config import ExportConfig, DEFAULT_EXPORT_CONFIG
-
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter
-from .dataLoader import DataLoader
-from .id_validator import validate_id_consistency
+from .codeGenerator import CodeGeneratorReasoningResults
 
 class ResultsExporter:
     
-    def __init__(self, config: ExportConfig = None, verbose: bool = True, prompt_printer = None):
-        self.config = config or DEFAULT_EXPORT_CONFIG
+    def __init__(self, verbose: bool = True):
         self.verbose = verbose
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
-        self.data_loader = DataLoader(verbose=False)
-        
-    def export_results(self, 
-                      labeled_results: List[models.LabelModel],
-                      filename: str,
-                      id_column: str,
-                      var_name: str) -> Dict[str, str]:
-
-        self.verbose_reporter.section_header("EXPORTING RESULTS")
-        
-        # Extract data structure from results
-        if not labeled_results or not labeled_results[0].themes:
-            raise ValueError("No hierarchical structure found in labeled results")
-            
-        first_result = labeled_results[0]
-        hierarchical_structure = {
-            'themes': first_result.themes,
-            'cluster_mappings': first_result.cluster_mappings
-        }
-        
-        # Create respondent codes mapping
-        respondent_codes = self._create_respondent_codes_mapping(labeled_results, hierarchical_structure)
-        
-        # Create export directory
-        export_dir = self._setup_export_directory(filename, var_name)
-        
-        # Export to SPSS
-        spss_path = self._export_to_spss(
-            respondent_codes, hierarchical_structure, labeled_results, filename, id_column, var_name, export_dir)
-        
-        # Export to Excel  
-        excel_path = self._export_to_excel(
-            respondent_codes, hierarchical_structure, filename, var_name, export_dir)
-        
-        self.verbose_reporter.stat_line("✅ Results exported successfully")
-        self.verbose_reporter.stat_line(f"📊 SPSS file: {spss_path}")
-        self.verbose_reporter.stat_line(f"📈 Excel file: {excel_path}")
-        
-        return {
-            'spss_file': spss_path,
-            'excel_file': excel_path,
-            'export_directory': export_dir
-        }
     
-    def _create_respondent_codes_mapping(self, 
-                                       labeled_results: List[models.LabelModel],
-                                       hierarchical_structure: Dict) -> Dict[int, Dict[str, Any]]:
+    def _sanitize_excel_text(self, text):
+        """Remove or replace control characters that Excel cannot handle"""
+        if text is None or not isinstance(text, str):
+            return text
         
-        respondent_codes = {}
-        themes = hierarchical_structure['themes']
-        cluster_mappings = {mapping.cluster_id: mapping for mapping in hierarchical_structure['cluster_mappings']}
+        # Remove all control characters (0x00-0x1F) except tab, newline, carriage return
+        # These are characters that openpyxl/Excel cannot handle
+        sanitized = ''.join(char if ord(char) > 31 or char in '\t\n\r' else ' ' for char in text)
         
-        self.verbose_reporter.step_start("Creating respondent codes mapping (binary approach)")
+        # Also handle the specific problematic character we saw (0x08 - backspace)
+        sanitized = sanitized.replace('\x08', '')
         
-        # Create list of all possible themes and concepts for binary variables
-        all_themes = [(theme.theme_id, theme.numeric_id) for theme in themes]
-        all_concepts = []
-        for theme in themes:
-            for concept in theme.topics:  # topics are concepts in 2-level hierarchy
-                all_concepts.append((concept.topic_id, concept.numeric_id, theme.theme_id))
+        return sanitized
         
-        self.verbose_reporter.stat_line(f"Creating binary variables for {len(all_themes)} themes and {len(all_concepts)} concepts")
+    def export_to_excel(self,
+                       code_assigned_results: List[models.CodeAssignedModel],
+                       theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
+                       filename: str,
+                       var_name: str,
+                       export_dir: Optional[str] = None) -> str:
+        """
+        Export code assignment results to Excel with all requested columns:
+        - respondent_id
+        - idea_id
+        - initial_cluster_id (parent cluster)
+        - source_cluster_id (sub-cluster)
+        - code_label
+        - code_description
+        - assignment_rationale
+        - theme_name
+        - theme_description
+        """
         
-        for result in labeled_results:
+        self.verbose_reporter.section_header("EXPORTING CODE ASSIGNMENTS TO EXCEL")
+        
+        # Prepare data for export
+        export_data = []
+        
+        # Create comprehensive code mapping from enriched codebook
+        code_to_info = {}
+        for code_entry in theme_enriched_codebook.codes:
+            code_to_info[code_entry.code] = {
+                'theme_name': code_entry.theme or 'No Theme',
+                'theme_description': code_entry.theme_description or 'No Description',
+                'code_description': code_entry.definition,
+                'source_cluster': code_entry.source_cluster  # This is the sub-cluster ID like "12-1"
+            }
+        
+        # Process each result
+        for result in code_assigned_results:
             respondent_id = result.respondent_id
             
-            # Initialize binary codes for this respondent
-            codes = {
-                'quality_filter': result.quality_filter,
-                'quality_filter_code': result.quality_filter_code,
-                'themes_present': set(),  # Set of theme IDs present in segments
-                'concepts_present': set(),  # Set of concept IDs present in segments
-            }
-            
-            # Check if this respondent was filtered out
-            if result.quality_filter:
-                # Quality filtered - no themes/concepts present
-                codes['themes_present'] = set()
-                codes['concepts_present'] = set()
-            else:
-                # Find all themes/concepts from ALL segments (not just most common)
-                theme_concept_pairs = self._find_all_segment_assignments(result, cluster_mappings, themes)
-                codes['themes_present'] = {pair[0] for pair in theme_concept_pairs}
-                codes['concepts_present'] = {pair[1] for pair in theme_concept_pairs}
-            
-            respondent_codes[respondent_id] = codes
+            if result.response_ideas:
+                for idea in result.response_ideas:
+                    # Process each assigned code
+                    if idea.assigned_codes:
+                        for code in idea.assigned_codes:
+                            code_info = code_to_info.get(code, {
+                                'theme_name': 'Unknown Theme',
+                                'theme_description': 'Unknown Description',
+                                'code_description': 'Unknown Code',
+                                'source_cluster': None
+                            })
+                            
+                            # Get source cluster info from the enriched codebook
+                            source_cluster = code_info['source_cluster']
+                            
+                            # Extract parent cluster from source cluster
+                            if source_cluster and isinstance(source_cluster, str) and '-' in source_cluster:
+                                parent_cluster = source_cluster.split('-')[0]
+                            else:
+                                parent_cluster = source_cluster
+                            
+                            row_data = {
+                                'respondent_id': respondent_id,
+                                'original_response': result.response,
+                                'idea_id': idea.idea_id,
+                                'idea_text': idea.idea,
+                                'initial_cluster_id': parent_cluster,
+                                'source_cluster_id': source_cluster,  # This is the sub-cluster from enriched codebook
+                                'code_label': code,
+                                'code_description': code_info['code_description'],
+                                'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
+                                'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
+                                'theme_name': code_info['theme_name'],
+                                'theme_description': code_info['theme_description']
+                            }
+                            export_data.append(row_data)
+                    else:
+                        # No codes assigned - still export the row with empty code fields
+                        # Get cluster info from the idea itself as fallback
+                        initial_cluster = idea.initial_cluster if hasattr(idea, 'initial_cluster') else None
+                        if initial_cluster and isinstance(initial_cluster, str) and '-' in initial_cluster:
+                            parent_cluster = initial_cluster.split('-')[0]
+                            source_cluster = initial_cluster
+                        else:
+                            parent_cluster = initial_cluster
+                            source_cluster = initial_cluster
+                            
+                        row_data = {
+                            'respondent_id': respondent_id,
+                            'original_response': result.response,
+                            'idea_id': idea.idea_id,
+                            'idea_text': idea.idea,
+                            'initial_cluster_id': parent_cluster,
+                            'source_cluster_id': source_cluster,
+                            'code_label': 'No Code Assigned',
+                            'code_description': '',
+                            'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
+                            'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
+                            'theme_name': '',
+                            'theme_description': ''
+                        }
+                        export_data.append(row_data)
         
-        # Report statistics
-        total_respondents = len(respondent_codes)
-        filtered_count = sum(1 for codes in respondent_codes.values() if codes['quality_filter'])
-        coded_count = total_respondents - filtered_count
+        # Convert to DataFrame
+        df = pd.DataFrame(export_data)
         
-        # Count respondents with multiple themes/concepts
-        multi_theme_count = sum(1 for codes in respondent_codes.values() 
-                               if not codes['quality_filter'] and len(codes['themes_present']) > 1)
-        multi_concept_count = sum(1 for codes in respondent_codes.values() 
-                                 if not codes['quality_filter'] and len(codes['concepts_present']) > 1)
+        # Create export directory if not provided
+        if export_dir is None:
+            # Get project root (3 levels up from utils folder)
+            project_root = Path(__file__).parent.parent.parent
+            export_dir = os.path.join(project_root, 'exports')
         
-        self.verbose_reporter.stat_line(f"Total respondents: {total_respondents}")
-        self.verbose_reporter.stat_line(f"Filtered respondents: {filtered_count}")
-        self.verbose_reporter.stat_line(f"Coded respondents: {coded_count}")
-        self.verbose_reporter.stat_line(f"Respondents with multiple themes: {multi_theme_count}")
-        self.verbose_reporter.stat_line(f"Respondents with multiple concepts: {multi_concept_count}")
-        
-        return respondent_codes
-    
-    def _find_all_segment_assignments(self, 
-                                     result: models.LabelModel,
-                                     cluster_mappings: Dict[int, models.ClusterMapping],
-                                     themes: List[models.HierarchicalTheme]) -> List[Tuple[str, str]]:
-       
-        theme_concept_pairs = []
-        
-        if not result.response_segment:
-            return theme_concept_pairs
-        
-        # Process ALL segments, not just the most common
-        for segment in result.response_segment:
-            if hasattr(segment, 'initial_cluster') and segment.initial_cluster is not None:
-                cluster_id = segment.initial_cluster
-                
-                if cluster_id in cluster_mappings:
-                    mapping = cluster_mappings[cluster_id]
-                    theme_id = mapping.theme_id
-                    concept_id = mapping.topic_id  # concept stored as topic_id
-                    
-                    # Verify this theme/concept exists in our structure
-                    theme_found = False
-                    for theme in themes:
-                        if theme.theme_id == theme_id:
-                            for concept in theme.topics:
-                                if concept.topic_id == concept_id:
-                                    theme_concept_pairs.append((theme_id, concept_id))
-                                    theme_found = True
-                                    break
-                            if theme_found:
-                                break
-        
-        return theme_concept_pairs
-    
-    def _create_spss_metadata(self, themes: List[Tuple[str, str]], concepts: List[Tuple[str, str, str]], var_name: str) -> Tuple[Dict[str, str], Dict[str, Dict[int, str]]]:
-        
-        variable_labels = {}
-        value_labels = {}
-        
-        # Standard value labels for all binary variables
-        binary_values = {0: "Niet genoemd", 1: "Wel genoemd"}
-        
-        # 1. Theme variable labels and values
-        for theme_id, theme_description in themes:
-            col_name = f"{var_name}_THEME_{theme_id}"
-            variable_labels[col_name] = f"Theme {theme_id}: {theme_description}"
-            value_labels[col_name] = binary_values.copy()
-        
-        # 2. Concept variable labels and values
-        for concept_id, concept_description, theme_id in concepts:
-            col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
-            variable_labels[col_name] = f"Concept {concept_id}: {concept_description}"
-            value_labels[col_name] = binary_values.copy()
-        
-        # 3. Quality filter variable labels and values
-        quality_filter_labels = {
-            f"{var_name}_USER_MISSING_97": "User Missing: Don't know/expressing uncertainty",
-            f"{var_name}_SYSTEM_MISSING_98": "System Missing: Not at Home/Not Available", 
-            f"{var_name}_NO_ANSWER_99": "No Answer: Empty/Single Characters/Numbers/Nonsensical"
-        }
-        
-        for col_name, label in quality_filter_labels.items():
-            variable_labels[col_name] = label
-            value_labels[col_name] = binary_values.copy()
-        
-        return variable_labels, value_labels
-    
-    def _setup_export_directory(self, filename: str, var_name: str) -> str:
-        """Create and return export directory path"""
-        # Get base data directory
-        base_data_dir = self.data_loader.data_dir
-        export_dir = self.config.get_export_dir(base_data_dir)
-        
-        # Create subdirectory if enabled
-        if self.config.create_subdirs:
-            base_filename = Path(filename).stem
-            subdir_name = f"{base_filename}_{var_name}"
-            export_dir = os.path.join(export_dir, subdir_name)
-        
-        # Create directory
         Path(export_dir).mkdir(parents=True, exist_ok=True)
         
-        self.verbose_reporter.stat_line(f"Export directory: {export_dir}")
-        return export_dir
+        # Create output filename
+        base_name = Path(filename).stem
+        output_filename = f"{base_name}_{var_name}_code_assignments.xlsx"
+        output_path = os.path.join(export_dir, output_filename)
+        
+        print(f"About to export DataFrame with shape: {df.shape}")
+        #print(f"DataFrame columns: {list(df.columns)}")
+        # if len(df) > 0:
+        #     print(f"Sample data - original_response: {str(df.iloc[0]['original_response'])[:100]}...")
+        #     print(f"Sample data - idea_text: {str(df.iloc[0]['idea_text'])[:100]}...")
+        
+        # Export to Excel with formatting
+        self._write_formatted_excel(df, output_path, var_name)
+        
+        # Report statistics
+        self.verbose_reporter.stat_line(f"Total rows exported: {len(export_data)}")
+        self.verbose_reporter.stat_line(f"Unique respondents: {df['respondent_id'].nunique()}")
+        self.verbose_reporter.stat_line(f"Unique ideas: {df['idea_id'].nunique()}")
+        self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()}")
+        
+        return output_path
     
-    def _export_to_spss(self, 
-                       respondent_codes: Dict[int, Dict[str, Any]],
-                       hierarchical_structure: Dict,
-                       labeled_results: List,
-                       filename: str,
-                       id_column: str,
-                       var_name: str,
-                       export_dir: str) -> str:
+    def export_to_excel_with_reasoning(self,
+                                      code_assigned_results: List[models.CodeAssignedModel],
+                                      theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
+                                      reasoning_results: CodeGeneratorReasoningResults,
+                                      filename: str,
+                                      var_name: str,
+                                      export_dir: Optional[str] = None) -> str:
         """
-        Export codes to SPSS using binary variables approach
-        Creates binary variables for each theme, concept, and quality filter code
+        Export code assignment results with step 7 reasoning data to Excel.
+        Includes all data from regular export plus step 3 and step 4 reasoning.
         """
-        self.verbose_reporter.step_start("Exporting to SPSS (binary variables)")
         
-        # Load original SPSS data
-        original_df, meta = self.data_loader.load_sav(filename)
+        self.verbose_reporter.section_header("EXPORTING CODE ASSIGNMENTS WITH REASONING TO EXCEL")
         
-        # Get themes and concepts from hierarchical structure
-        themes_list = hierarchical_structure['themes']
+        # Prepare data for export
+        export_data = []
         
-        # Extract themes and concepts for binary variables
-        themes = [(theme.theme_id, theme.description) for theme in themes_list]
-        concepts = []
-        for theme in themes_list:
-            for concept in theme.topics:  # topics are concepts in 2-level hierarchy
-                concepts.append((concept.topic_id, concept.description, theme.theme_id))
+        # Create comprehensive code mapping from enriched codebook
+        code_to_info = {}
+        for code_entry in theme_enriched_codebook.codes:
+            code_to_info[code_entry.code] = {
+                'theme_name': code_entry.theme or 'No Theme',
+                'theme_description': code_entry.theme_description or 'No Description',
+                'code_description': code_entry.definition,
+                'source_cluster': code_entry.source_cluster  # This is the sub-cluster ID like "12-1"
+            }
         
-        # Create binary columns for themes
-        new_columns = {}
+        # Create reasoning mapping from step 7 data
+        reasoning_mapping = self._create_reasoning_mapping(reasoning_results)
         
-        # 1. Theme binary variables
-        for theme_id, theme_description in themes:
-            col_name = f"{var_name}_THEME_{theme_id}"
-            new_columns[col_name] = []
+        # Process each result
+        for result in code_assigned_results:
+            respondent_id = result.respondent_id
+            
+            if result.response_ideas:
+                for idea in result.response_ideas:
+                    # Process each assigned code
+                    if idea.assigned_codes:
+                        for code in idea.assigned_codes:
+                            code_info = code_to_info.get(code, {
+                                'theme_name': 'Unknown Theme',
+                                'theme_description': 'Unknown Description',
+                                'code_description': 'Unknown Code',
+                                'source_cluster': None
+                            })
+                            
+                            # Get source cluster info from the enriched codebook
+                            source_cluster = code_info['source_cluster']
+                            
+                            # Extract parent cluster from source cluster
+                            if source_cluster and isinstance(source_cluster, str) and '-' in source_cluster:
+                                parent_cluster = source_cluster.split('-')[0]
+                            else:
+                                parent_cluster = source_cluster
+                            
+                            # Get reasoning data for this cluster
+                            reasoning_data = self._get_reasoning_for_cluster(reasoning_mapping, source_cluster, parent_cluster)
+                            
+                            row_data = {
+                                'respondent_id': respondent_id,
+                                'original_response': result.response,
+                                'idea_id': idea.idea_id,
+                                'idea_text': idea.idea,
+                                'initial_cluster_id': parent_cluster,
+                                'source_cluster_id': source_cluster,
+                                'code_label': code,
+                                'code_description': code_info['code_description'],
+                                'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
+                                'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
+                                'theme_name': code_info['theme_name'],
+                                'theme_description': code_info['theme_description'],
+                                # Step 7 reasoning data
+                                'codegen_theme': reasoning_data.get('codegen_theme', ''),
+                                'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
+                                'codebook_validation': reasoning_data.get('codebook_validation', '')
+                            }
+                            export_data.append(row_data)
+                    else:
+                        # No codes assigned - still export the row with empty code fields
+                        initial_cluster = idea.initial_cluster if hasattr(idea, 'initial_cluster') else None
+                        if initial_cluster and isinstance(initial_cluster, str) and '-' in initial_cluster:
+                            parent_cluster = initial_cluster.split('-')[0]
+                            source_cluster = initial_cluster
+                        else:
+                            parent_cluster = initial_cluster
+                            source_cluster = initial_cluster
+                        
+                        # Get reasoning data for this cluster
+                        reasoning_data = self._get_reasoning_for_cluster(reasoning_mapping, source_cluster, parent_cluster)
+                            
+                        row_data = {
+                            'respondent_id': respondent_id,
+                            'original_response': result.response,
+                            'idea_id': idea.idea_id,
+                            'idea_text': idea.idea,
+                            'initial_cluster_id': parent_cluster,
+                            'source_cluster_id': source_cluster,
+                            'code_label': 'No Code Assigned',
+                            'code_description': '',
+                            'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
+                            'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
+                            'theme_name': '',
+                            'theme_description': '',
+                            # Step 7 reasoning data
+                            'codegen_theme': reasoning_data.get('codegen_theme', ''),
+                            'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
+                            'codebook_validation': reasoning_data.get('codebook_validation', '')
+                        }
+                        export_data.append(row_data)
         
-        # 2. Concept binary variables  
-        for concept_id, concept_description, theme_id in concepts:
-            # Use format like Q1_CONCEPT_1_2 for theme 1, concept 2
-            col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
-            new_columns[col_name] = []
+        # Convert to DataFrame
+        df = pd.DataFrame(export_data)
         
-        # 3. Quality filter binary variables
-        quality_filter_columns = {
-            f"{var_name}_USER_MISSING_97": [],
-            f"{var_name}_SYSTEM_MISSING_98": [],
-            f"{var_name}_NO_ANSWER_99": []
-        }
-        new_columns.update(quality_filter_columns)
+        # Create export directory if not provided
+        if export_dir is None:
+            # Get project root (3 levels up from utils folder)
+            project_root = Path(__file__).parent.parent.parent
+            export_dir = os.path.join(project_root, 'exports')
         
-        self.verbose_reporter.stat_line(f"Creating {len(new_columns)} binary variables")
+        Path(export_dir).mkdir(parents=True, exist_ok=True)
         
-        # Validate ID matching before mapping
-        validation_results = validate_id_consistency(
-            original_df, 
-            id_column, 
-            labeled_results,
-            verbose=self.verbose
+        # Create output filename
+        base_name = Path(filename).stem
+        output_filename = f"{base_name}_{var_name}_code_assignments_with_reasoning.xlsx"
+        output_path = os.path.join(export_dir, output_filename)
+        
+        # Export to Excel with formatting
+        self._write_formatted_excel_with_reasoning(df, output_path, var_name)
+        
+        # Report statistics
+        self.verbose_reporter.stat_line(f"Total rows exported: {len(export_data)}")
+        self.verbose_reporter.stat_line(f"Unique respondents: {df['respondent_id'].nunique()}")
+        self.verbose_reporter.stat_line(f"Unique ideas: {df['idea_id'].nunique()}")
+        self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()}")
+        self.verbose_reporter.stat_line(f"Excel file with reasoning saved: {output_path}")
+        
+        return output_path
+    
+    def _write_formatted_excel(self, df: pd.DataFrame, output_path: str, var_name: str):
+        """Write DataFrame to Excel with formatting"""
+        
+        # Create workbook and worksheet
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "codering"
+        
+        # Define styles
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
         )
         
-        # Check for critical errors
-        if validation_results['only_in_pipeline']:
-            self.verbose_reporter.warning(f"CRITICAL: {len(validation_results['only_in_pipeline'])} IDs from pipeline not found in original SPSS file!")
-            self.verbose_reporter.warning("This indicates a serious ID mismatch problem that will cause incorrect mapping!")
+        # Write headers
+        headers = [
+            'Respondent ID',
+            'Original Response',
+            'Idea ID',
+            'Idea Text',
+            'Initial Cluster ID',
+            'Source Cluster ID',
+            'Code Label',
+            'Code Description',
+            'Assignment Rationale',
+            'Assignment Confidence',
+            'Theme Name',
+            'Theme Description'
+        ]
         
-        # Create a mapping of original row indices to respondent IDs for safer iteration
-        self.verbose_reporter.stat_line(f"Processing {len(original_df)} rows for binary variable mapping...")
-        row_to_id_mapping = {}
-        for idx, row in original_df.iterrows():
-            if idx % 100 == 0 and idx > 0:  # Progress indicator every 100 rows
-                self.verbose_reporter.stat_line(f"  Processed {idx}/{len(original_df)} rows...")
-            try:
-                respondent_id = int(row[id_column])
-                row_to_id_mapping[idx] = respondent_id
-            except (ValueError, TypeError) as e:
-                self.verbose_reporter.warning(f"Could not convert ID '{row[id_column]}' to integer at row {idx}: {e}")
-                row_to_id_mapping[idx] = None
-        
-        # Map codes to original data using explicit ID matching
-        matched_count = 0
-        for idx, respondent_id in row_to_id_mapping.items():
-            if respondent_id is None:
-                # Skip rows with invalid IDs
-                for col_name in new_columns:
-                    new_columns[col_name].append(0)
-                continue
-                
-            if respondent_id in respondent_codes:
-                matched_count += 1
-                codes = respondent_codes[respondent_id]
-                
-                # Set theme binary variables
-                for theme_id, theme_description in themes:
-                    col_name = f"{var_name}_THEME_{theme_id}"
-                    value = 1 if theme_id in codes['themes_present'] else 0
-                    new_columns[col_name].append(value)
-                
-                # Set concept binary variables
-                for concept_id, concept_description, theme_id in concepts:
-                    col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
-                    value = 1 if concept_id in codes['concepts_present'] else 0
-                    new_columns[col_name].append(value)
-                
-                # Set quality filter binary variables
-                if codes['quality_filter']:
-                    filter_code = codes['quality_filter_code']
-                    new_columns[f"{var_name}_USER_MISSING_97"].append(1 if filter_code == 99999997 else 0)
-                    new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(1 if filter_code == 99999998 else 0)
-                    new_columns[f"{var_name}_NO_ANSWER_99"].append(1 if filter_code == 99999999 else 0)
-                else:
-                    # Not filtered - all quality filter variables = 0
-                    new_columns[f"{var_name}_USER_MISSING_97"].append(0)
-                    new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(0)
-                    new_columns[f"{var_name}_NO_ANSWER_99"].append(0)
-            else:
-                # Respondent not in analysis - set all theme/concept to 0, system missing to 1
-                for theme_id, theme_description in themes:
-                    col_name = f"{var_name}_THEME_{theme_id}"
-                    new_columns[col_name].append(0)
-                
-                for concept_id, concept_description, theme_id in concepts:
-                    col_name = f"{var_name}_CONCEPT_{concept_id.replace('.', '_')}"
-                    new_columns[col_name].append(0)
-                
-                # Mark as system missing
-                new_columns[f"{var_name}_USER_MISSING_97"].append(0)
-                new_columns[f"{var_name}_SYSTEM_MISSING_98"].append(1)
-                new_columns[f"{var_name}_NO_ANSWER_99"].append(0)
-        
-        # Add new columns to dataframe
-        for col_name, values in new_columns.items():
-            original_df[col_name] = values
-        
-        # Create SPSS metadata (variable labels and value labels)
-        variable_labels, value_labels = self._create_spss_metadata(themes, concepts, var_name)
-        
-        # Create output filename
-        base_name = Path(filename).stem
-        output_filename = f"{base_name}{self.config.spss_suffix}.sav"
-        output_path = os.path.join(export_dir, output_filename)
-        
-        # Report final matching statistics
-        self.verbose_reporter.stat_line(f"Successfully matched {matched_count} respondents between pipeline and SPSS")
-        if matched_count < len(original_df):
-            self.verbose_reporter.warning(f"WARNING: {len(original_df) - matched_count} respondents have no analysis results")
-        
-        # Save to SPSS format with metadata
-        try:
-            self.verbose_reporter.stat_line(f"Writing SPSS file: {len(original_df)} rows, {len(original_df.columns)} columns")
-            # Use correct pyreadstat syntax: column_labels for variable labels, variable_value_labels for value labels
-            pyreadstat.write_sav(original_df, output_path, 
-                                column_labels=variable_labels,
-                                variable_value_labels=value_labels)
-        except (TypeError, MemoryError, Exception) as e:
-            # Fallback: save without metadata if parameters not supported or memory issues
-            self.verbose_reporter.stat_line(f"⚠️ SPSS export error: {str(e)}")
-            self.verbose_reporter.stat_line("  Saving without variable and value labels")
-            try:
-                pyreadstat.write_sav(original_df, output_path)
-            except Exception as fallback_e:
-                self.verbose_reporter.stat_line(f"⚠️ Critical SPSS export failure: {str(fallback_e)}")
-                raise
-        
-        self.verbose_reporter.stat_line(f"Added {len(new_columns)} binary variables with SPSS metadata")
-        self.verbose_reporter.stat_line(f"  - {len(themes)} theme variables")
-        self.verbose_reporter.stat_line(f"  - {len(concepts)} concept variables") 
-        self.verbose_reporter.stat_line("  - 3 quality filter variables")
-        self.verbose_reporter.stat_line("  - Variable labels: descriptive names for each column")
-        self.verbose_reporter.stat_line("  - Value labels: 0='Niet genoemd', 1='Wel genoemd'")
-        self.verbose_reporter.stat_line(f"SPSS file saved: {output_filename}")
-        
-        return output_path
-    
-    def _export_to_excel(self,
-                        respondent_codes: Dict[int, Dict[str, Any]],
-                        hierarchical_structure: Dict,
-                        filename: str,
-                        var_name: str,
-                        export_dir: str) -> str:
-
-        self.verbose_reporter.step_start("Exporting to Excel with visualizations")
-        
-        # Create output filename
-        base_name = Path(filename).stem
-        output_filename = f"{base_name}_{var_name}{self.config.excel_suffix}.xlsx"
-        output_path = os.path.join(export_dir, output_filename)
-        
-        # Use xlsxwriter for better chart support
-        workbook = xlsxwriter.Workbook(output_path)
-        
-        try:
-            # Tab 1: Codebook
-            if self.config.enable_codebook_tab:
-                self._create_enhanced_codebook_tab(workbook, hierarchical_structure)
-            
-            # Tab 2: Hierarchy with visual dendrogram
-            if self.config.enable_dendrogram_tab:
-                self._create_enhanced_dendrogram_tab(workbook, hierarchical_structure, export_dir)
-            
-            # Tab 3: Frequencies with embedded charts
-            if self.config.enable_frequency_tab:
-                self._create_enhanced_frequency_tab(workbook, respondent_codes, hierarchical_structure, export_dir)
-            
-            # Tab 4: Wordcloud with embedded images
-            if self.config.enable_wordcloud_tab:
-                self._create_enhanced_wordcloud_tab(workbook, respondent_codes, hierarchical_structure, export_dir)
-        
-        finally:
-            workbook.close()
-        
-        self.verbose_reporter.stat_line(f"Excel file with visualizations saved: {output_filename}")
-        return output_path
-    
-    def _create_enhanced_codebook_tab(self, workbook, hierarchical_structure: Dict):
-        """Create enhanced codebook tab with styled formatting for 2-level hierarchy"""
-        themes = hierarchical_structure['themes']
-        
-        # Create worksheet
-        worksheet = workbook.add_worksheet('Codebook')
-        
-        # Define formats
-        header_format = workbook.add_format({
-            'bold': True,
-            'font_size': 12,
-            'bg_color': '#366092',
-            'font_color': 'white',
-            'align': 'center',
-            'valign': 'vcenter',
-            'border': 1
-        })
-        
-        theme_format = workbook.add_format({
-            'bold': True,
-            'font_size': 11,
-            'bg_color': '#D9E1F2',
-            'border': 1,
-            'align': 'left'
-        })
-        
-        concept_format = workbook.add_format({
-            'font_size': 10,
-            'bg_color': '#F2F2F2',
-            'border': 1,
-            'align': 'left',
-            'indent': 1
-        })
-        
-        # Headers for 2-level hierarchy
-        headers = ['Level', 'ID', 'Numeric_ID', 'Label', 'Description', 'Parent_ID', 'Full_Path']
-        for col, header in enumerate(headers):
-            worksheet.write(0, col, header, header_format)
-        
-        # Data
-        row = 1
-        for theme in themes:
-            # Theme row
-            worksheet.write(row, 0, 'Theme', theme_format)
-            worksheet.write(row, 1, theme.theme_id, theme_format)
-            worksheet.write(row, 2, theme.numeric_id, theme_format)
-            worksheet.write(row, 3, theme.label, theme_format)
-            worksheet.write(row, 4, theme.description, theme_format)
-            worksheet.write(row, 5, '', theme_format)
-            worksheet.write(row, 6, theme.label, theme_format)
-            row += 1
-            
-            for topic in theme.topics:  # Topics are actually concepts in 2-level hierarchy
-                # Concept row
-                worksheet.write(row, 0, 'Concept', concept_format)
-                worksheet.write(row, 1, topic.topic_id, concept_format)
-                worksheet.write(row, 2, topic.numeric_id, concept_format)
-                worksheet.write(row, 3, topic.label, concept_format)
-                worksheet.write(row, 4, topic.description, concept_format)
-                worksheet.write(row, 5, theme.theme_id, concept_format)
-                worksheet.write(row, 6, f"{theme.label} > {topic.label}", concept_format)
-                row += 1
-        
-        # Adjust column widths
-        worksheet.set_column('A:A', 8)   # Level
-        worksheet.set_column('B:B', 10)  # ID
-        worksheet.set_column('C:C', 12)  # Numeric_ID
-        worksheet.set_column('D:D', 25)  # Label
-        worksheet.set_column('E:E', 40)  # Description
-        worksheet.set_column('F:F', 12)  # Parent_ID
-        worksheet.set_column('G:G', 50)  # Full_Path
-    
-    def _create_enhanced_dendrogram_tab(self, workbook, hierarchical_structure: Dict, export_dir: str):
-        """Create dendrogram tab with visual hierarchy for 2-level structure"""
-        themes = hierarchical_structure['themes']
-        
-        # Create worksheet
-        worksheet = workbook.add_worksheet('Hierarchy')
-        
-        # Create tree diagram using matplotlib
-        fig, ax = plt.subplots(1, 1, figsize=(self.config.chart_width, self.config.chart_height))
-        fig.patch.set_facecolor('white')
-        
-        # Create hierarchical tree structure for 2 levels
-        y_pos = 0
-        y_positions = {}
-        
-        for theme_idx, theme in enumerate(themes):
-            # Theme level
-            theme_y = y_pos
-            y_positions[theme.theme_id] = theme_y
-            
-            # Draw theme box
-            ax.text(0, theme_y, theme.label, fontsize=14, fontweight='bold',
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor='lightblue', alpha=0.8))
-            
-            concept_start_y = y_pos
-            for concept_idx, concept in enumerate(theme.topics):  # Topics are concepts
-                y_pos -= 1
-                concept_y = y_pos
-                y_positions[concept.topic_id] = concept_y
-                
-                # Draw concept box
-                ax.text(1, concept_y, concept.label, fontsize=12,
-                       bbox=dict(boxstyle="round,pad=0.2", facecolor='lightgreen', alpha=0.6))
-                
-                # Draw line from theme to concept
-                ax.plot([0.4, 0.9], [theme_y, concept_y], 'k-', alpha=0.5)
-            
-            y_pos -= 1  # Space between themes
-        
-        ax.set_xlim(-0.5, 2)
-        ax.set_ylim(y_pos - 1, 1)
-        ax.set_title('Hierarchical Structure: Themes → Concepts', fontsize=16, fontweight='bold')
-        ax.axis('off')
-        
-        # Save chart
-        chart_path = os.path.join(export_dir, 'hierarchy_chart.png')
-        plt.tight_layout()
-        plt.savefig(chart_path, dpi=300, bbox_inches='tight', facecolor='white')
-        plt.close()
-        
-        # Add structured data table
-        header_format = workbook.add_format({
-            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
-            'align': 'center', 'border': 1
-        })
-        
-        headers = ['Theme', 'Concept', 'Numeric_ID', 'Level']
-        for col, header in enumerate(headers):
-            worksheet.write(0, col, header, header_format)
-        
-        # Data rows
-        row = 1
-        for theme in themes:
-            worksheet.write(row, 0, theme.label, workbook.add_format({'bold': True, 'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 1, '', workbook.add_format({'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 2, theme.numeric_id, workbook.add_format({'bg_color': '#D9E1F2'}))
-            worksheet.write(row, 3, 'Theme', workbook.add_format({'bg_color': '#D9E1F2'}))
-            row += 1
-            
-            for concept in theme.topics:  # Topics are concepts
-                worksheet.write(row, 0, '', workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 1, concept.label, workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 2, concept.numeric_id, workbook.add_format({'bg_color': '#F2F2F2'}))
-                worksheet.write(row, 3, 'Concept', workbook.add_format({'bg_color': '#F2F2F2'}))
-                row += 1
-        
-        # Insert chart image
-        try:
-            worksheet.insert_image('F2', chart_path, {'x_scale': 0.8, 'y_scale': 0.8})
-        except Exception as e:
-            self.verbose_reporter.stat_line(f"Warning: Could not insert hierarchy chart: {e}")
-        
-        # Adjust column widths
-        worksheet.set_column('A:D', 20)
-        worksheet.set_column('E:P', 25)  # Space for chart
-    
-    def _create_enhanced_frequency_tab(self, workbook, respondent_codes: Dict, hierarchical_structure: Dict, export_dir: str):
-        """Create frequency analysis tab with embedded bar charts for 2-level hierarchy"""
-        themes = hierarchical_structure['themes']
-        
-        # Create worksheet
-        worksheet = workbook.add_worksheet('Frequencies')
-        
-        # Count frequencies for each level using binary approach
-        theme_counts = {}
-        concept_counts = {}
-        
-        for respondent_id, codes in respondent_codes.items():
-            # Count themes present (binary approach)
-            for theme_id in codes['themes_present']:
-                theme_counts[theme_id] = theme_counts.get(theme_id, 0) + 1
-            
-            # Count concepts present (binary approach)  
-            for concept_id in codes['concepts_present']:
-                concept_counts[concept_id] = concept_counts.get(concept_id, 0) + 1
-        
-        total_respondents = len(respondent_codes)
-        
-        # Prepare data for charts
-        theme_data = []
-        concept_data = []
-        
-        for theme in themes:
-            count = theme_counts.get(theme.theme_id, 0)
-            percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-            if count > 0:  # Only include non-zero frequencies
-                theme_data.append((theme.label, count, percentage))
-        
-        for theme in themes:
-            for concept in theme.topics:  # Topics are concepts
-                count = concept_counts.get(concept.topic_id, 0)
-                percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                if count > 0:
-                    concept_data.append((concept.label, count, percentage))
-        
-        # Create charts
-        chart_paths = []
-        
-        # Theme frequency chart
-        if theme_data:
-            fig, ax = plt.subplots(figsize=(12, 6))
-            labels, counts, percentages = zip(*sorted(theme_data, key=lambda x: x[1], reverse=True))
-            bars = ax.bar(range(len(labels)), counts, color='skyblue', alpha=0.8)
-            ax.set_xlabel('Themes', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Theme Frequencies', fontsize=14, fontweight='bold')
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels([label[:20] + '...' if len(label) > 20 else label for label in labels], 
-                             rotation=45, ha='right')
-            
-            # Add value labels on bars
-            for bar, count, pct in zip(bars, counts, percentages):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=9)
-            
-            plt.tight_layout()
-            theme_chart_path = os.path.join(export_dir, 'theme_frequencies.png')
-            plt.savefig(theme_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
-            plt.close()
-            chart_paths.append(('Theme Frequencies', theme_chart_path))
-        
-        # Concept frequency chart (top 20)
-        if concept_data:
-            fig, ax = plt.subplots(figsize=(14, 8))
-            sorted_concepts = sorted(concept_data, key=lambda x: x[1], reverse=True)[:20]
-            labels, counts, percentages = zip(*sorted_concepts)
-            bars = ax.bar(range(len(labels)), counts, color='lightgreen', alpha=0.8)
-            ax.set_xlabel('Concepts', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Top 20 Concept Frequencies', fontsize=14, fontweight='bold')
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels([label[:25] + '...' if len(label) > 25 else label for label in labels], 
-                             rotation=45, ha='right')
-            
-            for bar, count, pct in zip(bars, counts, percentages):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{count}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=8)
-            
-            plt.tight_layout()
-            concept_chart_path = os.path.join(export_dir, 'concept_frequencies.png')
-            plt.savefig(concept_chart_path, dpi=300, bbox_inches='tight', facecolor='white')
-            plt.close()
-            chart_paths.append(('Concept Frequencies', concept_chart_path))
-        
-        # Add data table
-        header_format = workbook.add_format({
-            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
-            'align': 'center', 'border': 1
-        })
-        
-        headers = ['Level', 'ID', 'Label', 'Frequency', 'Percentage']
-        for col, header in enumerate(headers):
-            worksheet.write(0, col, header, header_format)
-        
-        # Add all frequency data
-        row = 1
-        all_freq_data = []
-        
-        # Add theme data
-        for theme in themes:
-            count = theme_counts.get(theme.theme_id, 0)
-            percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-            all_freq_data.append(['Theme', theme.theme_id, theme.label, count, percentage])
-        
-        # Add concept data
-        for theme in themes:
-            for concept in theme.topics:  # Topics are concepts
-                count = concept_counts.get(concept.topic_id, 0)
-                percentage = (count / total_respondents) * 100 if total_respondents > 0 else 0
-                all_freq_data.append(['Concept', concept.topic_id, concept.label, count, percentage])
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = border
         
         # Write data
-        for data_row in all_freq_data:
-            for col, value in enumerate(data_row):
-                if col == 4:  # Percentage column
-                    worksheet.write(row, col, f"{value:.1f}%")
-                else:
-                    worksheet.write(row, col, value)
-            row += 1
-        
-        # Insert charts
-        chart_row = row + 3
-        for i, (title, chart_path) in enumerate(chart_paths):
-            try:
-                worksheet.write(chart_row, 0, title, workbook.add_format({'bold': True, 'font_size': 14}))
-                worksheet.insert_image(chart_row + 1, 0, chart_path, {'x_scale': 0.7, 'y_scale': 0.7})
-                chart_row += 35  # Space for next chart
-            except Exception as e:
-                self.verbose_reporter.stat_line(f"Warning: Could not insert chart {title}: {e}")
+        try:
+            for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=False), 2):
+                 for c_idx, value in enumerate(row, 1):
+                    # Handle None values for Excel
+                    if value is None:
+                        value = ""
+                    
+                    # Sanitize string values to remove control characters
+                    if isinstance(value, str):
+                        value = self._sanitize_excel_text(value)    
+                    try:
+                        cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                        cell.border = border
+                    except Exception as cell_error:
+                        print(f"DEBUG: Error writing cell at row {r_idx}, col {c_idx}")
+                        print(f"DEBUG: Cell value: {str(value)[:200]}...")
+                        print(f"DEBUG: Cell error: {cell_error}")
+                        raise
+                    
+                    # Format confidence values
+                    if c_idx == 10 and value is not None:  # Assignment confidence column (shifted by 1 due to new column)
+                        try:
+                            cell.value = float(value)
+                            cell.number_format = '0.00'
+                        except:
+                            pass
+        except Exception as e:
+            print(f"DEBUG: Error during data writing: {e}")
+            raise
         
         # Adjust column widths
-        worksheet.set_column('A:E', 20)
+        column_widths = {
+            'A': 15,  # Respondent ID
+            'B': 50,  # Original Response
+            'C': 15,  # Idea ID
+            'D': 50,  # Idea Text
+            'E': 18,  # Initial Cluster ID
+            'F': 18,  # Source Cluster ID
+            'G': 30,  # Code Label
+            'H': 50,  # Code Description
+            'I': 60,  # Assignment Rationale
+            'J': 20,  # Assignment Confidence
+            'K': 30,  # Theme Name
+            'L': 50   # Theme Description
+        }
+        
+        for col, width in column_widths.items():
+            ws.column_dimensions[col].width = width
+        
+        # Freeze the header row
+        ws.freeze_panes = 'A2'
+        
+        # Add summary sheet
+        summary_ws = wb.create_sheet(title="Summary")
+        
+        # Summary statistics
+        summary_data = [
+            ["Summary Statistics", ""],
+            ["", ""],
+            ["Total Assignments", len(df)],
+            ["Unique Respondents", df['respondent_id'].nunique()],
+            ["Unique Ideas", df['idea_id'].nunique()],
+            ["Unique Codes", df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()],
+            ["Unique Themes", df[df['theme_name'] != '']['theme_name'].nunique()],
+            ["", ""],
+            ["Code Frequency", "Count"],
+        ]
+        
+        # Add code frequency
+        code_freq = df[df['code_label'] != 'No Code Assigned']['code_label'].value_counts()
+        for code, count in code_freq.items():
+            summary_data.append([code, count])
+        
+        # Write summary data
+        for row_idx, row_data in enumerate(summary_data, 1):
+            for col_idx, value in enumerate(row_data, 1):
+                cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
+                if row_idx == 1 or (row_idx == 9 and col_idx == 1):
+                    cell.font = Font(bold=True, size=14)
+                elif row_idx in [3, 4, 5, 6, 7]:
+                    if col_idx == 1:
+                        cell.font = Font(bold=True)
+        
+        # Adjust summary column widths
+        summary_ws.column_dimensions['A'].width = 30
+        summary_ws.column_dimensions['B'].width = 15
+        
+        # Save workbook
+        try:
+            wb.save(output_path)
+        except Exception as e:
+            print(f"DEBUG: Error saving workbook: {e}")
+            raise
     
-    def _create_enhanced_wordcloud_tab(self, workbook, respondent_codes: Dict, hierarchical_structure: Dict, export_dir: str):
-        """Create wordcloud tab with embedded wordcloud images for each theme"""
-        themes = hierarchical_structure['themes']
+    def _create_reasoning_mapping(self, reasoning_results: CodeGeneratorReasoningResults) -> Dict[str, Dict[str, str]]:
+        """Create a mapping from cluster IDs to reasoning data"""
+        reasoning_mapping = {}
         
-        # Create worksheet
-        worksheet = workbook.add_worksheet('Wordcloud_Data')
-        
-        # Add data table first
-        header_format = workbook.add_format({
-            'bold': True, 'bg_color': '#366092', 'font_color': 'white',
-            'align': 'center', 'border': 1
-        })
-        
-        headers = ['Theme', 'Concept_Label', 'Frequency', 'Weight']
-        for col, header in enumerate(headers):
-            worksheet.write(0, col, header, header_format)
-        
-        wordcloud_data = []
-        theme_wordclouds = {}
-        
-        row = 1
-        for theme in themes:
-            theme_concept_frequencies = {}
+        # Process step 1 summaries (theme analysis)
+        for cluster_id, step1_data in reasoning_results.step1_summaries.items():
+            cluster_key = str(cluster_id)
+            if cluster_key not in reasoning_mapping:
+                reasoning_mapping[cluster_key] = {}
             
-            for concept in theme.topics:  # Topics are concepts
-                count = sum(1 for codes in respondent_codes.values() 
-                          if concept.topic_id in codes['concepts_present'])
+            # Extract analysis from step1 data for Codegen_theme
+            analysis = step1_data.get('analysis', '')
+            reasoning_mapping[cluster_key]['codegen_theme'] = analysis
+        
+        # Process step 2 analysis (coding decisions)
+        for cluster_id, step2_data in reasoning_results.step2_analysis.items():
+            cluster_key = str(cluster_id)
+            if cluster_key not in reasoning_mapping:
+                reasoning_mapping[cluster_key] = {}
+            
+            if 'coding_decision' in step2_data and step2_data['coding_decision']:
+                # Get the single coding decision
+                first_decision = step2_data['coding_decision']
+                decision = first_decision.get('decision', '')
+                justification = first_decision.get('justification', '')
+                # Combine decision + justification for Codegen_recommendation
+                combined_recommendation = f"{decision}: {justification}" if decision and justification else decision or justification
+                reasoning_mapping[cluster_key]['codegen_recommendation'] = combined_recommendation
+        
+        # Process step 3 recommendations (generated codes)
+        for cluster_id, step3_data in reasoning_results.step3_recommendations.items():
+            cluster_key = str(cluster_id)
+            if cluster_key not in reasoning_mapping:
+                reasoning_mapping[cluster_key] = {}
+            
+            if 'generated_code' in step3_data and step3_data['generated_code']:
+                # Get the single generated code
+                first_code = step3_data['generated_code']
+                code_label = first_code.get('code_label', '')
+                code_definition = first_code.get('code_definition', '')
+                # Combine label + definition for generated code info
+                combined_code = f"{code_label}: {code_definition}" if code_label and code_definition else code_label or code_definition
+                reasoning_mapping[cluster_key]['generated_code'] = combined_code
+        
+        # Process step 4 validations
+        for cluster_id, step4_data in reasoning_results.step4_validations.items():
+            cluster_key = str(cluster_id)
+            if cluster_key not in reasoning_mapping:
+                reasoning_mapping[cluster_key] = {}
+            
+            if 'code_validation' in step4_data and step4_data['code_validation']:
+                # Get the single validation
+                first_validation = step4_data['code_validation']
+                code_label = first_validation.get('code_label', '')
+                justification = first_validation.get('decision_rationale', '')
+                # Combine code label + justification for Codebook_validation
+                combined_validation = f"{code_label}: {justification}" if code_label and justification else code_label or justification
+                reasoning_mapping[cluster_key]['codebook_validation'] = combined_validation
+        
+        return reasoning_mapping
+    
+    def _get_reasoning_for_cluster(self, reasoning_mapping: Dict[str, Dict[str, str]], 
+                                 source_cluster: Optional[str], 
+                                 parent_cluster: Optional[str]) -> Dict[str, str]:
+        """Get reasoning data for a specific cluster, trying source cluster first then parent cluster"""
+        default_reasoning = {'codegen_theme': '', 'codegen_recommendation': '', 'codebook_validation': ''}
+        
+        # Try source cluster first (sub-cluster like "12-1")
+        if source_cluster and str(source_cluster) in reasoning_mapping:
+            return {**default_reasoning, **reasoning_mapping[str(source_cluster)]}
+        
+        # Try parent cluster (main cluster like "12")
+        if parent_cluster and str(parent_cluster) in reasoning_mapping:
+            return {**default_reasoning, **reasoning_mapping[str(parent_cluster)]}
+        
+        return default_reasoning
+    
+    def _write_formatted_excel_with_reasoning(self, df: pd.DataFrame, output_path: str, var_name: str):
+        """Write DataFrame to Excel with formatting including reasoning columns"""
+        
+        # Create workbook and worksheet
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "codering"
+        
+        # Define styles
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Write headers
+        headers = [
+            'Respondent ID',
+            'Original Response',
+            'Idea ID',
+            'Idea Text',
+            'Initial Cluster ID',
+            'Source Cluster ID',
+            'Code Label',
+            'Code Description',
+            'Assignment Rationale',
+            'Assignment Confidence',
+            'Theme Name',
+            'Theme Description',
+            'Codegen_theme',
+            'Codegen_recommendation',
+            'Codebook_validation'
+        ]
+        
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = border
+        
+        # Write data
+        for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=False), 2):
+            for c_idx, value in enumerate(row, 1):
+                # Handle None values for Excel
+                if value is None:
+                    value = ""
                 
-                if count > 0:
-                    theme_concept_frequencies[concept.label] = count
+                # Sanitize string values to remove control characters
+                if isinstance(value, str):
+                    value = self._sanitize_excel_text(value)
+                    # Also apply length limit to avoid openpyxl bugs
+                    if len(value) > 255:  # Much shorter limit to avoid openpyxl bugs
+                        value = value[:255] + "..."
                     
-                    # Add to data table
-                    worksheet.write(row, 0, theme.label)
-                    worksheet.write(row, 1, concept.label)
-                    worksheet.write(row, 2, count)
-                    worksheet.write(row, 3, count)  # Weight same as frequency
-                    row += 1
-            
-            # Create wordcloud for this theme if it has data
-            if theme_concept_frequencies:
-                theme_wordclouds[theme.label] = theme_concept_frequencies
-        
-        # Generate wordcloud images
-        wordcloud_paths = []
-        
-        for theme_label, concept_frequencies in theme_wordclouds.items():
-            if len(concept_frequencies) > 0:
-                try:
-                    # Create wordcloud
-                    wordcloud = WordCloud(
-                        width=self.config.wordcloud_width,
-                        height=self.config.wordcloud_height,
-                        max_words=self.config.max_wordcloud_words,
-                        background_color='white',
-                        colormap='viridis',
-                        relative_scaling=0.5,
-                        random_state=42
-                    ).generate_from_frequencies(concept_frequencies)
-                    
-                    # Create matplotlib figure
-                    fig, ax = plt.subplots(figsize=(12, 8))
-                    ax.imshow(wordcloud, interpolation='bilinear')
-                    ax.axis('off')
-                    ax.set_title(f'Wordcloud: {theme_label}', fontsize=16, fontweight='bold', pad=20)
-                    
-                    # Save wordcloud
-                    wordcloud_path = os.path.join(export_dir, f'wordcloud_{theme_label.replace(" ", "_")}.png')
-                    plt.tight_layout()
-                    plt.savefig(wordcloud_path, dpi=300, bbox_inches='tight', facecolor='white')
-                    plt.close()
-                    
-                    wordcloud_paths.append((theme_label, wordcloud_path))
-                    
-                except Exception as e:
-                    self.verbose_reporter.stat_line(f"Warning: Could not create wordcloud for {theme_label}: {e}")
-        
-        # Insert wordcloud images
-        if wordcloud_paths:
-            chart_row = row + 3
-            for theme_label, wordcloud_path in wordcloud_paths:
-                try:
-                    worksheet.write(chart_row, 0, f'Wordcloud: {theme_label}', 
-                                  workbook.add_format({'bold': True, 'font_size': 14}))
-                    worksheet.insert_image(chart_row + 1, 0, wordcloud_path, 
-                                         {'x_scale': 0.6, 'y_scale': 0.6})
-                    chart_row += 30  # Space for next wordcloud
-                except Exception as e:
-                    self.verbose_reporter.stat_line(f"Warning: Could not insert wordcloud for {theme_label}: {e}")
+                cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                cell.border = border
+                
+                # Format confidence values
+                if c_idx == 10 and value is not None:  # Assignment confidence column
+                    try:
+                        cell.value = float(value)
+                        cell.number_format = '0.00'
+                    except:
+                        pass
         
         # Adjust column widths
-        worksheet.set_column('A:D', 20)
-        worksheet.set_column('E:O', 25)  # Space for wordclouds
+        column_widths = {
+            'A': 15,  # Respondent ID
+            'B': 50,  # Original Response
+            'C': 15,  # Idea ID
+            'D': 50,  # Idea Text
+            'E': 18,  # Initial Cluster ID
+            'F': 18,  # Source Cluster ID
+            'G': 30,  # Code Label
+            'H': 50,  # Code Description
+            'I': 60,  # Assignment Rationale
+            'J': 20,  # Assignment Confidence
+            'K': 30,  # Theme Name
+            'L': 50,  # Theme Description
+            'M': 60,  # Codegen_theme
+            'N': 60,  # Codegen_recommendation
+            'O': 60   # Codebook_validation
+        }
+        
+        for col, width in column_widths.items():
+            ws.column_dimensions[col].width = width
+        
+        # Freeze the header row
+        ws.freeze_panes = 'A2'
+        
+        # Add summary sheet
+        summary_ws = wb.create_sheet(title="Summary")
+        
+        # Summary statistics
+        summary_data = [
+            ["Summary Statistics", ""],
+            ["", ""],
+            ["Total Assignments", len(df)],
+            ["Unique Respondents", df['respondent_id'].nunique()],
+            ["Unique Ideas", df['idea_id'].nunique()],
+            ["Unique Codes", df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()],
+            ["Unique Themes", df[df['theme_name'] != '']['theme_name'].nunique()],
+            ["", ""],
+            ["Codegen Recommendations", "Count"],
+        ]
+        
+        # Add codegen recommendation frequency
+        codegen_rec_freq = df[df['codegen_recommendation'] != '']['codegen_recommendation'].value_counts()
+        for recommendation, count in codegen_rec_freq.items():
+            summary_data.append([recommendation, count])
+        
+        summary_data.extend([
+            ["", ""],
+            ["Code Frequency", "Count"],
+        ])
+        
+        # Add code frequency
+        code_freq = df[df['code_label'] != 'No Code Assigned']['code_label'].value_counts()
+        for code, count in code_freq.items():
+            summary_data.append([code, count])
+        
+        # Write summary data
+        for row_idx, row_data in enumerate(summary_data, 1):
+            for col_idx, value in enumerate(row_data, 1):
+                cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
+                if row_idx == 1 or (row_idx == 9 and col_idx == 1) or ("Frequency" in str(value) and col_idx == 1):
+                    cell.font = Font(bold=True, size=14)
+                elif row_idx in [3, 4, 5, 6, 7]:
+                    if col_idx == 1:
+                        cell.font = Font(bold=True)
+        
+        # Adjust summary column widths
+        summary_ws.column_dimensions['A'].width = 30
+        summary_ws.column_dimensions['B'].width = 15
+        
+        # Save workbook
+        try:
+            wb.save(output_path)
+        except Exception as e:
+            print(f"DEBUG: Error saving workbook: {e}")
+            raise
