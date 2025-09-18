@@ -44,6 +44,51 @@ def generate_variable_key(selected_variables: List[str], is_merged: bool = False
     return "+".join(sorted_vars)
 
 
+def generate_enhanced_variable_key(selected_variables: List[str], 
+                                  is_merged: bool = False, sample_size: Optional[int] = None) -> str:
+    """
+    Generate enhanced variable key including sample size for cache operations
+    
+    Args:
+        selected_variables: List of variable names (e.g., ['Q18'] or ['Q18', 'Q19', 'Q20'])
+        is_merged: Whether this represents merged variables
+        sample_size: Sample size for truncation (None means no truncation)
+    
+    Returns:
+        str: Enhanced variable key (e.g., 'Q18_full' or 'Q18+Q19_250')
+    """
+    # Generate base variable key
+    base_key = generate_variable_key(selected_variables, is_merged)
+    
+    # Add sample size suffix
+    sample_suffix = f"_{sample_size}" if sample_size else "_full"
+    
+    return f"{base_key}{sample_suffix}"
+
+
+def generate_enhanced_cache_key(filename: str, selected_variables: List[str], 
+                               is_merged: bool = False, sample_size: Optional[int] = None) -> str:
+    """
+    Generate enhanced cache key including sample size for consistent caching
+    
+    Args:
+        filename: SPSS filename (e.g., 'survey.sav')
+        selected_variables: List of variable names (e.g., ['Q18'] or ['Q18', 'Q19', 'Q20'])
+        is_merged: Whether this represents merged variables
+        sample_size: Sample size for truncation (None means no truncation)
+    
+    Returns:
+        str: Enhanced cache key (e.g., 'survey_Q18_full' or 'survey_Q18+Q19_250')
+    """
+    # Get base filename without extension
+    base_filename = filename.replace('.sav', '')
+    
+    # Generate enhanced variable key
+    variable_key = generate_enhanced_variable_key(selected_variables, is_merged, sample_size)
+    
+    return f"{base_filename}_{variable_key}"
+
+
 class CacheDatabase:
     """Simple SQLite database for cache metadata tracking"""
     

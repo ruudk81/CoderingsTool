@@ -50,7 +50,17 @@ class VerboseReporter:
     
     def _output(self, text: str):
         """Centralized output method that handles both terminal and capture"""
-        print(text)  # Always print to terminal (existing behavior)
+        try:
+            print(text)  # Always print to terminal (existing behavior)
+        except UnicodeEncodeError:
+            # Replace problematic Unicode characters for Windows console
+            safe_text = (text.replace('→', '->')
+                            .replace('✓', 'v')
+                            .replace('⚠️', 'WARNING')
+                            .replace('‑', '-')
+                            .replace('×', 'x')
+                            .replace('•', '*'))
+            print(safe_text)
         if self.capture_callback:
             self.capture_callback(text)  # Also capture for Streamlit if callback provided
     

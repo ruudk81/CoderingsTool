@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from config import CacheConfig, DEFAULT_LANGUAGE
 from utils import codeGenerator
-from prompts import CLUSTER_SUMMARY_PROMPT, CANDIDATE_CODE_SELECTION_PROMPT, CODE_GENERATION_PROMPT, VALIDATION_PROMPT
+from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODING_MODIFICATION_PROMPT, CODE_CREATION_PROMPT, VALIDATION_PROMPT
 
 class SimplePromptTester:
     """Simple prompt tester for Step 7 codeGenerator prompts"""
@@ -109,10 +109,10 @@ class SimplePromptTester:
     
     def _sample_cluster_id(self):
         """Sample a random cluster ID that has data in ALL steps"""
-        # First get all possible cluster IDs
+        # First get all possible cluster IDs (now considering expanded_cluster)
          
         all_cluster_ids = list(set([
-            response_idea['initial_cluster'] 
+            response_idea.get('expanded_cluster', str(response_idea['initial_cluster'])) 
             for result in self.initial_cluster_results 
             for response_idea in result['response_ideas']   
             if response_idea['initial_cluster'] is not None and response_idea['initial_cluster'] != -1]))
@@ -138,8 +138,10 @@ class SimplePromptTester:
         """Get cluster text for the sampled cluster"""
         cluster_segments = []
         for result in self.initial_cluster_results:
-            for response_idea in result['response_ideas']:   
-                if response_idea['initial_cluster'] == self.cluster_id:
+            for response_idea in result['response_ideas']:
+                # Check expanded_cluster first, then fall back to initial_cluster
+                idea_cluster = response_idea.get('expanded_cluster', str(response_idea['initial_cluster']))
+                if idea_cluster == self.cluster_id:
                     cluster_segments.append(response_idea['idea'])
         
         sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
@@ -217,17 +219,21 @@ class SimplePromptTester:
             code_lines = [line.strip() for line in code_text.split('\n') if line.strip().startswith('Code:')]
             print(f"  Nearest Codes: {len(code_lines)} codes, {len(code_text)} characters")
         
-        prompt = CANDIDATE_CODE_SELECTION_PROMPT.format(**step2_input)
+        prompt = CODING_DECISION_PROMPT.format(**step2_input)
         print(f"\n{'-'*60}\nFORMATTED PROMPT:\n{'-'*60}\n")
         print(prompt)
     
     def test_prompt_3(self):
+        
+        # step3_inputs = getattr(codebook_reasoning, 'step3_inputs', {})
+        # step3_input =  step3_inputs[cluster_id]
+        # step3_input.get('coding_decision', '')
+
         """Test Prompt 3: Code Generation"""
         print("\n" + "="*80)
         print("PROMPT 3: CODE GENERATION")
         print("="*80)
-        
-        # Use EXACT same inputs as actual pipeline
+
         step3_inputs = getattr(self.codebook_reasoning, 'step3_inputs', {})
         if self.cluster_id in step3_inputs:
             step3_input = step3_inputs[self.cluster_id]
@@ -242,13 +248,14 @@ class SimplePromptTester:
         print(f"  Survey Question: {step3_input.get('survey_question', 'Unknown')}")
         print(f"  Cluster Summary: {step3_input.get('cluster_summary', 'Unknown')}")
         
-        candidate_codes = step3_input.get('candidate_codes', '')
-        if candidate_codes:
-            # Count codes by looking for "Code:" lines (codeGenerator formats as "Code: {name}\nDefinition: {def}")
-            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip().startswith('Code:')]
-            print(f"  Candidate Codes: {len(code_lines)} codes, {len(candidate_codes)} characters")
+        coding_decision = step3_input.get('coding_decision', '')
+        if coding_decision:
+            if coding_decision.upper() == "MODIFY":
+                CODING_GENERATION_PROMPT = CODING_MODIFICATION_PROMPT
+            else:
+                CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
         
-        prompt = CODE_GENERATION_PROMPT.format(**step3_input)
+        prompt = CODING_GENERATION_PROMPT.format(**step3_input)
         print(f"\n{'-'*60}\nFORMATTED PROMPT:\n{'-'*60}\n")
         print(prompt)
     
@@ -273,11 +280,11 @@ class SimplePromptTester:
         print(f"  Survey Question: {step4_input.get('survey_question', 'Unknown')}")
         print(f"  Cluster Summary: {step4_input.get('cluster_summary', 'Unknown')}")
         
-        candidate_codes = step4_input.get('candidate_codes', '')
-        if candidate_codes:
+        code_text = step4_input.get('code_text', '')
+        if code_text:
             # Count codes by looking for "Code:" lines (codeGenerator formats as "Code: {name}\nDefinition: {def}\n")
-            code_lines = [line.strip() for line in candidate_codes.split('\n') if line.strip().startswith('Code:')]
-            print(f"  Candidate Codes: {len(code_lines)} codes, {len(candidate_codes)} characters")
+            code_lines = [line.strip() for line in code_text.split('\n') if line.strip().startswith('Code:')]
+            print(f"  Existing Codes: {len(code_lines)} codes, {len(code_text)} characters")
         
         step3_recommendation = step4_input.get('step3_recommendation', '')
         if step3_recommendation:

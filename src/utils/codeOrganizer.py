@@ -2,7 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import time
-#import asyncio
+import asyncio
 import json
 from typing import List, Dict, Any, Optional
 #from dataclasses import dataclass
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field #, model_validator
 
 # === CONFIG ========================================================================================================
 from prompts import THEME_ORGANIZATION_REASONING_PROMPT
-from config import DEFAULT_LANGUAGE, OPENAI_API_KEY #, ModelConfig
+from config import DEFAULT_LANGUAGE, OPENAI_API_KEY 
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
@@ -42,9 +42,9 @@ class ThemeHierarchyLevel(BaseModel):
     """A theme with its codes at a specific hierarchy level"""
     theme_name: str = Field(description="Atomic theme name")
     theme_description: str = Field(description="Detailed theme description")
-    level: int = Field(description="Hierarchy level (1=broad, 2=intermediate, 3=specific)")
+    #level: int = Field(description="Hierarchy level (1=broad, 2=intermediate, 3=specific)")
     codes: List[OrganizedCode] = Field(description="Codes belonging to this theme")
-    is_miscellaneous: bool = Field(description="Whether this is a miscellaneous theme", default=False)
+    #is_miscellaneous: bool = Field(description="Whether this is a miscellaneous theme", default=False)
 
 class OrganizedCodebook(BaseModel):
     """Complete hierarchical theme organization"""
@@ -67,11 +67,16 @@ class RetryableError(Exception):
     """Exception for retryable errors in API calls"""
     pass
 
-class ThemeOrganizerReasoning:
+class CodeOrganizer:
     """Theme organizer using OpenAI reasoning models with single-prompt approach"""
     
-    def __init__(self, codebook: List[Dict[str, str]], var_lab: str, language: str = DEFAULT_LANGUAGE, 
-                 verbose: bool = True, model: str = "gpt-5", reasoning_effort: str = "high", 
+    def __init__(self, 
+                 codebook: List[Dict[str, str]], 
+                 var_lab: str, 
+                 language: str = DEFAULT_LANGUAGE, 
+                 verbose: bool = True, 
+                 model: str = "gpt-5-mini", 
+                 reasoning_effort: str = "low", 
                  text_verbosity: str = "medium"):
         self.codebook = codebook
         self.var_lab = var_lab
@@ -108,12 +113,14 @@ class ThemeOrganizerReasoning:
                 "Codes Count": len(self.codebook)
             })
             
-            # Use the existing responses.create wrapper
-            response = _sync_responses_create(
+            # Use the existing responses.create wrapper with asyncio.to_thread
+            response = await asyncio.to_thread(
+                _sync_responses_create,
                 model=self.model,
                 prompt=prompt,
                 reasoning_effort=self.reasoning_effort,
-                text_verbosity=self.text_verbosity
+                text_verbosity=self.text_verbosity,
+                timeout=300.0  # 5 minutes for reasoning models
             )
             
             # Parse the JSON response
@@ -179,7 +186,7 @@ class ThemeOrganizerReasoning:
             # Prepare codebook data for prompt
             codebook_text = ""
             for i, entry in enumerate(self.codebook, 1):
-                codebook_text += f"{i}. **{entry['code']}**: {entry['definition']}\n"
+                codebook_text += f"{entry['code']}\n"
             
             # Build the prompt
             prompt = THEME_ORGANIZATION_REASONING_PROMPT.format(
@@ -209,7 +216,7 @@ class ThemeOrganizerReasoning:
                     'theme_name': theme.theme_name,
                     'theme_description': theme.theme_description,
                     'cluster_id': f"reasoning_{len(themes_summary)+1}",
-                    'is_miscellaneous': theme.is_miscellaneous,
+                    #'is_miscellaneous': theme.is_miscellaneous,
                     'codes': []
                 }
                 

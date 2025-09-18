@@ -4,12 +4,16 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import asyncio
 import time
 import logging
+import itertools
 from typing import Dict, List, Optional, Union
+from collections import deque
+from dataclasses import dataclass
+import numpy as np
 
-from aiolimiter import AsyncLimiter
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from instructor.exceptions import InstructorRetryException
+from aiolimiter import AsyncLimiter
 
 # === MODELS ========================================================================================================
 import models
@@ -30,306 +34,135 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# === RATE LIMITING (PROVEN THREE-LAYER PATTERN FROM SPELLCHECKER) ========================================================================================================
+# === RATE LIMITING HELPER CLASSES  ========================================================================================================
+
 class TokenBucket:
-    
+    """Simple token bucket for TPM limiting"""
     def __init__(self, tokens_per_minute):
         self.tpm = tokens_per_minute
         self.available = tokens_per_minute
-        self.last_update = time.monotonic()  # Use monotonic to avoid clock issues
+        self.last_update = time.monotonic()
         self.lock = asyncio.Lock()
     
     async def acquire(self, tokens_needed):
-        """Acquire tokens, waiting if necessary"""
-        while True:
-            async with self.lock:
-                # Regenerate tokens based on time elapsed
-                now = time.monotonic()
-                elapsed = now - self.last_update
-                self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
-                self.last_update = now
-                
-                # Check if we have enough tokens
-                if self.available >= tokens_needed:
-                    # Consume tokens and exit
-                    self.available -= tokens_needed
-                    logger.debug(f"Token bucket: consumed {tokens_needed}, {self.available:.0f} remaining")
-                    return
-                
-                # Calculate wait time if not enough tokens
+        """Acquire tokens, returning wait time if not available"""
+        async with self.lock:
+            now = time.monotonic()
+            elapsed = now - self.last_update
+            # Regenerate tokens based on time elapsed
+            self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
+            self.last_update = now
+            
+            if self.available >= tokens_needed:
+                self.available -= tokens_needed
+                return True
+            else:
+                # Calculate wait time
                 deficit = tokens_needed - self.available
                 wait_seconds = deficit * 60 / self.tpm
-            
-            # CRITICAL FIX: Release lock before sleeping
-            if wait_seconds > 1.0:  # Only log significant waits
-                print(f"[RATE LIMIT] Token bucket waiting {wait_seconds:.1f}s for {tokens_needed} tokens (deficit: {deficit:.0f})")
-            await asyncio.sleep(wait_seconds)
-            # Loop back to reacquire lock and check again
+                return wait_seconds
+    
+    async def wait_and_acquire(self, tokens_needed):
+        """Wait if necessary and acquire tokens"""
+        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
+        
+        while True:
+            result = await self.acquire(tokens_needed)
+            if result is True:
+                logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
+                return
+            else:
+                # result is wait_seconds
+                logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
+                await asyncio.sleep(result)
+    
+    async def reconcile(self, delta_tokens):
+        """Reconcile actual vs estimated tokens"""
+        # If we overestimated (delta < 0), return tokens
+        # If we underestimated (delta > 0), we already used them
+        if delta_tokens < 0:
+            async with self.lock:
+                old_available = self.available
+                self.available = min(self.tpm, self.available - delta_tokens)
+                logger.debug(f"[TOKEN BUCKET] Reconciled {-delta_tokens} tokens back, {old_available:.0f} → {self.available:.0f}")
+        else:
+            logger.debug(f"[TOKEN BUCKET] No reconciliation needed for +{delta_tokens} tokens (underestimated)")
 
 
-class RateLimitTracker:
-    """Track rate limit errors and enforce cooldown periods"""
+class LatencyTracker:
+    """Simple EMA tracker for latencies"""
+    def __init__(self, alpha=0.1):
+        self.ema = None
+        self.alpha = alpha
+        self.values = deque(maxlen=100)  # Keep last 100 for percentiles
     
-    def __init__(self, cooldown_seconds=15):
-        self.last_rate_limit_time = 0
-        self.cooldown_seconds = cooldown_seconds
+    def add(self, value):
+        """Add a latency measurement"""
+        self.values.append(value)
+        if self.ema is None:
+            self.ema = value
+        else:
+            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
     
-    def check_cooldown(self):
-        """Check if we're still in cooldown period"""
-        time_since_error = time.monotonic() - self.last_rate_limit_time
-        if time_since_error < self.cooldown_seconds:
-            remaining = self.cooldown_seconds - time_since_error
-            return True, remaining
-        return False, 0
+    def get_timeout(self, est_tokens, margin=1.5, min_timeout=15.0, max_timeout=60.0):
+        """Calculate timeout based on EMA and token count with configurable bounds"""
+        if not self.values:
+            return max(min_timeout, 30.0)  # Default 30s or configured minimum, whichever is higher
+        
+        # Use P95 latency as base
+        p95 = np.percentile(list(self.values), 95)
+        # Simple linear scaling with token count
+        # Assume ~100ms per 1000 tokens as baseline
+        token_factor = est_tokens / 1000
+        timeout = p95 + (token_factor * 0.1)
+        # Apply margin and configurable bounds
+        return max(min_timeout, min(max_timeout, timeout * margin))
     
-    def record_rate_limit(self):
-        """Record when rate limit was hit"""
-        self.last_rate_limit_time = time.monotonic()
-        logger.warning(f"Rate limit error recorded, entering {self.cooldown_seconds}s cooldown")
+    def get_avg_latency(self):
+        """Get average latency for concurrency calculations"""
+        if not self.values:
+            return 2.0  # Default 2s
+        return self.ema if self.ema is not None else 2.0
 
 
-class DynamicTimeoutManager:
-    """Dynamic timeout management based on task complexity and learned patterns"""
-    
-    def __init__(self, base_timeout=30, min_timeout=15, max_timeout=120):
-        self.base_timeout = base_timeout
-        self.min_timeout = min_timeout
-        self.max_timeout = max_timeout
-        
-        # Learning data
-        self.response_times = []  # Store actual response times
-        self.token_to_time_ratio = 0.02  # Initial estimate: 20ms per token
-        self.complexity_patterns = {}  # Cache timeout patterns by response characteristics
-        
-        # Baseline measurement
-        self.baseline_measured = False
-        self.baseline_tasks_needed = 10
-        self.baseline_times = []
-        
-    def calculate_timeout(self, token_count: int, response_length: int = None) -> float:
-        """Calculate dynamic timeout based on task complexity"""
-        
-        if not self.baseline_measured:
-            # Use conservative timeout during baseline measurement
-            return self.max_timeout
-        
-        # Base calculation from learned token-to-time ratio
-        estimated_time = token_count * self.token_to_time_ratio
-        
-        # Add buffer based on response complexity
-        complexity_factor = 1.0
-        if response_length:
-            if response_length > 500:
-                complexity_factor = 1.5  # Long responses need more processing time
-            elif response_length < 50:
-                complexity_factor = 0.8  # Short responses process faster
-        
-        # Calculate timeout with safety margin
-        timeout = estimated_time * complexity_factor * 3  # 3x safety margin
-        
-        # Enforce bounds
-        return max(self.min_timeout, min(self.max_timeout, timeout))
-    
-    def record_response_time(self, token_count: int, response_time: float, response_length: int = None):
-        """Record actual response time to improve estimates"""
-        self.response_times.append(response_time)
-        
-        # Update baseline measurement
-        if not self.baseline_measured:
-            self.baseline_times.append(response_time)
-            if len(self.baseline_times) >= self.baseline_tasks_needed:
-                avg_baseline = sum(self.baseline_times) / len(self.baseline_times)
-                self.base_timeout = max(self.min_timeout, avg_baseline * 2)  # 2x average as base
-                self.baseline_measured = True
-                logger.info(f"Dynamic timeout baseline established: {self.base_timeout:.1f}s from {len(self.baseline_times)} samples")
-        
-        # Update token-to-time ratio (rolling average)
-        if token_count > 0:
-            observed_ratio = response_time / token_count
-            self.token_to_time_ratio = (self.token_to_time_ratio * 0.9) + (observed_ratio * 0.1)
-        
-        # Cache complex patterns
-        if response_length:
-            pattern_key = f"{response_length//100}00"  # Group by hundreds
-            if pattern_key not in self.complexity_patterns:
-                self.complexity_patterns[pattern_key] = []
-            self.complexity_patterns[pattern_key].append(response_time)
-            
-            # Keep only recent patterns (last 50 per group)
-            if len(self.complexity_patterns[pattern_key]) > 50:
-                self.complexity_patterns[pattern_key] = self.complexity_patterns[pattern_key][-50:]
+# === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
 
-    def get_stats(self):
-        """Get timeout manager statistics"""
-        return {
-            'baseline_measured': self.baseline_measured,
-            'base_timeout': self.base_timeout,
-            'token_to_time_ratio': self.token_to_time_ratio,
-            'total_responses_recorded': len(self.response_times),
-            'avg_response_time': sum(self.response_times) / len(self.response_times) if self.response_times else 0,
-            'complexity_patterns_learned': len(self.complexity_patterns)
-        }
+@dataclass
+class ApiLimits:
+    """API limits structure for bootstrap calculations"""
+    tokens_per_minute: int
+    requests_per_minute: int
 
 
-class SmartConcurrencyManager:
-    """Smart concurrency management with real-time timeout monitoring"""
-    
-    def __init__(self, initial_limit=100, min_limit=20, max_limit=100):
-        self.current_limit = initial_limit
-        self.min_limit = min_limit
-        self.max_limit = max_limit
-        
-        # CRITICAL FIX: Store shared semaphore as instance variable
-        self.semaphore = asyncio.Semaphore(initial_limit)
-        
-        # Monitoring data
-        self.recent_timeouts = []  # Track recent timeout events
-        self.timeout_window = 60  # seconds
-        self.adjustment_cooldown = 30  # seconds between adjustments
-        self.last_adjustment = 0
-        
-        # Performance tracking
-        self.requests_completed = 0
-        self.timeouts_occurred = 0
-        
-    def record_timeout(self):
-        """Record a timeout occurrence"""
-        now = time.monotonic()
-        self.recent_timeouts.append(now)
-        self.timeouts_occurred += 1
-        
-        # Clean old timeouts outside window
-        cutoff = now - self.timeout_window
-        self.recent_timeouts = [t for t in self.recent_timeouts if t > cutoff]
-        
-        # Check if adjustment needed
-        self._check_adjustment_needed()
-    
-    def record_success(self):
-        """Record a successful completion"""
-        self.requests_completed += 1
-        
-        # Check if we can increase concurrency
-        self._check_adjustment_needed()
-    
-    def _check_adjustment_needed(self):
-        """Check if concurrency adjustment is needed"""
-        now = time.monotonic()
-        
-        # Cooldown check
-        if now - self.last_adjustment < self.adjustment_cooldown:
-            return
-        
-        # Calculate recent timeout rate
-        recent_timeout_count = len(self.recent_timeouts)
-        total_recent = self.requests_completed + self.timeouts_occurred
-        
-        if total_recent < 10:  # Need minimum data
-            return
-        
-        timeout_rate = recent_timeout_count / min(total_recent, 100)  # Look at last 100 requests
-        
-        old_limit = self.current_limit
-        
-        if timeout_rate > 0.15:  # >15% timeout rate - reduce concurrency
-            self.current_limit = max(self.min_limit, int(self.current_limit * 0.7))
-            logger.info(f"High timeout rate ({timeout_rate:.1%}), reducing concurrency: {old_limit} → {self.current_limit}")
-            self._resize_semaphore(self.current_limit)
-            self.last_adjustment = now
-            
-        elif timeout_rate < 0.05 and self.current_limit < self.max_limit:  # <5% timeout rate - can increase
-            self.current_limit = min(self.max_limit, int(self.current_limit * 1.2))
-            logger.info(f"Low timeout rate ({timeout_rate:.1%}), increasing concurrency: {old_limit} → {self.current_limit}")
-            self._resize_semaphore(self.current_limit)
-            self.last_adjustment = now
-    
-    def _resize_semaphore(self, new_limit):
-        """Resize the shared semaphore to new limit"""
-        # Create new semaphore with new limit
-        self.semaphore = asyncio.Semaphore(new_limit)
-    
-    def get_current_semaphore(self):
-        """Get the shared semaphore"""
-        return self.semaphore
-    
-    def get_stats(self):
-        """Get concurrency manager statistics"""
-        total_requests = self.requests_completed + self.timeouts_occurred
-        return {
-            'current_limit': self.current_limit,
-            'total_requests': total_requests,
-            'timeouts_occurred': self.timeouts_occurred,
-            'timeout_rate': self.timeouts_occurred / total_requests if total_requests > 0 else 0,
-            'recent_timeouts': len(self.recent_timeouts)
-        }
+def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, cap: int = 300, min_conc: int = 100, HEADROOM: float = 0.9) -> int:
+    """Compute optimal concurrency using Little's Law"""
+    latency_seconds = max(float(latency_seconds or 0.5), 0.05)
+    avg_tokens = max(float(avg_tokens or 1.0), 1.0)
+
+    rpm_throughput = limits.requests_per_minute * HEADROOM / 60
+    tpm_throughput = limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+    candidates = [rpm_throughput, tpm_throughput]
+    allowed_rps = max(min(candidates), 0.0)
+    target = allowed_rps * latency_seconds   # Little's Law
+
+    return int(max(min(target, cap), min_conc))
 
 
-class TokenUsageLearner:
-    """Learn and improve token estimation accuracy over time"""
-    
-    def __init__(self):
-        self.estimation_records = []  # (estimated, actual) pairs
-        self.current_ratio = 0.15  # Initial 15% output estimate
-        self.min_ratio = 0.10
-        self.max_ratio = 0.50
-        
-    def record_usage(self, estimated_tokens: int, actual_tokens: int):
-        """Record actual vs estimated token usage"""
-        if estimated_tokens > 0 and actual_tokens > 0:
-            self.estimation_records.append((estimated_tokens, actual_tokens))
-            
-            # Keep only recent records (last 1000)
-            if len(self.estimation_records) > 1000:
-                self.estimation_records = self.estimation_records[-1000:]
-            
-            # Update ratio based on recent accuracy
-            if len(self.estimation_records) >= 10:
-                recent_records = self.estimation_records[-50:]  # Use last 50 for ratio calculation
-                
-                # Calculate actual output ratio
-                total_estimated_input = 0
-                total_actual_output = 0
-                
-                for est, actual in recent_records:
-                    # Estimated input was est / (1 + current_ratio)
-                    estimated_input = est / (1 + self.current_ratio)
-                    actual_output = actual - estimated_input
-                    
-                    total_estimated_input += estimated_input
-                    total_actual_output += max(0, actual_output)
-                
-                if total_estimated_input > 0:
-                    observed_ratio = total_actual_output / total_estimated_input
-                    # Smooth update
-                    self.current_ratio = (self.current_ratio * 0.8) + (observed_ratio * 0.2)
-                    # Enforce bounds
-                    self.current_ratio = max(self.min_ratio, min(self.max_ratio, self.current_ratio))
-    
-    def get_current_ratio(self) -> float:
-        """Get current output token estimation ratio"""
-        return self.current_ratio
-    
-    def get_accuracy_stats(self):
-        """Get estimation accuracy statistics"""
-        if len(self.estimation_records) < 10:
-            return {'samples': len(self.estimation_records), 'accuracy': 'insufficient_data'}
-        
-        recent = self.estimation_records[-100:]  # Last 100 records
-        errors = []
-        
-        for estimated, actual in recent:
-            error = abs(estimated - actual) / actual if actual > 0 else 0
-            errors.append(error)
-        
-        avg_error = sum(errors) / len(errors) if errors else 0
-        
-        return {
-            'samples': len(self.estimation_records),
-            'current_ratio': self.current_ratio,
-            'avg_estimation_error': avg_error,
-            'accuracy': 1.0 - avg_error if avg_error < 1.0 else 0.0
-        }
+async def bootstrap_measure_async(call_fn, n_probes: int = 3):
+    """Run n_probes serial calls and return (avg_latency_s, avg_tokens). call_fn() -> usage dict."""
+    latencies, tokens = [], []
+    for _ in range(n_probes):
+        t0 = time.perf_counter()
+        usage = await call_fn()  # Let tenacity handle timeouts and retries
+        t1 = time.perf_counter()
+        latencies.append(max(t1 - t0, 0.001))
+        pt = int(usage.get("prompt_tokens", 0))
+        ct = int(usage.get("completion_tokens", 0))
+        tokens.append(max(pt + ct, 1))
+    return sum(latencies)/len(latencies), sum(tokens)/len(tokens)
 
+
+# === MAIN GRADER CLASS ========================================================================================================
 
 class Grader:
     def __init__(
@@ -358,49 +191,61 @@ class Grader:
         # Instructor-patched async OpenAI client for structured output (cached)
         self.client = get_openai_client(OPENAI_API_KEY)
         
-        # Rate limiting setup (proven three-layer pattern from spellChecker.py)
+        # Rate limiting setup (following spellChecker pattern)
         limits = get_openai_rate_limits(self.model)
-        HEADROOM = 0.8
+        HEADROOM = 0.9  # Increased from 0.8 to 0.9 for higher throughput
         
-        self.rpm_limiter = AsyncLimiter(int(limits.requests_per_minute * HEADROOM), 60)
-        self.token_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
+        # Token bucket for TPM limiting
+        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
         
-        # Smart management systems
-        self.timeout_manager = DynamicTimeoutManager(base_timeout=30, min_timeout=15, max_timeout=120)
-        self.concurrency_manager = SmartConcurrencyManager(initial_limit=100, min_limit=20, max_limit=100)
-        self.token_learner = TokenUsageLearner()
+        # Adaptive token estimation (following user's strategy)
+        self.input_token_history = deque(maxlen=3)  # First 3 input token counts
+        self.output_token_history = deque(maxlen=5)  # First 5 output token counts
+        self.estimation_errors = deque(maxlen=50)  # Track accuracy
+        self.first_prompt_tokens = None  # Cache first prompt calculation
         
-        # Rate limit tracking
-        self.rate_limit_tracker = RateLimitTracker(cooldown_seconds=15)
+        # Rolling average of actual total tokens for comparison
+        self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
         
-        # Enhanced stats tracking
+        # Latency tracking
+        self.latency_tracker = LatencyTracker()
+        
+        # Calculate initial average tokens estimate for bootstrapping
+        self.avg_tokens = self._calculate_avg_tokens()
+        
+        # Rate limiting components (will be initialized after bootstrap)
+        self.rate_limiter = None
+        self.semaphore = None
+        self.optimal_concurrency = None
+        
+        # Stats
         self.stats = {
             'tasks_processed': 0,
             'tasks_successful': 0,
             'tasks_failed': 0,
-            'llm_calls_made': 0,
-            'llm_calls_successful': 0,
-            'llm_calls_failed': 0,
-            'processing_time': 0.0,
-            'timeouts_occurred': 0,
-            'avg_response_time': 0.0,
-            'dynamic_timeout_adjustments': 0,
-            'concurrency_adjustments': 0
+            'retries': 0,
+            'rate_limits': 0,
+            'timeouts': 0
         }
 
-    def _prepare_individual_tasks(self) -> List[Dict]:
-        """Prepare individual tasks for processing (individual task approach)"""
-        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
+    def _calculate_avg_tokens(self) -> int:
+        """Calculate average token count for requests"""
+        sample_size = min(10, len(self.responses))
+        if sample_size == 0:
+            return 200  # Default estimate
         
-        tasks = []
-        for i, response in enumerate(items_to_process):
-            tasks.append({
-                'task_id': response.respondent_id,
-                'response_text': response.response,
-                'original_response': response
-            })
+        total_tokens = 0
+        for i in range(sample_size):
+            prompt = self._build_individual_prompt(
+                self.question,
+                self.responses[i].respondent_id,
+                self.responses[i].response
+            )
+            total_tokens += len(self.encoding.encode(prompt))
         
-        return tasks
+        avg_input = total_tokens / sample_size
+        # Assume 15% output ratio initially
+        return int(avg_input * 1.15)
 
     def _build_individual_prompt(self, var_lab: str, response_id: str, response_text: str) -> str:
         """Build prompt for individual response assessment"""
@@ -411,91 +256,151 @@ class Grader:
             responses=responses_text
         )
     
-    def count_task_tokens(self, task: Dict) -> int:
-        """Count tokens with output estimates (critical for TPM limiting)"""
-        prompt = self._build_individual_prompt(self.question, task['task_id'], task['response_text'])
+    def estimate_tokens(self, prompt: str) -> int:
+        """Estimate total tokens using adaptive strategy"""
+        actual_input_tokens = len(self.encoding.encode(prompt))
         
-        input_tokens = len(self.encoding.encode(prompt))
+        # Input estimation: first prompt + 15%, then average of first 3
+        if self.first_prompt_tokens is None:
+            # First prompt: use actual + 15% margin
+            self.first_prompt_tokens = actual_input_tokens
+            estimated_input = int(actual_input_tokens * 1.15)
+        elif len(self.input_token_history) < 3:
+            # Still collecting data: use actual + 15%
+            estimated_input = int(actual_input_tokens * 1.15)
+        else:
+            # Use average of first 3 actual inputs
+            avg_input = sum(self.input_token_history) / len(self.input_token_history)
+            estimated_input = int(avg_input)
         
-        # Use dynamic output estimation from token learner
-        output_ratio = self.token_learner.get_current_ratio()
-        estimated_output_tokens = max(50, int(input_tokens * output_ratio))
+        # Track input tokens for learning
+        if len(self.input_token_history) < 3:
+            self.input_token_history.append(actual_input_tokens)
         
-        return input_tokens + estimated_output_tokens
+        # Output estimation: 15% of input, then average of first 5 responses
+        if len(self.output_token_history) < 5:
+            # Use 15% of input as estimate
+            estimated_output = int(estimated_input * 0.15)
+        else:
+            # Use average of first 5 actual outputs
+            avg_output = sum(self.output_token_history) / len(self.output_token_history)
+            estimated_output = int(avg_output)
+        
+        # Ensure we don't exceed max_tokens
+        estimated_output = min(self.config.max_tokens, estimated_output)
+        
+        total_estimate = estimated_input + estimated_output
+        
+        return total_estimate
+    
+    def get_token_estimation_stats(self) -> dict:
+        """Get token estimation accuracy statistics"""
+        if not self.estimation_errors:
+            return {"status": "collecting_data", "samples": 0}
+        
+        avg_error = sum(self.estimation_errors) / len(self.estimation_errors)
+        avg_input = sum(self.input_token_history) / len(self.input_token_history) if self.input_token_history else 0
+        avg_output = sum(self.output_token_history) / len(self.output_token_history) if self.output_token_history else 0
+        avg_actual_total = sum(self.actual_total_tokens) / len(self.actual_total_tokens) if self.actual_total_tokens else 0
+        
+        return {
+            "status": "learning",
+            "samples": len(self.estimation_errors),
+            "avg_estimation_error": avg_error,
+            "avg_input_tokens": avg_input,
+            "avg_output_tokens": avg_output,
+            "avg_actual_total_tokens": avg_actual_total,
+            "initial_avg_tokens": self.avg_tokens,
+            "input_samples": len(self.input_token_history),
+            "output_samples": len(self.output_token_history),
+            "actual_samples": len(self.actual_total_tokens)
+        }
+    
+    def get_token_bucket_status(self) -> dict:
+        """Get current token bucket status with corrected utilization calculation"""
+        available_pct = (self.tpm_bucket.available / self.tpm_bucket.tpm) * 100
+        
+        # Calculate real utilization based on consumption rate vs capacity
+        if len(self.actual_total_tokens) >= 10:
+            # Use actual consumption rate over last 10 samples
+            recent_avg = sum(list(self.actual_total_tokens)[-10:]) / 10
+            # Convert to per-second rate (assuming ~2s per request for rough estimate)
+            consumption_rate_per_sec = recent_avg / 2.0
+            # Calculate utilization as percentage of per-second capacity (60k tokens/sec)
+            real_utilization_pct = (consumption_rate_per_sec / (self.tpm_bucket.tpm / 60)) * 100
+        else:
+            # Fallback to bucket level method for early samples
+            real_utilization_pct = 100 - available_pct
+        
+        return {
+            "available_tokens": int(self.tpm_bucket.available),
+            "capacity": self.tpm_bucket.tpm,
+            "utilization_pct": real_utilization_pct,
+            "low_tokens": available_pct < 10,
+            "consumption_rate": consumption_rate_per_sec if len(self.actual_total_tokens) >= 10 else 0
+        }
 
     @retry(
         retry=retry_if_exception_type((
-            RateLimitError,          # OpenAI rate limits
-            APIConnectionError,      # Connection issues
-            APITimeoutError,         # OpenAI timeout errors
-            InternalServerError,     # Server-side issues
-            InstructorRetryException, # Instructor retry failures
-            asyncio.TimeoutError,    # Our asyncio timeout
-            ConnectionError,         # Network connection errors
-            TimeoutError             # General timeout errors
+            RateLimitError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            InstructorRetryException,
+            asyncio.TimeoutError
         )),
-        wait=wait_exponential_jitter(initial=2, max=60),  # Longer backoff for connection issues
-        stop=stop_after_attempt(5),  # More attempts for network issues
+        wait=wait_exponential_jitter(initial=2, max=60),
+        stop=stop_after_attempt(5),
         reraise=True
     )
-    async def process_individual_task(self, task: Dict, task_index: int) -> models.QualityFilteredModel:
-        """Process individual quality assessment task with dynamic timeout and monitoring"""
+    async def process_task(self, task: Dict) -> models.QualityFilteredModel:
+        """Process a single quality assessment task"""
+        task_start = time.perf_counter()
         
-        tokens_needed = self.count_task_tokens(task)
-        
-        # Fix data type bug: safely handle float/NaN/None values in response_text
-        response_text = task.get('response_text', '')
-        if isinstance(response_text, (float, int)):
-            # Handle NaN, inf, or numeric values
-            if str(response_text).lower() in ['nan', 'inf', '-inf']:
-                response_text = ''
-            else:
-                response_text = str(response_text)
-        elif response_text is None:
-            response_text = ''
-        
-        response_length = len(response_text) if response_text else 0
-        
-        # Using fixed 30-second timeout (simplified from dynamic approach)
-        
-        # Get current semaphore from concurrency manager (adapts based on timeout rates)
-        current_semaphore = self.concurrency_manager.get_current_semaphore()
-        
-        # Three-layer rate limiting (EXACT ORDER from spellChecker.py)
-        async with self.rpm_limiter:                    # 1. RPM check first
-            await self.token_bucket.acquire(tokens_needed)  # 2. TPM check second
-            async with current_semaphore:                   # 3. Smart transport limit last
-                
-                task_start_time = time.monotonic()
-                
-                try:
-                    self.stats['llm_calls_made'] += 1
+        try:
+            # Build prompt
+            prompt = self._build_individual_prompt(
+                self.question,
+                task['task_id'],
+                task['response_text']
+            )
+            
+            # Estimate tokens
+            est_tokens = self.estimate_tokens(prompt)
+            
+            # Log estimation for first few tasks
+            if task.get('task_index', 0) < 5:
+                logger.info(f"[ESTIMATION DEBUG] Task {task.get('task_index', 0)}: estimated {est_tokens} tokens")
+            
+            # Capture prompt for first task
+            if self.prompt_printer and task.get('task_index', 0) == 0:
+                self.prompt_printer.capture_prompt(
+                    step_name="quality_filter",
+                    utility_name="QualityFilter",
+                    prompt_content=prompt,
+                    prompt_type="quality_assessment",
+                    metadata={
+                        "model": self.model,
+                        "var_lab": self.question,
+                        "language": DEFAULT_LANGUAGE,
+                        "estimated_tokens": est_tokens
+                    }
+                )
+           
+            # TPM bucket for token limiting
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            
+            # Calculate dynamic timeout BEFORE rate limiting for progressive learning
+            timeout = self.latency_tracker.get_timeout(
+                est_tokens,
+                min_timeout=self.config.minimum_timeout_seconds,
+                max_timeout=self.config.maximum_timeout_seconds)
+            
+            # Unified rate limiting and semaphore
+            async with self.semaphore:
+                async with self.rate_limiter:
                     
-                    # Build prompt for individual task
-                    prompt = self._build_individual_prompt(
-                        self.question, 
-                        task['task_id'], 
-                        task['response_text']
-                    )
-                    
-                    # Capture prompt for the first task only
-                    if self.prompt_printer and task_index == 0:
-                        self.prompt_printer.capture_prompt(
-                            step_name="quality_filter",
-                            utility_name="QualityFilter",
-                            prompt_content=prompt,
-                            prompt_type="quality_assessment",
-                            metadata={
-                                "model": self.model,
-                                "var_lab": self.question,
-                                "language": DEFAULT_LANGUAGE,
-                                "individual_task": True,
-                                "fixed_timeout": 30,
-                                "estimated_tokens": tokens_needed
-                            }
-                        )
-                    
-                    # Use instructor client for structured output with fixed 30s timeout
+                    # Make API call
                     response = await asyncio.wait_for(
                         self.client.chat.completions.create(
                             model=self.model,
@@ -505,184 +410,339 @@ class Grader:
                             max_tokens=self.config.max_tokens,
                             seed=self.model_config.seed
                         ),
-                        timeout=30  # Fixed 30-second timeout
+                        timeout=timeout
                     )
                     
-                    # Record successful completion and timing
-                    task_end_time = time.monotonic()
-                    response_time = task_end_time - task_start_time
+                    # Record latency
+                    latency = time.perf_counter() - task_start
+                    self.latency_tracker.add(latency)
                     
-                    self.stats['llm_calls_successful'] += 1
+                    # Track actual token usage for learning and reconciliation
+                    if hasattr(response, '_raw_response'):
+                        usage = response._raw_response.usage
+                        if usage:
+                            actual_total_tokens = usage.total_tokens
+                            actual_output_tokens = usage.completion_tokens
+                            
+                            # Update output token history for estimation learning
+                            if len(self.output_token_history) < 5:
+                                self.output_token_history.append(actual_output_tokens)
+                            
+                            # Track actual total tokens for rolling average
+                            self.actual_total_tokens.append(actual_total_tokens)
+                            
+                            # Track estimation accuracy
+                            estimation_error = abs(actual_total_tokens - est_tokens)
+                            self.estimation_errors.append(estimation_error)
+                            
+                            # Reconcile token difference with bucket
+                            delta = actual_total_tokens - est_tokens
+                            if task.get('task_index', 0) < 5:
+                                print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
+                            await self.tpm_bucket.reconcile(delta)
                     
-                    # Record performance data for learning
-                    self.timeout_manager.record_response_time(tokens_needed, response_time, response_length)
-                    self.concurrency_manager.record_success()
-                    
-                    # Record actual token usage if available (for learning)
-                    if hasattr(response, 'usage') and response.usage:
-                        actual_tokens = response.usage.total_tokens
-                        self.token_learner.record_usage(tokens_needed, actual_tokens)
-                    
-                    # Update stats
-                    self.stats['avg_response_time'] = (
-                        (self.stats['avg_response_time'] * (self.stats['llm_calls_successful'] - 1) + response_time) /
-                        self.stats['llm_calls_successful']
-                    )
-                    
-                    # Extract single result from list response
+                    # Extract result
                     if response and len(response) > 0:
-                        return response[0]  # Single task = single result
+                        self.stats['tasks_successful'] += 1
+                        return response[0]
                     else:
-                        # Fallback - no valid response
                         return self.create_fallback_response(task)
-                        
-                except asyncio.TimeoutError:
-                    task_end_time = time.monotonic()
-                    response_time = task_end_time - task_start_time
                     
-                    logger.warning(f"Task {task['task_id']} timed out after 30s")
-                    
-                    # Record timeout for monitoring and adjustment
-                    self.concurrency_manager.record_timeout()
-                    self.stats['llm_calls_failed'] += 1
-                    self.stats['timeouts_occurred'] += 1
-                    
-                    return self.create_fallback_response(task)
-                    
-                except RateLimitError as e:
-                    logger.warning(f"Task {task['task_id']} hit rate limit: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    # CRITICAL FIX: Re-raise for tenacity retry
-                    raise
-                    
-                except (APIConnectionError, ConnectionError) as e:
-                    logger.warning(f"Task {task['task_id']} connection failed: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    # CRITICAL FIX: Re-raise for tenacity retry
-                    raise
-                    
-                except (APITimeoutError, TimeoutError) as e:
-                    logger.warning(f"Task {task['task_id']} request timeout: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    # CRITICAL FIX: Re-raise for tenacity retry
-                    raise
-                    
-                except InternalServerError as e:
-                    logger.warning(f"Task {task['task_id']} server error: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    # CRITICAL FIX: Re-raise for tenacity retry
-                    raise
-                    
-                except InstructorRetryException as e:
-                    logger.warning(f"Task {task['task_id']} instructor retry failed: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    # CRITICAL FIX: Re-raise for tenacity retry
-                    raise
-                    
-                except ValueError as e:
-                    # Data type or parsing errors
-                    logger.error(f"Task {task['task_id']} data error: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
-                    
-                except Exception as e:
-                    # Catch-all for unexpected errors
-                    logger.error(f"Task {task['task_id']} unexpected error [{type(e).__name__}]: {e}")
-                    self.stats['llm_calls_failed'] += 1
-                    return self.create_fallback_response(task)
+        except asyncio.TimeoutError:
+            self.stats['timeouts'] += 1
+            logger.warning(f"Task {task['task_id']} timed out")
+            raise  # Let tenacity retry
+            
+        except RateLimitError:
+            self.stats['rate_limits'] += 1
+            logger.warning(f"Task {task['task_id']} hit rate limit")
+            raise  # Let tenacity retry
+            
+        except Exception as e:
+            logger.error(f"Task {task['task_id']} failed: {type(e).__name__}: {e}")
+            raise  # Let tenacity retry
     
     def create_fallback_response(self, task: Dict) -> models.QualityFilteredModel:
         """Create fallback response for failed tasks"""
         original = task['original_response']
-        # Return as meaningful response (conservative fallback)
+        # Conservative: assume meaningful if we can't process
         original.quality_filter = False
         original.quality_filter_code = 0
         return original
+    
+    async def probe_call_no_structured(self, task_dict):
+        """Probe call without structured output for bootstrap measurement"""
+        prompt = self._build_individual_prompt(
+            task_dict.get('var_lab', self.question),
+            task_dict['task_id'],
+            task_dict['response_text']
+        )
+        
+        # For probes: avoid response_model so we can read .usage
+        resp = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.config.temperature,
+            seed=self.model_config.seed
+        )
+
+        u = getattr(resp, "usage", None)
+        return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+
+    async def worker(self, queue: asyncio.Queue, results: List):
+        """Worker coroutine that processes tasks from queue"""
+        while True:
+            try:
+                task = await queue.get()
+                if task is None:  # Sentinel
+                    break
+                
+                try:
+                    result = await self.process_task(task)
+                    results[task['result_index']] = result
+                except Exception as e:
+                    # After all retries failed
+                    logger.error(f"Task {task['task_id']} failed after retries: {e}")
+                    self.stats['tasks_failed'] += 1
+                    results[task['result_index']] = self.create_fallback_response(task)
+                finally:
+                    self.stats['tasks_processed'] += 1
+                    queue.task_done()
+                    
+            except Exception as e:
+                logger.error(f"Worker error: {e}")
+                break
 
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[models.QualityFilteredModel]:
-        """Process all tasks using proven individual task approach (following spellChecker pattern)"""
-        
+        """Process all tasks using queue + workers pattern with bootstrap measurement"""
         if not tasks:
             return []
         
-        # Rate limiting setup logging (following spellChecker pattern)
+        # Setup
         limits = get_openai_rate_limits(self.model)
-        HEADROOM = 0.8
+        HEADROOM = 0.9  # Increased from 0.8 to 0.9 for higher throughput
         
-        print("[SMART RATE LIMITING SETUP]")
+        # Bootstrap measurement with probe calls (following spellChecker pattern)
+        sample_tasks = tasks[:min(3, len(tasks))]
+        if len(sample_tasks) < 3:
+            # Duplicate tasks if we have fewer than 3
+            sample_tasks = sample_tasks * 3
+            sample_tasks = sample_tasks[:3]
+        
+        self.verbose_reporter.step_start("Quality Assessment")
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
+        
+        start_time = time.time()
+        task_cycle = itertools.cycle(sample_tasks)
+        
+        async def probe_with_different_tasks():
+            return await self.probe_call_no_structured(next(task_cycle))
+        
+        avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_with_different_tasks, n_probes=3)
+        
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
+            self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
+        
+        # Initialize latency tracker with bootstrap measurements
+        for i in range(3):  # Add 3 samples to get started
+            self.latency_tracker.add(avg_latency_s)
+        
+        # Update avg_tokens with bootstrap measurement
+        self.avg_tokens = int(avg_tokens)
+        
+        # Calculate optimal concurrency using Little's Law
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, cap=10000, min_conc=0)
+        optimal = min(300, max(Little, 100)) #constrained or range 100-300
+        
+        # Initialize rate limiting components
+        arrival_rate = min(
+            limits.requests_per_minute * HEADROOM / 60,
+            limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+        )
+        
+        if arrival_rate < 1:
+            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
+        else:
+            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        
+        self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
+        self.optimal_concurrency = min(len(tasks), optimal)
+        
+        print("[RATE LIMITING SETUP]")
         print(f"- Model: {self.model}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * HEADROOM:,.0f} with headroom)")
         print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * HEADROOM:,.0f} with headroom)")
-        print(f"- Processing {len(tasks):,} individual tasks")
-        print(f"- Initial concurrent limit: {self.concurrency_manager.current_limit}")
-        print(f"- Dynamic timeout: {self.timeout_manager.base_timeout:.1f}s base (adaptive)")
-        print(f"- Token estimation: {self.token_learner.current_ratio:.1%} output ratio")
+        print(f"- Bootstrap measured avg_tokens: {self.avg_tokens}")
         
-        # Create individual task coroutines (NOT batches)
-        task_coroutines = [
-            self.process_individual_task(task, i) 
-            for i, task in enumerate(tasks)
-        ]
+        # Show expected throughput breakdown
+        rpm_throughput = limits.requests_per_minute * HEADROOM / 60
+        tpm_throughput = limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+        bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
+        print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
+        print(f"- Optimal by Little's law: {Little}")
+        print(f"- Constrained optimum: {optimal} (min=100, max=300)")
         
-        # Process with protected gathering (CRITICAL)
-        print(f"Processing tasks... 0/{len(tasks)} (0.0%)")
+        print(f"- Processing {len(tasks):,} tasks")
+        
+        # Calculate number of workers
+        expected_throughput = min(rpm_throughput, tpm_throughput)
+        num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+       
+        print(f"- Workers launched: (concurrent subroutines): {num_workers}")
+        print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
+        
+        # Create queue and results list
+        queue = asyncio.Queue()
+        results = [None] * len(tasks)
+        
+        # Add tasks to queue with result indices
+        for i, task in enumerate(tasks):
+            task['result_index'] = i
+            task['task_index'] = i
+            await queue.put(task)
+        
+        # Start workers
+        workers = []
+        for _ in range(num_workers):
+            w = asyncio.create_task(self.worker(queue, results))
+            workers.append(w)
+        
+        # Progress monitoring with diagnostics
         start_time = time.time()
+        last_report = start_time
+        last_diagnostics = start_time
         
-        results = await asyncio.gather(*task_coroutines, return_exceptions=True)
+        while not queue.empty():
+            await asyncio.sleep(1)
+            now = time.time()
+            
+            # Regular progress report every 5s
+            if now - last_report >= 5:
+                completed = self.stats['tasks_processed']
+                remaining = queue.qsize()
+                elapsed = now - start_time
+                rate = completed / elapsed if elapsed > 0 else 0
+                
+                print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
+                      f"Rate: {rate:.1f}/s, Queue: {remaining}")
+                last_report = now
+            
+            # Diagnostic report every 30s (if verbose)
+            if self.verbose_reporter.enabled and now - last_diagnostics >= 30:
+                bucket_status = self.get_token_bucket_status()
+                token_stats = self.get_token_estimation_stats()
+                
+                # Token bucket diagnostics
+                if bucket_status['low_tokens']:
+                    self.verbose_reporter.stat_line(f"⚠️ Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
+                # else:
+                #     self.verbose_reporter.stat_line(f"Token bucket: {bucket_status['available_tokens']:,}/{bucket_status['capacity']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
+                
+                # Token estimation diagnostics
+                if token_stats['status'] == 'learning' and token_stats['samples'] >= 5:
+                    self.verbose_reporter.stat_line(f"Token estimation: {token_stats['avg_estimation_error']:.0f} avg error, "
+                                                  f"Input: {token_stats['avg_input_tokens']:.0f} avg ({token_stats['input_samples']}/3), "
+                                                  f"Output: {token_stats['avg_output_tokens']:.0f} avg ({token_stats['output_samples']}/5)")
+                    
+                    # Show comparison of initial vs learned average tokens
+                    if token_stats['actual_samples'] >= 10:
+                        actual_avg = token_stats['avg_actual_total_tokens']
+                        initial_avg = token_stats['initial_avg_tokens']
+                        difference = actual_avg - initial_avg
+                        
+                        # Calculate theoretical throughput with learned average
+                        limits = get_openai_rate_limits(self.model)
+                        HEADROOM = 0.9
+                        learned_throughput = limits.tokens_per_minute * HEADROOM / actual_avg / 60
+                        initial_throughput = limits.tokens_per_minute * HEADROOM / initial_avg / 60
+                        
+                        self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
+                                                      f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
+                        self.verbose_reporter.stat_line(f"Throughput impact: {initial_throughput:.1f}/s → {learned_throughput:.1f}/s "
+                                                      f"({(learned_throughput-initial_throughput)/initial_throughput*100:+.1f}%)")
+                
+                last_diagnostics = now
         
-        processing_time = time.time() - start_time
+        # Wait for all tasks to complete
+        await queue.join()
         
-        # Handle results safely (follows spellChecker.py pattern)
-        processed_results = []
-        successful_tasks = 0
-        failed_tasks = 0
+        # Stop workers
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
         
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Task {i} failed with exception: {result}")
-                fallback = self.create_fallback_response(tasks[i])
-                processed_results.append(fallback)
-                failed_tasks += 1
-                self.stats['tasks_failed'] += 1
-            else:
-                processed_results.append(result)
-                successful_tasks += 1
-                self.stats['tasks_successful'] += 1
+        # Final stats with diagnostics
+        elapsed = time.time() - start_time
+        print(f"\nCompleted {len(tasks)} tasks in {elapsed:.1f}s")
+        print(f"- Successful: {self.stats['tasks_successful']}")
+        print(f"- Failed: {self.stats['tasks_failed']}")
+        print(f"- Rate limits: {self.stats['rate_limits']}")
+        print(f"- Timeouts: {self.stats['timeouts']}")
+        print(f"- Average: {elapsed/len(tasks):.2f}s/task")
         
-        # Statistics and reporting (CoderingsTool style)
-        success_rate = (successful_tasks / len(tasks)) * 100
-        self.stats['processing_time'] = processing_time
-        self.stats['tasks_processed'] = len(tasks)
+        # Final diagnostic summary (if verbose)
+        if self.verbose_reporter.enabled:
+            token_stats = self.get_token_estimation_stats()
+            bucket_status = self.get_token_bucket_status()
+            
+            #self.verbose_reporter.stat_line(f"Final token bucket status: {bucket_status['available_tokens']:,}/{bucket_status['capacity']:,} tokens remaining")
+            
+            if token_stats['status'] == 'learning':
+                accuracy = max(0, 100 - (token_stats['avg_estimation_error'] / max(1, token_stats['avg_input_tokens'] + token_stats['avg_output_tokens']) * 100))
+                self.verbose_reporter.stat_line(f"Token estimation accuracy: {accuracy:.1f}% (avg error: {token_stats['avg_estimation_error']:.0f} tokens)")
+                self.verbose_reporter.stat_line(f"Learned averages - Input: {token_stats['avg_input_tokens']:.0f}, Output: {token_stats['avg_output_tokens']:.0f}")
+                
+                # Final comparison of initial vs learned token usage
+                if token_stats['actual_samples'] >= 10:
+                    actual_avg = token_stats['avg_actual_total_tokens']
+                    initial_avg = token_stats['initial_avg_tokens']
+                    difference = actual_avg - initial_avg
+                    
+                    # Calculate what throughput would have been with perfect estimation
+                    limits = get_openai_rate_limits(self.model)
+                    HEADROOM = 0.9
+                    optimal_throughput = limits.tokens_per_minute * HEADROOM / actual_avg / 60
+                    initial_throughput = limits.tokens_per_minute * HEADROOM / initial_avg / 60
+                    
+                    self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
+                                                  f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
+                    self.verbose_reporter.stat_line(f"Throughput analysis: Expected {initial_throughput:.1f}/s → Optimal {optimal_throughput:.1f}/s with perfect estimation")
         
-        print(f"Processing tasks... {len(tasks)}/{len(tasks)} (100.0%)")
-        print(f"• Successful: {successful_tasks}")
-        print(f"• Failed: {failed_tasks}")
-        print(f"• Success rate: {success_rate:.1f}%")
-        print(f"• Timeouts: {self.stats['timeouts_occurred']}")
-        print(f"• Avg response time: {self.stats['avg_response_time']:.2f}s")
+        return results
+
+    def _prepare_individual_tasks(self) -> List[Dict]:
+        """Prepare individual tasks for processing"""
+        items_to_process = [r for r in self.responses if r.quality_filter_code is None]
         
-        if processing_time > 1:
-            rate = len(tasks) / processing_time
-            print(f"• Processing rate: {rate:.1f} tasks/sec")
+        tasks = []
+        for i, response in enumerate(items_to_process):
+            # Handle various data types safely
+            response_text = response.response
+            if isinstance(response_text, (float, int)):
+                if str(response_text).lower() in ['nan', 'inf', '-inf']:
+                    response_text = ''
+                else:
+                    response_text = str(response_text)
+            elif response_text is None:
+                response_text = ''
+            
+            tasks.append({
+                'task_id': response.respondent_id,
+                'response_text': response_text,
+                'original_response': response
+            })
         
-        # Enhanced monitoring statistics
-        timeout_stats = self.timeout_manager.get_stats()
-        concurrency_stats = self.concurrency_manager.get_stats()
-        token_stats = self.token_learner.get_accuracy_stats()
-        
-        print(f"[SMART MONITORING RESULTS]")
-        print(f"• Timeout baseline: {'Established' if timeout_stats['baseline_measured'] else 'Learning'}")
-        print(f"• Final concurrent limit: {concurrency_stats['current_limit']} (started at 100)")
-        if token_stats['accuracy'] != 'insufficient_data':
-            print(f"• Token estimation accuracy: {token_stats['accuracy']:.1%}")
-        
-        return processed_results
+        return tasks
 
     def grade(self) -> List[models.QualityFilteredModel]:
+        """Main entry point for quality filtering"""
         self._stats.start_timing()
         self._stats.input_count = len(self.responses)
         
-        # Separate items that need LLM evaluation from pre-filtered items
+        # Separate items that need processing from pre-filtered
         items_to_process = [r for r in self.responses if r.quality_filter_code is None]
         pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
         
@@ -692,44 +752,45 @@ class Grader:
         self.verbose_reporter.stat_line(f"Items needing LLM evaluation: {len(items_to_process)}")
         self.verbose_reporter.stat_line(f"Pre-filtered items: {len(pre_filtered_items)}")
         
-        # Process items that need LLM evaluation using individual task approach
+        # Process items that need LLM evaluation
         if items_to_process:
-            # Prepare individual tasks
+            # Prepare tasks
             tasks = self._prepare_individual_tasks()
             
-            # Process with proven individual task strategy
+            # Process with queue + workers
             if nest_asyncio:
                 nest_asyncio.apply()
             llm_results = asyncio.run(self.process_all_tasks_async(tasks))
             
-            # Store LLM results
+            # Store results
             self._results = llm_results
         else:
             self.verbose_reporter.stat_line("No items require LLM evaluation")
+            self._results = []
         
-        # Create mapping from respondent_id to LLM results for efficient lookup
-        llm_results_map = {result.respondent_id: result for result in self._results}
+        # Create mapping for efficient lookup
+        llm_results_map = {result.respondent_id: result for result in self._results if result}
         
-        # Merge results: combine pre-filtered items with LLM results in original order
+        # Merge results in original order
         merged_results = []
         for original_item in self.responses:
             if original_item.quality_filter_code is not None:
-                # Keep pre-filtered item as-is
+                # Keep pre-filtered item
                 merged_results.append(original_item)
             else:
-                # Use LLM result if available, otherwise keep original
+                # Use LLM result if available
                 if original_item.respondent_id in llm_results_map:
                     merged_results.append(llm_results_map[original_item.respondent_id])
                 else:
-                    # Fallback: mark as unprocessed (shouldn't happen normally)
+                    # Fallback if not processed
                     original_item.quality_filter = False
-                    original_item.quality_filter_code = 0  # Assume meaningful if LLM failed
+                    original_item.quality_filter_code = 0
                     merged_results.append(original_item)
         
-        # Update self._results to the merged list for statistics and filtering
+        # Update results
         self._results = merged_results
         
-        # Calculate quality statistics
+        # Calculate statistics
         quality_counts = {"high": 0, "medium": 0, "low": 0}
         filtered_examples = []
         
@@ -742,7 +803,7 @@ class Grader:
                 else:
                     quality_counts["low"] += 1
             
-            # Only show examples for user-missing (97) or no-answer (99) codes, not system-missing (98)
+            # Collect meaningful filter examples
             if (result.quality_filter and 
                 len(filtered_examples) < self.config.max_filter_examples and
                 result.quality_filter_code is not None and
@@ -779,14 +840,16 @@ class Grader:
         return self._results
 
     def filter(self) -> List[models.QualityFilteredModel]:
+        """Return only meaningful responses"""
         return [r for r in self._results if not r.quality_filter]
 
     def summary(self) -> Dict[str, Union[int, float]]:
+        """Get summary statistics"""
         total = len(self._results)
         meaningless = sum(1 for r in self._results if r.quality_filter)
         meaningful = total - meaningless
         
-        # Count items by how they were processed
+        # Count by processing type
         llm_processed = sum(1 for r in self._results if hasattr(r, 'quality_score'))
         pre_filtered = total - llm_processed
 

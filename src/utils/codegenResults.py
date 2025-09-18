@@ -30,10 +30,12 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
   
     # 1. CLUSTER THEME(S)
-    #cluster_id = '14-2'
+    #cluster_id = '12'; show_detailed_reasoning = False
+
     if step1_summaries and cluster_id in step1_summaries:
         step1_data = step1_summaries[cluster_id]
         analysis = step1_data.get("analysis", [])
+        
         theme_id = step1_data.get("theme_id", [])
         theme_label = step1_data.get("theme_label", [])
         theme_description = step1_data.get("theme_description", [])
@@ -46,7 +48,7 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
 
         print("\n🔍 CLUSTER THEME:")
         if theme_id > 0: 
-            print(f"Theme: {theme_id}")
+            #print(f"Theme: {theme_id}")
             print(f"Label: {theme_label}")
             print(f"Description: {theme_description}")
         else:
@@ -61,12 +63,12 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
             ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
             clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
             print(f"\n💡 CLUSTER IDEAS ({len(clean_ideas)} responses):")
-            for i, idea in enumerate(clean_ideas, 1):  
-                print(f"   {i}. {idea}")
-            # for i, idea in enumerate(clean_ideas[:10], 1):  # Show first 10
+            # for i, idea in enumerate(clean_ideas, 1):  
             #     print(f"   {i}. {idea}")
-            # if len(clean_ideas) > 10:
-            #     print(f"   ... and {len(clean_ideas) - 10} more ideas")
+            for i, idea in enumerate(clean_ideas[:5], 1):  # Show first 10
+                print(f"   {i}. {idea}")
+            if len(clean_ideas) > 5:
+                print(f"   ... and {len(clean_ideas) - 5} more ideas")
         else:
             print("\n💡 CLUSTER IDEAS: [No cluster_text found]")
     else:
@@ -76,9 +78,14 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     if step2_analysis:
         # Try to find candidate codes for this cluster
         candidate_codes = None
+        candidate_codes = []
         
         if cluster_id in step2_analysis:
-            candidate_codes = step2_analysis[cluster_id]
+            step2_data = step2_analysis[cluster_id]
+            decision = step2_data['coding_decision']
+            if 'matched_candidates' in decision:
+                candidate_codes.extend(decision['matched_candidates'])
+
         if candidate_codes:
             print(f"\n🔍 CANDIDATE CODES ({len(candidate_codes)} found):")
             for i, code_data in enumerate(candidate_codes, 1):
@@ -94,48 +101,45 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     else:
         print("\n🔍 CANDIDATE CODES: [Not available]")
     
-    #show_detailed_reasoning = False
     
-    # 4. RECOMMENDED CHANGES TO CODEBOOK
+    # 4. RECOMMENDED CHANGES TO CODEBOOK  
+    # Combine information from step2 (decisions) and step3 (generated codes)
+    decision_data = None
+    if step2_analysis and cluster_id in step2_analysis:
+        step2_data = step2_analysis[cluster_id]
+        if isinstance(step2_data, dict) and 'coding_decision' in step2_data:
+            decision_data = step2_data['coding_decision']
+    
+    generated_code_data = None
     if step3_recommendations and cluster_id in step3_recommendations:
-        gen_result = step3_recommendations[cluster_id]
+        generated_code_data = step3_recommendations[cluster_id]
+       
+    
+    if decision_data and generated_code_data: 
         print("\n🎯 RECOMMENDED CHANGES TO CODEBOOK:")
         
-        if 'coding_decisions' in gen_result:
-            for i, decision in enumerate(gen_result['coding_decisions'], 1):
-                decision_type = decision.get('decision', 'Unknown')
-                theme_number = decision.get('theme_number', i)
-                final_code_label = decision.get('final_code_label', 'Unknown')
-                final_code_description = decision.get('final_code_definition', 'No description available')  # Fixed field name
-                source_code = decision.get('source_code', None)
-                justification = decision.get('justification', 'No justification provided')
-                
-                if theme_number <= 1:
-                    if decision_type == "create": 
-                        print(f"{decision_type.upper()}: {final_code_label}") 
-                    if decision_type == "modify": 
-                        source_display = source_code if source_code else "[Unknown Source]"
-                        print(f"{decision_type.upper()}: {source_display} -> {final_code_label}")    
-                    if decision_type == "use": 
-                        print(f"{decision_type.upper()}: {final_code_label}")                          
-                else:
-                    print(f"\nDecision: {theme_number}")
-                    if decision_type == "create": 
-                        print(f"{decision_type.upper()}: {final_code_label}") 
-                    if decision_type == "modify": 
-                        source_display = source_code if source_code else "[Unknown Source]"
-                        print(f"{decision_type.upper()}: {source_display} -> {final_code_label}")    
-                    if decision_type == "use": 
-                        print(f"{decision_type.upper()}: {final_code_label}") 
-                
-                if show_detailed_reasoning:
-                    print(f"Definition: {final_code_description}")
-                    if source_code:
-                        print(f"Source code: {source_code}")
-                
-                print(f"\nReasoning: {justification}")
-        else:
-            print("[No recommendations found]")
+        # Process single decision with generated code
+        decision_type = decision_data.get('decision', 'Unknown')
+        source_code = decision_data.get('source_code', None)
+        justification = decision_data.get('justification', 'No justification provided')
+        
+        final_code_label = generated_code_data.get('code_label_proposal', 'Unknown')
+        
+        if decision_type ==  "CREATE": 
+            print(f"{decision_type.upper()} new code") 
+        if decision_type == "MODIFY": 
+            source_display = source_code if source_code else "[Unknown Source]"
+            print(f"{decision_type.upper()} this existing code: {source_display}")    
+        if decision_type == "USE": 
+            source_display = source_code if source_code else "[Unknown Source]"
+            print(f"{decision_type.upper()} this existing code: {source_display}")      
+
+        print(f"\nReasoning: {justification}")
+        
+        print(f"\nRecommended code: {final_code_label}")
+
+        # else:
+        #     print("[No recommendations found]")
     else:
         print("\n🎯 RECOMMENDED CHANGES TO CODEBOOK: [Not available]")
     
@@ -145,36 +149,34 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         val_result = step4_validations[cluster_id]
         print("\n✅ VALIDATION:")
         
-        if 'code_validations' in val_result:
-            for i, validation in enumerate(val_result['code_validations'], 1):
-                #theme_desc = validation.get('theme_description', 'Unknown theme')
-                #original_rec = validation.get('original_recommendation', 'Not available')
-                decision = validation.get('decision', 'Unknown')
-                rationale = validation.get('decision_rationale', 'Not provided')
-                
-                # print(f"\n   Theme {i}: {theme_desc}")
-                # print(f"   Original recommendation: {original_rec}")
-                
-                if i > 1:
-                    print(f"\n\ndecision ({i}): {decision}") 
-                    print(f"\nReasoning: {rationale}")
-                else: 
-                    print(f"decision: {decision}") 
-                    print(f"\nReasoning: {rationale}")
-                
-                if show_detailed_reasoning:
-                    # Show original recommendation
-                    orig_rec = validation.get('original_recommendation', {})
-                    if orig_rec:
-                        print(f"\nOriginal recommendation: {orig_rec.get('code', 'Unknown')}")
-                        print(f"Original definition: {orig_rec.get('definition', 'Unknown')}")
-                
-                # Show final validated code
-                validated_code = validation.get('validated_code')
-                if validated_code:
-                    print("\n")
-                    for key, value in validated_code.items():
-                        print(f"Validated {key}: {value}")
+        if 'code_validation' in val_result:
+            validation = val_result['code_validation']
+            #theme_desc = validation.get('theme_description', 'Unknown theme')
+            #original_rec = validation.get('original_recommendation', 'Not available')
+            verdict = validation.get('verdict', 'Unknown')  # APPROVE/REJECT
+            validated_decision = validation.get('validated_decision', 'Unknown')  # USE/CREATE/MODIFY (final decision)
+            rationale = validation.get('decision_rationale', 'Not provided')
+            
+            # print(f"\n   Theme {i}: {theme_desc}")
+            # print(f"   Original recommendation: {original_rec}")
+            
+            print(f"Verdict: {verdict}") 
+            print(f"Final Decision: {validated_decision}")
+            print(f"\nReasoning: {rationale}")
+            
+            if show_detailed_reasoning:
+                # Show original recommendation
+                orig_rec = validation.get('original_recommendation', {})
+                if orig_rec:
+                    print(f"\nOriginal recommendation: {orig_rec.get('code', 'Unknown')}")
+                    print(f"Original definition: {orig_rec.get('definition', 'Unknown')}")
+            
+            # Show final validated code
+            validated_code = validation.get('validated_code')
+            if validated_code:
+                print("\n")
+                for key, value in validated_code.items():
+                    print(f"Validated {key}: {value}")
         else:
             print("[No validation results found]")
     else:
@@ -201,32 +203,49 @@ def display_summary_statistics(codebook_reasoning) -> None:
                 print(f"• Completion: {value}%")     
      
     
-    # Step 3 Decision breakdown
-    if step3_recommendations:
+    # Step 2 Decision breakdown (decisions are in step2_analysis now)
+    step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})
+    if step2_analysis:
         all_decisions = []
-        for gen_result in step3_recommendations.values():
-            if 'coding_decisions' in gen_result:
-                for decision in gen_result['coding_decisions']:
-                    all_decisions.append(decision.get('decision', 'unknown'))
+        for step2_data in step2_analysis.values():
+            if isinstance(step2_data, dict) and 'coding_decision' in step2_data:
+                decision = step2_data['coding_decision']
+                all_decisions.append(decision.get('decision', 'unknown'))
         
-        print("\nStep 3 Decisions:")
+        print("\nStep 2 Decisions:")
         print(f"• Create new: {all_decisions.count('create')}")
         print(f"• Modify existing: {all_decisions.count('modify')}")  
         print(f"• Use existing: {all_decisions.count('use')}")
         print(f"• Total decisions: {len(all_decisions)}")
     
+    # Step 3 Generated codes breakdown  
+    if step3_recommendations:
+        all_generated = []
+        for gen_result in step3_recommendations.values():
+            if 'generated_code' in gen_result:
+                code = gen_result['generated_code']
+                all_generated.append(code.get('code_label', 'unknown'))
+        
+        print("\nStep 3 Generated codes:")
+        print(f"• Total codes generated: {len(all_generated)}")
+    
     # Step 4 Validation breakdown
     if step4_validations:
-        all_val_decisions = []
+        all_verdicts = []
+        all_final_decisions = []
         for val_result in step4_validations.values():
-            if 'code_validations' in val_result:
-                for validation in val_result['code_validations']:
-                    all_val_decisions.append(validation.get('decision', 'unknown'))
+            if 'code_validation' in val_result:
+                validation = val_result['code_validation']
+                all_verdicts.append(validation.get('verdict', 'unknown'))
+                all_final_decisions.append(validation.get('validated_decision', 'unknown'))
         
         print("\nStep 4 Validation:")
-        print(f"• Approved: {all_val_decisions.count('APPROVE')}")
-        print(f"• Rejected: {all_val_decisions.count('REJECT')}")
-        print(f"• Total validations: {len(all_val_decisions)}")
+        print(f"• Verdict - Approved: {all_verdicts.count('APPROVE')}")
+        print(f"• Verdict - Rejected: {all_verdicts.count('REJECT')}")
+        print(f"• Final Decision - USE: {all_final_decisions.count('use')}")
+        print(f"• Final Decision - CREATE: {all_final_decisions.count('create')}")
+        print(f"• Final Decision - MODIFY: {all_final_decisions.count('modify')}")
+        print(f"• Total validations: {len(all_verdicts)}")
 
 
 def display_multiple_clusters(codebook_reasoning, cluster_ids: List[Union[int, str]] = None, max_clusters: int = 5, debug_mode: bool = False) -> None:
@@ -248,15 +267,15 @@ def display_multiple_clusters(codebook_reasoning, cluster_ids: List[Union[int, s
 
 
 def find_clusters_by_decision(codebook_reasoning, decision_type: str) -> List[Union[int, str]]:
-    """step 3 only: create; modify and use"""
+    """step 2 decisions: create; modify and use"""
    
     matching_clusters = []
-    step3_recommendations = codebook_reasoning.step3_recommendations
+    step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})
     
-    for cluster_id, gen_result in step3_recommendations.items():
+    for cluster_id, step2_data in step2_analysis.items():
         # Check if any decision in this cluster matches the target type
-        if 'coding_decisions' in gen_result:
-            for decision in gen_result['coding_decisions']:
+        if isinstance(step2_data, dict) and 'coding_decisions' in step2_data:
+            for decision in step2_data['coding_decisions']:
                 if decision.get('decision') == decision_type:
                     matching_clusters.append(cluster_id)
                     break  # Found one match, move to next cluster

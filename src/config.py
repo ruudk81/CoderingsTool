@@ -49,31 +49,31 @@ class OpenAIRateLimits:
     requests_per_minute: int
     tokens_per_day: int
 
-OPENAI_RATE_LIMITS = {
+OPENAI_RATE_LIMITS = {  
     "gpt-5": OpenAIRateLimits(
-        tokens_per_minute=800_000,
-        requests_per_minute=5_000,
-        tokens_per_day=100_000_000
+        tokens_per_minute=4_000_000,
+        requests_per_minute=10_000,
+        tokens_per_day=200_000_000
     ),
     "gpt-5-mini": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
+        tokens_per_minute=10_000_000,
+        requests_per_minute=10_000,
+        tokens_per_day=1_000_000_000
     ),
     "gpt-5-nano": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
+       tokens_per_minute=10_000_000,
+       requests_per_minute=10_000,
+       tokens_per_day=1_000_000_000
     ),
     "gpt-4.1": OpenAIRateLimits(
-        tokens_per_minute=800_000,
-        requests_per_minute=5_000,
-        tokens_per_day=100_000_000
+       tokens_per_minute=2_000_000,
+       requests_per_minute=10_000,
+       tokens_per_day=1_000_000_000
     ),
     "gpt-4.1-mini": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
+       tokens_per_minute=10_000_000,
+       requests_per_minute=10_000,
+       tokens_per_day=1_000_000_000
     ),
     "gpt-4.1-nano": OpenAIRateLimits(
         tokens_per_minute=4_000_000,
@@ -86,20 +86,20 @@ OPENAI_RATE_LIMITS = {
         tokens_per_day=40_000_000
     ),
     "gpt-4o": OpenAIRateLimits(
-        tokens_per_minute=800_000,
-        requests_per_minute=5_000,
-        tokens_per_day=100_000_000
+        tokens_per_minute=2_000_000,
+        requests_per_minute=10_000,
+        tokens_per_day=1_000_000_000
     ),
     "gpt-4o-mini": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
+       tokens_per_minute=10_000_000,
+       requests_per_minute=10_000,
+       tokens_per_day=1_000_000_000
     ),
     # Fallback for unknown models (conservative limits)
     "default": OpenAIRateLimits(
-        tokens_per_minute=800_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
+        tokens_per_minute=2_000_000,
+        requests_per_minute=10_000,
+        tokens_per_day=1_000_000_000
     )
 }
 
@@ -176,21 +176,21 @@ class ModelConfig:
     embedding_model: str = "text-embedding-3-large"
     #embedding_model: str = "gemini-embedding-001"
     
-    # Step 6: Codebook generation
+   
     speculative_codes_model: str = DEFAULT_MODEL  
 
     # Step 7: Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
     thematic_summary_model: str = "gpt-5-mini"              
-    candidate_selection_model: str = "gpt-5-nano"           
+    candidate_selection_model: str = "gpt-5-mini"           
     code_generation_model: str ="gpt-5-mini"               
     validation_model: str = "gpt-5-mini"                  
     
-    # Step 8: Hierarchical organisation of codebook
-    hierarchical_organisation_model: str = DEFAULT_MODEL
-    domain_clustering_model: str = DEFAULT_MODEL
-    theme_synthesis_model: str = DEFAULT_MODEL
-    
+    # Step 8: theme identification
+    thematic_organizer_model : str = "gpt-5-mini"   
+    theme_extraction_reasoning_effort: str = "low"       
+    theme_extraction_text_verbosity: str = "medium"      
+
     # Step 9: Code assignment
     code_assignment_model: str = DEFAULT_MODEL
 
@@ -340,24 +340,14 @@ class CacheConfig:
     
     # Cache validity settings
     max_cache_age_days: int = 30
-    check_file_hash: bool = True
     
     # File handling settings
-    enable_compression: bool = False
-    compression_level: int = 6  # 1-9, higher = more compression
     use_atomic_writes: bool = True
     
     # Performance settings
     batch_size: int = 1000
-    memory_limit_mb: int = 500
-    
-    # Cleanup settings
-    auto_cleanup: bool = True
-    cleanup_interval_days: int = 7
-    max_cache_size_gb: float = 10.0
     
     # Logging settings
-    log_cache_operations: bool = True
     verbose: bool = False
     
     def __post_init__(self):
@@ -409,7 +399,6 @@ class SpellCheckConfig:
     max_correction_examples: int = 10  # For verbose output
     seed: int = 42
     context_chars: int = 20  # Characters of context for spell checking
-    spell_check_threshold: float = 0.7  # TODO: probably redundant
     max_concurrent_requests: int = 5  # For API rate limiting
     
     # Performance optimization settings
@@ -425,6 +414,10 @@ class SpellCheckConfig:
     enable_adaptive_chunking: bool = True  # Dynamic chunk sizing based on performance
     chunk_progress_reporting: bool = True  # Show progress per chunk
     suggestion_processing_semaphore_limit: int = 100  # Limit concurrent Hunspell processes (increased for aggressive parallelism)
+    
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
     
     # New optimization parameters
     hunspell_concurrent_sessions: int = 20  # Number of concurrent Hunspell sessions for OOV detection (increased from 5)
@@ -465,6 +458,10 @@ class QualityFilterConfig:
     # Model configuration - will be overridden by ModelConfig
     model: str = DEFAULT_MODEL  # Fallback model
     max_concurrent_requests: int = 5  # For API rate limiting
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
+   
 
 
 @dataclass
@@ -485,6 +482,9 @@ class SegmentationConfig:
     model: str = "gpt-4o-mini"  # Fallback model
     temperature: float = 0.0  # Temperature for generation
     max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
 
 # =============================================================================
 # EMBEDDING CONFIGURATION
@@ -532,8 +532,8 @@ class UMAPConfig:
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
     min_cluster_size: Optional[int] = 2  # Smaller clusters for better semantic coherence
-    min_samples: Optional[int] = None # Lower threshold for more selective clustering
-    cluster_selection_epsilon: Optional[float] = 0.5  
+    min_samples: Optional[int] = 5 # Lower threshold for more selective clustering
+    cluster_selection_epsilon: Optional[float] = 0
     alpha: Optional[float] = 1.0  # Default stability weighting as requested
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
     cluster_selection_method: str = "eom"
@@ -591,48 +591,6 @@ class CodeDesignerConfig:
     enable_embedding_cache: bool = True  # Cache code embeddings per version
     max_cached_versions: int = 5  # Maximum cached codebook versions
 
-# =============================================================================
-# SMART PHASE PROCESSING CONFIGURATION
-# =============================================================================
-
-# @dataclass
-# class SmartPhaseConfig:
-#     """Configuration for smart phase processing optimization"""
-    
-#     # Feature flag - DISABLED by default for safety
-#     enable_smart_phase_processing: bool = True
-    
-#     # Fallback behavior
-#     enable_automatic_fallback: bool = True
-#     fallback_timeout_seconds: int = 120  # Fallback if phase 1 takes too long (increased from 30s)
-    
-#     # Phase 1: Theme extraction settings
-#     theme_extraction_concurrency: int = 20  # Reduced concurrency to avoid API rate limits
-#     theme_extraction_batch_size: int = 20  # Batch size for theme extraction API calls
-    
-#     # Phase 2: Batch formation settings  
-#     similarity_threshold: float = 0.7  # Cosine similarity threshold for theme grouping
-#     target_batch_size: int = 10  # Target clusters per batch (optimized for 50-100 total)
-#     min_batch_size: int = 5  # Minimum clusters per batch
-#     max_batch_size: int = 15  # Maximum clusters per batch
-    
-#     # Phase 3: Sequential processing settings
-#     enable_inter_batch_optimization: bool = True  # Use updated codebook between batches
-#     batch_progress_reporting: bool = True  # Report progress between batches
-    
-#     # Performance monitoring
-#     enable_performance_comparison: bool = True  # Compare performance with current system
-#     enable_timing_details: bool = False  # Detailed timing breakdowns (verbose only)
-    
-#     # Memory management
-#     cache_theme_embeddings: bool = True  # Cache theme embeddings for reuse
-#     max_cached_theme_embeddings: int = 1000  # Limit cache size
-#     clear_cache_between_runs: bool = True  # Clear theme cache between runs
-    
-#     # Testing and validation
-#     enable_output_validation: bool = True  # Compare outputs between systems (test mode)
-#     validation_sample_size: int = 10  # Number of clusters to validate in test mode
-#     enable_test_mode: bool = False  # Run both systems and compare (for testing)
 
 
 # =============================================================================
@@ -686,6 +644,10 @@ class CodeAssignmentConfig:
     # Model configuration - will be overridden by ModelConfig
     model: str = DEFAULT_MODEL  # Fallback model
     max_assignment_examples: int = 3  # For verbose output
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
+  
 
 # =============================================================================
 # EXPORT CONFIGURATION
@@ -751,8 +713,6 @@ DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()
 DEFAULT_EXPORT_CONFIG = ExportConfig()
-#DEFAULT_DEDUPLICATION_CONFIG = DeduplicationConfig()
-#DEFAULT_SMART_PHASE_CONFIG = SmartPhaseConfig()
 DEFAULT_CODEDESIGNER_CONFIG = CodeDesignerConfig()
 
 

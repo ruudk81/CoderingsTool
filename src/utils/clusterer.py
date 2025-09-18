@@ -84,7 +84,7 @@ class Clusterer:
         
         self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
         self.verbose_reporter.stat_line(f"UMAP configuration: {self.umap_n_neighbors} neighbors, {self.umap_n_components} components, cosine metric")
-        self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_cluster_size={self.hdbscan_config.min_cluster_size}, epsilon={self.hdbscan_config.cluster_selection_epsilon}, alpha={self.hdbscan_config.alpha}, {self.hdbscan_config.metric} metric")
+        #self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_cluster_size={self.hdbscan_config.min_cluster_size}, epsilon={self.hdbscan_config.cluster_selection_epsilon}, alpha={self.hdbscan_config.alpha}, {self.hdbscan_config.metric} metric")
         
         #from sklearn.decomposition import PCA
         #from sklearn.preprocessing import StandardScaler
@@ -132,22 +132,47 @@ class Clusterer:
             item.umap_embedding = umap_embed
 
         #print(f"[UMAP] Reduced {optimal_dims} → {self.umap_n_components} dims")
+        
+        # === Step 3: HDBSCAN ===
+        from sklearn.neighbors import NearestNeighbors
+        from sklearn.cluster import DBSCAN
+        from sklearn.preprocessing import normalize
+
+        U = umap_embeddings.astype(np.float64, copy=False)
+        U = normalize(U, axis=1)  # stabilizes scale a bit
+
+        MinPts = self.hdbscan_config.min_samples
+        
+        nn = NearestNeighbors(n_neighbors=MinPts, metric="euclidean")
+        nn.fit(U)
+        distances, _ = nn.kneighbors(U)
+        kdist = np.sort(distances[:, MinPts-1])
+
+        # plt.plot(kdist); plt.show()
+        eps = kdist[int(0.9 * len(kdist))]  # or read the elbow visually
+
+        self.verbose_reporter.stat_line(f"HDBSCAN configuration: min_samples = {self.hdbscan_config.min_samples}, epsilon={eps}, {self.hdbscan_config.metric} metric")
+        self.verbose_reporter.stat_line("Clustering with HDBSCAN...")
+       
+        db = DBSCAN(eps=eps, min_samples=MinPts, metric=self.hdbscan_config.metric)
+        labels = db.fit_predict(U)
+
 
         # === Step 3: HDBSCAN ===
-        self.verbose_reporter.stat_line("Clustering with HDBSCAN...")
+        #self.verbose_reporter.stat_line("Clustering with HDBSCAN...")
         
-        hdb = hdbscan.HDBSCAN(
-            min_cluster_size=self.hdbscan_config.min_cluster_size,
-            min_samples=self.hdbscan_config.min_samples,
-            cluster_selection_epsilon=self.hdbscan_config.cluster_selection_epsilon,
-            alpha=self.hdbscan_config.alpha,
-            metric=self.hdbscan_config.metric,
-            cluster_selection_method=self.hdbscan_config.cluster_selection_method,
-            prediction_data=self.hdbscan_config.prediction_data,
-            approx_min_span_tree=self.hdbscan_config.approx_min_span_tree,
-            gen_min_span_tree=self.hdbscan_config.gen_min_span_tree,
-        )
-        labels = hdb.fit_predict(umap_embeddings)
+        # hdb = hdbscan.HDBSCAN(
+        #     min_cluster_size=self.hdbscan_config.min_cluster_size,
+        #     min_samples=self.hdbscan_config.min_samples,
+        #     cluster_selection_epsilon=self.hdbscan_config.cluster_selection_epsilon,
+        #     alpha=self.hdbscan_config.alpha,
+        #     metric=self.hdbscan_config.metric,
+        #     cluster_selection_method=self.hdbscan_config.cluster_selection_method,
+        #     prediction_data=self.hdbscan_config.prediction_data,
+        #     approx_min_span_tree=self.hdbscan_config.approx_min_span_tree,
+        #     gen_min_span_tree=self.hdbscan_config.gen_min_span_tree,
+        # )
+        # labels = hdb.fit_predict(umap_embeddings)
 
         for item, label in zip(self.output_list, labels):
             item.initial_idea_cluster = int(label)

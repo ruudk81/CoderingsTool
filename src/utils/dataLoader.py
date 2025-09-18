@@ -108,6 +108,23 @@ class DataLoader:
             
         return variables
     
+    def list_variables_with_types(self, filename: str, encoding: str = None):
+        """List all variables with their types (string vs numeric)"""
+        df, meta = self.load_sav(filename, encoding)
+        
+        variables_with_types = {}
+        for var_name in meta.column_names:
+            var_label = meta.column_labels[meta.column_names.index(var_name)]
+            # Check if variable is string type (object dtype in pandas)
+            is_string = df[var_name].dtype == 'object'
+            variables_with_types[var_name] = {
+                'label': var_label,
+                'is_string': is_string,
+                'dtype': str(df[var_name].dtype)
+            }
+            
+        return variables_with_types
+    
     def get_variable(self, filename: str, var_name: str, encoding: str = None):
         """Get specific variable with encoding support"""
         df, _ = self.load_sav(filename, encoding)

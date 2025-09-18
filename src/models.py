@@ -38,7 +38,8 @@ class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
 
 class ClusterSubmodel(EmbeddingsSubmodel):
-    initial_cluster: Optional[Union[int, str]] = None   # Support sub-clusters like "8-1", "8-2"   
+    initial_cluster: Optional[Union[int, str]] = None   
+    expanded_cluster: Optional[str] = None
     
 class ClusterModel(EmbeddingsModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  
@@ -84,16 +85,21 @@ class Codebook(BaseModel):
 
 """theme enriched_codebook"""
 class ThemeEnrichedCodebookEntry(CodebookEntry):
+    code: Optional[str] = None
+    definition: Optional[str] = None
     theme: Optional[str] = None
     theme_description: Optional[str] = None
-    theme_cluster_id: Optional[Union[int, str]] = None  # Support sub-clusters like "12-1", "12-2"
-    is_miscellaneous: Optional[bool] = False
+    source_cluster: Optional[Union[int, str]] = None  
+    
+
+    
 
 class ThemeEnrichedCodebookModel(CodebookModel):
     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
     themes_summary: Optional[List[Dict[str, Any]]] = None
     code_to_theme_mapping: Optional[Dict[str, str]] = None
     theme_methodology: Optional[str] = None
+
 
 
 

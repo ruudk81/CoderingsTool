@@ -30,7 +30,8 @@
       "Bash(awk:*)",
       "Bash(del test_step8b.py)",
       "Bash($timestamp = Get-Date -Format \"yyyyMMdd_HHmmss\")",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(del test_use_optimization.py)"
     ],
     "deny": []
   }
