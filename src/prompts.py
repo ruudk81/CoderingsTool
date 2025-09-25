@@ -131,26 +131,45 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # STEP 4: IDEA EXTRACTION  
 # =============================================================================
 
+EXTRACT_SUBJECT = """
+<input>
+Survey question: {survey_question}
+</input>
+
+Read the survey question and analyze it to extract the canonical subject or actor.
+
+Instructions:
+- Identify the **CANONICAL SUBJECT** (the main product/service/event named or implied by the question). 
+- Identify the **CANONICAL ACTOR** (who is expected to act, if applicable). 
+- Decide whether to use **SUBJECT phrasing** or **ACTOR phrasing** for all ideas: 
+    - Prefer **SUBJECT phrasing** unless the survey question explicitly asks about what the actor must do. 
+    - Use the same phrasing type consistently for all ideas.
+
+Return your response as JSON in this exact format:
+{{
+  "decision": "CANONICAL_SUBJECT" or "CANONICAL_ACTOR",
+  "canonical_term": "the canonical subject or actor as a single word or short phrase"
+}}
+
+Examples:
+- Question: "What could the manufacturer of electric vehicles do better?" → {{"decision": "CANONICAL_SUBJECT", "canonical_term": "electric vehicles"}}
+- Question: "What should doctors do to improve patient care?" → {{"decision": "CANONICAL_ACTOR", "canonical_term": "doctors"}}
+"""
+
 IDEA_EXTRACTION_PROMPT = """
 You are a {language} language expert in analyzing written responses to open-ended questions in {language} collected in surveys. 
 Your task is to extract ALL distinct ideas expressed in a respondent's written answer.  
 
 <inputs>
-survey question: {var_lab}
+Survey question: {var_lab}
+{canonical_phrasing}
 Respondent ID: {respondent_id}
 Written response: {response}
 </inputs>
 
 <instructions>
-1. Understand the Context
-    - Read the survey question and response carefully.
-    - Identify the primary subject(s) of the question (e.g., a product, service, experience, or event).
-    - Determine the CANONICAL SUBJECT (the main product/service/topic named or implied by the survey question).
-    - Determine the CANONICAL ACTOR (who is expected to act: e.g., manufacturer, retailer, teacher; derive from the question or response).
-    - Decide whether to use SUBJECT or ACTOR phrasing for the entire response:
-        - Prefer SUBJECT phrasing unless the question explicitly focuses on the actor's actions.
-        - Use the same template type consistently for all ideas in the response.
-
+1. Understand the context by reading the survey question and response carefully. 
+        
 2. Idea Identification
     - Extract all distinct ideas that directly answer or relate to the survey question. 
     - An “idea” is:
@@ -166,11 +185,10 @@ Written response: {response}
     - The idea you will return must not contain coordinating conjunctions or list markers in {language}.
     - Forbid list/coordination punctuation: "/", "&", ",", ";", ":", "-", "–" (hyphens allowed only inside a single lexicalized word, not to join ideas).
 
-
-4. Canonical Phrasing Templates
-    - SUBJECT template: "[CANONICAL_SUBJECT] [should/needs to/must/is/are] [property or outcome]"
-    - ACTOR template: "[CANONICAL_ACTOR] [should/needs to/must] [action] [on/for/to] [CANONICAL_SUBJECT if applicable]"
-    - Normalize synonyms/abbreviations/omissions to the canonical forms. Do not add extra qualifiers beyond the canonical forms.
+4. Phrasing template
+    - {canonical_phrasing}  
+    - Use this exact phrasing template in your output: {phrasing_template}
+    - Normalize synonyms/abbreviations/omissions to the canonical form. Do not add extra qualifiers beyond the canonical form.
 
 5. Preserve Meaning, Normalize Terms
     - Preserve the respondent’s intended meaning.
@@ -183,12 +201,7 @@ Written response: {response}
 6. Include Implicit Ideas
     - Capture both explicit statements and ideas that are clearly implied by the response.
 
-7. Deidentification
-    - Replace personal names with [PERSON].
-    - Use gender-neutral pronouns (they/them/their) for individuals.
-    - Keep role descriptors (manager, teacher, etc.) when relevant.
-
-8. Edge Cases
+7. Edge Cases
     - If the response is empty, irrelevant, or “N/A”: return an empty array [].
     - If the response is off-topic: extract ideas anyway but note they may be off-topic.
     - If only one idea is present: return it in a single-item array.
@@ -197,8 +210,8 @@ Written response: {response}
 <output_format>
 Return the extracted ideas as a JSON array. Each item should include:
 - "respondent_id": exactly as provided
-- "idea_id": a string number ("1", "2", etc.)
-- "idea": the descriptive phrase in {language}, normalized and phrased using the chosen template consistently for the entire response.
+- "idea_id": a string number (numbering always starts at "1" and increments sequentially -e.g. "1", "2", etc.).
+- "idea": the descriptive phrase in {language}, normalized and phrased using the provided phrasing template.
 Always output in {language}.
 </output_format>
 

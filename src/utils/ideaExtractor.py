@@ -6,7 +6,7 @@ import time
 import statistics
 import itertools
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Literal
 from dataclasses import dataclass
 from collections import deque
 import numpy as np
@@ -27,7 +27,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, get_openai_rate_limits
-from prompts import IDEA_EXTRACTION_PROMPT
+from prompts import IDEA_EXTRACTION_PROMPT, EXTRACT_SUBJECT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -157,6 +157,11 @@ async def bootstrap_measure_async(call_fn, n_probes: int = 3):
 
 # === PYDANTIC MODELS ========================================================================================================
 
+class SubjectExtractionResponse(BaseModel):
+    """Response model for subject/actor extraction"""
+    decision: Literal["CANONICAL_SUBJECT", "CANONICAL_ACTOR"] = Field(description="Whether to use subject or actor phrasing")
+    canonical_term: str = Field(description="The canonical subject or actor as a single word or short phrase")
+
 class IdeaResponse(BaseModel):
     """Pydantic model for idea extraction response - matches prompt output format"""
     respondent_id: str = Field(alias_choices=['respondent_id', 'respond_id', 'respondent', 'respondrespondent_id'])
@@ -232,6 +237,9 @@ class IdeaExtractor:
             'rate_limits': 0,
             'timeouts': 0
         }
+        
+        # Cache for subject extraction to avoid redundant LLM calls
+        self._subject_cache = {}
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting"""
@@ -243,8 +251,18 @@ class IdeaExtractor:
         sample_responses = self.responses[:sample_size]
         
         token_counts = []
+        # For initial token estimation, use placeholder values
+        # The actual subject will be extracted during processing
+        placeholder_canonical_phrasing = "Canonical form: the subject"
+        placeholder_phrasing_template = "Template: '[the subject] [should/needs to/must/is/are] [property or outcome]'"
+        
         for response in sample_responses:
-            prompt = self._build_prompt(response.respondent_id, response.response)
+            prompt = self._build_prompt(
+                response.respondent_id, 
+                response.response, 
+                placeholder_canonical_phrasing,
+                placeholder_phrasing_template
+            )
             prompt_tokens = len(self.encoding.encode(prompt))
             # Estimate completion tokens (25% of prompt for idea extraction)
             completion_tokens = int(prompt_tokens * 0.25)
@@ -252,10 +270,52 @@ class IdeaExtractor:
         
         return int(statistics.mean(token_counts)) if token_counts else 1500
 
-    def _build_prompt(self, respondent_id: str, response: str) -> str:
+    async def _extract_subject(self, survey_question: str) -> SubjectExtractionResponse:
+        """Extract canonical subject/actor from survey question with caching"""
+        # Check cache first
+        if survey_question in self._subject_cache:
+            return self._subject_cache[survey_question]
+        
+        try:
+            # Build subject extraction prompt
+            prompt = EXTRACT_SUBJECT.format(survey_question=survey_question)
+            
+            # Make API call with structured output
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                response_model=SubjectExtractionResponse,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,  # Use deterministic temperature for consistency
+                seed=self.model_config.seed
+            )
+            
+            # Cache the result
+            self._subject_cache[survey_question] = response
+            
+            # Log if verbose
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(
+                    f"Extracted {response.decision}: '{response.canonical_term}'"
+                )
+            
+            return response
+            
+        except Exception as e:
+            logger.warning(f"Subject extraction failed: {e}. Using fallback.")
+            # Fallback: extract a reasonable default from the question
+            fallback = SubjectExtractionResponse(
+                decision="CANONICAL_SUBJECT",
+                canonical_term="the subject"
+            )
+            self._subject_cache[survey_question] = fallback
+            return fallback
+
+    def _build_prompt(self, respondent_id: str, response: str, canonical_phrasing: str, phrasing_template: str) -> str:
         """Build prompt for a single response"""
         return IDEA_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
+            canonical_phrasing=canonical_phrasing,
+            phrasing_template=phrasing_template,
             language=self.language,
             respondent_id=respondent_id,
             response=response
@@ -360,7 +420,16 @@ class IdeaExtractor:
     )
     async def probe_call_no_structured(self, task_dict):
         """Probe call without structured output for bootstrap measurement"""
-        prompt = self._build_prompt(task_dict['respondent_id'], task_dict['response'])
+        # For probe calls, use placeholder values to avoid extra API calls
+        placeholder_canonical_phrasing = "Canonical subject: the subject"
+        placeholder_phrasing_template = "SUBJECT template: '[the subject] [should/needs to/must/is/are] [property or outcome]'"
+        
+        prompt = self._build_prompt(
+            task_dict['respondent_id'], 
+            task_dict['response'], 
+            placeholder_canonical_phrasing,
+            placeholder_phrasing_template
+        )
         
         # For probes: avoid response_model so we can read .usage
         resp = await asyncio.wait_for(
@@ -394,8 +463,19 @@ class IdeaExtractor:
         task_start = time.perf_counter()
         
         try:
-            # Build prompt
-            prompt = self._build_prompt(task['respondent_id'], task['response'])
+            # Extract subject first (will be cached after first call)
+            subject_response = await self._extract_subject(self.var_lab)
+            subject = subject_response.canonical_term
+            
+            if subject_response.decision == "CANONICAL_SUBJECT": 
+                canonical_phrasing = f"Canonical subject: {subject.capitalize()}"
+                phrasing_template = "[CANONICAL_SUBJECT] [should/needs to/must/is/are] [property or outcome]".replace("[CANONICAL_SUBJECT]", subject.capitalize())
+            else:
+                canonical_phrasing = f"Canonical actor: {subject.capitalize()}"
+                phrasing_template = "[CANONICAL_ACTOR] [should/needs to/must] [action] [on/for/to]".replace("[CANONICAL_ACTOR]", subject.capitalize())
+            
+            # Build prompt with subject
+            prompt = self._build_prompt(task['respondent_id'], task['response'], canonical_phrasing, phrasing_template)
             
             # Capture prompt for debugging if enabled (first time only)
             if self.prompt_printer and not self._captured_prompt:
@@ -579,6 +659,14 @@ class IdeaExtractor:
             sample_tasks = sample_tasks[:3]
         
         self.verbose_reporter.step_start("Idea Extraction", emoji="💡")
+        
+        # Extract subject once at the beginning to cache it
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Extracting canonical subject/actor from survey question...")
+        
+        # This will cache the subject for all subsequent calls
+        await self._extract_subject(self.var_lab)
+        
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
         

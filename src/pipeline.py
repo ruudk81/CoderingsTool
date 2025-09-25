@@ -24,7 +24,6 @@ cache_manager = CacheManager(cache_config)
 # Initialize model configuration
 model_config = ModelConfig()
 
-
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
 # filename = "M250285 input voor coderen - met Q18Q19.sav"
@@ -36,14 +35,14 @@ model_config = ModelConfig()
 # id_column = "DLNMID"
 # var_name = "Q20"
 
-filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-id_column = "DLNMID"
-var_name = "Qd1_combined"
-
-# filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+# filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 # id_column = "DLNMID"
-# var_name = "Q15"
-# var_name = "Q18Q19"
+# var_name = "Qd1_combined"
+
+filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+id_column = "DLNMID"
+var_name = "Q15"
+
 
 # Generate variable key for caching
 selected_variables = globals().get('selected_variables', [var_name])
@@ -64,7 +63,7 @@ else:
     )
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = ""  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
 VERBOSE = True  # Enable verbose output for debugging in Spyder
@@ -133,22 +132,21 @@ else:
         print(f"{data_type}: {count} items")
     print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
     
-#debug 
-import random
-n_samples = 5
-indices = random.sample(range(len(raw_text_list)), n_samples)
-for i in indices:
-    print("Raw structured:", raw_text_list[i])
-    print("---")        
+if False: #debug if true
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(raw_text_list)), n_samples)
+    for i in indices:
+        print("Raw structured:", raw_text_list[i])
+        print("---")        
 
 
 # ===========================================================================================================
 """truncate data"""
 # debug
 # raw_text_list0 = raw_text_list
-raw_text_list = raw_text_list[:250]
+# raw_text_list = raw_text_list[:250]
 # raw_text_list = raw_text_list0
-
 
 # === STEP 2 ========================================================================================================
 """preprocess data"""
@@ -311,13 +309,18 @@ else:
         print()
     
     print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    
+if False: #debug if true
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(preprocessed_text)), n_samples)
+    for i in indices:
+        print("Raw structured:", raw_text_list[i])
+        print("---")        
 
 # === STEP 3 ========================================================================================================
 """quality filter"""
 from utils import qualityFilter
-
-#preprocessed_text0 = preprocessed_text
-#preprocessed_text = preprocessed_text[:500]
 
 FORCE = False
 VERBOSE = True
@@ -372,14 +375,14 @@ else:
     print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
     print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
-# # debug
-import random
-n_samples = 5
-indices = random.sample(range(len(quality_filtered_text)), n_samples)
-for i in indices:
-    print("Filtered:", quality_filtered_text[i])
-    print("---")    
-
+# debug if true
+if False : 
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    for i in indices:
+        print("Filtered:", quality_filtered_text[i])
+        print("---")    
 
 # === STEP 4 ========================================================================================================
 """Response segments/ideas"""
@@ -420,18 +423,15 @@ else:
     cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
     print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
     
-# for text in encoded_text:
-#     print(text)
-#     break
 
-# debug - example outputs
-import random
-n_samples = 1
-sampled_items = random.sample(encoded_text, n_samples)
-for item in sampled_items:
-    print(item.response)
-    for segment in item.response_ideas:
-        print(f"- {segment.idea}")
+if False : # debug if true
+    import random
+    n_samples = 1
+    sampled_items = random.sample(encoded_text, n_samples)
+    for item in sampled_items:
+        print(item.response)
+        for segment in item.response_ideas:
+            print(f"- {segment.idea}")
 
 # === STEP 5 =======================================================================================================
 """Generate embeddings"""
@@ -458,13 +458,10 @@ else:
     verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
     start_time = time.time()
     verbose_reporter.step_start("Generating Embeddings", emoji="🔗")
-
-
     embedding_config = EmbeddingConfig()
     get_embeddings = Embedder(
             config=embedding_config,
             model_config=model_config,
-            #provider="gemini",
             provider="openai",
             verbose=VERBOSE)
     input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
@@ -475,22 +472,20 @@ else:
     cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time)
     print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
 
-#debug 
-# import random
-# n_samples = 1
-# sampled_items = random.sample(embedded_text, n_samples)
-# for item in sampled_items:
-#     print(f"{item.response}\n")
-#     for segment in item.response_ideas:
-#         print(f"- {segment.idea}")
-
-#len(embedded_text)
+if False: #debug if true
+    import random
+    n_samples = 1
+    sampled_items = random.sample(embedded_text, n_samples)
+    for item in sampled_items:
+        print(f"{item.response}\n")
+        for segment in item.response_ideas:
+            print(f"- {segment.idea}")
 
 # === STEP 6 =======================================================================================================
 """Reduce data/get clusters"""
 from utils.clusterer import Clusterer
 
-FORCE = False
+FORCE = True
 VERBOSE = True
 
 step_name = "initial_clusters"
@@ -523,20 +518,28 @@ else:
     # Create custom HDBSCAN config if overrides specified
     hdbscan_config = None
     if CLUSTERING_ALPHA is not None or CLUSTERING_EPSILON is not None:
-        from config import DEFAULT_HDBSCAN_CONFIG, HDBSCANConfig
+        from config import DEFAULT_HDBSCAN_CONFIG, HDBSCANConfig, DEFAULT_UMAP_CONFIG, DEFAULT_CLUSTERING_CONFIG
         hdbscan_config = HDBSCANConfig(
-            min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
-            min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
-            cluster_selection_epsilon=CLUSTERING_EPSILON or DEFAULT_HDBSCAN_CONFIG.cluster_selection_epsilon,
-            alpha=CLUSTERING_ALPHA or DEFAULT_HDBSCAN_CONFIG.alpha,
-            metric=DEFAULT_HDBSCAN_CONFIG.metric,
-            cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
-            prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
-            approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
-            gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
-        )
-    
-    clusterer = Clusterer(embedded_text, hdbscan_config=hdbscan_config, verbose=VERBOSE)
+              min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
+              min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
+              cluster_selection_epsilon=DEFAULT_HDBSCAN_CONFIG.cluster_selection_epsilon,
+              alpha=DEFAULT_HDBSCAN_CONFIG.alpha,
+              metric=DEFAULT_HDBSCAN_CONFIG.metric,
+              cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
+              prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
+              approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
+              gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
+              merge_similar_clusters=True,   
+              merge_similarity_threshold=0.95   
+          )
+   
+    clusterer = Clusterer(
+        embedded_text, 
+        umap_config=DEFAULT_UMAP_CONFIG,
+        clustering_config=DEFAULT_CLUSTERING_CONFIG,
+        hdbscan_config=hdbscan_config, 
+        verbose=VERBOSE
+    )
     clusterer.run()
     initial_cluster_results = clusterer.to_cluster_model()
     
@@ -545,43 +548,43 @@ else:
     cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time)
     print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
-# # #debug - print random clusters  
-import random
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas   
-    if response_idea.initial_cluster is not None]))
-sampled_cluster = random.sample(cluster_ids, 1)[0]
-print(f"\nCluster {sampled_cluster}:\n")
-cluster_segments = []
-for result in initial_cluster_results:
-    for response_idea in result.response_ideas:   
-        if response_idea.initial_cluster == sampled_cluster:
-            cluster_segments.append(response_idea.idea)
-sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-for segment_desc in sampled_segments:
-    print(f"-    {segment_desc}")
+if False: #debug - print random clusters  
+    import random
+    cluster_ids = list(set([
+        response_idea.initial_cluster 
+        for result in initial_cluster_results 
+        for response_idea in result.response_ideas   
+        if response_idea.initial_cluster is not None]))
+    sampled_cluster = random.sample(cluster_ids, 1)[0]
+    print(f"\nCluster {sampled_cluster}:\n")
+    cluster_segments = []
+    for result in initial_cluster_results:
+        for response_idea in result.response_ideas:   
+            if response_idea.initial_cluster == sampled_cluster:
+                cluster_segments.append(response_idea.idea)
+    sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+    for segment_desc in sampled_segments:
+        print(f"-    {segment_desc}")
     
     
-#debug - print all clusters
-cluster_ids = list(set([
-    response_idea.initial_cluster 
-    for result in initial_cluster_results 
-    for response_idea in result.response_ideas  # This has initial_cluster
-    if response_idea.initial_cluster is not None]))
-for x in range(1, round(len(cluster_ids) / 1) + 1):
-    y = x * 1
-    print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
-
-    for z in range(y - 1, y):
-        if z < len(cluster_ids):
-            print(f"\nCluster {z}")
-            for item in initial_cluster_results:
-                for subitem in item.response_ideas:
-                    if subitem.initial_cluster == z:
-                        print(subitem.idea)
-    input("\n🔸 Press Enter to continue to the next batch of clusters...")
+if False: #debug if true - print all clusters
+    cluster_ids = list(set([
+        response_idea.initial_cluster 
+        for result in initial_cluster_results 
+        for response_idea in result.response_ideas  # This has initial_cluster
+        if response_idea.initial_cluster is not None]))
+    for x in range(1, round(len(cluster_ids) / 1) + 1):
+        y = x * 1
+        print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
+    
+        for z in range(y - 1, y):
+            if z < len(cluster_ids):
+                print(f"\nCluster {z}")
+                for item in initial_cluster_results:
+                    for subitem in item.response_ideas:
+                        if subitem.initial_cluster == z:
+                            print(subitem.idea)
+        input("\n🔸 Press Enter to continue to the next batch of clusters...")
 
 
 # === STEP 7 ========================================================================================================
@@ -589,7 +592,7 @@ for x in range(1, round(len(cluster_ids) / 1) + 1):
 from utils import speculativeStarterCodes
 from utils import codeGenerator as codeGenerator
 
-FORCE = False
+FORCE = True
 VERBOSE = True
 VERBOSE_DETAILED = False
 PROMPT_PRINTER = False
@@ -761,24 +764,22 @@ else:
     
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
-#HIER
 
-#debug : reasoning
-if True and CACHE_CODEGENERATOR_REASONING: 
-    from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
-    if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
-            display_cluster_analysis(codebook_reasoning)
-    else:
-        print("Note: codebook_reasoning not available for display")
 
-step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
-step3_recommendations = codebook_reasoning.step3_recommendations
-available_ids = list(step3_recommendations.keys())
-cluster_id = random.choice(available_ids)
+if False: #debug if true (reasoning_
+    if True and CACHE_CODEGENERATOR_REASONING: 
+        from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
+        if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+                display_cluster_analysis(codebook_reasoning)
+        else:
+            print("Note: codebook_reasoning not available for display")
+
+if False: #debug if true (prompts + reasonng)
+    step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+    step3_recommendations = codebook_reasoning.step3_recommendations
+    available_ids = list(step3_recommendations.keys())
+    cluster_id = random.choice(available_ids)
  
-#debug : prompts 
-cluster_id = "33"
-if True:  
     from utils import codegenPromptTester    
     tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
     tester.test_prompt_1()
@@ -787,20 +788,18 @@ if True:
     tester.test_prompt_4()
     # codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
     
-#debug : reasoning
-if True and CACHE_CODEGENERATOR_REASONING: 
-    from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
-    if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+    if True and CACHE_CODEGENERATOR_REASONING: 
+        from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
+        if 'codebook_reasoning' in locals() and codebook_reasoning is not None: 
             display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
-    else:
-        print("Note: codebook_reasoning not available for display")
-    
- 
+        else:
+            print("Note: codebook_reasoning not available for display")
+  
 # === STEP 8 =======================================================================================================
 """Theme Organization """
 from utils.codeOrganizer import CodeOrganizer
-STEP_8B_MODEL = "gpt-5-mini"
-STEP_8B_REASONING_EFFORT = "low"
+STEP_8B_MODEL = "gpt-5"
+STEP_8B_REASONING_EFFORT = "medium"
 
 FORCE = True
 VERBOSE = True
@@ -925,12 +924,12 @@ codebook=[models.Codebook(
     theme_description=entry.theme_description
     ) for entry in theme_enriched_codebook.codes]    
 
-for theme in themes:
-    print(f"\n📂 {theme['theme_name'].upper()}")
-    print('-' * len(theme['theme_name']))
-    for code in theme['codes']:
-        print(f"  • {code['code_name']}")
-
+if False: #debug of true
+    for theme in themes:
+        print(f"\n📂 {theme['theme_name'].upper()}")
+        print('-' * len(theme['theme_name']))
+        for code in theme['codes']:
+            print(f"  • {code['code_name']}")
     
 # === STEP 9 =======================================================================================================
 """Assign codes (and themes)"""

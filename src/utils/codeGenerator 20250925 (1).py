@@ -442,19 +442,13 @@ async def async_responses_create_with_json_retry(
             # Check if this is a retryable JSON error
             if attempt < max_retries - 1:  # Don't retry on last attempt
                 if "control character" in error_msg.lower() or "invalid json" in error_msg.lower():
-                    # Check if this is a GPT-4 model for specific handling
-                    is_gpt4 = model.startswith('gpt-4')
-                    
                     # Enhance prompt for retry based on error type
                     if "control character" in error_msg.lower():
                         prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON only. Use standard ASCII characters. Avoid any control characters or special Unicode symbols in your response."
                     elif "expected" in error_msg.lower() and ("," in error_msg or "}" in error_msg):
                         prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON with proper syntax. Ensure all objects have correct comma placement and closing braces."
-                    elif is_gpt4 and "expected value at line 1 column 1" in error_msg:
-                        # GPT-4 specific - likely wrapped in markdown
-                        prompt = base_prompt + "\n\nIMPORTANT: Return ONLY raw JSON without any markdown formatting or code blocks. Do NOT wrap the JSON in ```json``` tags or any other formatting."
                     else:
-                        prompt = base_prompt + "\n\nIMPORTANT: Return only valid, well-formed JSON. Check your syntax carefully. Do not include any markdown formatting or code blocks."
+                        prompt = base_prompt + "\n\nIMPORTANT: Return only valid, well-formed JSON. Check your syntax carefully."
                     
                     continue  # Retry with enhanced prompt
             

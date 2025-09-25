@@ -32,10 +32,6 @@ from utils.verboseReporter import VerboseReporter
 from utils.streamlit_debug import SampleGenerator, StepSamplers
 from utils.bare_mode_utils import conditional_cache_resource, conditional_cache_data, get_session_state, conditional_error, conditional_info #cconditional_success, conditional_warning
 
-# from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional, get_embedder_for_provider
-# from utils.session_manager import get_session_manager
-# DebugCapture, VerboseCapture, PromptCapture, 
-
 # Cached resource functions for heavy pipeline components
 @conditional_cache_resource
 def _get_cached_embedder(config_hash: str, model_config_hash: str, provider: str):
@@ -52,11 +48,6 @@ def _get_cached_embedder(config_hash: str, model_config_hash: str, provider: str
 def _get_cached_clusterer(config_hash: str):
     """Cache clusterer class for session-wide reuse"""
     return _get_clusterer()
-
-# @conditional_cache_resource  
-# def _get_cached_theme_identifier():
-#     """Cache theme identifier class for session-wide reuse"""
-#     return _get_theme_identifier()
 
 # Cached data functions for processing results
 @conditional_cache_data(show_spinner="Loading SPSS data...")
@@ -850,115 +841,115 @@ class StreamlitPipelineRunner:
         
         return theme_enriched_codebook
     
-    def step_8b_organize_themes_reasoning(self, codebook_main: models.CodebookModel, filename: str, var_name: str, var_lab: str,
-                                        model_config: Optional[ModelConfig] = None,
-                                        reasoning_effort: str = "high",
-                                        text_verbosity: str = "medium",
-                                        force_recalc: bool = False,
-                                        streamlit_container=None) -> models.ThemeEnrichedCodebookModel:
-        """Step 8b: Organize themes using OpenAI reasoning models (alternative to step 8)"""
+    # def step_8b_organize_themes_reasoning(self, codebook_main: models.CodebookModel, filename: str, var_name: str, var_lab: str,
+    #                                     model_config: Optional[ModelConfig] = None,
+    #                                     reasoning_effort: str = "high",
+    #                                     text_verbosity: str = "medium",
+    #                                     force_recalc: bool = False,
+    #                                     streamlit_container=None) -> models.ThemeEnrichedCodebookModel:
+    #     """Step 8b: Organize themes using OpenAI reasoning models (alternative to step 8)"""
         
-        step_name = "theme_organization_reasoning"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
-        variable_key = self.get_variable_key()
+    #     step_name = "theme_organization_reasoning"
+    #     verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
+    #     variable_key = self.get_variable_key()
         
-        if streamlit_container:
-            streamlit_container.text("🔄 Organizing themes with reasoning model...")
+    #     if streamlit_container:
+    #         streamlit_container.text("🔄 Organizing themes with reasoning model...")
         
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
-            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
-            if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
-                theme_enriched_codebook = theme_enriched_codebooks[0]
-                verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
-            else:
-                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
-                    theme_methodology="Error loading from cache"
-                )
-        else:
-            verbose_reporter.section_header("THEME ORGANIZATION WITH REASONING MODEL")
-            start_time = time.time()
+    #     if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+    #         theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
+    #         if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
+    #             theme_enriched_codebook = theme_enriched_codebooks[0]
+    #             verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
+    #         else:
+    #             theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+    #                 codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
+    #                 theme_methodology="Error loading from cache"
+    #             )
+    #     else:
+    #         verbose_reporter.section_header("THEME ORGANIZATION WITH REASONING MODEL")
+    #         start_time = time.time()
             
-            if not codebook_main.codes:
-                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
-                    theme_methodology="No codes available"
-                )
-            else:
-                # Prepare codebook for reasoning model
-                codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
+    #         if not codebook_main.codes:
+    #             theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+    #                 codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, 
+    #                 theme_methodology="No codes available"
+    #             )
+    #         else:
+    #             # Prepare codebook for reasoning model
+    #             codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
                 
-                # Use model from model_config if available, otherwise default
-                model_name = "gpt-5"
-                if model_config and hasattr(model_config, 'model'):
-                    model_name = model_config.model
+    #             # Use model from model_config if available, otherwise default
+    #             model_name = "gpt-5"
+    #             if model_config and hasattr(model_config, 'model'):
+    #                 model_name = model_config.model
                 
-                # Initialize theme organizer (lazy loaded)
-                CodeOrganizer = _get_theme_organizer_reasoning()
-                theme_organizer = CodeOrganizer(
-                    codebook=codebook,
-                    var_lab=var_lab,
-                    verbose=self.verbose,
-                    model=model_name,
-                    reasoning_effort=reasoning_effort,
-                    text_verbosity=text_verbosity
-                )
+    #             # Initialize theme organizer (lazy loaded)
+    #             CodeOrganizer = _get_theme_organizer_reasoning()
+    #             theme_organizer = CodeOrganizer(
+    #                 codebook=codebook,
+    #                 var_lab=var_lab,
+    #                 verbose=self.verbose,
+    #                 model=model_name,
+    #                 reasoning_effort=reasoning_effort,
+    #                 text_verbosity=text_verbosity
+    #             )
                 
-                async def run_theme_organization():
-                    return await theme_organizer.organize_themes_reasoning()
+    #             async def run_theme_organization():
+    #                 return await theme_organizer.organize_themes_reasoning()
                 
-                result = asyncio.run(run_theme_organization())
+    #             result = asyncio.run(run_theme_organization())
                 
-                # Process theme results
-                enriched_entries = []
-                code_to_theme_mapping = result.get('code_to_theme_mapping', {})
-                themes = result.get('themes', [])
+    #             # Process theme results
+    #             enriched_entries = []
+    #             code_to_theme_mapping = result.get('code_to_theme_mapping', {})
+    #             themes = result.get('themes', [])
                 
-                # Enrich codebook entries with theme information
-                for entry in codebook_main.codes:
-                    theme_name = code_to_theme_mapping.get(entry.code)
-                    theme_info = None
-                    theme_cluster_id = None
-                    is_misc = False
+    #             # Enrich codebook entries with theme information
+    #             for entry in codebook_main.codes:
+    #                 theme_name = code_to_theme_mapping.get(entry.code)
+    #                 theme_info = None
+    #                 theme_cluster_id = None
+    #                 is_misc = False
                     
-                    if theme_name:
-                        theme_name_normalized = theme_name.strip().lower()
-                        for theme in themes:
-                            if theme['theme_name'].strip().lower() == theme_name_normalized:
-                                theme_info = theme.get('theme_description', '')
-                                theme_cluster_id = theme.get('cluster_id', 'reasoning_theme')
-                                is_misc = theme.get('is_miscellaneous', False)
-                                break
+    #                 if theme_name:
+    #                     theme_name_normalized = theme_name.strip().lower()
+    #                     for theme in themes:
+    #                         if theme['theme_name'].strip().lower() == theme_name_normalized:
+    #                             theme_info = theme.get('theme_description', '')
+    #                             theme_cluster_id = theme.get('cluster_id', 'reasoning_theme')
+    #                             is_misc = theme.get('is_miscellaneous', False)
+    #                             break
                     
-                    enriched_entry = models.ThemeEnrichedCodebookEntry(
-                        code=entry.code,
-                        definition=entry.definition,
-                        source_cluster=entry.source_cluster,
-                        theme=theme_name,
-                        theme_description=theme_info,
-                        theme_cluster_id=theme_cluster_id,
-                        is_miscellaneous=is_misc
-                    )
-                    enriched_entries.append(enriched_entry)
+    #                 enriched_entry = models.ThemeEnrichedCodebookEntry(
+    #                     code=entry.code,
+    #                     definition=entry.definition,
+    #                     source_cluster=entry.source_cluster,
+    #                     theme=theme_name,
+    #                     theme_description=theme_info,
+    #                     theme_cluster_id=theme_cluster_id,
+    #                     is_miscellaneous=is_misc
+    #                 )
+    #                 enriched_entries.append(enriched_entry)
                 
-                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                    codes=enriched_entries,
-                    generation_metadata=codebook_main.generation_metadata,
-                    source_variable=codebook_main.source_variable,
-                    themes_summary=themes,
-                    code_to_theme_mapping=code_to_theme_mapping,
-                    theme_methodology=result.get('methodology', 'Single-prompt reasoning model organization')
-                )
+    #             theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+    #                 codes=enriched_entries,
+    #                 generation_metadata=codebook_main.generation_metadata,
+    #                 source_variable=codebook_main.source_variable,
+    #                 themes_summary=themes,
+    #                 code_to_theme_mapping=code_to_theme_mapping,
+    #                 theme_methodology=result.get('methodology', 'Single-prompt reasoning model organization')
+    #             )
             
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
+    #         end_time = time.time()
+    #         elapsed_time = end_time - start_time
+    #         self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
             
-            if streamlit_container:
-                theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
-                streamlit_container.success(f"✅ Organized {theme_count} themes using reasoning model in {elapsed_time:.2f}s")
+    #         if streamlit_container:
+    #             theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
+    #             streamlit_container.success(f"✅ Organized {theme_count} themes using reasoning model in {elapsed_time:.2f}s")
         
-        return theme_enriched_codebook
+    #     return theme_enriched_codebook
     
     def step_9a_assign_codes(self, initial_cluster_results: List[models.ClusterModel], 
                            theme_enriched_codebook: models.ThemeEnrichedCodebookModel, 
@@ -1082,7 +1073,7 @@ class StreamlitPipelineRunner:
         
         # Lazy load code assignment exporter
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = ResultsExporter(verbose=self.verbose)
+        exporter = CodeAssignmentExporter(verbose=self.verbose)
         excel_path = exporter.export_to_excel(
             code_assigned_results=code_assigned_results,
             theme_enriched_codebook=theme_enriched_codebook,
@@ -1134,7 +1125,7 @@ class StreamlitPipelineRunner:
         # Always use the with_reasoning export for consistent format
         # If no reasoning data available, it will show empty reasoning columns
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = ResultsExporter(verbose=self.verbose)
+        exporter = CodeAssignmentExporter(verbose=self.verbose)
         
         if final_reasoning_results:
             output_path = exporter.export_to_excel_with_reasoning(
@@ -1171,6 +1162,7 @@ class StreamlitPipelineRunner:
         """Step 10: Export Excel with reasoning data from step 7"""
         
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, "export_reasoning")
+        variable_key = self.get_variable_key()
         
         if streamlit_container:
             streamlit_container.text("🔄 Exporting results with reasoning data...")
@@ -1196,7 +1188,7 @@ class StreamlitPipelineRunner:
         
         # Create exporter (lazy loaded)
         CodeAssignmentExporter = _get_code_assignment_exporter()
-        exporter = ResultsExporter(verbose=self.verbose)
+        exporter = CodeAssignmentExporter(verbose=self.verbose)
         
         # Export with or without reasoning data
         if reasoning_results:

@@ -175,17 +175,22 @@ class ModelConfig:
     # Step 4: Embedding model
     embedding_model: str = "text-embedding-3-large"
     #embedding_model: str = "gemini-embedding-001"
-    
    
     speculative_codes_model: str = DEFAULT_MODEL  
 
     # Step 7: Codebook generation
-    token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-5-mini"              
-    candidate_selection_model: str = "gpt-5-mini"           
-    code_generation_model: str ="gpt-5-mini"               
-    validation_model: str = "gpt-5-mini"                  
+    # token_codebook_generation_model: str = "gpt-4o-mini"
+    # thematic_summary_model: str = "gpt-5-mini"              
+    # candidate_selection_model: str = "gpt-5-mini"           
+    # code_generation_model: str ="gpt-5-mini"               
+    # validation_model: str = "gpt-5-mini"   
     
+    token_codebook_generation_model: str = "gpt-4o-mini"
+    thematic_summary_model: str = "gpt-4o-mini"              
+    candidate_selection_model: str = "gpt-4o-mini"           
+    code_generation_model: str ="gpt-4o-mini"               
+    validation_model: str = "gpt-4o-mini"   
+
     # Step 8: theme identification
     thematic_organizer_model : str = "gpt-5-mini"   
     theme_extraction_reasoning_effort: str = "low"       
@@ -463,7 +468,6 @@ class QualityFilterConfig:
     maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
    
 
-
 @dataclass
 class SegmentationConfig:
     """Configuration for segmentation and description step"""
@@ -526,20 +530,54 @@ class UMAPConfig:
     n_jobs: int = 1
     low_memory: bool = True
     transform_seed: int = 42
+    
+    # Parallel processing configuration
+    n_epochs = 200
+    use_parallel_umap: bool = False  # False = reproducible (single-threaded), True = faster (parallel)
+    parallel_jobs: int = -1  # Number of cores to use when parallel enabled (-1 = all cores)
+
+
+@dataclass
+class ClusteringConfig:
+    """Configuration for the complete clustering pipeline"""
+    # PCA configuration
+    pca_components: int = 100   #50 is min
+    pca_random_state: int = 42  #random state for re-calc
+    
+    CLUSTER_METRIC = "euclidean"
+    
+    similarity_analysis_thresholds: list = field(default_factory=lambda: [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95])     # Similarity analysis thresholds
+    default_merge_threshold: float = 0.95     # Default merge threshold for similarity-based merging
+
+    grid_search_max_workers: Optional[int] = None  # None=auto, -1=all cores
+    grid_search_timeout_seconds: float = 300.0
+
+    enable_dbcv: bool = False 
+    DBCV_D = 1  # safe for DBCV (avoid overflow)
+        
+    ctfidf_top_k: int = 15 
+    #ctfidf_stopwords:  = #TODO
+    ctfidf_min_df: int = 2 
+    ctfidf_ngram_range: Tuple[int,int] = (1,2) 
+    
 
 
 @dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
-    min_cluster_size: Optional[int] = 2  # Smaller clusters for better semantic coherence
-    min_samples: Optional[int] = 5 # Lower threshold for more selective clustering
+    min_cluster_size: Optional[int] = 5  # Smaller clusters for better semantic coherence
+    min_samples: Optional[int] = None # if none, fallback is min_cluster_size
     cluster_selection_epsilon: Optional[float] = 0
     alpha: Optional[float] = 1.0  # Default stability weighting as requested
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
-    cluster_selection_method: str = "eom"
+    cluster_selection_method: str = "eom"  #leaf for more granularity
     prediction_data: bool = True
     approx_min_span_tree: bool = False
     gen_min_span_tree: bool = True
+    
+    # Cluster merging configuration
+    merge_similar_clusters: bool = True
+    merge_similarity_threshold: float = 0.95  # Cosine similarity threshold for merging
 
 
 @dataclass
@@ -585,6 +623,9 @@ class CodeDesignerConfig:
     enable_similarity_distribution_analysis: bool = True  # Report similarity statistics
     enable_batch_analytics: bool = True  # Report batch formation statistics
     enable_performance_monitoring: bool = True  # Monitor processing performance
+    
+    # Idea sampling settings
+    max_ideas_per_cluster: int = 30  # Maximum ideas to include per cluster for LLM processing
     
     # SharedCodebook settings
     enable_version_tracking: bool = True  # Track codebook versions
@@ -709,6 +750,8 @@ DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
 DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
+DEFAULT_UMAP_CONFIG = UMAPConfig()
+DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()
 DEFAULT_HDBSCAN_CONFIG = HDBSCANConfig()
 DEFAULT_LABELLER_CONFIG = LabellerConfig()
 DEFAULT_CODE_ASSIGNMENT_CONFIG = CodeAssignmentConfig()

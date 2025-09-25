@@ -46,7 +46,8 @@ def _get_cache_manager():
 st.set_page_config(
     page_title="CoderingsTool - Survey Response Analysis",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 # Initialize session state
@@ -411,38 +412,287 @@ def main():
         # display_debug_controls()
     
     # Main content
-    col1, col2 = st.columns([2, 1])
+    # sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
+    # if not st.session_state.step in sampling_steps:
+    sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
+    if not st.session_state.step in sampling_steps: 
+        show_upload_page()
+    else:
+        # Steps 1-10: Split layout with info panel
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            show_info_panel()
+
+        with col2:
+            if st.session_state.step == 1:
+                show_preprocessing_page()
+            elif st.session_state.step == 2:
+                show_filtering_page()
+            elif st.session_state.step == 3:
+                show_idea_extraction_page()
+            elif st.session_state.step == 4:
+                show_embedding_page()
+            elif st.session_state.step == 5:
+                show_clustering_page()
+            elif st.session_state.step == 6:
+                show_codebook_generation_page()
+            elif st.session_state.step == 7:
+                show_theme_identification_page()
+            elif st.session_state.step == 8:
+                show_code_assignment_page()
+            elif st.session_state.step == 9:
+                show_export_page()
+            elif st.session_state.step == 10:
+                show_results_page()
     
-    with col1:
-        if st.session_state.step == 0:
-            show_upload_page()
-        elif st.session_state.step == 1:
-            show_preprocessing_page()
-        elif st.session_state.step == 2:
-            show_filtering_page()
-        elif st.session_state.step == 3:
-            show_idea_extraction_page()
-        elif st.session_state.step == 4:
-            show_embedding_page()
-        elif st.session_state.step == 5:
-            show_clustering_page()
-        elif st.session_state.step == 6:
-            show_codebook_generation_page()
-        elif st.session_state.step == 7:
-            show_theme_identification_page()
-        elif st.session_state.step == 8:
-            show_code_assignment_page()
-        elif st.session_state.step == 9:
-            show_export_page()
-        elif st.session_state.step == 10:
-            show_results_page()
+
+
+def get_available_cached_datasets():
+    """Get available cached datasets (001_data_* files) with metadata"""
+    cache_manager = _get_cache_manager()
+    cache_dir = cache_manager.config.cache_dir
     
-    with col2:
-        show_info_panel()
+    if not cache_dir.exists():
+        return []
+    
+    # Find all 001_data_* files
+    cache_files = list(cache_dir.glob("001_data_*.pkl"))
+    
+    datasets = []
+    for cache_file in cache_files:
+        try:
+            # Parse cache filename to extract metadata
+            filename_parts = cache_file.stem.split('_')
+            if len(filename_parts) < 3:
+                continue
+                
+            # Extract filename (everything between "001_data_" and last underscore)
+            prefix_end = 2  # After "001_data"
+            
+            # Find sample size suffix (_250, _full, etc.)
+            sample_suffix = ""
+            if filename_parts[-1].isdigit():
+                sample_suffix = f"_{filename_parts[-1]}"
+                variable_key = "_".join(filename_parts[prefix_end:-1])
+            elif filename_parts[-1] == "full":
+                sample_suffix = "_full"
+                variable_key = "_".join(filename_parts[prefix_end:-1])
+            else:
+                variable_key = "_".join(filename_parts[prefix_end:])
+            
+            # Extract filename from variable key
+            if variable_key:
+                # Find where variable names start (after filename)
+                parts = variable_key.split('_')
+                # Assume filename is everything before the last few parts that look like variables
+                # This is a heuristic since the format is filename_variablekey
+                
+                # Look for patterns that indicate variables (Q1, Qd1, etc.)
+                var_start_idx = None
+                for i, part in enumerate(parts):
+                    if (part.startswith('Q') and (len(part) <= 4 or '+' in part)) or '+' in part:
+                        var_start_idx = i
+                        break
+                
+                if var_start_idx is not None:
+                    dataset_name = "_".join(parts[:var_start_idx])
+                    variables = "_".join(parts[var_start_idx:])
+                else:
+                    # Fallback: assume last part is variables
+                    dataset_name = "_".join(parts[:-1]) if len(parts) > 1 else parts[0]
+                    variables = parts[-1] if len(parts) > 1 else "unknown"
+            else:
+                dataset_name = "unknown"
+                variables = "unknown"
+            
+            # Get file stats
+            file_stats = cache_file.stat()
+            
+            datasets.append({
+                'cache_file': cache_file,
+                'dataset_name': dataset_name,
+                'variables': variables,
+                'sample_suffix': sample_suffix,
+                'file_size': file_stats.st_size,
+                'created_date': file_stats.st_ctime,
+                'display_name': f"{dataset_name} ({variables}){sample_suffix}",
+                'cache_key': f"{dataset_name}_{variables}{sample_suffix}"
+            })
+            
+        except Exception:
+            # Skip files that can't be parsed
+            continue
+    
+    # Sort by creation date (newest first)
+    datasets.sort(key=lambda x: x['created_date'], reverse=True)
+    return datasets
+
+def load_cached_dataset(dataset_info):
+    """Load a cached dataset and set up session state"""
+    try:
+        cache_manager = _get_cache_manager()
+        
+        # Extract components for cache loading
+        dataset_name = dataset_info['dataset_name']
+        variables = dataset_info['variables']
+        sample_suffix = dataset_info['sample_suffix']
+        
+        # Reconstruct the variable key for cache manager
+        if sample_suffix:
+            variable_key = f"{variables}{sample_suffix}"
+        else:
+            variable_key = variables
+            
+        # Construct filename for cache lookup
+        filename = f"{dataset_name}.sav"
+        
+        # Load from cache
+        data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
+        
+        if data:
+            # Set up session state to continue with cached data
+            st.session_state.filename = filename
+            st.session_state.uploaded_file_path = None  # No physical file
+            
+            # Parse variables from variable key
+            if '+' in variables:
+                # Multiple variables
+                parsed_vars = variables.split('+')
+                st.session_state.selected_variables = parsed_vars
+                st.session_state.selected_variable = parsed_vars[0]  # Backward compatibility
+                st.session_state.variable_mode = 'multiple'
+                st.session_state.is_merged_variable = True
+            else:
+                # Single variable
+                st.session_state.selected_variable = variables
+                st.session_state.selected_variables = [variables]
+                st.session_state.variable_mode = 'single'
+                st.session_state.is_merged_variable = False
+            
+            # Set sample size if specified
+            if sample_suffix and sample_suffix != "_full":
+                sample_size = sample_suffix.replace("_", "")
+                if sample_size.isdigit():
+                    st.session_state.selected_sample_size = int(sample_size)
+                    st.session_state.truncate_data = True
+                else:
+                    st.session_state.selected_sample_size = None
+                    st.session_state.truncate_data = False
+            else:
+                st.session_state.selected_sample_size = None
+                st.session_state.truncate_data = False
+            
+            # We don't have original variable list from SPSS, so we'll create a minimal one
+            # This is a limitation but allows progression to next steps
+            if '+' in variables:
+                var_dict = {var: f"Variable {var}" for var in variables.split('+')}
+            else:
+                var_dict = {variables: f"Variable {variables}"}
+            
+            # Add ID column (assume first response has id_column set)
+            if data and hasattr(data[0], 'id_column') and data[0].id_column:
+                var_dict[data[0].id_column] = f"ID Column ({data[0].id_column})"
+                st.session_state.selected_id_column = data[0].id_column
+            else:
+                # Fallback ID column
+                var_dict['id'] = 'ID Column (assumed)'
+                st.session_state.selected_id_column = 'id'
+            
+            st.session_state.available_variables = var_dict
+            
+            # Store the cache key for consistent use throughout the session
+            st.session_state.current_cache_key = variable_key
+            st.session_state.current_variable_key = variable_key
+            
+            # Store original cache info for reference
+            st.session_state.loaded_from_cache = True
+            st.session_state.cache_dataset_info = {
+                'dataset_name': dataset_name,
+                'variables': variables,
+                'sample_suffix': sample_suffix,
+                'variable_key': variable_key,
+                'filename': filename
+            }
+            
+            return True, len(data)
+        else:
+            return False, 0
+            
+    except Exception as e:
+        st.error(f"Error loading cached dataset: {str(e)}")
+        return False, 0
 
 def show_upload_page():
     lang = st.session_state.language
     st.header(f"Stap 1: {ui.get_text('BTN_UPLOAD', lang)}" if lang == "nl" else "Step 1: Upload Data")
+    
+    # Add cache loading option
+    st.subheader("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"))
+    
+    # Get available cached datasets
+    cached_datasets = get_available_cached_datasets()
+    
+    if cached_datasets:
+        st.markdown("**" + ("Beschikbare datasets in cache:" if lang == "nl" else "Available datasets in cache:") + "**")
+        
+        # Create a selectbox with cached datasets
+        dataset_options = [""] + [dataset['display_name'] for dataset in cached_datasets]
+        selected_dataset_name = st.selectbox(
+            "Selecteer dataset" if lang == "nl" else "Select dataset",
+            options=dataset_options,
+            help="Selecteer een eerder verwerkte dataset om verder te gaan" if lang == "nl" 
+                 else "Select a previously processed dataset to continue"
+        )
+        
+        if selected_dataset_name:
+            # Find the selected dataset info
+            selected_dataset = next((d for d in cached_datasets if d['display_name'] == selected_dataset_name), None)
+            
+            if selected_dataset:
+                # Show dataset information
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                	st.write("**Dataset:** " + selected_dataset['dataset_name'])
+
+                with col2:
+                	st.write("**Variables:** " + selected_dataset['variables'])
+
+                with col3:
+                    file_size_mb = selected_dataset['file_size'] / (1024 * 1024)
+                    st.write(f"**Size:** {file_size_mb:.1f} MB")
+                
+                # with col1:
+                #     st.metric("Dataset", selected_dataset['dataset_name'])
+                
+                # with col2:
+                #     st.metric("Variables", selected_dataset['variables'])
+                
+                # with col3:
+                #     file_size_mb = selected_dataset['file_size'] / (1024 * 1024)
+                #     st.metric("Size", f"{file_size_mb:.1f} MB")
+                
+                # Load from cache button
+                if st.button("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"), type="primary"):
+                    with st.spinner("Data wordt geladen uit cache..." if lang == "nl" else "Loading data from cache..."):
+                        success, record_count = load_cached_dataset(selected_dataset)
+                        
+                        if success:
+                            st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records)" if lang == "nl" 
+                                                else f"Dataset loaded from cache! ({record_count} records)"))
+                            st.session_state.step = 1  # Advance to preprocessing
+                            st.rerun()
+                        else:
+                            st.error("❌ " + ("Fout bij laden uit cache" if lang == "nl" else "Error loading from cache"))
+        
+        st.markdown("---")
+    else:
+        st.info("ℹ️ " + ("Geen cached datasets beschikbaar" if lang == "nl" else "No cached datasets available"))
+        st.markdown("---")
+    
+    # Original file upload section
+    st.subheader("📤 " + ("Upload Nieuw Bestand" if lang == "nl" else "Upload New File"))
     
     uploaded_file = st.file_uploader(
         "Kies een SPSS bestand (.sav)" if lang == "nl" else "Choose a SPSS file (.sav)",
@@ -802,7 +1052,6 @@ def show_preprocessing_page():
     st.header("Stap 2: Preprocessing" if lang == "nl" else "Step 2: Preprocessing")
     st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
     
-    # Show current selection with support for merged variables
     if st.session_state.selected_variable and st.session_state.selected_id_column:
         # Check if this is a merged variable scenario
         is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or
@@ -820,15 +1069,15 @@ def show_preprocessing_page():
         if is_multiple_mode and len(selected_vars) > 1:
             merge_config = (st.session_state.get('merge_config') or 
                            st.session_state.get('merge_config_confirmed', {}))
-            st.info(
-                f"**Samengevoegde Variabelen:** {', '.join(selected_vars)}\n\n"
-                f"**ID Kolom:** {st.session_state.selected_id_column}\n\n"
-                f"**Samenvoeg Strategie:** {merge_config.get('strategy', 'concatenate')}{sample_info}"
-                if lang == "nl" else
-                f"**Merged Variables:** {', '.join(selected_vars)}\n\n"
-                f"**ID Column:** {st.session_state.selected_id_column}\n\n"
-                f"**Merge Strategy:** {merge_config.get('strategy', 'concatenate')}{sample_info}"
-            )
+            # st.info(
+            #     f"**Samengevoegde Variabelen:** {', '.join(selected_vars)}\n\n"
+            #     f"**ID Kolom:** {st.session_state.selected_id_column}\n\n"
+            #     f"**Samenvoeg Strategie:** {merge_config.get('strategy', 'concatenate')}{sample_info}"
+            #     if lang == "nl" else
+            #     f"**Merged Variables:** {', '.join(selected_vars)}\n\n"
+            #     f"**ID Column:** {st.session_state.selected_id_column}\n\n"
+            #     f"**Merge Strategy:** {merge_config.get('strategy', 'concatenate')}{sample_info}"
+            # )
         else:
             st.info(
                 f"**Variabele:** {st.session_state.selected_variable}\n\n"
@@ -1652,11 +1901,17 @@ def show_raw_samples(raw_text_list, n_samples=5):
     # Original pattern: random.sample(range(len(raw_text_list)), n_samples)
     indices = random.sample(range(len(raw_text_list)), min(n_samples, len(raw_text_list)))
     
-    st.write(f"**Random samples from {len(raw_text_list)} raw responses:**")
-    for i in indices:
-        response_text = raw_text_list[i].response if raw_text_list[i].response is not None else "(empty response)"
-        st.write(f"**Raw structured:** {response_text}")
-        st.write("---")
+    st.write(f"**Random samples from {len(raw_text_list)} filtered responses:**")
+    
+    if indices:
+        sample_text = ""
+        for i in indices:
+            response_text = raw_text_list[i].response if raw_text_list[i].response is not None else "(empty response)"
+            sample_text += f"{response_text}\n"
+        
+        # Display in gray container
+        st.code(sample_text.strip(), language=None)
+    
 
 def show_filtered_samples(quality_filtered_text, n_samples=5):
     """Show random samples from Step 3 - Quality Filtered Data"""
@@ -1671,10 +1926,14 @@ def show_filtered_samples(quality_filtered_text, n_samples=5):
     indices = random.sample(range(len(quality_filtered_text)), min(n_samples, len(quality_filtered_text)))
     
     st.write(f"**Random samples from {len(quality_filtered_text)} filtered responses:**")
+    
+    sample_text = ""
     for i in indices:
         response_text = quality_filtered_text[i].response if quality_filtered_text[i].response is not None else "(empty response)"
-        st.write(f"**Filtered:** {response_text}")
-        st.write("---")
+        sample_text += f"{response_text}\n"
+    
+    # Display in gray container
+    st.code(sample_text.strip(), language=None)
 
 def show_idea_samples(encoded_text, n_samples=1):
     """Show random samples from Step 4 - Ideas"""
@@ -1689,12 +1948,18 @@ def show_idea_samples(encoded_text, n_samples=1):
     sampled_items = random.sample(encoded_text, min(n_samples, len(encoded_text)))
     
     st.write(f"**Random sample from {len(encoded_text)} encoded responses:**")
+    
+    sample_text = ""
     for item in sampled_items:
-        st.write(f"**Response:** {item.response}")
+        sample_text += f"Response: {item.response}\n"
         if hasattr(item, 'response_ideas') and item.response_ideas:
             for segment in item.response_ideas:
                 if hasattr(segment, 'idea'):
-                    st.write(f"- {segment.idea}")
+                    sample_text += f"- {segment.idea}\n"
+        sample_text += "\n"
+    
+    # Display in gray container
+    st.code(sample_text.strip(), language=None)
 
 def show_cluster_samples(initial_cluster_results):
     """Show cluster samples using EXACT pattern from user's original code"""
@@ -1749,10 +2014,16 @@ def show_cluster_samples(initial_cluster_results):
         if z < len(cluster_ids):
             cluster_id = cluster_ids[z]  # Use actual cluster ID, not index
             st.write(f"\n**Cluster {cluster_id}**")
+            
+            cluster_text = ""
             for item in initial_cluster_results:
                 for subitem in item.response_ideas:
                     if subitem.initial_cluster == cluster_id:
-                        st.text(subitem.idea)
+                        cluster_text += f"{subitem.idea}\n"
+            
+            # Display in gray container
+            if cluster_text.strip():
+                st.code(cluster_text.strip(), language=None)
 
 def show_codebook_samples(codebook_reasoning):
     """Show codebook samples using display_cluster_analysis"""
@@ -1772,8 +2043,9 @@ def show_codebook_samples(codebook_reasoning):
         display_cluster_analysis(codebook_reasoning)
         output = captured_output.getvalue()
         
-        # Display the captured output
-        st.text(output)
+        # Display the captured output in gray container
+        if output.strip():
+            st.code(output, language=None)
     except Exception as e:
         st.error(f"Error displaying codebook analysis: {e}")
     finally:
@@ -1789,19 +2061,25 @@ def show_theme_samples(theme_enriched_codebook):
     if hasattr(theme_enriched_codebook, 'themes_summary') and theme_enriched_codebook.themes_summary:
         themes = theme_enriched_codebook.themes_summary
         
+        theme_text = ""
         for theme in themes:
             # Original pattern: print(f"\n📂 {theme['theme_name'].upper()}")
             if isinstance(theme, dict) and 'theme_name' in theme:
-                st.write(f"\n📂 **{theme['theme_name'].upper()}**")
-                st.write('-' * len(theme['theme_name']))
+                theme_text += f"\n📂 **{theme['theme_name'].upper()}**\n"
+                theme_text += '-' * len(theme['theme_name']) + "\n"
                 
                 # Original pattern: for code in theme['codes']
                 if 'codes' in theme and theme['codes']:
                     for code in theme['codes']:
                         if isinstance(code, dict) and 'code_name' in code:
-                            st.write(f"  • {code['code_name']}")
+                            theme_text += f"  • {code['code_name']}\n"
                         elif isinstance(code, str):
-                            st.write(f"  • {code}")
+                            theme_text += f"  • {code}\n"
+                theme_text += "\n"
+        
+        # Display in gray container
+        if theme_text.strip():
+            st.code(theme_text.strip(), language=None)
     else:
         st.write("No themes summary available")
 
@@ -1828,7 +2106,10 @@ def show_assignment_samples(code_assigned_results):
             enriched_codebook=None
         )
         output = captured_output.getvalue()
-        st.text(output)
+        
+        # Display in gray container
+        if output.strip():
+            st.code(output, language=None)
     except Exception as e:
         st.error(f"Error displaying assignment summary: {e}")
     finally:
@@ -1864,29 +2145,80 @@ def show_step_samples(step_number):
     cache_manager = _get_cache_manager()
     filename = st.session_state.filename
     
-    # Get variable key for cache lookup (similar to pipeline_runner)
-    try:
-        # Try to get variable key from session state or generate it
-        variable_key = None
-        if hasattr(_get_pipeline_runner(), 'get_variable_key'):
-            variable_key = _get_pipeline_runner().get_variable_key()
-        else:
+    if False: #debug
+        #Get variable key for cache lookup (similar to pipeline_runner)
+        try:
+            # Try to get variable key from session state first (if loaded from cache)
+            st.write("🔍 **VARIABLE KEY DEBUG:**")
+            variable_key = None
+            
+            # Check if we have a stored cache key from cache loading
+            if st.session_state.get('loaded_from_cache', False):
+                stored_key = st.session_state.get('current_cache_key')
+                cache_info = st.session_state.get('cache_dataset_info', {})
+                
+                st.write("✅ **Loaded from cache - using stored key**")
+                st.write(f"- Stored cache key: {stored_key}")
+                st.write(f"- Dataset: {cache_info.get('dataset_name', 'unknown')}")
+                st.write(f"- Variables: {cache_info.get('variables', 'unknown')}")
+                st.write(f"- Sample suffix: {cache_info.get('sample_suffix', 'none')}")
+                
+                if stored_key:
+                    variable_key = stored_key
+                    st.write(f"- **Using stored key: {variable_key}**")
+            
+            # If no stored key, try pipeline runner
+            if not variable_key:
+                st.write("🔄 **Trying pipeline runner for variable key...**")
+                try:
+                    pipeline_runner = _get_pipeline_runner()
+                    st.write(f"- Pipeline runner loaded: {type(pipeline_runner)}")
+                    
+                    if hasattr(pipeline_runner, 'get_variable_key'):
+                        st.write("- get_variable_key method exists, calling it...")
+                        variable_key = pipeline_runner.get_variable_key()
+                        st.write(f"- Pipeline runner variable key: {variable_key}")
+                    else:
+                        st.write("- get_variable_key method does not exist")
+                        
+                except Exception as e:
+                    st.write(f"- Error with pipeline runner: {e}")
+            
             # Fallback: generate basic variable key
-            selected_variables = [st.session_state.selected_variable]
-            from utils.cacheManager import generate_variable_key
-            variable_key = generate_variable_key(selected_variables, False)
-    except Exception as e:
-        st.write(f"❌ Error generating variable key: {e}")
-        return
+            if not variable_key or variable_key == "unknown":
+                st.write("- Using fallback variable key generation...")
+                try:
+                    selected_variables = [st.session_state.selected_variable]
+                    st.write(f"- Selected variables: {selected_variables}")
+                    
+                    from utils.cacheManager import generate_variable_key
+                    variable_key = generate_variable_key(selected_variables, False)
+                    st.write(f"- Fallback generated key: {variable_key}")
+                    
+                except Exception as e:
+                    st.write(f"- Error in fallback generation: {e}")
+                    
+            if not variable_key:
+                variable_key = "unknown"
+                
+            st.write(f"- **Final variable key: {variable_key}**")
+            st.write("---")
+            
+        except Exception as e:
+            st.write(f"❌ Error generating variable key: {e}")
+            return
+        
+        # DEBUG: Show current state
+        st.write("🔍 **CACHE DEBUG INFO:**")
+        st.write(f"- Current step: {st.session_state.step}")
+        st.write(f"- Requested step_number: {step_number}")
+        st.write(f"- Filename: {filename}")
+        st.write(f"- Selected variable: {st.session_state.selected_variable}")
+        st.write(f"- Variable key: {variable_key}")
+        st.write("---")
     
-    # DEBUG: Show current state
-    st.write("🔍 **CACHE DEBUG INFO:**")
-    st.write(f"- Current step: {st.session_state.step}")
-    st.write(f"- Requested step_number: {step_number}")
-    st.write(f"- Filename: {filename}")
-    st.write(f"- Selected variable: {st.session_state.selected_variable}")
-    st.write(f"- Variable key: {variable_key}")
-    st.write("---")
+    # Load variabe/cache key
+    variable_key = st.session_state.get('current_cache_key')
     
     # Load data from cache based on step
     try:
@@ -1894,7 +2226,7 @@ def show_step_samples(step_number):
             # Step 1: Raw data
             data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
             if data:
-                st.write(f"✅ Loaded {len(data)} raw responses from cache")
+                #st.write(f"✅ Loaded {len(data)} raw responses from cache")
                 show_raw_samples(data)
             else:
                 st.write("⏳ No raw data in cache - run preprocessing first")
@@ -1903,7 +2235,7 @@ def show_step_samples(step_number):
             # Step 2: Quality filtered data
             data = cache_manager.load_from_cache(filename, "quality_filter", variable_key, models.QualityFilteredModel)
             if data:
-                st.write(f"✅ Loaded {len(data)} quality filtered responses from cache")
+                #st.write(f"✅ Loaded {len(data)} quality filtered responses from cache")
                 show_filtered_samples(data)
             else:
                 st.write("⏳ No quality filtered data in cache - run quality filtering first")
@@ -1912,8 +2244,8 @@ def show_step_samples(step_number):
             # Step 3: Extracted ideas
             data = cache_manager.load_from_cache(filename, "extracted_ideas", variable_key, models.IdeasExtractedModel)
             if data:
-                total_ideas = sum(item.idea_count for item in data)
-                st.write(f"✅ Loaded {len(data)} responses with {total_ideas} ideas from cache")
+                #total_ideas = sum(item.idea_count for item in data)
+                #st.write(f"✅ Loaded {len(data)} responses with {total_ideas} ideas from cache")
                 show_idea_samples(data)
             else:
                 st.write("⏳ No extracted ideas in cache - run idea extraction first")
@@ -1931,8 +2263,8 @@ def show_step_samples(step_number):
             # Step 5: Clusters
             data = cache_manager.load_from_cache(filename, "initial_clusters", variable_key, models.ClusterModel)
             if data:
-                cluster_ids = set([segment.initial_cluster for result in data for segment in result.response_ideas if segment.initial_cluster is not None])
-                st.write(f"✅ Loaded {len(cluster_ids)} clusters from cache")
+                #cluster_ids = set([segment.initial_cluster for result in data for segment in result.response_ideas if segment.initial_cluster is not None])
+                #st.write(f"✅ Loaded {len(cluster_ids)} clusters from cache")
                 show_cluster_samples(data)
             else:
                 st.write("⏳ No clusters in cache - run clustering first")
@@ -1943,7 +2275,7 @@ def show_step_samples(step_number):
                 from utils.codeGenerator import CodeGeneratorReasoningResults
                 data = cache_manager.load_from_cache(filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults)
                 if data and len(data) > 0:
-                    st.write(f"✅ Loaded codebook reasoning from cache")
+                    #st.write("✅ Loaded codebook reasoning from cache")
                     show_codebook_samples(data[0])
                 else:
                     st.write("⏳ No codebook reasoning in cache - run codebook generation first")
@@ -1954,7 +2286,7 @@ def show_step_samples(step_number):
             # Step 7: Themes
             data = cache_manager.load_from_cache(filename, "theme_identification", variable_key, models.ThemeEnrichedCodebookModel)
             if data and len(data) > 0:
-                st.write(f"✅ Loaded {len(data[0].codes)} codes with themes from cache")
+                #st.write(f"✅ Loaded {len(data[0].codes)} codes with themes from cache")
                 show_theme_samples(data[0])
             else:
                 st.write("⏳ No themes in cache - run theme identification first")
@@ -1963,8 +2295,8 @@ def show_step_samples(step_number):
             # Step 8: Code assignments
             data = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, models.CodeAssignedModel)
             if data:
-                total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in data if resp.response_ideas)
-                st.write(f"✅ Loaded {total_assignments} code assignments from cache")
+                #total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in data if resp.response_ideas)
+                #st.write(f"✅ Loaded {total_assignments} code assignments from cache")
                 show_assignment_samples(data)
             else:
                 st.write("⏳ No code assignments in cache - run code assignment first")
@@ -1976,60 +2308,40 @@ def show_step_samples(step_number):
         st.write(f"❌ Error loading data from cache: {e}")
         st.write("This might indicate a cache format issue or missing dependencies.")
 
+
 def show_info_panel():
     lang = st.session_state.language
-    st.subheader("Informatie" if lang == "nl" else "Information")
     
-    # Current file info
-    if st.session_state.filename:
-        st.markdown(f"**{'Huidig bestand' if lang == 'nl' else 'Current file'}:** {st.session_state.filename}")
-    
-    # Selected variable info
-    if st.session_state.selected_variable:
-        st.markdown(f"**{'Geselecteerde variabele' if lang == 'nl' else 'Selected variable'}:** {st.session_state.selected_variable}")
-    
-    if st.session_state.selected_id_column:
-        st.markdown(f"**{'ID kolom' if lang == 'nl' else 'ID column'}:** {st.session_state.selected_id_column}")
-    
-    st.markdown("---")
-    
-    # Extended step descriptions for 10 steps
-    step_descriptions = [
-        "Upload uw SPSS databestand en selecteer variabelen voor analyse." if lang == "nl" else "Upload your SPSS data file and select variables for analysis.",
-        "Preprocessing normaliseert en schoont de tekstdata voor analyse." if lang == "nl" else "Preprocessing normalizes and cleans the text data for analysis.",
-        "Kwaliteitsfiltering verwijdert lage kwaliteit of betekenisloze antwoorden." if lang == "nl" else "Quality filtering removes low-quality or meaningless responses.",
-        "Idee extractie segmenteert responsen in discrete ideeën." if lang == "nl" else "Idea extraction segments responses into discrete ideas.",
-        "Embeddings zetten tekst om in numerieke representaties voor clustering." if lang == "nl" else "Embeddings convert text into numerical representations for clustering.",
-        "Clustering groepeert vergelijkbare antwoorden in hiërarchische thema's." if lang == "nl" else "Clustering groups similar responses into hierarchical themes.",
-        "Codebook generatie maakt gestructureerde codes voor elk cluster." if lang == "nl" else "Codebook generation creates structured codes for each cluster.",
-        "Thema identificatie groepeert codes in betekenisvolle thema's." if lang == "nl" else "Theme identification groups codes into meaningful themes.",
-        "Code toewijzing koppelt codes aan individuele responsen." if lang == "nl" else "Code assignment links codes to individual responses.",
-        "Exporteer resultaten naar Excel met alle toewijzingen en thema's." if lang == "nl" else "Export results to Excel with all assignments and themes.",
-        "Bekijk en download uw geanalyseerde resultaten." if lang == "nl" else "Review and download your analyzed results."
-    ]
-    
-    if st.session_state.step < len(step_descriptions):
-        st.markdown(step_descriptions[st.session_state.step])
-    
-    # Interactive data sampling section
-    st.markdown("---")
-    
-    # Check if we can show samples for the current step
+    # Show samples 
     sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8]
     if st.session_state.step in sampling_steps:
-        step_names = {
-            1: "Raw Data" if lang == "en" else "Ruwe Data",
-            2: "Filtered Data" if lang == "en" else "Gefilterde Data", 
-            3: "Extracted Ideas" if lang == "en" else "Geëxtraheerde Ideeën",
-            4: "Embeddings" if lang == "en" else "Embeddings",
-            5: "Clusters" if lang == "en" else "Clusters",
-            6: "Codebook" if lang == "en" else "Codeboek",
-            7: "Themes" if lang == "en" else "Thema's",
-            8: "Assignments" if lang == "en" else "Toewijzingen"
-        }
+        st.header(f"Stap {st.session_state.step}: Voorbeelden" if lang == "nl" else f"Step {st.session_state.step}: Samples")
+        show_step_samples(st.session_state.step)
+    
+        st.markdown("---")
+    
+    if False: # Extended step descriptions for 10 steps
+        step_descriptions = [
+            "Upload uw SPSS databestand en selecteer variabelen voor analyse." if lang == "nl" else "Upload your SPSS data file and select variables for analysis.",
+            "Preprocessing normaliseert en schoont de tekstdata voor analyse." if lang == "nl" else "Preprocessing normalizes and cleans the text data for analysis.",
+            "Kwaliteitsfiltering verwijdert lage kwaliteit of betekenisloze antwoorden." if lang == "nl" else "Quality filtering removes low-quality or meaningless responses.",
+            "Idee extractie segmenteert responsen in discrete ideeën." if lang == "nl" else "Idea extraction segments responses into discrete ideas.",
+            "Embeddings zetten tekst om in numerieke representaties voor clustering." if lang == "nl" else "Embeddings convert text into numerical representations for clustering.",
+            "Clustering groepeert vergelijkbare antwoorden in hiërarchische thema's." if lang == "nl" else "Clustering groups similar responses into hierarchical themes.",
+            "Codebook generatie maakt gestructureerde codes voor elk cluster." if lang == "nl" else "Codebook generation creates structured codes for each cluster.",
+            "Thema identificatie groepeert codes in betekenisvolle thema's." if lang == "nl" else "Theme identification groups codes into meaningful themes.",
+            "Code toewijzing koppelt codes aan individuele responsen." if lang == "nl" else "Code assignment links codes to individual responses.",
+            "Exporteer resultaten naar Excel met alle toewijzingen en thema's." if lang == "nl" else "Export results to Excel with all assignments and themes.",
+            "Bekijk en download uw geanalyseerde resultaten." if lang == "nl" else "Review and download your analyzed results."
+        ]
         
-        with st.expander(f"📊 {'Bekijk data voorbeelden' if lang == 'nl' else 'View Data Samples'} - {step_names.get(st.session_state.step, '')}", expanded=True):
-            show_step_samples(st.session_state.step)
+        if st.session_state.step < len(step_descriptions):
+            st.markdown(step_descriptions[st.session_state.step])
+        
+        # Interactive data sampling section
+        st.markdown("---")
+    
+
 
 if __name__ == "__main__":
     main()
