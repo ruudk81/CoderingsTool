@@ -19,7 +19,7 @@ class TextFinalizer:
         # Configuration reporting
         if self.verbose_reporter.enabled:
             self.verbose_reporter.empty_line()
-            print("Text finalizer configuration:")
+            self.verbose_reporter.stat_line("Text finalizer configuration:")
             self.verbose_reporter.stat_line("Capitalization: First letter uppercase", indent=1)
             self.verbose_reporter.stat_line("Punctuation: Ensure ending punctuation", indent=1)
             self.verbose_reporter.stat_line("Cleanup: Remove duplicate punctuation and fix spacing", indent=1)
@@ -81,10 +81,10 @@ class TextFinalizer:
         stats = ProcessingStats()
         stats.start_timing()
         stats.input_count = len(data)
-        
+
         # Always show main progress
         self.verbose_reporter.empty_line()
-        print(f"Processing {len(data)} responses for finalization...")
+        self.verbose_reporter.stat_line(f"Processing {len(data)} responses for finalization...")
              
         # Track changes and examples
         capitalization_fixes = 0
@@ -137,10 +137,10 @@ class TextFinalizer:
         
         stats.output_count = len(results)
         stats.end_timing()
-            
+
         # Always show main completion stats (as was before)
         self.verbose_reporter.empty_line()
-        print(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")
+        self.verbose_reporter.stat_line(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")
         
         # Verbose detailed transformation statistics
         if self.verbose_reporter.enabled:
