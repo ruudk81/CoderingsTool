@@ -31,7 +31,7 @@ class TextNormalizer:
         # Report configuration if verbose
         if self.verbose_reporter.enabled:
             self.verbose_reporter.empty_line()
-            print("Text normalizer configuration:")
+            self.verbose_reporter.stat_line("Text normalizer configuration:")
             self.verbose_reporter.stat_line(f"Minimum length: {self.config.min_length} characters", indent=1)
             self.verbose_reporter.stat_line(f"NA placeholder: '{self.config.na_placeholder}'", indent=1)
             self.verbose_reporter.stat_line(f"Custom symbols: '{self.config.custom_symbols}'", indent=1)
@@ -122,10 +122,10 @@ class TextNormalizer:
         
         stats.output_count = len(results) - invalid_filtered
         stats.end_timing()
-   
+
         # Always show main completion stats (as was before)
         self.verbose_reporter.empty_line()
-        print(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
+        self.verbose_reporter.stat_line(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
         
         # Verbose detailed transformation statistics
         if self.verbose_reporter.enabled:

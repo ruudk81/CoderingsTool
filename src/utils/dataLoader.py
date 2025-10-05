@@ -111,18 +111,20 @@ class DataLoader:
     def list_variables_with_types(self, filename: str, encoding: str = None):
         """List all variables with their types (string vs numeric)"""
         df, meta = self.load_sav(filename, encoding)
-        
+
         variables_with_types = {}
         for var_name in meta.column_names:
             var_label = meta.column_labels[meta.column_names.index(var_name)]
-            # Check if variable is string type (object dtype in pandas)
-            is_string = df[var_name].dtype == 'object'
+            # Check if variable is string type using SPSS metadata
+            # Use readstat_variable_types which correctly identifies SPSS string variables
+            readstat_type = meta.readstat_variable_types.get(var_name) if hasattr(meta, 'readstat_variable_types') else None
+            is_string = readstat_type == 'string'
             variables_with_types[var_name] = {
                 'label': var_label,
                 'is_string': is_string,
                 'dtype': str(df[var_name].dtype)
             }
-            
+
         return variables_with_types
     
     def get_variable(self, filename: str, var_name: str, encoding: str = None):
