@@ -468,10 +468,10 @@ class IdeaExtractor:
             subject = subject_response.canonical_term
             
             if subject_response.decision == "CANONICAL_SUBJECT": 
-                canonical_phrasing = f"Canonical subject: {subject.capitalize()}"
+                canonical_phrasing = f"{subject.capitalize()}"
                 phrasing_template = "[CANONICAL_SUBJECT] [should/needs to/must/is/are] [property or outcome]".replace("[CANONICAL_SUBJECT]", subject.capitalize())
             else:
-                canonical_phrasing = f"Canonical actor: {subject.capitalize()}"
+                canonical_phrasing = f"{subject.capitalize()}"
                 phrasing_template = "[CANONICAL_ACTOR] [should/needs to/must] [action] [on/for/to]".replace("[CANONICAL_ACTOR]", subject.capitalize())
             
             # Build prompt with subject

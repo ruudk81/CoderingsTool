@@ -178,10 +178,6 @@ def _get_code_generator_reasoning_results():
     from utils.codeGenerator import CodeGeneratorReasoningResults
     return CodeGeneratorReasoningResults
 
-def _get_codebook_refinement():
-    from utils.codebookRefinement import refine_codebook, print_refinement_report
-    return refine_codebook, print_refinement_report
-
 class StreamlitPipelineRunner:
     """Pipeline runner optimized for Streamlit with session state management"""
     
@@ -733,147 +729,115 @@ class StreamlitPipelineRunner:
         
         return codebook_main, reasoning_results
     
-    def step_8_refine_codebook(self, codebook_reasoning: Any, filename: str, var_name: str, var_lab: str,
-                             model_config: Optional[ModelConfig] = None,
-                             force_recalc: bool = False,
-                             streamlit_container=None) -> models.CodeRefinementResults:
-        """Step 8: Refine codebook using GPT-5"""
-        
-        step_name = "codebook_refinement"
-        verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
-        variable_key = self.get_variable_key()
-        
-        if streamlit_container:
-            streamlit_container.text("🔄 Refining codebook with GPT-5...")
-        
-        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
-            refinement_results_cached = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
-            if refinement_results_cached and len(refinement_results_cached) > 0:
-                refinement_results = refinement_results_cached[0]
-                verbose_reporter.summary("CODEBOOK REFINEMENT FROM CACHE", {
-                    "Original codes": refinement_results.processing_stats.get('original_code_count', 0),
-                    "Refined categories": refinement_results.processing_stats.get('refined_category_count', 0),
-                    "Total subcodes": refinement_results.processing_stats.get('total_refined_subcodes', 0)
-                })
-            else:
-                raise ValueError("Failed to load codebook refinement from cache")
-        else:
-            verbose_reporter.section_header("CODEBOOK REFINEMENT PHASE")
-            start_time = time.time()
-            
-            if not codebook_reasoning:
-                raise ValueError("No codebook reasoning results available for refinement")
-            
-            # Lazy load refinement function
-            refine_codebook_func, print_refinement_report = _get_codebook_refinement()
-            
-            # Set default model config if not provided
-            if model_config is None:
-                model_config = ModelConfig()
-            
-            # Run refinement
-            refinement_results = refine_codebook_func(
-                survey_question=var_lab,
-                reasoning_results=codebook_reasoning,
-                model_config=model_config,
-                language=DEFAULT_LANGUAGE,
-                verbose=self.verbose
-            )
-            
-            # Cache results
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            self.cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time)
-            
-            if streamlit_container:
-                streamlit_container.success(f"✅ Codebook refined in {elapsed_time:.2f}s")
-                
-            # Print refinement report if verbose
-            if self.verbose:
-                print_refinement_report(refinement_results)
-        
-        return refinement_results
-
-    def step_8_identify_themes(self, refinement_results: models.CodeRefinementResults, filename: str, var_name: str, var_lab: str,
+    def step_8_identify_themes(self, codebook_main: models.CodebookModel, filename: str, var_name: str, var_lab: str,
                              force_recalc: bool = False,
                              streamlit_container=None) -> models.ThemeEnrichedCodebookModel:
-        """Step 8: Convert refinement results to theme enriched codebook"""
+        """Step 8: Identify themes"""
         
-        step_name = "theme_enriched_codebook"
+        step_name = "theme_identification"
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)
         variable_key = self.get_variable_key()
         
         if streamlit_container:
-            streamlit_container.text("🔄 Creating theme enriched codebook...")
+            streamlit_container.text("🔄 Identifying themes in codebook...")
         
-        # Always convert from refinement results (no separate caching needed)
-        verbose_reporter.section_header("THEME ENRICHED CODEBOOK CREATION")
-        start_time = time.time()
-        
-        if not refinement_results or not refinement_results.refined_codebook.refined_codebook:
-            verbose_reporter.warning("No refinement results available to create theme enriched codebook")
-            theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                codes=[],
-                themes_summary=[],
-                code_to_theme_mapping={},
-                theme_methodology="Empty fallback - refinement failed",
-                source_variable=var_name
-            )
+        if not force_recalc and self.cache_manager.is_cache_valid(filename, step_name, variable_key):
+            theme_enriched_codebooks = self.cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
+            if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
+                theme_enriched_codebook = theme_enriched_codebooks[0]
+                verbose_reporter.summary("THEMES FROM CACHE", {"Total codes": len(theme_enriched_codebook.codes)})
+            else:
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, theme_methodology="Error loading from cache"
+                )
         else:
-            verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
+            verbose_reporter.section_header("THEME IDENTIFICATION PHASE")
+            start_time = time.time()
             
-            # Create ThemeEnrichedCodebookEntry objects from refined codebook
-            enriched_entries = []
-            code_to_theme_mapping = {}
-            themes_summary = []
-            
-            for category in refinement_results.refined_codebook.refined_codebook:
-                theme_name = category.category
+            if not codebook_main.codes:
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=[], source_variable=var_name, themes_summary=[], code_to_theme_mapping={}, theme_methodology="No codes available"
+                )
+            else:
+                codebook = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
                 
-                # Add to themes summary
-                themes_summary.append({
-                    'theme_name': theme_name,
-                    'theme_description': theme_name,  # Use theme name as description
-                    'code_count': len(category.subcodes)
-                })
+                # Lazy load theme organizer (using reasoning-based approach)
+                CodeOrganizer = _get_theme_organizer_reasoning()
                 
-                for subcode in category.subcodes:
-                    # Create ThemeEnrichedCodebookEntry
+                # Get model and reasoning effort from config
+                model_config = ModelConfig()
+                model = getattr(model_config, 'thematic_organizer_model', 'gpt-5-mini')
+                reasoning_effort = getattr(model_config, 'theme_extraction_reasoning_effort', 'low')
+                
+                theme_organizer = CodeOrganizer(
+                    codebook=codebook,
+                    var_lab=var_lab,
+                    language=DEFAULT_LANGUAGE,
+                    verbose=self.verbose,
+                    model=model,
+                    reasoning_effort=reasoning_effort
+                )
+                
+                async def run_theme_identification():
+                    return await theme_organizer.organize_themes_reasoning()
+                
+                result = asyncio.run(run_theme_identification())
+                
+                # Process theme results
+                enriched_entries = []
+                code_to_theme_mapping = {}
+                themes = result['themes']
+                
+                # Build code-to-theme mapping
+                for theme in themes:
+                    theme_name = theme['theme_name']
+                    for code_info in theme['codes']:
+                        code_name = code_info['code_name']
+                        code_to_theme_mapping[code_name] = theme_name
+                
+                # Enrich codebook entries with theme information
+                for entry in codebook_main.codes:
+                    theme_name = code_to_theme_mapping.get(entry.code)
+                    theme_info = None
+                    theme_cluster_id = None
+                    is_misc = False
+                    
+                    if theme_name:
+                        theme_name_normalized = theme_name.strip().lower()
+                        for theme in themes:
+                            if theme['theme_name'].strip().lower() == theme_name_normalized:
+                                theme_info = theme.get('theme_description', '')
+                                theme_cluster_id = theme.get('cluster_id', -1)
+                                is_misc = theme.get('is_miscellaneous', False)
+                                break
+                    
                     enriched_entry = models.ThemeEnrichedCodebookEntry(
-                        code=subcode.code,
-                        definition=subcode.description,
+                        code=entry.code,
+                        definition=entry.definition,
+                        source_cluster=entry.source_cluster,
                         theme=theme_name,
-                        theme_description=theme_name,
-                        source_cluster=subcode.id  # Use original code ID as source cluster
+                        theme_description=theme_info,
+                        theme_cluster_id=theme_cluster_id,
+                        is_miscellaneous=is_misc
                     )
                     enriched_entries.append(enriched_entry)
-                    
-                    # Build code-to-theme mapping
-                    code_to_theme_mapping[subcode.code] = theme_name
+                
+                theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+                    codes=enriched_entries,
+                    generation_metadata=codebook_main.generation_metadata,
+                    source_variable=codebook_main.source_variable,
+                    themes_summary=themes,
+                    code_to_theme_mapping=code_to_theme_mapping,
+                    theme_methodology=result.get('methodology', 'Clustering-based theme identification')
+                )
             
-            # Create ThemeEnrichedCodebookModel
-            theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-                codes=enriched_entries,
-                themes_summary=themes_summary,
-                code_to_theme_mapping=code_to_theme_mapping,
-                theme_methodology="GPT-5 based codebook refinement with hierarchical theme organization",
-                generation_metadata={
-                    "refinement_source": "step_8_codebook_refinement",
-                    "original_code_count": len(refinement_results.original_codebook),
-                    "refined_category_count": len(refinement_results.refined_codebook.refined_codebook),
-                    "total_refined_codes": len(enriched_entries)
-                },
-                source_variable=var_name
-            )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            self.cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
             
-            verbose_reporter.step_complete(f"Created theme enriched codebook: {len(enriched_entries)} codes in {len(themes_summary)} themes")
-        
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        
-        if streamlit_container:
-            theme_count = len(themes_summary)
-            streamlit_container.success(f"✅ Created theme enriched codebook with {theme_count} themes in {elapsed_time:.2f}s")
+            if streamlit_container:
+                theme_count = len(set(entry.theme for entry in theme_enriched_codebook.codes if entry.theme))
+                streamlit_container.success(f"✅ Identified {theme_count} themes in {elapsed_time:.2f}s")
         
         return theme_enriched_codebook
     

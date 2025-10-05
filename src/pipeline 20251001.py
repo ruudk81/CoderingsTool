@@ -1,0 +1,1232 @@
+import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
+
+# ===  MODULES ========================================================================================================
+import re
+import string 
+import time
+import asyncio
+import pandas as pd
+import nest_asyncio
+nest_asyncio.apply()
+
+# === MODELS ========================================================================================================
+import models
+
+# === CONFIG ========================================================================================================
+from utils import dataLoader
+from utils.cacheManager import CacheManager
+from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
+
+# Initialize cache manager
+cache_config = CacheConfig()
+cache_manager = CacheManager(cache_config)
+
+# Initialize model configuration
+model_config = ModelConfig()
+
+
+# === PIPELINE CONFIGURATION ========================================================================================
+# Test data 
+# filename = "M250285 input voor coderen - met Q18Q19.sav"
+# id_column = "respondentid"
+# var_name = "q19"
+#var_name = "Q18Q19"
+
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+id_column = "DLNMID"
+var_name = "Q20"
+
+# filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Qd1_combined"
+
+# filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+# id_column = "DLNMID"
+# var_name = "Q15"
+
+
+# Generate variable key for caching
+selected_variables = globals().get('selected_variables', [var_name])
+is_merged = globals().get('is_merged', False)
+sample_size = globals().get('test_sample_size') if globals().get('is_test_mode') else None
+
+# Use enhanced variable key from pipeline_executor (single source of truth)
+if 'variable_key' in globals():
+    variable_key = globals()['variable_key']  # Enhanced key from executor like "Q18_250"
+else:
+    # This should not happen when running via app_v2.py -> pipeline_executor
+    # But keep fallback for standalone pipeline.py execution
+    from utils.cacheManager import generate_enhanced_variable_key
+    variable_key = generate_enhanced_variable_key(
+        selected_variables=selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size
+    )
+
+# Pipeline behavior flags
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_STEP = ""  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
+USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
+VERBOSE = True  # Enable verbose output for debugging in Spyder
+PROMPT_PRINTER = True  # Enable prompt printing for LLM calls
+
+# Clustering parameters
+LANGUAGE = "nl"  # Options: "nl" or "en" (currently not used)
+
+# Initialize data loader and get variable label
+data_loader = dataLoader.DataLoader(verbose=False)
+var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+
+# Display configuration
+print("=" * 80)
+print("CODERINGSTOOL PIPELINE")
+print("=" * 80)
+print(f"Data file: {filename}")
+print(f"Variable: {var_name} - {var_lab}")
+print(f"Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
+print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
+print(f"Verbose mode: {VERBOSE}")
+print(f"Prompt printer: {PROMPT_PRINTER}")
+print("=" * 80)
+
+
+# === STEP 1 ========================================================================================================
+"""get data"""
+from utils.verboseReporter import VerboseReporter
+
+step_name = "data"
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+verbose_reporter = VerboseReporter(VERBOSE)
+data_loader = dataLoader.DataLoader(verbose=VERBOSE)
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    raw_text_list = cache_manager.load_from_cache(filename, step_name, variable_key, models.ResponseModel)
+    verbose_reporter.summary("DATA FROM CACHE", {"Input": f"{len(raw_text_list)} responses"})
+else:
+    verbose_reporter.section_header("DATA LOADING SUMMARY")
+    start_time       = time.time()
+    # loading data from spss file
+    raw_text_df      = data_loader.get_variable_with_IDs(filename = filename, id_column = id_column,var_name = var_name)
+    raw_unstructued  = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
+    raw_text_list = []
+    # structuring data NaN=system missing; Numeric=undefined user missing; String=response 
+    for resp_id, resp in raw_unstructued:
+        if pd.isna(resp):
+            response_type = 'nan'
+        elif isinstance(resp, (int, float)):
+            response_type = 'numeric'
+        elif isinstance(resp, str):
+            response_type = 'string'
+        else:
+            response_type = 'unknown'
+        raw_text_list.append(models.ResponseModel(respondent_id=resp_id,  response=resp, response_type=response_type))
+    end_time         = time.time()
+    elapsed_time     = end_time - start_time
+    cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time)
+    
+    print("\n=== RAW DATA TYPE ANALYSIS ===")
+    type_counts = {'nan': 0, 'numeric': 0, 'string': 0, 'unknown': 0}
+    for item in raw_text_list:
+        type_counts[item.response_type] += 1
+    for data_type, count in type_counts.items():
+        print(f"{data_type}: {count} items")
+    print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
+    
+if False: #debug if true
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(raw_text_list)), n_samples)
+    for i in indices:
+        print("Raw structured:", raw_text_list[i])
+        print("---")        
+
+
+# ===========================================================================================================
+"""truncate data"""
+# debug
+# raw_text_list0 = raw_text_list
+# raw_text_list = raw_text_list[:250]
+# raw_text_list = raw_text_list0
+
+# === STEP 2 ========================================================================================================
+"""preprocess data"""
+from utils import textNormalizer, spellChecker, textFinalizer
+from utils import verboseReporter
+from utils import promptPrinter
+from config import SpellCheckConfig
+
+spell_check_config = SpellCheckConfig(
+    minimum_timeout_seconds=15.0,   
+    maximum_timeout_seconds=60.0)   
+
+FORCE = False
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name        = "preprocessed"
+if  FORCE:
+    FORCE_STEP   = step_name
+
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+
+code_meanings = {
+    99999997: "User missing: Don't know/only expressing uncertainty", 
+    99999998: "System missing: NA",
+    99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    preprocessed_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.PreprocessedModel)
+    code_counts = {}
+    for item in preprocessed_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    verbose_reporter.summary("PREPROCESSED RESPONSES FROM CACHE", {"• Input" : f"{len(raw_text_list)} responses"})
+    for code, count in code_counts.items():
+        verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
+    verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
+else:    
+    verbose_reporter.section_header("PREPROCESSING PHASE")
+    # intialize utils
+    text_normalizer       = textNormalizer.TextNormalizer(verbose=VERBOSE)
+    spell_checker         = spellChecker.SpellChecker(config=spell_check_config, model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
+    text_finalizer        = textFinalizer.TextFinalizer(verbose=VERBOSE)
+    start_time            = time.time()
+    # preprocess strings 
+    all_responses = []
+    string_responses = []
+    non_string_responses = []
+    for item in raw_text_list:
+        preprocess_item = item.to_model(models.PreprocessedModel)
+        all_responses.append(preprocess_item)
+        if item.response_type == 'string':
+            string_responses.append(preprocess_item)
+        else:
+            non_string_responses.append(preprocess_item)
+    if string_responses:
+        normalized_text = text_normalizer.normalize_responses(string_responses)
+        normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
+        corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
+        finalized_text = text_finalizer.finalize_responses(corrected_text)
+    else:
+        finalized_text = [] 
+    processed_map = {item.respondent_id: item for item in finalized_text}
+    processed_map.update({item.respondent_id: item for item in non_string_responses})
+    preprocessed_text = []
+    for original in raw_text_list:
+        if original.respondent_id in processed_map:
+            item = processed_map[original.respondent_id]
+            desc_item = item.to_model(models.PreprocessedModel)
+            if item.response == 'nan':
+                desc_item.quality_filter_code = 99999998  # System missing
+                desc_item.quality_filter = True
+            elif isinstance(item.response, int):
+                # Check if it's a known missing code
+                if item.response in [99999997, 99999998, 99999999]:
+                    desc_item.quality_filter_code = int(item.response)
+                    desc_item.quality_filter = True
+                else:
+                    # Regular numeric response - will be evaluated by qualityFilter
+                    desc_item.quality_filter_code = None
+                    desc_item.quality_filter = None
+            elif isinstance(item.response, str):
+                if item.response.strip() == '':
+                    desc_item.quality_filter_code = 99999999   
+                    desc_item.quality_filter = True
+                else:
+                    # Text response - will be evaluated by qualityFilter
+                    desc_item.quality_filter_code = None
+                    desc_item.quality_filter = None
+            preprocessed_text.append(desc_item)
+        else:
+            preprocessed_text.append(models.PreprocessedModel(
+                respondent_id=original.respondent_id,
+                response='<NA>',
+                response_type='nan',
+                quality_filter_code=99999998,  # no answer, etc. only numbers, 1 character or empty
+                quality_filter=True))
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    cache_manager.save_to_cache(preprocessed_text, filename, step_name, variable_key, elapsed_time)
+    
+    # Quality filter summary
+    if VERBOSE:
+        print()  # Empty line
+        print("=== QUALITY FILTER CODE SUMMARY ===")
+        code_counts = {}
+        for item in preprocessed_text:
+            code = item.quality_filter_code
+            if code is not None:
+                code_counts[code] = code_counts.get(code, 0) + 1
+        
+        code_meanings = {
+            99999997: "User missing: Don't know/only expressing uncertainty", 
+            99999998: "System missing: NA",
+            99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+        
+        for code, count in sorted(code_counts.items()):
+            meaning = code_meanings.get(code, "Unknown code")
+            print(f"Code {code}: {count} items - {meaning}")
+        
+        print(f"Total items with codes: {sum(code_counts.values())}")
+        print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}")
+        print()  # Empty line
+    
+    # Show consolidated sample corrections from all preprocessing steps
+    if VERBOSE:
+        print()
+        print("📋 Sample preprocessing corrections:")
+        
+        # Collect samples from all processing steps
+        all_samples = []
+        
+        # From text normalizer
+        if hasattr(text_normalizer, 'transformation_examples') and text_normalizer.transformation_examples:
+            all_samples.extend(text_normalizer.transformation_examples)
+        
+        # From spell checker (most important for user)
+        if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+            all_samples.extend(spell_checker.correction_examples)
+        
+        # From text finalizer
+        if hasattr(text_finalizer, 'transformation_examples') and text_finalizer.transformation_examples:
+            all_samples.extend(text_finalizer.transformation_examples)
+        
+        # Show one random sample from spell checker (most relevant) if available
+        if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+            import random
+            sample = random.choice(spell_checker.correction_examples)
+            print(f'  "{sample[0]}" -> "{sample[1]}"')
+        elif all_samples:
+            import random
+            sample = random.choice(all_samples)
+            print(f'  "{sample[0]}" -> "{sample[1]}"')
+        else:
+            print("  No corrections made")
+        print()
+    
+    print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
+    
+if False: #debug if true
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(preprocessed_text)), n_samples)
+    for i in indices:
+        print("Raw structured:", raw_text_list[i])
+        print("---")        
+
+# === STEP 3 ========================================================================================================
+"""quality filter"""
+from utils import qualityFilter
+
+FORCE = False
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name        = "quality_filter"
+if  FORCE:
+    FORCE_STEP   = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    quality_filtered_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.QualityFilteredModel)
+    input_len = len([item.response for item in quality_filtered_text if item.quality_filter_code != 99999998] )
+    filtered_len = len([item.quality_filter for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999998])
+    code_counts = {}
+    for item in quality_filtered_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    verbose_reporter.summary("QUALIFIED RESPONESES FROM CACHE", {"• Input" : f"{input_len} responses"})
+    for code, count in code_counts.items():
+            if code != 99999998:
+                verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
+    verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
+else:
+    verbose_reporter.section_header("QUALITY FILTERING PHASE")
+    start_time = time.time()
+    grader = qualityFilter.Grader(preprocessed_text, var_lab, model_config=model_config, verbose=VERBOSE, prompt_printer=prompt_printer)
+    quality_filtered_text = grader.grade()
+    grading_summary = grader.summary()
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache(quality_filtered_text, filename, step_name, variable_key, elapsed_time)
+    
+    print("\n=== MISSING CODE SUMMARY ===")
+    code_counts = {}
+    for item in quality_filtered_text:
+        code = item.quality_filter_code
+        if code is not None:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    code_meanings = {
+        99999997: "User missing: Don't know/only expressing uncertainty", 
+        99999998: "System missing: NA",
+        99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"}
+    for code, count in sorted(code_counts.items()):
+        meaning = code_meanings.get(code, "Unknown code")
+        print(f"Code {code}: {count} items - {meaning}")
+    print(f"Total items with codes: {sum(code_counts.values())}")
+    print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
+    print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
+
+# debug if true
+if False : 
+    import random
+    n_samples = 5
+    indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    for i in indices:
+        print("Filtered:", quality_filtered_text[i])
+        print("---")    
+
+# === STEP 4 ========================================================================================================
+"""Response segments/ideas"""
+from utils import ideaExtractor
+
+FORCE = False
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name        = "extracted_ideas"
+if  FORCE:
+    FORCE_STEP   = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    encoded_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.IdeasExtractedModel)
+    segments = sum(item.idea_count for item in encoded_text)
+    verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses -> Output": f"{segments} response segments"})
+else: 
+    verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSED PHASE")
+    start_time = time.time()
+    filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
+    verbose_reporter.stat_line(f"Input: {len(quality_filtered_text)} quality-filtered responses")
+    verbose_reporter.stat_line(f"Processing: {len(filtered_text)} meaningful responses (excluded {len(quality_filtered_text) - len(filtered_text)} filtered responses)")
+    encoder = ideaExtractor.IdeaExtractor(
+        responses=filtered_text,
+        var_lab=var_lab,
+        model_config=model_config,
+        verbose=VERBOSE,
+        prompt_printer=prompt_printer
+    )
+    encoded_text = encoder.extract()
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
+    print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
+    
+
+if False : # debug if true
+    import random
+    n_samples = 1
+    sampled_items = random.sample(encoded_text, n_samples)
+    for item in sampled_items:
+        print(item.response)
+        for segment in item.response_ideas:
+            print(f"- {segment.idea}")
+
+# === STEP 5 =======================================================================================================
+"""Generate embeddings"""
+from config import EmbeddingConfig
+from utils.embedder import Embedder
+
+FORCE = False
+
+step_name = "embeddings"
+if  FORCE:
+    FORCE_STEP   = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+force_recalc     = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    embedded_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.EmbeddingsModel)
+    total_embeddings = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
+    verbose_reporter.summary("EMBEDDINGS FROM CACHE", {
+        "Input": f"{len(encoded_text)} responses", 
+        "Total embeddings": f"{total_embeddings}"
+    })
+else:
+    verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
+    start_time = time.time()
+    verbose_reporter.step_start("Generating Embeddings", emoji="🔗")
+    embedding_config = EmbeddingConfig()
+    get_embeddings = Embedder(
+            config=embedding_config,
+            model_config=model_config,
+            provider="openai",
+            verbose=VERBOSE)
+    input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
+    embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time)
+    print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
+
+if False: #debug if true
+    import random
+    n_samples = 1
+    sampled_items = random.sample(embedded_text, n_samples)
+    for item in sampled_items:
+        print(f"{item.response}\n")
+        for segment in item.response_ideas:
+            print(f"- {segment.idea}")
+
+# === STEP 6 =======================================================================================================
+"""Reduce data/get clusters"""
+from utils.clusterer import Clusterer
+
+FORCE = False
+VERBOSE = True
+
+step_name = "initial_clusters"
+if  FORCE:
+    FORCE_STEP   = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+
+from config import HDBSCANConfig
+
+CLUSTERING_ALPHA = HDBSCANConfig.alpha  # 1 is default, 1.5 would give more weight to size of clusters over distance. But advice is not to play around with this param too much/not at all.
+CLUSTERING_EPSILON = HDBSCANConfig.cluster_selection_epsilon  # Embeddings from OpenAI/Gemini are L2-normalized by default. After UMAP (10D, metric="cosine") and Euclidean HDBSCAN clustering, an epsilon of 0.5 typically corresponds to ~0.875–0.9 cosine similarity in the original embedding space. This prevents splitting clusters that are semantically very close.
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    initial_cluster_results = cache_manager.load_from_cache(filename, step_name, variable_key, models.ClusterModel)
+    cluster_ids = set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None])
+    num_initial_clusters = len(cluster_ids)
+    total_segments = sum(len(resp.response_ideas) for resp in initial_cluster_results if resp.response_ideas)
+    verbose_reporter.summary("INITIAL CLUSTERS FROM CACHE", {
+        "Input": f"{len(embedded_text)} responses",
+        "Total segments": f"{total_segments}", 
+        "Initial clusters": f"{num_initial_clusters}"
+    })
+else:
+    verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
+    start_time = time.time()
+    
+    # Create custom HDBSCAN config if overrides specified
+    hdbscan_config = None
+    if CLUSTERING_ALPHA is not None or CLUSTERING_EPSILON is not None:
+        from config import DEFAULT_HDBSCAN_CONFIG, HDBSCANConfig, DEFAULT_UMAP_CONFIG, DEFAULT_CLUSTERING_CONFIG
+        hdbscan_config = HDBSCANConfig(
+              min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
+              min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
+              cluster_selection_epsilon=DEFAULT_HDBSCAN_CONFIG.cluster_selection_epsilon,
+              alpha=DEFAULT_HDBSCAN_CONFIG.alpha,
+              metric=DEFAULT_HDBSCAN_CONFIG.metric,
+              cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
+              prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
+              approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
+              gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
+              merge_similar_clusters=True,   
+              merge_similarity_threshold=0.95   
+          )
+   
+    clusterer = Clusterer(
+        embedded_text, 
+        umap_config=DEFAULT_UMAP_CONFIG,
+        clustering_config=DEFAULT_CLUSTERING_CONFIG,
+        hdbscan_config=hdbscan_config, 
+        verbose=VERBOSE
+    )
+    clusterer.run()
+    initial_cluster_results = clusterer.to_cluster_model()
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time)
+    print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
+
+if False: #debug - print random clusters  
+    import random
+    cluster_ids = list(set([
+        response_idea.initial_cluster 
+        for result in initial_cluster_results 
+        for response_idea in result.response_ideas   
+        if response_idea.initial_cluster is not None]))
+    sampled_cluster = random.sample(cluster_ids, 1)[0]
+    print(f"\nCluster {sampled_cluster}:\n")
+    cluster_segments = []
+    for result in initial_cluster_results:
+        for response_idea in result.response_ideas:   
+            if response_idea.initial_cluster == sampled_cluster:
+                cluster_segments.append(response_idea.idea)
+    sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+    for segment_desc in sampled_segments:
+        print(f"-    {segment_desc}")
+    
+    
+if False: #debug if true - print all clusters
+    cluster_ids = list(set([
+        response_idea.initial_cluster 
+        for result in initial_cluster_results 
+        for response_idea in result.response_ideas  # This has initial_cluster
+        if response_idea.initial_cluster is not None]))
+    for x in range(1, round(len(cluster_ids) / 1) + 1):
+        y = x * 1
+        print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
+    
+        for z in range(y - 1, y):
+            if z < len(cluster_ids):
+                print(f"\nCluster {z}")
+                for item in initial_cluster_results:
+                    for subitem in item.response_ideas:
+                        if subitem.initial_cluster == z:
+                            print(subitem.idea)
+        input("\n🔸 Press Enter to continue to the next batch of clusters...")
+
+
+# === STEP 7 ========================================================================================================
+"""Generate codes"""
+from utils import speculativeStarterCodes
+from utils import codeGenerator as codeGenerator
+
+FORCE = True
+VERBOSE = True
+VERBOSE_DETAILED = False
+PROMPT_PRINTER = False
+CACHE_CODEGENERATOR_REASONING = True  
+USE_SPECULATIVE_STARTER_CODES = False
+
+step_name = "codebook_generation"
+if  FORCE:
+    FORCE_STEP      = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    codebook_models = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodebookModel)
+    if codebook_models and len(codebook_models) > 0:
+        codebook_main = codebook_models[0]  # Extract the single model from the list
+        verbose_reporter.summary("CODEBOOK FROM CACHE", {
+            "Total codes": len(codebook_main.codes),
+            "Source variable": codebook_main.source_variable
+        })
+        # Extract legacy codebook list for backward compatibility
+        codebook = [models.Codebook(code=entry.code, definition=entry.definition) 
+                    for entry in codebook_main.codes]
+        
+        # Load reasoning cache if flag is enabled
+        if CACHE_CODEGENERATOR_REASONING:
+            try:
+                reasoning_models = cache_manager.load_from_cache(
+                    filename, f"{step_name}_reasoning", variable_key, codeGenerator.CodeGeneratorReasoningResults
+                )
+                if reasoning_models and len(reasoning_models) > 0:
+                    codebook_reasoning = reasoning_models[0]
+                    print("✓ Loaded codebook reasoning from cache")
+                else:
+                    print("Note: Reasoning cache not found (run with CACHE_CODEGENERATOR_REASONING=True to create)")
+            except Exception as e:
+                print(f"Warning: Failed to load reasoning cache: {e}")
+    else:
+        print("ERROR: Failed to load codebook from cache")
+        codebook_main = models.CodebookModel(codes=[], source_variable=var_name)
+        codebook = []
+else:
+    verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
+    start_time = time.time()
+    
+    # Phase 1: Generate starter codes (optional)
+    if USE_SPECULATIVE_STARTER_CODES:
+        starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+            var_lab=var_lab, 
+            verbose=VERBOSE, 
+            prompt_printer=prompt_printer
+        )
+        starter_codes = starter_generator.generate()
+    else:
+        # Use empty starter codes when speculative generation is disabled
+        starter_codes = []
+        print("Speculative starter codes disabled - proceeding with empty starter codes")
+  
+    if not starter_codes and USE_SPECULATIVE_STARTER_CODES:
+        print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
+        codebook_main = models.CodebookModel(
+            codes=[],
+            generation_metadata={"error": "Failed to generate starter codes"},
+            source_variable=var_name
+        )
+        codebook = []
+        results = {}  # Empty results for caching check
+    else:
+        # Phase 2: Inductive code generation
+        # Use original codeGenerator with proven algorithms
+        generator = codeGenerator.InductiveCodeGenerator(
+            cluster_results=initial_cluster_results,
+            starter_codes=starter_codes, 
+            var_lab=var_lab,
+            verbose=True,
+            verbose_detailed=VERBOSE_DETAILED,
+            prompt_printer=prompt_printer
+        )
+        results = generator.generate()
+        
+        codebook_entries = []
+        codebook = []  # Legacy format for backward compatibility
+        
+        if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
+            # Use the deduplicated codebook directly from results
+            final_codebook = results.codebook
+            
+            # source_clusters_ids = []
+            # for key, value in results.step3_recommendations.items():
+            #      source_clusters_ids.append(key)
+            
+            # Display final codebook summary
+            if VERBOSE and final_codebook:
+                verbose_reporter.empty_line()
+                print("📊 FINAL CODEBOOK SUMMARY")
+                verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
+                
+                # Show sample codes (first 10)
+                verbose_reporter.empty_line()
+                print("📋 Complete codebook:")
+                
+            idx = 1
+            # Process the extracted final codebook
+            for item in final_codebook:
+                #print(item)
+                if VERBOSE:
+                    definition = item['definition']
+                    if len(definition) > 100:
+                        definition = definition[:97] + "..."
+                    #print(f"  {idx}. \"{item['code']}\" - {definition}")
+                    print(f"  {idx}. {item['code']}")
+                
+                codebook_entry = models.CodebookEntry(
+                    code=item['code'],
+                    definition=item['definition'],
+                    source_cluster=item['source_cluster_id']
+                )
+                codebook_entries.append(codebook_entry)
+               
+                idx += 1
+        else:
+            print("Warning: Codebook generator returned no results")
+        
+        codebook_main = models.CodebookModel(
+            codes=codebook_entries,
+            generation_metadata={
+                "methodology": "Inductive codebook generation from clusters",
+                "starter_codes_count": len(starter_codes) if starter_codes else 0,
+                "total_codes_generated": len(codebook_entries),
+            },
+            source_variable=var_name
+        )
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    if 'codebook_main' not in locals():
+        print("ERROR: codebook_main was not created!")
+        codebook_main = models.CodebookModel(
+            codes=[],
+            generation_metadata={"error": "Failed to create codebook model"},
+            source_variable=var_name
+        )
+    
+    cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time)
+    
+    from utils.codebookDisplayer import display_clustered_codebook
+    # Pass reasoning results if available (either from cache or newly generated)
+    reasoning_for_display = None
+    if 'codebook_reasoning' in locals():
+        reasoning_for_display = codebook_reasoning
+    elif 'results' in locals():
+        reasoning_for_display = results
+    
+    display_clustered_codebook(codebook_main, generator, model_config, verbose=VERBOSE, reasoning_results=reasoning_for_display)
+
+    
+    # Always cache codebook reasoning if available for consistent exports
+    if results:
+        try:
+            codebook_reasoning = results
+            cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time)
+            print("v Cached codebook reasoning for export consistency")
+        except Exception as e:
+            print(f"WARNING: Failed to cache reasoning results: {e}")
+            print("   Export will fall back to basic format without reasoning columns")
+    else:
+        print("WARNING: No reasoning results generated to cache")
+        print("   Export will fall back to basic format without reasoning columns")
+    
+    print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
+
+
+if True: #the codebook - clustered display
+    from utils.codebookDisplayer import display_clustered_codebook
+    display_clustered_codebook(codebook_main, generator, model_config, verbose=VERBOSE)
+        
+
+if False: #debug if true (reasoning_
+    if True and CACHE_CODEGENERATOR_REASONING: 
+        from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
+        if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+                display_cluster_analysis(codebook_reasoning)
+        else:
+            print("Note: codebook_reasoning not available for display")
+
+
+if False: #debug if true (prompts + reasonng)
+    import random
+    step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+    step3_recommendations = codebook_reasoning.step3_recommendations
+    available_ids = list(step3_recommendations.keys())
+    cluster_id = random.choice(available_ids)
+    cluster_id = '117-2'
+ 
+    from utils import codegenPromptTester    
+    tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
+    tester.test_prompt_1()
+    tester.test_prompt_2()
+    tester.test_prompt_3()
+    tester.test_prompt_4()
+    # codegenPromptTester.main(cluster_id = cluster_id, var_lab=var_lab)
+    
+    if True and CACHE_CODEGENERATOR_REASONING: 
+        from utils.codegenResults import display_cluster_analysis #, display_summary_statistics
+        if 'codebook_reasoning' in locals() and codebook_reasoning is not None: 
+            display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
+        else:
+            print("Note: codebook_reasoning not available for display")
+  
+    
+# from utils.codebookDeduplicator import deduplicate_codebook, print_deduplication_report
+
+# if 'codebook_reasoning' in locals() and codebook_reasoning: 
+#     dedup_results = deduplicate_codebook( 
+#         reasoning_results=codebook_reasoning,  # Use the actual reasoning results
+#         similarity_threshold=0.9,                                                                       
+#         language="Dutch" ) 
+#     final_codebook = dedup_results.deduplicated_codebook                                                                                                
+# else:
+#     print("Warning: No reasoning results available for deduplication")
+
+# # Review results
+# print_deduplication_report(dedup_results)
+# final_codebook = dedup_results.deduplicated_codebook 
+
+# if False: #the codebook
+#     for entry in final_codebook:
+#         print(entry['code'].upper())
+#         print(entry['definition'])
+#         print("\n")
+        
+#         break
+#         print(f"{entry['code'].code.upper()}: \n{entry['definition']}\n")
+    
+# === STEP 7B =======================================================================================================
+"""Codebook Refinement"""
+from utils.codebookRefinement import refine_codebook, print_refinement_report
+
+STEP_7B_FORCE = True
+STEP_7B_VERBOSE = True
+
+step_name = "codebook_refinement"
+if STEP_7B_FORCE:
+    FORCE_STEP = step_name
+
+verbose_reporter_7b = VerboseReporter(STEP_7B_VERBOSE)
+force_recalc_7b = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc_7b and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    refinement_results_cached = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
+    if refinement_results_cached and len(refinement_results_cached) > 0:
+        refinement_results = refinement_results_cached[0]
+        verbose_reporter_7b.summary("CODEBOOK REFINEMENT FROM CACHE", {
+            "Original codes": refinement_results.processing_stats.get('original_code_count', 0),
+            "Refined categories": refinement_results.processing_stats.get('refined_category_count', 0),
+            "Total subcodes": refinement_results.processing_stats.get('total_refined_subcodes', 0)
+        })
+    else:
+        print("ERROR: Failed to load codebook refinement from cache")
+        refinement_results = None
+else:
+    verbose_reporter_7b.section_header("CODEBOOK REFINEMENT PHASE")
+    start_time_7b = time.time()
+    
+    # Check if we have codebook_reasoning from step 7
+    if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+        verbose_reporter_7b.step_start("GPT-5 Refinement", "Refining raw codes into hierarchical structure")
+        
+        # Run refinement using async pattern
+        async def run_codebook_refinement():
+            return await refine_codebook(
+                reasoning_results=codebook_reasoning,
+                model_config=model_config,
+                language= DEFAULT_LANGUAGE,
+                verbose=STEP_7B_VERBOSE
+            )
+        
+        refinement_results = asyncio.run(run_codebook_refinement())
+        
+        # Cache results
+        elapsed_time_7b = time.time() - start_time_7b
+        cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time_7b)
+        
+        if STEP_7B_VERBOSE:
+            print_refinement_report(refinement_results)
+    else:
+        print("ERROR: No codebook reasoning results available for refinement")
+        refinement_results = None
+
+print("\n'codebook refinement' completed.\n")
+
+# === STEP 8 =======================================================================================================
+"""Theme Organization """
+from utils.codeOrganizer import CodeOrganizer
+STEP_8_MODEL = "gpt-5"
+STEP_8_REASONING_EFFORT = "minimal"
+
+FORCE = True
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name = "theme_identification_reasoning"
+if FORCE:
+    FORCE_STEP = step_name
+
+verbose_reporter = VerboseReporter(VERBOSE)
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+codebook_for_reasoning = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    theme_enriched_codebook_8b = cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
+    if theme_enriched_codebook_8b and len(theme_enriched_codebook_8b) > 0:
+        theme_enriched_codebook = theme_enriched_codebook_8b[0]  # Extract the single model from the list
+        verbose_reporter.summary("REASONING-BASED THEME ORGANIZATION FROM CACHE", {
+            "Total codes": len(theme_enriched_codebook.codes),
+            "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
+            "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
+        })
+        # Extract legacy codebook for backward compatibility
+        enriched_codebook = [models.Codebook(
+            code=entry.code, 
+            definition=entry.definition, 
+            theme=entry.theme,
+            theme_description=entry.theme_description
+        ) for entry in theme_enriched_codebook.codes]
+    else:
+        print("ERROR: Failed to load reasoning-based theme enriched codebook from cache")
+else:
+    verbose_reporter.section_header("REASONING-BASED THEME ORGANIZATION PHASE")
+    start_time = time.time()
+    
+    if not codebook_for_reasoning:
+        print("Error: No codes available for reasoning-based theme organization.")
+        # Keep existing results from Step 8
+    else:
+        # Initialize ThemeOrganizerReasoning
+        theme_organizer = CodeOrganizer(
+            codebook=codebook_for_reasoning,
+            var_lab=var_lab,
+            language=LANGUAGE,
+            verbose=VERBOSE,
+            model=STEP_8_MODEL,
+            reasoning_effort=STEP_8_REASONING_EFFORT
+        )
+        
+        # Run the reasoning-based theme organization
+        async def run_reasoning_theme_organization():
+            return await theme_organizer.organize_themes_reasoning()
+        
+        result = asyncio.run(run_reasoning_theme_organization())
+        
+        # Process theme results into structured format (same as Step 8)
+        enriched_entries = []
+        code_to_theme_mapping = {}
+        desc_to_theme_mapping = {}
+        themes = result['themes']
+
+        # Build code-to-theme mapping
+        for theme in themes:
+            theme_name = theme['theme_name']
+            #print(theme_name)
+            theme_desc = theme.get('theme_description', '')
+            #print(theme_desc)
+            cluster_id = theme.get('cluster_id', -1)
+            #print(cluster_id)
+        
+            for code_info in theme['codes']:
+                cleaned = re.sub(rf"[{string.digits}{re.escape(string.punctuation)}]", '', code_info['code_name'])
+                code_name = cleaned.strip().lower()
+                code_to_theme_mapping[code_name.lower()] = theme_name.lower()
+                desc_to_theme_mapping[code_name.lower()] = theme_desc.lower()
+            #print("\n")
+                
+        # Enrich codebook entries with theme information
+        for entry in codebook_main.codes:
+            theme_name = code_to_theme_mapping.get(entry.code.lower(), 'None')
+            theme_info = desc_to_theme_mapping.get(entry.code.lower(),'None')
+            theme_cluster_id = theme.get('cluster_id', -1)
+            #print(theme_cluster_id)
+
+            enriched_entry = models.ThemeEnrichedCodebookEntry(
+                code=entry.code,
+                definition=entry.definition,
+                theme=theme_name.capitalize(),
+                theme_description=theme_info.capitalize(),
+                source_cluster=entry.source_cluster
+            )
+            enriched_entries.append(enriched_entry)
+        
+        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+            codes=enriched_entries,
+            generation_metadata=codebook_main.generation_metadata,
+            source_variable=codebook_main.source_variable,
+            themes_summary=themes,
+            code_to_theme_mapping=code_to_theme_mapping,
+            theme_methodology=result.get('methodology', 'Single-prompt reasoning-based theme organization')
+        )
+        
+        # Create legacy enriched codebook for backward compatibility
+        # enriched_codebook = [models.Codebook(
+        #     code=entry.code, 
+        #     definition=entry.definition,
+        #     theme=entry.theme,
+        #     theme_description=entry.theme_description
+        # ) for entry in enriched_entries]
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
+    print(f"\n'Reasoning-based theme organization' completed in {elapsed_time:.2f} seconds.\n")
+    
+
+codebook=[models.Codebook(
+    code=entry.code, 
+    definition=entry.definition,
+    theme=entry.theme,
+    theme_description=entry.theme_description
+    ) for entry in theme_enriched_codebook.codes]    
+
+if False: #debug of true
+    for theme in themes:
+        print(f"\n📂 {theme['theme_name'].upper()}")
+        print('-' * len(theme['theme_name']))
+        for code in theme['codes']:
+            print(f"  • {code['code_name']}")
+    
+# === STEP 9 =======================================================================================================
+"""Assign codes (and themes)"""
+from utils import codeAssigner
+
+FORCE = True
+VERBOSE = True
+PROMPT_PRINTER = False
+
+step_name = "code_assignment_direct"
+if  FORCE:
+    FORCE_STEP      = step_name
+
+verbose_reporter = verboseReporter.VerboseReporter(VERBOSE)
+prompt_printer = promptPrinter.PromptPrinter(enabled=PROMPT_PRINTER, print_realtime=True)   
+force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+
+if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    code_assigned_results = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeAssignedModel)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
+    total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
+    verbose_reporter.summary("DIRECT CODE ASSIGNMENTS FROM CACHE", {
+        "Input responses": len(code_assigned_results),
+        "Ideas processed": total_ideas,
+        "Code assignments": total_assignments,
+        "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
+    })
+else:
+    verbose_reporter.section_header("DIRECT CODE ASSIGNMENT PHASE (NO EMBEDDINGS)")
+    start_time = time.time()
+    
+    if not theme_enriched_codebook or not theme_enriched_codebook.codes:
+        print("Error: No enriched codebook available for direct code assignment.")
+        code_assigned_results = []
+    elif not initial_cluster_results:
+        print("Error: No cluster results available for direct code assignment.")
+        code_assigned_results = []
+    else:
+        print(f"\nDirect assignment: Processing ideas from {len(initial_cluster_results)} cluster results")
+        print(f"Using complete codebook with {len(theme_enriched_codebook.codes)} codes")
+        
+        # Create simplified code assigner without embeddings
+        code_assigner_instance = codeAssigner.CodeAssigner(
+            cluster_models=initial_cluster_results,  # Use original cluster models
+            codebook=[models.Codebook(
+                code=entry.code, 
+                definition=entry.definition,
+                theme=entry.theme,
+                theme_description=entry.theme_description
+            ) for entry in theme_enriched_codebook.codes],
+            var_lab=var_lab,
+            code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
+            cached_idea_embeddings=None,   
+            model_config=model_config,
+            verbose=VERBOSE,
+            prompt_printer=prompt_printer
+        )
+        
+        code_assigned_results = code_assigner_instance.assign()
+ 
+    for result in code_assigned_results:
+        if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
+            result.assignment_metadata = {}
+        result.assignment_metadata.update({
+            "codebook_used": f"{len(theme_enriched_codebook.codes)} codes with themes",
+            "assignment_method": "direct_llm_processing",
+            "theme_methodology": theme_enriched_codebook.theme_methodology,
+            "assignment_timestamp": start_time
+        })
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time)
+    print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
+
+
+# === CODEBOOK PRINTOUT ========================================================================================================
+for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
+    print(f"{idx}) {entry.code}")
+    #print(entry.definition)
+    #print("\n")
+
+# === ASSIGNMENT STATS  ========================================================================================================
+from utils.pipelineSummarizer import PipelineSummarizer
+summarizer = PipelineSummarizer(verbose=True)
+summarizer.generate_summary(
+    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
+    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None)
+
+# === RANDOM ASSIGNMENTS  ========================================================================================================
+import random
+sampled_result = random.choice(code_assigned_results)
+print(f"Respondent ID: {sampled_result.respondent_id}")
+print(f"Response: {sampled_result.response}")
+#print(f"Idea count: {sampled_result.idea_count}")
+#print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+#print("---- Assigned Codes ----")
+for idea in sampled_result.response_ideas:
+    print("-" * 40)
+    print(f"Idea ID: {idea.idea_id}")
+    print(f"Idea: {idea.idea}")
+    print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+    #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+    print(f"Rationale: {idea.assignment_rationale}")
+    print(f"Assignment Confidence: {idea.assignment_confidence}")
+    print("-" * 40)
+
+# === RANDOM PROMPT  ========================================================================================================
+print("\n" + "="*80)
+print("RANDOM PROMPT TESTING (DEBUG)")
+print("="*80)
+
+# Extract ideas directly from initial_cluster_results
+all_ideas_for_debug = []
+for result in initial_cluster_results:
+    if result.response_ideas:
+        for idea in result.response_ideas:
+            all_ideas_for_debug.append({
+                'idea_id': idea.idea_id,
+                'idea': idea.idea,
+                'respondent_id': result.respondent_id
+            })
+
+from prompts import CODE_ASSIGNMENT_PROMPT
+
+if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
+    # Pick random idea from debug data
+    random_idea = random.choice(all_ideas_for_debug)
+    
+    # Get idea details
+    idea_id = random_idea['idea_id']
+    idea_text = random_idea['idea']
+    respondent_id = random_idea['respondent_id']
+    
+    print("🎯 Random Selected Idea:")
+    print(f"  ID: {idea_id}")
+    print(f"  Respondent: {respondent_id}")
+    print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
+    print(f"  Text ({len(idea_text)} chars): {idea_text}")
+    
+    # Get first 5 codes as candidate codes (simplified for demo)
+    if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
+        similar_codes = theme_enriched_codebook.codes # First 5 codes as example
+        
+        # print("\nCandidate Codes (first 5):")
+        # for j, code in enumerate(similar_codes, 1):
+        #     print(f"  {j}. {code.code}: {code.definition}")
+        
+        # Format candidate codes for prompt (match CodeAssigner format)
+        candidate_codes_text = "\n".join([
+            f"Code label: {code.code}\nCode description: {code.definition}\n" 
+            #f"Code: {code.definition}\n"
+            for code in similar_codes
+        ])
+        
+        # Create prompt using same logic as CodeAssigner
+        prompt = CODE_ASSIGNMENT_PROMPT.format(
+            language="Dutch",  # Match pipeline language
+            var_lab=var_lab,
+            idea_id=idea_id,
+            idea_text=idea_text,
+            candidate_codes=candidate_codes_text
+        )
+        
+        print(f"\n{'='*60}")
+        print("FORMATTED PROMPT:")
+        print(f"{'='*60}")
+        print(prompt)
+        #print("="*60)
+        
+        for result in code_assigned_results:
+            segments = result.response_ideas
+            for segment in segments:
+                if segment.idea_id == idea_id:
+                    print(f"\n{'='*60}")
+                    print("llM RESPNSE:")
+                    print(f"{'='*60}")
+                    # print(f"Response: {segment.idea_id}")
+                    print(f"Response: {segment.idea}")
+                    print("Assigned code:\n", "".join(segment.assigned_codes))
+                    print(f"\nReasoning:\n {segment.assignment_rationale}")
+                    print(f"\nConfidence: {segment.assignment_confidence}")
+                    #print("\n")
+        
+    else:
+        print("ERROR: No codebook available for prompt generation")
+else:
+    print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
+   
+# === STEP 10  ========================================================================================================
+"""Export Results"""
+from utils.resultsExporter import ResultsExporter
+
+try:
+    exporter = ResultsExporter(verbose=VERBOSE)
+    excel_path = exporter.export_to_excel(
+        code_assigned_results,
+        theme_enriched_codebook,
+        filename,
+        var_name,
+        export_dir=None  # Will create default export directory
+    )
+    print(f"✅ Code assignments exported to Excel: {excel_path}")
+except Exception as e:
+    print(f"⚠️ Excel export failed: {str(e)}")

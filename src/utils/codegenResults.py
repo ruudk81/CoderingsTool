@@ -16,8 +16,9 @@ def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int,
     else:
         cluster_id = cluster_id
     
-    print("\n" + "="*80 + f"\nCLUSTER REASONING ANALYSIS (cluster: {cluster_id})\n" + "="*80)
+    main_cluster_id = cluster_id.split('-')[0]
     
+    print("\n" + "="*80 + f"\nCLUSTER {main_cluster_id} REASONING ANALYSIS\n" + "="*80)
     
     _display_single_cluster(codebook_reasoning, cluster_id, show_detailed_reasoning, debug_mode)
         
@@ -28,10 +29,32 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
     step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})  
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
     step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
-  
-    # 1. CLUSTER THEME(S)
-    #cluster_id = '12'; show_detailed_reasoning = False
+    
+    if False: #debug
+        cluster_id = '43-1'
+        show_detailed_reasoning = False
 
+    main_cluster_id = cluster_id.split('-')[0] 
+    
+    # 1. CLUSTER IDEAS 
+    if step1_inputs and cluster_id in step1_inputs:
+        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')  
+        if cluster_text:
+            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
+            clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
+            print(f"\n💡 CLUSTER {main_cluster_id} IDEAS ({len(clean_ideas)} responses):")
+            for i, idea in enumerate(clean_ideas, 1):  
+                print(f"   {i}. {idea}")
+            # for i, idea in enumerate(clean_ideas[:5], 1):  # Show first 10
+            #     print(f"   {i}. {idea}")
+            # if len(clean_ideas) > 5:
+            #     print(f"   ... and {len(clean_ideas) - 5} more ideas")
+        else:
+            print(f"\n💡 CLUSTER {main_cluster_id} IDEAS: [No cluster_text found]")
+    else:
+        print(f"\n💡 CLUSTER {main_cluster_id} IDEAS: [Not available]")
+    
+    # 2. CLUSTER THEME(S)
     if step1_summaries and cluster_id in step1_summaries:
         step1_data = step1_summaries[cluster_id]
         analysis = step1_data.get("analysis", [])
@@ -40,13 +63,13 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         theme_label = step1_data.get("theme_label", [])
         theme_description = step1_data.get("theme_description", [])
         
-        print("\n🧠 CLUSTER ANALYSIS:")
+        print(f"\n🧠 CLUSTER {main_cluster_id} ANALYSIS:")
         if analysis:
             print(f"{analysis}")
         else:
             print("[No analysis]")
 
-        print("\n🔍 CLUSTER THEME:")
+        print(f"\n🔍 CLUSTER {cluster_id} THEME:")
         if theme_id > 0: 
             #print(f"Theme: {theme_id}")
             print(f"Label: {theme_label}")
@@ -54,25 +77,7 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
         else:
             print("[No themes identified]")
     else:
-        print("\n🔍 1. CLUSTER THEME(S): [Not available]")
-    
-    # 2. CLUSTER IDEAS 
-    if step1_inputs and cluster_id in step1_inputs:
-        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')  
-        if cluster_text:
-            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
-            clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
-            print(f"\n💡 CLUSTER IDEAS ({len(clean_ideas)} responses):")
-            # for i, idea in enumerate(clean_ideas, 1):  
-            #     print(f"   {i}. {idea}")
-            for i, idea in enumerate(clean_ideas[:5], 1):  # Show first 10
-                print(f"   {i}. {idea}")
-            if len(clean_ideas) > 5:
-                print(f"   ... and {len(clean_ideas) - 5} more ideas")
-        else:
-            print("\n💡 CLUSTER IDEAS: [No cluster_text found]")
-    else:
-        print("\n💡 CLUSTER IDEAS: [Not available]")
+        print(f"\n🔍 1. CLUSTER {main_cluster_id} THEME(S): [Not available]")
     
     # 3. CANDIDATE CODES (from step2_analysis)
     if step2_analysis:
