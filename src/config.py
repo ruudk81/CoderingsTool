@@ -186,10 +186,13 @@ class ModelConfig:
     # validation_model: str = "gpt-5-mini"   
     
     token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-4o-mini"              
+    thematic_summary_model: str = "gpt-5-mini"      
     candidate_selection_model: str = "gpt-4o-mini"           
     code_generation_model: str ="gpt-4o-mini"               
-    validation_model: str = "gpt-4o-mini"   
+    validation_model: str = "gpt-5-mini"
+    
+    # Step 7b: Codebook refinement
+    codebook_refinement_model: str = "gpt-5" 
 
     # Step 8: theme identification
     thematic_organizer_model : str = "gpt-5-mini"   
@@ -219,7 +222,7 @@ class ModelConfig:
     # =============================================================================
     
     # Theme Extraction (Step 1 - Cluster Summary)
-    theme_extraction_reasoning_effort: str = "low"       
+    theme_extraction_reasoning_effort: str = "minimal"       
     theme_extraction_text_verbosity: str = "medium"      
 
     # Candidate Selection (Step 2 - Code Selection)  
@@ -227,15 +230,19 @@ class ModelConfig:
     candidate_selection_text_verbosity: str = "medium"        
 
     # Code Generation (Step 3 - Code Recommendation)
-    code_generation_reasoning_effort: str = "low"      
+    code_generation_reasoning_effort: str = "minimal"      
     code_generation_text_verbosity: str = "medium"     
 
     # Validation (Step 4 - Code Validation)
-    validation_reasoning_effort: str = "low"         
+    validation_reasoning_effort: str = "minimal"         
     validation_text_verbosity: str = "medium"         
+    
+    # Codebook Refinement (Step 7b - Refinement)
+    refinement_reasoning_effort: str = "medium"
+    refinement_text_verbosity: str = "high"
 
     # Keep global defaults as fallback
-    gpt5_reasoning_effort: str = "low"      # Global default
+    gpt5_reasoning_effort: str = "minimal"  # Global default
     gpt5_text_verbosity: str = "medium"     # Global default
     
     # =============================================================================
@@ -256,7 +263,8 @@ class ModelConfig:
             'theme_extraction': self.thematic_summary_model,
             'candidate_selection': self.candidate_selection_model,
             'code_recommendation': self.code_generation_model,
-            'recommendation_validation': self.validation_model
+            'recommendation_validation': self.validation_model,
+            'codebook_refinement': self.codebook_refinement_model
             }
         return stage_models.get(stage, DEFAULT_MODEL)
     
@@ -274,7 +282,8 @@ class ModelConfig:
             'theme_extraction': self.theme_extraction_reasoning_effort,
             'candidate_selection': self.candidate_selection_reasoning_effort,
             'code_recommendation': self.code_generation_reasoning_effort,
-            'recommendation_validation': self.validation_reasoning_effort
+            'recommendation_validation': self.validation_reasoning_effort,
+            'codebook_refinement': self.refinement_reasoning_effort
         }
         return stage_efforts.get(stage, self.gpt5_reasoning_effort)
 
@@ -284,7 +293,8 @@ class ModelConfig:
             'theme_extraction': self.theme_extraction_text_verbosity,
             'candidate_selection': self.candidate_selection_text_verbosity,
             'code_recommendation': self.code_generation_text_verbosity,
-            'recommendation_validation': self.validation_text_verbosity
+            'recommendation_validation': self.validation_text_verbosity,
+            'codebook_refinement': self.refinement_text_verbosity
         }
         return stage_verbosities.get(stage, self.gpt5_text_verbosity)
     
@@ -338,6 +348,7 @@ class CacheConfig:
         "embeddings": "005",     
         "initial_clusters": "006",
         "codebook_generation": "007",
+        "codebook_refinement": "007b",
         "theme_identification": "008",
         "code_assignment": "009",
         "export": "010"
@@ -520,11 +531,36 @@ class EmbeddingConfig:
 # =============================================================================
 
 @dataclass
+class ClusteringConfig:
+    """Configuration for the complete clustering pipeline"""
+    
+    # PCA configuration
+    pca_components: int = .99   # keep 99% of variance
+    pca_random_state: int = 42  # random state for re-calc
+    
+    # Metrics
+    enable_dbcv       = True
+    enable_meanp      = True
+    centroid_distance = True
+    
+    # Calc Metrics
+    CLUSTER_METRIC = "euclidean"
+    DBCV_D = 1  # safe for DBCV (avoid overflow)
+    similarity_analysis_thresholds: list = field(default_factory=lambda: [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95])     # Similarity analysis thresholds
+    default_merge_threshold: float = 0.95     # Default merge threshold for similarity-based merging
+    grid_search_max_workers: Optional[int] = None  # None=auto, -1=all cores
+    grid_search_timeout_seconds: float = 300.0
+    ctfidf_top_k: int = 15 
+    #ctfidf_stopwords:  = #TODO
+    ctfidf_min_df: int = 2 
+    ctfidf_ngram_range: Tuple[int,int] = (1,2) 
+
+@dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""
-    n_neighbors: int = 15  # Higher for better semantic relationships
+    n_neighbors: int = 10  # default is 15, but 10 provides more detail, could be a better sweet spot in compination with clustering method "leaf"
     n_components: int = 10    # More dimensions to preserve semantic nuances
-    min_dist: float = 0.0  # Slight separation for better cluster distinction
+    min_dist: float = 0.1  # Slight separation for better cluster distinction
     metric: str = "cosine"  # Consistent with HDBSCAN for semantic similarity
     random_state: int = 42
     n_jobs: int = 1
@@ -538,39 +574,14 @@ class UMAPConfig:
 
 
 @dataclass
-class ClusteringConfig:
-    """Configuration for the complete clustering pipeline"""
-    # PCA configuration
-    pca_components: int = 100   #50 is min
-    pca_random_state: int = 42  #random state for re-calc
-    
-    CLUSTER_METRIC = "euclidean"
-    
-    similarity_analysis_thresholds: list = field(default_factory=lambda: [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95])     # Similarity analysis thresholds
-    default_merge_threshold: float = 0.95     # Default merge threshold for similarity-based merging
-
-    grid_search_max_workers: Optional[int] = None  # None=auto, -1=all cores
-    grid_search_timeout_seconds: float = 300.0
-
-    enable_dbcv: bool = False 
-    DBCV_D = 1  # safe for DBCV (avoid overflow)
-        
-    ctfidf_top_k: int = 15 
-    #ctfidf_stopwords:  = #TODO
-    ctfidf_min_df: int = 2 
-    ctfidf_ngram_range: Tuple[int,int] = (1,2) 
-    
-
-
-@dataclass
 class HDBSCANConfig:
     """Configuration for HDBSCAN clustering"""
     min_cluster_size: Optional[int] = 5  # Smaller clusters for better semantic coherence
     min_samples: Optional[int] = None # if none, fallback is min_cluster_size
-    cluster_selection_epsilon: Optional[float] = 0
+    cluster_selection_epsilon: Optional[float] = 0.0
     alpha: Optional[float] = 1.0  # Default stability weighting as requested
     metric: str = "euclidean"  # Better for semantic embeddings than euclidean
-    cluster_selection_method: str = "eom"  #leaf for more granularity
+    cluster_selection_method: str = "leaf"  #good for semantic purity & granularity; eom good for broad themes
     prediction_data: bool = True
     approx_min_span_tree: bool = False
     gen_min_span_tree: bool = True
@@ -631,6 +642,10 @@ class CodeDesignerConfig:
     enable_version_tracking: bool = True  # Track codebook versions
     enable_embedding_cache: bool = True  # Cache code embeddings per version
     max_cached_versions: int = 5  # Maximum cached codebook versions
+    
+    # Modification leak recovery settings
+    enable_concurrent_leak_recovery: bool = True  # Use concurrent batch processing for modification leak recovery
+    modification_leak_batch_size: int = 10  # Batch size for concurrent leak recovery
 
 
 

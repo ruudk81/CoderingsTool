@@ -71,6 +71,33 @@ class CodebookModel(BaseModel):
     source_variable: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+"""refined_codebook"""
+
+class RefinedSubcode(BaseModel):
+    id: str  # Original code ID(s) - multiple if merged (e.g., "1,2,3")
+    code: str
+    description: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class RefinedCodebookCategory(BaseModel):
+    category: str
+    subcodes: List[RefinedSubcode]
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class RefinedCodebookModel(BaseModel):
+    analysis: str
+    refined_codebook: List[RefinedCodebookCategory]
+    generation_metadata: Optional[Dict[str, Any]] = None
+    source_variable: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class CodeRefinementResults(BaseModel):
+    original_codebook: List[Dict[str, Any]]
+    refined_codebook: RefinedCodebookModel
+    processing_stats: Dict[str, Any]
+    timestamp: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 """enriched_codebook"""
 class CodeDefinition(BaseModel):
     code: str

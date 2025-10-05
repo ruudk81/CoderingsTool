@@ -20,6 +20,8 @@ from pydantic import ValidationError
 from aiolimiter import AsyncLimiter
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import AgglomerativeClustering
+from hdbscan import HDBSCAN
+
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel  
@@ -148,6 +150,7 @@ class CodeGeneratorReasoningResults(BaseModel):
     cluster_data: Dict[Union[int, str], Dict[str, Any]]   
     validation_details: Optional[Dict[Union[int, str], Any]] = None
     redistribution_stats: Optional[Dict[str, Any]] = None  # Statistics from idea redistribution
+    final_embeddings: Optional[List[List[float]]] = None  # Embeddings for final codebook codes
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
@@ -2305,24 +2308,51 @@ class InductiveCodeGenerator:
     
     def _smart_clustering(self, embeddings: np.ndarray) -> AgglomerativeClustering:
         """Simple heuristic-based clustering for idea sampling"""
+      
         n_ideas = len(embeddings)
-
-        # Simple heuristic based on cluster size
+        
         if n_ideas <= 50:
-            target_clusters = min(5, n_ideas // 3)
+            max_clusters = 4
         elif n_ideas <= 200:
-            target_clusters = 8
+            max_clusters = 8
         else:
-            target_clusters = 12
+            max_clusters = 12
+                    
+        mcs = int(max(2, 0.25 * np.sqrt(n_ideas)))
+     
+        db = HDBSCAN(
+            min_cluster_size=mcs,
+            min_samples=None,
+            metric="euclidean",
+            cluster_selection_method="eom",
+            cluster_selection_epsilon=0.0,
+            alpha=1.0
+        ).fit(embeddings)
         
-        # Use fixed cluster count - let sklearn optimize
-        clustering = AgglomerativeClustering(
-            n_clusters=target_clusters,
-            metric='cosine',
-            linkage='average'
-        )
+        labels = db.labels_
         
-        return clustering
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        
+        if n_clusters > max_clusters:
+            centroids = []
+            cluster_ids = []
+            for lbl in set(labels):
+                if lbl == -1:
+                    continue
+                cluster_ids.append(lbl)
+                centroids.append(embeddings[labels == lbl].mean(axis=0))
+            centroids = np.array(centroids)
+            
+            agg = AgglomerativeClustering(n_clusters=max_clusters, metric="euclidean", linkage="average")
+            cap_labels = agg.fit_predict(centroids)
+            
+            final_labels = np.full_like(labels, fill_value=-1)
+            for old_lbl, new_lbl in zip(cluster_ids, cap_labels):
+                final_labels[labels == old_lbl] = new_lbl
+        else:
+            final_labels = labels
+
+        return final_labels
     
     def _sample_representative_ideas(self, ideas: List, max_ideas: int = None) -> List[str]:
         """Sample representative ideas from a cluster using embedding-based sub-clustering"""
@@ -2419,12 +2449,13 @@ class InductiveCodeGenerator:
         embeddings = np.array(embeddings)
         
         # Perform clustering
-        clustering = self._smart_clustering(embeddings)
-        cluster_labels = clustering.fit_predict(embeddings)
+        cluster_labels = self._smart_clustering(embeddings)
         
         # Group ideas by cluster
         sub_clusters = {}
         for i, label in enumerate(cluster_labels):
+            if label == -1:
+                continue  # option: skip noise
             if label not in sub_clusters:
                 sub_clusters[label] = []
             sub_clusters[label].append({
@@ -3538,6 +3569,31 @@ class InductiveCodeGenerator:
         # Extract deduplicated codebook from SharedCodebook
         final_codes, version = await self.shared_codebook.get_current_snapshot()
         
+        # Generate and cache embeddings for final codebook
+        final_embeddings = None
+        if final_codes:
+            try:
+                if self.verbose:
+                    self.verbose_reporter.stat_line(f"Generating embeddings for final codebook (version {version}, {len(final_codes)} codes)")
+                
+                # Generate embeddings for final codebook using existing similarity engine
+                code_texts = [f"{code['code']}" for code in final_codes]
+                embeddings_numpy = await self.similarity_engine._embed_openai_batch(code_texts)
+                
+                # Cache embeddings in SharedCodebook for immediate use
+                await self.shared_codebook.cache_embeddings(version, embeddings_numpy)
+                
+                # Convert to serializable format for storage in reasoning results
+                final_embeddings = [embedding.tolist() for embedding in embeddings_numpy]
+                
+                if self.verbose:
+                    self.verbose_reporter.stat_line(f"Generated and cached {len(final_embeddings)} final codebook embeddings")
+                    
+            except Exception as e:
+                if self.verbose:
+                    self.verbose_reporter.error(f"Failed to generate final codebook embeddings: {e}")
+                final_embeddings = None
+        
         # Get raw cluster data for stats calculations
         cluster_data = self._prepare_cluster_data_for_results()
         
@@ -3573,7 +3629,8 @@ class InductiveCodeGenerator:
             codebook=final_codes,  # Final deduplicated codebook from SharedCodebook
             cluster_data=cluster_data,  # Raw cluster data for stats calculations
             validation_details=self.step4_validations,  # Detailed validation results
-            redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None
+            redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None,
+            final_embeddings=final_embeddings  # Embeddings for final codebook
         )
     
     def get_results(self) -> List[Dict[str, Any]]:

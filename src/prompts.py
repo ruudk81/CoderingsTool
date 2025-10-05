@@ -162,7 +162,7 @@ Your task is to extract ALL distinct ideas expressed in a respondent's written a
 
 <inputs>
 Survey question: {var_lab}
-{canonical_phrasing}
+Subject: {canonical_phrasing}
 Respondent ID: {respondent_id}
 Written response: {response}
 </inputs>
@@ -186,22 +186,15 @@ Written response: {response}
     - Forbid list/coordination punctuation: "/", "&", ",", ";", ":", "-", "–" (hyphens allowed only inside a single lexicalized word, not to join ideas).
 
 4. Phrasing template
-    - {canonical_phrasing}  
     - Use this exact phrasing template in your output: {phrasing_template}
-    - Normalize synonyms/abbreviations/omissions to the canonical form. Do not add extra qualifiers beyond the canonical form.
-
-5. Preserve Meaning, Normalize Terms
-    - Preserve the respondent’s intended meaning.
-    - Use their own words where possible but normalize key terms to a consistent canonical form derived from the survey question’s primary subject(s).
-        - Replace synonyms, abbreviations, or omitted references with the canonical form.
-        - Apply this uniformly to all extracted ideas from that response. 
-        - Example: If the question is about “electric vehicles” and the respondent says “cars” or “EVs,” standardize to “electric vehicles.”
+    - Normalize synonyms/abbreviations/omissions of the canonical term "{canonical_phrasing}". Do not add extra qualifiers.
+    - Example: If the question is about “electric vehicles” and the respondent says “cars” or “EVs,” standardize to “electric vehicles.”
     - Do not change sentiment or tone during normalization.
 
-6. Include Implicit Ideas
+5. Include Implicit Ideas
     - Capture both explicit statements and ideas that are clearly implied by the response.
 
-7. Edge Cases
+6. Edge Cases
     - If the response is empty, irrelevant, or “N/A”: return an empty array [].
     - If the response is off-topic: extract ideas anyway but note they may be off-topic.
     - If only one idea is present: return it in a single-item array.
@@ -307,10 +300,13 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher using Braun & Clarke's (2006) thematic analysis method. 
-Your task is to analyze a cluster of descriptive codes and construct themes by identifying shared underlying meanings or patterns.
+You are a qualitative researcher applying Braun & Clarke’s (2006) thematic analysis method. 
+Your task is to analyze a cluster of descriptive codes and construct one or more themes by identifying dominant patterns of shared meaning. 
+The descriptive codes are derived from responses to the research question.
 
 <inputs>
+Language to use: {language}
+
 Cluster ID: {cluster_id}
 
 Research question:
@@ -320,41 +316,57 @@ Cluster of descriptive codes to analyze:
 {cluster_text}
 </inputs>
 
+<guidance>
+- A central organizing concept (COC) is a unifying pattern of shared meaning, sentiment, or intention that brings together a group of codes into an **ATOMIC** theme in light of the research question.
 
-Follow these steps exactly and in order. Do not skip or reorder any step. Use your analytical judgment and reflexivity throughout - remember that themes are not discovered in data but are actively constructed.
+- Atomic means:
+  • One single idea, action, or expectation (not multiple at once).  
+  • Belongs to one aspect, domain, category, or product attribute only.  
+  • Expresses one consistent sentiment or intention (no mixing of positive/negative, or “keep” vs. “change”).  
+  • Is concrete and directly actionable — cannot be meaningfully split further.  
+  • If a code mentions multiple aspects (joined by “and,” “or,” commas, lists), crosses domains, or contains contradictory stances → split into multiple atomic concepts.  
+</guidance>
+
+Follow these steps exactly and in order. Do not skip or reorder any step. Use your analytical judgment and reflexivity throughout—remember that themes are not discovered in data but actively constructed.
 
 <analysis_steps>
-1. Consider the broader meaning of the descriptive codes in light of the research question
+1. Interpret descriptive codes in light of the research question:
+    - How does each code address the research question?
+    - What patterns are meaningful for analyzing concrete, actionable answers?
 
-2. Assess for a central organizing concept (COC)
-    - Can all descriptive codes be organized around one central concept?
-    - Practical test: If you cannot summarize all descriptive codes into one aomic idea, there is more than one COC.
-    - If one COC exists, continue with it. Otherwise, proceed with multiple COCs.
+2. Remove outliers. 
+    - Eliminate codes that do not connect to any broader pattern across multiple codes.
+    - Eliminate codes that do not represent a meaningful segment (too rare, irrelevant, or idiosyncratic).
+
+3. Identify COC(s):
+    - Can all codes be grouped around one central organizing ?
+    - Practical test: 
+        - Can I summarize all codes into one sentence that:
+            a) alligns with <guidance>,
+            b) captures exactly ONE ATOMIC theme,
+            c) contains no coordinating conjunctions (e.g., "and," "or") or list punctuation (commas, slashes),
+            d) preserves unity, consistency, and contrast?
+        - If yes → single COC. If no → multiple COCs.
+    - If one COC exists, continue with it; otherwise, work with multiple COCs.
+
+4. Refine COCs:
+    - Remove singletons (COCs based on only one code).
+    - Remove COCs without a dominant shared pattern or conceptual overlap.
+    - Remove vague or overly broad COCs (e.g., “positivity,” “challenges,” “general satisfaction”).
+
+5. Construct theme(s):
+    - Each theme must represent ONE ATOMIC concept only — see <guidance>.
+    - If multiple atomic concepts exist, create multiple theme objects (one per concept).
+    - Do not combine multiple aspects, domains, or contradictory stances into a single theme.
    
-3. If multiple COCs exist:
-    - Exclude COCs that rest on a single code (singletons).
-    - Exclude COCs that lack a dominant shared pattern with conceptual overlap.
-    - Exclude vague or overly broad COCs (e.g., “positivity,” “challenges,” “general satisfaction”).
+6. Document the analysis:
+    - State how many COCs were identified.
+    - If only one COC: explain why it is sufficient.
+    - If multiple COCs: justify why not a single COC.
 
-4. Construct a theme for each COC included
-    - A COC must be atomic: conceptually unified, interpretable, and distinct.
-
-5. Document your analysis:
-    - State how many COCs you identified.
-    - If only one COC, explain why it is sufficient.
-    - If multiple COCs, justify why not a single COC.
-    - For each COC: explain how it constructs a relevant theme in light of the research question.
-    - Support your explanation by referencing descriptive codes that exemplify each COC.
-
-5. Create theme labels. Each label must:
-    - Be clear, concise and precise  
-    - Contain ≤ 10 words
-
-
-6. Provide clarifications. Each clarification must:
-    - Be coherent
-    - Explain the label in light of the research question
-    - Include representative descriptive codes
+7. Write a theme label and clarification for that label:
+    - Theme Label Template: "[≤ 10 words |  active/actionable formulation of ONE ATOMIC theme in relation to the research question - short, active, atomic]"
+    - Clarification Template: "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label - tight, grounded, evidence-based]"
 
 </analysis_steps>
 
@@ -379,7 +391,6 @@ Critical requirements:
 - Conduct your analysis in the specified language.
 """
 
-
 CODING_DECISION_PROMPT = """
 You are a {language} qualitative research assistant helping to maintain a codebook for survey data analysis. 
 Your task is to decide whether existing codes in a codebook are sufficient to describe a new theme, or whether modifications or new codes are needed.
@@ -388,8 +399,9 @@ Your task is to decide whether existing codes in a codebook are sufficient to de
 Here is the survey question being analyzed:
 "{survey_question}"
 
-Here is the name of the new theme:
-"{cluster_summary}"
+Here is the new theme:
+- name: "{theme_name}"
+- decription: "{theme_description}"    
 
 Here is the list with existing codes in the codebook:
 {code_text}
@@ -465,13 +477,14 @@ You are a qualitative research assistant helping to maintain a codebook for surv
 Your task is to CREATE a new code that captures a distinct theme emerging from responses to a specific survey question.
 
 <inputs>
-Language to use: {language}
+1) Language to use: {language}
 
-Survey question:
+2) Survey question:
 "{survey_question}"
 
-New theme that emerged:
-"{cluster_summary}"
+3) New theme that emerged:
+- name: "{theme_name}"
+- description: "{theme_description}"
 </inputs>
 
 Follow these critical coding principles:
@@ -524,15 +537,16 @@ You are a qualitative research assistant helping to maintain a codebook for surv
 Your task is to MODIFY an existing code so that it fits a new theme, while preserving the **core meaning** of the original code.
 
 <inputs>
-Language to use: {language}
+1) Language to use: {language}
 
-Survey question:
+2) Survey question:
 "{survey_question}"
 
-New theme that emerged:
-"{cluster_summary}"
+3) New theme that emerged:
+- name: "{theme_name}"
+- description: "{theme_description}"
 
-Original code to modify:
+4) Original code to modify:
 {source_code}
 </inputs>
 
@@ -590,16 +604,17 @@ Language to use: {language}
 
 Existing codes in codebook:
 {code_text}
-
-Proposal:
+    
+Proposal background:
     
 A new theme emerged from analyzing responses to this survey question: 
 "{survey_question}" 
 
-This is the theme: 
-"{cluster_summary}"
+This is the new theme:
+- name: "{theme_name}"
+- description: "{theme_description}"    
 
-In order to capture this theme, let's:
+The proposal to review:
 {step3_recommendation}
 </inputs>
 
@@ -639,7 +654,10 @@ Step 4: If rejected on the grounds of parsimony, non-redunancy or overlap, make 
 
 Step 5: Determine your final components:
 - validated_decision: USE, MODIFY, or CREATE code
-- source_code: exact code label from codebook if USE/MODIFY, or null if CREATE
+- source_code: 
+    - If USE, this exact code: {source_code}
+    - If MODIFY, the exact code from the existing codebook you seek to modify
+    - If CREATE, write "null"
 - validated_code and validated_decision: final compliant label and definition
 - decision_rationale: brief explanation of approval/rejection
 </scratchpad>
@@ -658,13 +676,15 @@ Output schema:
     "verdict": "APPROVE" | "REJECT",
     "decision_rationale": "Brief explanation as to why the recommendation was approved or rejected",
     "validated_decision" : "USE | MODIFY | CREATE" , 
-    "source_code": "{source_code}",
+    "source_code": "If USE, this exact code: {source_code}; If MODIFY, the exact code from the existing codebook you seek to modify - or null, if CREATE",
     "validated_code": {{
       "code": "Final validated label (≤10 words, rule-compliant)",
       "definition": "Final validated definition (≤25 words, operational, grounded)"
     }}
   }}
 }}
+
+If USE, this exact code: {source_code}; If MODIFY, the exact code from the existing codebook you seek to modify - or null, if CREATE
 
 Critical remarks:
 - Use theme_id provided.
@@ -675,6 +695,89 @@ Critical remarks:
 # =============================================================================
 # STEP 8 THEME ORGANIZATION WITH REASONING MODELS
 # =============================================================================
+
+CODEBOOK_REFINEMENT_PROMPT = """
+You are a qualitative researcher and codebook methodologist. 
+Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook. 
+The descriptive codes are derived from survey responses.
+
+<inputs>
+Language to use: {language}
+
+survey_question: {survey_question}
+
+Raw descriptive codes to refine:
+{raw_codes}
+</inputs>
+
+<guidance>
+A high-quality codebook must be:
+- Non-redundant: No duplicate codes that restate the same idea in different words.
+- Inherently distinct: codes within the same category differ in content, not just phrasing.
+- Semantically differentiated: Wording for each code should be clearly different; minor overlap is acceptable.
+- Parsimonious: Use the fewest codes needed to cover the data comprehensively.
+- Well-structured: Organize in a clear hierarchy — Themes → Codes.
+- Each code has exactly one parent (no multi-parenting).
+- Consistently labeled: Use short, uniform, action-oriented labels that are meaningful for the survey question: “{survey_question}”.    
+    
+When codes overlap semantically:
+- Merge near-duplicates into a single code and remove duplicates.
+- Consolidate overlapping codes under one inclusive label that captures the shared idea.
+- **Preserve contrasts**: Keep separate codes that reflect  distinctive, contrasting, or polar aspects/cateogries/product-attributes, even if they belong under the same broader theme.
+- Refine wording of any vague code to make its scope precise.    
+
+Labeling:
+- Prefer active, specific labels (e.g., “Seeks clearer instructions” over “Clarity”).
+- Include a brief definition/decision rule and 1–2 examples for each code.
+</guidance>
+
+<analysis_steps>
+1. Review all raw codes.
+   - Identify redundant codes (semantic duplicates, identical meaning).
+   - Identify overlapping codes that can be merged into broader codes.
+
+2. Construct main themes that represent broad domains.
+
+3. Assign refined codes under these themes.
+   - Each code must represent ONE distinct, actionable concept.
+   - Remove vague or overly broad codes.
+
+4. Ensure consistent naming:
+   - Labels ≤ 8 words.
+   - Active or descriptive phrasing.
+   - No repetition across themes.
+
+5. Document the restructuring in "analysis":
+   - How many raw codes were merged.
+   - Which semantic duplicates were consolidated.
+   - Which themes were created and why.
+</analysis_steps>
+
+Provide your response as a valid JSON dictionary using this exact structure:
+{{
+  "analysis": "Provide your analysis here in {language} (describe main restructuring decisions, what was merged, how categories were formed).",
+   "refined_codebook": [
+      {{
+        "theme": "Main theme label",
+        "codes": [
+          {{
+            "id" : "original code_id(s) - only multiple if merged"
+            "code": "Refined subcode label",
+            "description": "≤ 20 words explanation of what this code means"
+          }}
+          // Add additional subcodes as needed
+        ]
+      }}
+      // Add additional categories here
+    ]
+}}
+
+
+Critical requirements:
+- Output must be valid JSON only — no extra commentary or explanation before or after.  
+- Replace "codebook_id" and "language" with the actual values provided.  
+- Conduct your analysis in the specified language.  
+"""
 
 THEME_ORGANIZATION_REASONING_PROMPT = """
 You are a qualitative research specialist with expertise in thematic analysis. Your task is to organize a set of codes into atomic themes based on semantic similarity in the context of a research question.

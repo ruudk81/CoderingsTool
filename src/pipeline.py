@@ -1,10 +1,8 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-# ===  MODULES ========================================================================================================
-import re
-import string 
+# ===  MODULES ======================================================================================================== 
 import time
-import asyncio
+#import asyncio
 import pandas as pd
 import nest_asyncio
 nest_asyncio.apply()
@@ -15,7 +13,7 @@ import models
 # === CONFIG ========================================================================================================
 from utils import dataLoader
 from utils.cacheManager import CacheManager
-from config import CacheConfig, ModelConfig
+from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
 
 # Initialize cache manager
 cache_config = CacheConfig()
@@ -24,6 +22,7 @@ cache_manager = CacheManager(cache_config)
 # Initialize model configuration
 model_config = ModelConfig()
 
+
 # === PIPELINE CONFIGURATION ========================================================================================
 # Test data 
 # filename = "M250285 input voor coderen - met Q18Q19.sav"
@@ -31,17 +30,21 @@ model_config = ModelConfig()
 # var_name = "q19"
 #var_name = "Q18Q19"
 
-# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Q20"
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+id_column = "DLNMID"
+var_name = "Q20"
 
 # filename = "M000000 Associatiemonitor Merk X net databestand.sav"
 # id_column = "DLNMID"
 # var_name = "Qd1_combined"
 
-filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
-id_column = "DLNMID"
-var_name = "Q15"
+# filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+# id_column = "DLNMID"
+# var_name = "Q15"
+
+# filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
+# id_column = "DLNMID"
+# var_name = "Q10"
 
 
 # Generate variable key for caching
@@ -63,7 +66,7 @@ else:
     )
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = ""  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
 VERBOSE = True  # Enable verbose output for debugging in Spyder
@@ -143,8 +146,8 @@ if False: #debug if true
 
 # ===========================================================================================================
 """truncate data"""
-# debug
-# raw_text_list0 = raw_text_list
+# # debug
+# # raw_text_list0 = raw_text_list
 # raw_text_list = raw_text_list[:250]
 # raw_text_list = raw_text_list0
 
@@ -485,7 +488,7 @@ if False: #debug if true
 """Reduce data/get clusters"""
 from utils.clusterer import Clusterer
 
-FORCE = True
+FORCE = False
 VERBOSE = True
 
 step_name = "initial_clusters"
@@ -713,15 +716,7 @@ else:
                     source_cluster=item['source_cluster_id']
                 )
                 codebook_entries.append(codebook_entry)
-                
-                # legacy_entry = models.Codebook(
-                #     code=item['code'],
-                #     definition=item['definition'],
-                    
-                #     theme=None,
-                #     theme_description=None
-                # )
-                # codebook.append(legacy_entry)
+               
                 idx += 1
         else:
             print("Warning: Codebook generator returned no results")
@@ -749,6 +744,17 @@ else:
     
     cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time)
     
+    from utils.codebookDisplayer import display_clustered_codebook
+    # Pass reasoning results if available (either from cache or newly generated)
+    reasoning_for_display = None
+    if 'codebook_reasoning' in locals():
+        reasoning_for_display = codebook_reasoning
+    elif 'results' in locals():
+        reasoning_for_display = results
+    
+    display_clustered_codebook(codebook_main, generator, model_config, verbose=VERBOSE, reasoning_results=reasoning_for_display)
+
+    
     # Always cache codebook reasoning if available for consistent exports
     if results:
         try:
@@ -765,6 +771,8 @@ else:
     print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
 
+#if True: #the codebook - clustered display
+        
 
 if False: #debug if true (reasoning_
     if True and CACHE_CODEGENERATOR_REASONING: 
@@ -774,11 +782,14 @@ if False: #debug if true (reasoning_
         else:
             print("Note: codebook_reasoning not available for display")
 
+
 if False: #debug if true (prompts + reasonng)
+    import random
     step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
     step3_recommendations = codebook_reasoning.step3_recommendations
     available_ids = list(step3_recommendations.keys())
     cluster_id = random.choice(available_ids)
+    cluster_id = '117-2'
  
     from utils import codegenPromptTester    
     tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab) 
@@ -795,143 +806,139 @@ if False: #debug if true (prompts + reasonng)
         else:
             print("Note: codebook_reasoning not available for display")
   
+
 # === STEP 8 =======================================================================================================
-"""Theme Organization """
-from utils.codeOrganizer import CodeOrganizer
-STEP_8B_MODEL = "gpt-5"
-STEP_8B_REASONING_EFFORT = "medium"
+"""Codebook Refinement"""
+from utils.codebookRefinement import refine_codebook, print_refinement_report
 
-FORCE = True
-VERBOSE = True
-PROMPT_PRINTER = False
+STEP_7B_FORCE = True
+STEP_7B_VERBOSE = True
 
-step_name = "theme_identification_reasoning"
-if FORCE:
+step_name = "codebook_refinement"
+if STEP_7B_FORCE:
     FORCE_STEP = step_name
 
-verbose_reporter = VerboseReporter(VERBOSE)
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
+verbose_reporter_7b = VerboseReporter(STEP_7B_VERBOSE)
+force_recalc_7b = FORCE_RECALCULATE_ALL or FORCE_STEP == step_name
 
-codebook_for_reasoning = [{"code": entry.code, "definition": entry.definition} for entry in codebook_main.codes]
+start_time_7b = time.time()
 
-if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-    theme_enriched_codebook_8b = cache_manager.load_from_cache(filename, step_name, variable_key, models.ThemeEnrichedCodebookModel)
-    if theme_enriched_codebook_8b and len(theme_enriched_codebook_8b) > 0:
-        theme_enriched_codebook = theme_enriched_codebook_8b[0]  # Extract the single model from the list
-        verbose_reporter.summary("REASONING-BASED THEME ORGANIZATION FROM CACHE", {
-            "Total codes": len(theme_enriched_codebook.codes),
-            "With themes": len([c for c in theme_enriched_codebook.codes if c.theme]),
-            "Themes identified": len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
+if not force_recalc_7b and cache_manager.is_cache_valid(filename, step_name, variable_key):
+    refinement_results_cached = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
+    if refinement_results_cached and len(refinement_results_cached) > 0:
+        refinement_results = refinement_results_cached[0]
+        verbose_reporter_7b.summary("CODEBOOK REFINEMENT FROM CACHE", {
+            "Original codes": refinement_results.processing_stats.get('original_code_count', 0),
+            "Refined categories": refinement_results.processing_stats.get('refined_category_count', 0),
+            "Total subcodes": refinement_results.processing_stats.get('total_refined_subcodes', 0)
         })
-        # Extract legacy codebook for backward compatibility
-        enriched_codebook = [models.Codebook(
-            code=entry.code, 
-            definition=entry.definition, 
-            theme=entry.theme,
-            theme_description=entry.theme_description
-        ) for entry in theme_enriched_codebook.codes]
     else:
-        print("ERROR: Failed to load reasoning-based theme enriched codebook from cache")
+        print("ERROR: Failed to load codebook refinement from cache")
+        refinement_results = None
 else:
-    verbose_reporter.section_header("REASONING-BASED THEME ORGANIZATION PHASE")
-    start_time = time.time()
+    verbose_reporter_7b.section_header("CODEBOOK REFINEMENT PHASE")
     
-    if not codebook_for_reasoning:
-        print("Error: No codes available for reasoning-based theme organization.")
-        # Keep existing results from Step 8
-    else:
-        # Initialize ThemeOrganizerReasoning
-        theme_organizer = CodeOrganizer(
-            codebook=codebook_for_reasoning,
-            var_lab=var_lab,
-            language=LANGUAGE,
-            verbose=VERBOSE,
-            model=STEP_8B_MODEL,
-            reasoning_effort=STEP_8B_REASONING_EFFORT
+    # Check if we have codebook_reasoning from step 7
+    if 'codebook_reasoning' in locals() and codebook_reasoning is not None:
+        verbose_reporter_7b.step_start("GPT-5 Refinement", "Refining raw codes into hierarchical structure")
+        
+        # Run refinement using simple sync call
+        refinement_results = refine_codebook(
+            survey_question = var_lab,
+            reasoning_results=codebook_reasoning,
+            model_config=model_config,
+            language=DEFAULT_LANGUAGE,
+            verbose=STEP_7B_VERBOSE
         )
         
-        # Run the reasoning-based theme organization
-        async def run_reasoning_theme_organization():
-            return await theme_organizer.organize_themes_reasoning()
+        # Cache results
+        elapsed_time_7b = time.time() - start_time_7b
+        cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time_7b)
         
-        result = asyncio.run(run_reasoning_theme_organization())
-        
-        # Process theme results into structured format (same as Step 8)
-        enriched_entries = []
-        code_to_theme_mapping = {}
-        desc_to_theme_mapping = {}
-        themes = result['themes']
+        if STEP_7B_VERBOSE:
+            print_refinement_report(refinement_results)
+    else:
+        print("ERROR: No codebook reasoning results available for refinement")
+        refinement_results = None
 
-        # Build code-to-theme mapping
-        for theme in themes:
-            theme_name = theme['theme_name']
-            #print(theme_name)
-            theme_desc = theme.get('theme_description', '')
-            #print(theme_desc)
-            cluster_id = theme.get('cluster_id', -1)
-            #print(cluster_id)
-        
-            for code_info in theme['codes']:
-                cleaned = re.sub(rf"[{string.digits}{re.escape(string.punctuation)}]", '', code_info['code_name'])
-                code_name = cleaned.strip().lower()
-                code_to_theme_mapping[code_name.lower()] = theme_name.lower()
-                desc_to_theme_mapping[code_name.lower()] = theme_desc.lower()
-            #print("\n")
-                
-        # Enrich codebook entries with theme information
-        for entry in codebook_main.codes:
-            theme_name = code_to_theme_mapping.get(entry.code.lower(), 'None')
-            theme_info = desc_to_theme_mapping.get(entry.code.lower(),'None')
-            theme_cluster_id = theme.get('cluster_id', -1)
-            #print(theme_cluster_id)
 
+elapsed_time_7b = time.time() - start_time_7b
+print(f"\n'codebook refinement' completed in {elapsed_time_7b:.2f} seconds.\n")
+
+if refinement_results and refinement_results.refined_codebook.refined_codebook:
+    verbose_reporter_7b.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
+    
+    # Create ThemeEnrichedCodebookEntry objects from refined codebook
+    enriched_entries = []
+    code_to_theme_mapping = {}
+    themes_summary = []
+    
+    for category in refinement_results.refined_codebook.refined_codebook:
+        theme_name = category.category
+        
+        # Add to themes summary
+        themes_summary.append({
+            'theme_name': theme_name,
+            'theme_description': theme_name,  # Use theme name as description
+            'code_count': len(category.subcodes)
+        })
+        
+        for subcode in category.subcodes:
+            # Create ThemeEnrichedCodebookEntry
             enriched_entry = models.ThemeEnrichedCodebookEntry(
-                code=entry.code,
-                definition=entry.definition,
-                theme=theme_name.capitalize(),
-                theme_description=theme_info.capitalize(),
-                source_cluster=entry.source_cluster
+                code=subcode.code,
+                definition=subcode.description,
+                theme=theme_name,
+                theme_description=theme_name,
+                source_cluster=subcode.id  # Use original code ID as source cluster
             )
             enriched_entries.append(enriched_entry)
-        
-        theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
-            codes=enriched_entries,
-            generation_metadata=codebook_main.generation_metadata,
-            source_variable=codebook_main.source_variable,
-            themes_summary=themes,
-            code_to_theme_mapping=code_to_theme_mapping,
-            theme_methodology=result.get('methodology', 'Single-prompt reasoning-based theme organization')
-        )
-        
-        # Create legacy enriched codebook for backward compatibility
-        # enriched_codebook = [models.Codebook(
-        #     code=entry.code, 
-        #     definition=entry.definition,
-        #     theme=entry.theme,
-        #     theme_description=entry.theme_description
-        # ) for entry in enriched_entries]
+            
+            # Build code-to-theme mapping
+            code_to_theme_mapping[subcode.code] = theme_name
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    cache_manager.save_to_cache([theme_enriched_codebook], filename, step_name, variable_key, elapsed_time)
-    print(f"\n'Reasoning-based theme organization' completed in {elapsed_time:.2f} seconds.\n")
+    # Create ThemeEnrichedCodebookModel
+    theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+        codes=enriched_entries,
+        themes_summary=themes_summary,
+        code_to_theme_mapping=code_to_theme_mapping,
+        theme_methodology="GPT-5 based codebook refinement with hierarchical theme organization",
+        generation_metadata={
+            "refinement_source": "step_8_codebook_refinement",
+            "original_code_count": len(refinement_results.original_codebook),
+            "refined_category_count": len(refinement_results.refined_codebook.refined_codebook),
+            "total_refined_codes": len(enriched_entries)
+        },
+        source_variable=var_name
+    )
     
+    verbose_reporter_7b.step_complete(f"Created theme enriched codebook: {len(enriched_entries)} codes in {len(themes_summary)} themes")
+    
+else:
+    print("ERROR: No refinement results available to create theme enriched codebook")
+    # Create empty theme enriched codebook as fallback
+    theme_enriched_codebook = models.ThemeEnrichedCodebookModel(
+        codes=[],
+        themes_summary=[],
+        code_to_theme_mapping={},
+        theme_methodology="Empty fallback - refinement failed",
+        source_variable=var_name
+    )
 
-codebook=[models.Codebook(
-    code=entry.code, 
-    definition=entry.definition,
-    theme=entry.theme,
-    theme_description=entry.theme_description
-    ) for entry in theme_enriched_codebook.codes]    
-
-if False: #debug of true
-    for theme in themes:
-        print(f"\n📂 {theme['theme_name'].upper()}")
-        print('-' * len(theme['theme_name']))
-        for code in theme['codes']:
-            print(f"  • {code['code_name']}")
-    
+if False: #debug
+    final_codebook = refinement_results.refined_codebook
+    for entry in final_codebook.refined_codebook:
+        print(entry.category)
+        for x in  entry.subcodes:
+            print(f"- {x.code}")
+            # print(x.description)
+            # print(x.id)
+            # print("\n")
+        print("\n")
+        
+        
 # === STEP 9 =======================================================================================================
+
 """Assign codes (and themes)"""
 from utils import codeAssigner
 
@@ -1018,108 +1025,111 @@ from utils.pipelineSummarizer import PipelineSummarizer
 summarizer = PipelineSummarizer(verbose=True)
 summarizer.generate_summary(
     code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None,
-    enriched_codebook=enriched_codebook if 'enriched_codebook' in locals() else None)
+    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
 
 # === RANDOM ASSIGNMENTS  ========================================================================================================
-import random
-sampled_result = random.choice(code_assigned_results)
-print(f"Respondent ID: {sampled_result.respondent_id}")
-print(f"Response: {sampled_result.response}")
-#print(f"Idea count: {sampled_result.idea_count}")
-#print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-#print("---- Assigned Codes ----")
-for idea in sampled_result.response_ideas:
-    print("-" * 40)
-    print(f"Idea ID: {idea.idea_id}")
-    print(f"Idea: {idea.idea}")
-    print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
-    #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
-    print(f"Rationale: {idea.assignment_rationale}")
-    print(f"Assignment Confidence: {idea.assignment_confidence}")
-    print("-" * 40)
+if False: #debug
+    import random
+    sampled_result = random.choice(code_assigned_results)
+    print(f"Respondent ID: {sampled_result.respondent_id}")
+    print(f"Response: {sampled_result.response}")
+    #print(f"Idea count: {sampled_result.idea_count}")
+    #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+    #print("---- Assigned Codes ----")
+    for idea in sampled_result.response_ideas:
+        print("-" * 40)
+        print(f"Idea ID: {idea.idea_id}")
+        print(f"Idea: {idea.idea}")
+        print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+        #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+        print(f"Rationale: {idea.assignment_rationale}")
+        print(f"Assignment Confidence: {idea.assignment_confidence}")
+        print("-" * 40)
 
 # === RANDOM PROMPT  ========================================================================================================
-print("\n" + "="*80)
-print("RANDOM PROMPT TESTING (DEBUG)")
-print("="*80)
+if False: #debug
 
-# Extract ideas directly from initial_cluster_results
-all_ideas_for_debug = []
-for result in initial_cluster_results:
-    if result.response_ideas:
-        for idea in result.response_ideas:
-            all_ideas_for_debug.append({
-                'idea_id': idea.idea_id,
-                'idea': idea.idea,
-                'respondent_id': result.respondent_id
-            })
+    print("\n" + "="*80)
+    print("RANDOM PROMPT TESTING (DEBUG)")
+    print("="*80)
 
-from prompts import CODE_ASSIGNMENT_PROMPT
+    # Extract ideas directly from initial_cluster_results
+    all_ideas_for_debug = []
+    for result in initial_cluster_results:
+        if result.response_ideas:
+            for idea in result.response_ideas:
+                all_ideas_for_debug.append({
+                    'idea_id': idea.idea_id,
+                    'idea': idea.idea,
+                    'respondent_id': result.respondent_id
+                })
 
-if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
-    # Pick random idea from debug data
-    random_idea = random.choice(all_ideas_for_debug)
     
-    # Get idea details
-    idea_id = random_idea['idea_id']
-    idea_text = random_idea['idea']
-    respondent_id = random_idea['respondent_id']
+    from prompts import CODE_ASSIGNMENT_PROMPT
     
-    print("🎯 Random Selected Idea:")
-    print(f"  ID: {idea_id}")
-    print(f"  Respondent: {respondent_id}")
-    print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
-    print(f"  Text ({len(idea_text)} chars): {idea_text}")
-    
-    # Get first 5 codes as candidate codes (simplified for demo)
-    if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
-        similar_codes = theme_enriched_codebook.codes # First 5 codes as example
+    if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
+        # Pick random idea from debug data
+        random_idea = random.choice(all_ideas_for_debug)
         
-        # print("\nCandidate Codes (first 5):")
-        # for j, code in enumerate(similar_codes, 1):
-        #     print(f"  {j}. {code.code}: {code.definition}")
+        # Get idea details
+        idea_id = random_idea['idea_id']
+        idea_text = random_idea['idea']
+        respondent_id = random_idea['respondent_id']
         
-        # Format candidate codes for prompt (match CodeAssigner format)
-        candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n" 
-            #f"Code: {code.definition}\n"
-            for code in similar_codes
-        ])
+        print("🎯 Random Selected Idea:")
+        print(f"  ID: {idea_id}")
+        print(f"  Respondent: {respondent_id}")
+        print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
+        print(f"  Text ({len(idea_text)} chars): {idea_text}")
         
-        # Create prompt using same logic as CodeAssigner
-        prompt = CODE_ASSIGNMENT_PROMPT.format(
-            language="Dutch",  # Match pipeline language
-            var_lab=var_lab,
-            idea_id=idea_id,
-            idea_text=idea_text,
-            candidate_codes=candidate_codes_text
-        )
-        
-        print(f"\n{'='*60}")
-        print("FORMATTED PROMPT:")
-        print(f"{'='*60}")
-        print(prompt)
-        #print("="*60)
-        
-        for result in code_assigned_results:
-            segments = result.response_ideas
-            for segment in segments:
-                if segment.idea_id == idea_id:
-                    print(f"\n{'='*60}")
-                    print("llM RESPNSE:")
-                    print(f"{'='*60}")
-                    # print(f"Response: {segment.idea_id}")
-                    print(f"Response: {segment.idea}")
-                    print("Assigned code:\n", "".join(segment.assigned_codes))
-                    print(f"\nReasoning:\n {segment.assignment_rationale}")
-                    print(f"\nConfidence: {segment.assignment_confidence}")
-                    #print("\n")
-        
+        # Get first 5 codes as candidate codes (simplified for demo)
+        if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
+            similar_codes = theme_enriched_codebook.codes # First 5 codes as example
+            
+            # print("\nCandidate Codes (first 5):")
+            # for j, code in enumerate(similar_codes, 1):
+            #     print(f"  {j}. {code.code}: {code.definition}")
+            
+            # Format candidate codes for prompt (match CodeAssigner format)
+            candidate_codes_text = "\n".join([
+                f"Code label: {code.code}\nCode description: {code.definition}\n" 
+                #f"Code: {code.definition}\n"
+                for code in similar_codes
+            ])
+            
+            # Create prompt using same logic as CodeAssigner
+            prompt = CODE_ASSIGNMENT_PROMPT.format(
+                language="Dutch",  # Match pipeline language
+                var_lab=var_lab,
+                idea_id=idea_id,
+                idea_text=idea_text,
+                candidate_codes=candidate_codes_text
+            )
+            
+            print(f"\n{'='*60}")
+            print("FORMATTED PROMPT:")
+            print(f"{'='*60}")
+            print(prompt)
+            #print("="*60)
+            
+            for result in code_assigned_results:
+                segments = result.response_ideas
+                for segment in segments:
+                    if segment.idea_id == idea_id:
+                        print(f"\n{'='*60}")
+                        print("llM RESPNSE:")
+                        print(f"{'='*60}")
+                        # print(f"Response: {segment.idea_id}")
+                        print(f"Response: {segment.idea}")
+                        print("Assigned code:\n", "".join(segment.assigned_codes))
+                        print(f"\nReasoning:\n {segment.assignment_rationale}")
+                        print(f"\nConfidence: {segment.assignment_confidence}")
+                        #print("\n")
+            
+        else:
+            print("ERROR: No codebook available for prompt generation")
     else:
-        print("ERROR: No codebook available for prompt generation")
-else:
-    print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
+        print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
    
 # === STEP 10  ========================================================================================================
 """Export Results"""
