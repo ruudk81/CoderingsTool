@@ -980,126 +980,126 @@ def show_upload_page():
                         st.error(f"Fout bij preview: {str(e)}" if lang == "nl" else f"Preview error: {str(e)}")
             else:
                 st.warning("Selecteer eerst variabelen en ID kolom" if lang == "nl" else "Please select variables and ID column first")
-
-        # Show preview if available
-        if st.session_state.variable_preview is not None:
-            st.subheader("📊 Data Preview")
-            preview_df = st.session_state.variable_preview
-
-            # Determine the text column name based on mode
-            text_column = st.session_state.selected_variable
-            if st.session_state.get('variable_mode_confirmed') == 'multiple' and text_column == 'merged_text':
-                display_text_column = 'merged_text'
-            else:
-                display_text_column = text_column
-
-            # Show statistics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Totaal" if lang == "nl" else "Total", len(preview_df))
-            with col2:
-                non_null = preview_df[display_text_column].notna().sum()
-                st.metric("Niet-leeg" if lang == "nl" else "Non-empty", non_null)
-            with col3:
-                unique_vals = preview_df[display_text_column].nunique()
-                st.metric("Uniek" if lang == "nl" else "Unique", unique_vals)
-            with col4:
-                sample_size_display = st.session_state.get('selected_sample_size')
-                if sample_size_display:
-                    st.metric("Steekproef" if lang == "nl" else "Sample", sample_size_display)
+            
+            # Show preview if available
+            if st.session_state.variable_preview is not None:
+                st.subheader("📊 Data Preview")
+                preview_df = st.session_state.variable_preview
+                
+                # Determine the text column name based on mode
+                text_column = st.session_state.selected_variable
+                if st.session_state.get('variable_mode_confirmed') == 'multiple' and text_column == 'merged_text':
+                    display_text_column = 'merged_text'
                 else:
-                    st.metric("Steekproef" if lang == "nl" else "Sample", "Volledig" if lang == "nl" else "Full")
-
-            # Show merge information for multiple variables
-            if st.session_state.get('variable_mode_confirmed') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
-                merge_config = st.session_state.get('merge_config', {})
-                sample_info = ""
-                if st.session_state.get('selected_sample_size'):
-                    sample_info = f" | **Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f" | **Sample:** {st.session_state.selected_sample_size} cases"
-
-                st.info(
-                    f"🔗 **Samengevoegd:** {len(st.session_state.selected_variables)} variabelen "
-                    f"({', '.join(st.session_state.selected_variables)}) | "
-                    f"**Strategie:** {merge_config.get('strategy', 'concatenate')} | "
-                    f"**Scheidingsteken:** '{merge_config.get('separator', ' ')}'{sample_info}"
-                    if lang == "nl" else
-                    f"🔗 **Merged:** {len(st.session_state.selected_variables)} variables "
-                    f"({', '.join(st.session_state.selected_variables)}) | "
-                    f"**Strategy:** {merge_config.get('strategy', 'concatenate')} | "
-                    f"**Separator:** '{merge_config.get('separator', ' ')}'{sample_info}"
-                )
-            else:
-                # Single variable display
-                sample_info = ""
-                if st.session_state.get('selected_sample_size'):
-                    sample_info = f" | **Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f" | **Sample:** {st.session_state.selected_sample_size} cases"
-
-                st.info(
-                    f"📊 **Variabele:** {st.session_state.selected_variable}{sample_info}"
-                )
-
-            # Show sample data
-            st.subheader("📝 " + ("Voorbeeldgegevens" if lang == "nl" else "Sample Data"))
-            sample_data = preview_df[preview_df[display_text_column].notna()].head(10)
-            if len(sample_data) > 0:
-                # Format data for clean display
-                sample_data = sample_data.copy()  # Avoid modifying original
-
-                # Convert all columns to appropriate display format
-                for col in sample_data.columns:
-                    if col == id_var:
-                        # Convert ID column to string, handling floats with .0
-                        try:
-                            # Check if it's numeric
-                            if sample_data[col].dtype in ['int64', 'float64']:
-                                # Convert to string and remove .0 for whole numbers
-                                sample_data[col] = sample_data[col].apply(
-                                    lambda x: str(int(x)) if pd.notna(x) and x == int(x) else str(x)
-                                )
-                            else:
-                                # Already string or other type
+                    display_text_column = text_column
+                
+                # Show statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Totaal" if lang == "nl" else "Total", len(preview_df))
+                with col2:
+                    non_null = preview_df[display_text_column].notna().sum()
+                    st.metric("Niet-leeg" if lang == "nl" else "Non-empty", non_null)
+                with col3:
+                    unique_vals = preview_df[display_text_column].nunique()
+                    st.metric("Uniek" if lang == "nl" else "Unique", unique_vals)
+                with col4:
+                    sample_size_display = st.session_state.get('selected_sample_size')
+                    if sample_size_display:
+                        st.metric("Steekproef" if lang == "nl" else "Sample", sample_size_display)
+                    else:
+                        st.metric("Steekproef" if lang == "nl" else "Sample", "Volledig" if lang == "nl" else "Full")
+                
+                # Show merge information for multiple variables
+                if st.session_state.get('variable_mode_confirmed') == 'multiple' and len(st.session_state.get('selected_variables', [])) > 1:
+                    merge_config = st.session_state.get('merge_config', {})
+                    sample_info = ""
+                    if st.session_state.get('selected_sample_size'):
+                        sample_info = f" | **Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f" | **Sample:** {st.session_state.selected_sample_size} cases"
+                    
+                    st.info(
+                        f"🔗 **Samengevoegd:** {len(st.session_state.selected_variables)} variabelen "
+                        f"({', '.join(st.session_state.selected_variables)}) | "
+                        f"**Strategie:** {merge_config.get('strategy', 'concatenate')} | "
+                        f"**Scheidingsteken:** '{merge_config.get('separator', ' ')}'{sample_info}" 
+                        if lang == "nl" else
+                        f"🔗 **Merged:** {len(st.session_state.selected_variables)} variables "
+                        f"({', '.join(st.session_state.selected_variables)}) | "
+                        f"**Strategy:** {merge_config.get('strategy', 'concatenate')} | "
+                        f"**Separator:** '{merge_config.get('separator', ' ')}'{sample_info}"
+                    )
+                else:
+                    # Single variable display
+                    sample_info = ""
+                    if st.session_state.get('selected_sample_size'):
+                        sample_info = f" | **Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f" | **Sample:** {st.session_state.selected_sample_size} cases"
+                    
+                    st.info(
+                        f"📊 **Variabele:** {st.session_state.selected_variable}{sample_info}"
+                    )
+                
+                # Show sample data
+                st.subheader("📝 " + ("Voorbeeldgegevens" if lang == "nl" else "Sample Data"))
+                sample_data = preview_df[preview_df[display_text_column].notna()].head(10)
+                if len(sample_data) > 0:
+                    # Format data for clean display
+                    sample_data = sample_data.copy()  # Avoid modifying original
+                    
+                    # Convert all columns to appropriate display format
+                    for col in sample_data.columns:
+                        if col == id_var:
+                            # Convert ID column to string, handling floats with .0
+                            try:
+                                # Check if it's numeric
+                                if sample_data[col].dtype in ['int64', 'float64']:
+                                    # Convert to string and remove .0 for whole numbers
+                                    sample_data[col] = sample_data[col].apply(
+                                        lambda x: str(int(x)) if pd.notna(x) and x == int(x) else str(x)
+                                    )
+                                else:
+                                    # Already string or other type
+                                    sample_data[col] = sample_data[col].astype(str)
+                            except Exception:
+                                # Fallback: just convert to string
                                 sample_data[col] = sample_data[col].astype(str)
-                        except Exception:
-                            # Fallback: just convert to string
-                            sample_data[col] = sample_data[col].astype(str)
-                    elif sample_data[col].dtype in ['int64', 'float64'] and col != display_text_column:
-                        # For other numeric columns, keep as numeric but handle display
-                        try:
-                            # Don't convert type, let streamlit handle display
-                            pass
-                        except Exception:
-                            pass
-                    elif sample_data[col].dtype == 'object' and col != display_text_column:
-                        # For string columns, ensure no format string issues
-                        try:
-                            # Replace format string placeholders to avoid errors
-                            sample_data[col] = sample_data[col].apply(
-                                lambda x: str(x).replace('%s', '%%s').replace('%d', '%%d').replace('%f', '%%f')
-                                if isinstance(x, str) else x
-                            )
-                        except Exception:
-                            pass
-
-                st.dataframe(sample_data, use_container_width=True)
-            else:
-                st.warning("Geen niet-lege gegevens gevonden" if lang == "nl" else "No non-empty data found")
-
-            # Ready to proceed button
-            if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
-                # Store session state based on variable mode
-                current_mode = st.session_state.get('variable_mode_confirmed', 'single')
-                selected_vars = st.session_state.get('selected_variables_confirmed', [])
-
-                if current_mode == 'multiple' and len(selected_vars) > 1:
-                    # Ensure merge configuration is properly stored
-                    if 'merge_config_confirmed' in st.session_state:
-                        st.session_state['merge_config'] = st.session_state['merge_config_confirmed']
-                    st.session_state['is_merged_variable'] = True
+                        elif sample_data[col].dtype in ['int64', 'float64'] and col != display_text_column:
+                            # For other numeric columns, keep as numeric but handle display
+                            try:
+                                # Don't convert type, let streamlit handle display
+                                pass
+                            except Exception:
+                                pass
+                        elif sample_data[col].dtype == 'object' and col != display_text_column:
+                            # For string columns, ensure no format string issues
+                            try:
+                                # Replace format string placeholders to avoid errors
+                                sample_data[col] = sample_data[col].apply(
+                                    lambda x: str(x).replace('%s', '%%s').replace('%d', '%%d').replace('%f', '%%f') 
+                                    if isinstance(x, str) else x
+                                )
+                            except Exception:
+                                pass
+                    
+                    st.dataframe(sample_data, use_container_width=True)
                 else:
-                    st.session_state['is_merged_variable'] = False
-
-                st.session_state.step = 1  # Move to preprocessing step
-                st.rerun()
+                    st.warning("Geen niet-lege gegevens gevonden" if lang == "nl" else "No non-empty data found")
+                
+                # Ready to proceed button
+                if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
+                    # Store session state based on variable mode
+                    current_mode = st.session_state.get('variable_mode_confirmed', 'single')
+                    selected_vars = st.session_state.get('selected_variables_confirmed', [])
+                    
+                    if current_mode == 'multiple' and len(selected_vars) > 1:
+                        # Ensure merge configuration is properly stored
+                        if 'merge_config_confirmed' in st.session_state:
+                            st.session_state['merge_config'] = st.session_state['merge_config_confirmed']
+                        st.session_state['is_merged_variable'] = True
+                    else:
+                        st.session_state['is_merged_variable'] = False
+                    
+                    st.session_state.step = 1  # Move to preprocessing step
+                    st.rerun()
 
 def show_preprocessing_page():
     lang = st.session_state.language

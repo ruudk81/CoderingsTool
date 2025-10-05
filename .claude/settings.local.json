@@ -32,8 +32,20 @@
       "Bash($timestamp = Get-Date -Format \"yyyyMMdd_HHmmss\")",
       "Bash(powershell:*)",
       "Bash(del test_use_optimization.py)",
-      "Bash(del test_sampling.py)"
+      "Bash(del test_sampling.py)",
+      "mcp__playwright__browser_navigate",
+      "Bash(streamlit run:*)",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_file_upload",
+      "mcp__playwright__browser_console_messages",
+      "Bash(cat:*)"
     ],
     "deny": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "playwright"
+  ]
 }
