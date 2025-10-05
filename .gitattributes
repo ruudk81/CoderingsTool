@@ -1,0 +1,26 @@
+# Normalize text files (portable line endings)
+* text=auto
+
+# Python & code (ensure LF in repo; Windows will still check out CRLF if core.autocrlf=true)
+*.py   text eol=lf
+*.txt  text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.csv  text eol=lf
+
+# Treat these as binary (no useless diffs, no eol conversion)
+*.xlsx binary
+*.xlsm binary
+*.sav  binary
+*.pkl  binary
+*.parquet binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+
+# (Optional) Make .ipynb handled as text but with minimal noise
+*.ipynb text
+
+# (Optional) If you adopt Git LFS later:
+# *.xlsx filter=lfs diff=lfs merge=lfs -text
+# *.parquet filter=lfs diff=lfs merge=lfs -text
