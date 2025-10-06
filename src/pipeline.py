@@ -30,9 +30,9 @@ model_config = ModelConfig()
 # var_name = "q19"
 #var_name = "Q18Q19"
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
+# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Q20"
 
 # filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 # id_column = "DLNMID"
@@ -42,9 +42,9 @@ var_name = "Q20"
 # id_column = "DLNMID"
 # var_name = "Q15"
 
-# filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
-# id_column = "DLNMID"
-# var_name = "Q10"
+filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
+id_column = "DLNMID"
+var_name = "Q10"
 
 
 # Generate variable key for caching
@@ -382,10 +382,11 @@ else:
 if False : 
     import random
     n_samples = 5
-    indices = random.sample(range(len(quality_filtered_text)), n_samples)
+    filtered_text = [item.response for item in quality_filtered_text if item.quality_filter]
+    indices = random.sample(range(len(filtered_text)), n_samples)
     for i in indices:
-        print("Filtered:", quality_filtered_text[i])
-        print("---")    
+        print(filtered_text[i])
+
 
 # === STEP 4 ========================================================================================================
 """Response segments/ideas"""

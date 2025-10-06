@@ -414,7 +414,6 @@ def main():
         # display_debug_controls()
     
     # Main content
-    # sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
     # if not st.session_state.step in sampling_steps:
     sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
     if not st.session_state.step in sampling_steps: 
@@ -671,9 +670,9 @@ def show_upload_page():
                         success, record_count = load_cached_dataset(selected_dataset)
                         
                         if success:
-                            st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records)" if lang == "nl" 
+                            st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records)" if lang == "nl"
                                                 else f"Dataset loaded from cache! ({record_count} records)"))
-                            st.session_state.step = 2  # Advance to preprocessing
+                            st.session_state.step = 1  
                             st.rerun()
                         else:
                             st.error("❌ " + ("Fout bij laden uit cache" if lang == "nl" else "Error loading from cache"))
@@ -888,7 +887,7 @@ def show_upload_page():
         if sample_size:
             preview_button_label += f" (eerste {sample_size} gevallen)" if lang == "nl" else f" (first {sample_size} cases)"
         else:
-            preview_button_label += f" (volledige dataset)" if lang == "nl" else f" (full dataset)"
+            preview_button_label += " (volledige dataset)" if lang == "nl" else " (full dataset)"
             
         if st.button(preview_button_label):
             if selected_variables and id_var:
@@ -1250,7 +1249,12 @@ def show_preprocessing_page():
                 debug_capture=debug_capture
             )
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
-            
+
+            # Explicitly store variable_key in session_state for column 2 display after rerun
+            pipeline_runner = _get_pipeline_runner()
+            if hasattr(pipeline_runner, 'get_variable_key'):
+                st.session_state['current_variable_key'] = pipeline_runner.get_variable_key()
+
             # App-level cache storage with correct cache key (force_recalculate_all route)
             if st.session_state.get('force_recalculate_all', False):
                 cache_manager = _get_cache_manager()
@@ -1276,7 +1280,7 @@ def show_preprocessing_page():
                 st.rerun()  # Rerun to show the continue button interface
             else:
                 # Set waiting state so user can see results before continuing
-                st.session_state['completed_step'] = 1.5  # Mark preprocessing as completed - show preprocessed results
+                st.session_state['completed_step'] = 1  # Mark preprocessing as completed - show preprocessed results
                 st.session_state['waiting_for_continue_preprocessing'] = True
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
@@ -1285,13 +1289,33 @@ def show_preprocessing_page():
 def show_filtering_page():
     lang = st.session_state.language
     st.header("Stap 3: Kwaliteitsfiltering" if lang == "nl" else "Step 3: Quality Filtering")
-    st.markdown(ui.get_text("FILTERING_INFO", lang))
-    
+
+    # Only show info text before processing (not in waiting state)
+    if not st.session_state.get('waiting_for_continue_filtering', False):
+        st.markdown(ui.get_text("FILTERING_INFO", lang))
+
     # Check if we're waiting for user to continue after filtering
     if st.session_state.get('waiting_for_continue_filtering', False):
-        st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten links en klik dan op doorgaan." 
-                           if lang == "nl" else "Quality filtering completed! Review the results on the left, then click continue."))
         
+        if 'quality_filter_stats' in st.session_state:
+            stats = st.session_state['quality_filter_stats']
+                
+            for code in sorted(stats['code_counts'].keys()):
+                count = stats['code_counts'][code]
+                meaning = stats['code_meanings'].get(code, 'Unknown')
+                st.write(f"**Code {code}:** {count} " + ("items" if lang == "nl" else "items") + f" - {meaning}")
+
+            total = stats['total_with_codes'] + stats['total_without_codes']
+            perc_with = stats['total_with_codes'] / total * 100
+            perc_without = stats['total_without_codes'] / total * 100
+
+            st.write("**" + ("Totaal met codes" if lang == "nl" else "Total with codes") +
+                     f":** {stats['total_with_codes']} ({perc_with:.0f}%)")
+            st.write("**" + ("Totaal zonder codes" if lang == "nl" else "Total without codes") +
+                     f":** {stats['total_without_codes']} ({perc_without:.0f}%)")
+
+        st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten rechts en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
+
         st.markdown("---")
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -1302,6 +1326,7 @@ def show_filtering_page():
                     del st.session_state['completed_step']
                 st.session_state.step = 3
                 st.rerun()
+
     elif st.button(ui.get_text("BTN_FILTER", lang), type="primary"):
         progress_container = st.empty()
         try:
@@ -1315,7 +1340,31 @@ def show_filtering_page():
                 streamlit_container=progress_container
             )
             st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
-            
+
+            # Calculate statistics from results for display
+            code_counts = {}
+            code_meanings = {
+                99999997: "User missing: Don't know/only expressing uncertainty",
+                99999998: "System missing: NA",
+                99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"
+            }
+
+            for item in quality_filtered_text:
+                if item.quality_filter and item.quality_filter_code:
+                    code = item.quality_filter_code
+                    code_counts[code] = code_counts.get(code, 0) + 1
+
+            total_with_codes = sum(code_counts.values())
+            total_without_codes = len(quality_filtered_text) - total_with_codes
+
+            # Store statistics in session_state for display in waiting state
+            st.session_state['quality_filter_stats'] = {
+                'code_counts': code_counts,
+                'code_meanings': code_meanings,
+                'total_with_codes': total_with_codes,
+                'total_without_codes': total_without_codes
+            }
+
             # Set waiting state and mark step as completed so left panel shows results
             st.session_state['completed_step'] = 2
             st.session_state['waiting_for_continue_filtering'] = True
@@ -2174,14 +2223,15 @@ def show_filtered_samples(quality_filtered_text, n_samples=5):
     if st.button("🎲 Draw new random examples", key="filtered_samples"):
         st.rerun()
     
-    # Original pattern: random.sample(range(len(quality_filtered_text)), n_samples)
-    indices = random.sample(range(len(quality_filtered_text)), min(n_samples, len(quality_filtered_text)))
+    #indices = random.sample(range(len(quality_filtered_text)), min(n_samples, len(quality_filtered_text)))
+    filtered_text = [item for item in quality_filtered_text if item.quality_filter]
+    indices = random.sample(range(len(filtered_text)), min(n_samples, len(filtered_text)))
     
     st.write(f"**Random samples from {len(quality_filtered_text)} filtered responses:**")
     
     sample_text = ""
     for i in indices:
-        response_text = quality_filtered_text[i].response if quality_filtered_text[i].response is not None else "(empty response)"
+        response_text = filtered_text[i].response if filtered_text[i].response is not None else "(empty response)"
         sample_text += f"{response_text}\n"
     
     # Display in gray container
@@ -2613,27 +2663,28 @@ def show_step_samples(step_number):
         st.write("---")
     
     # Load variabe/cache key
-    variable_key = st.session_state.get('current_cache_key')
-    
+    variable_key = st.session_state.get('current_variable_key')
+
+    if False:  # Additional debug for column 2 display
+        st.write("🔍 **Column 2 Debug:**")
+        st.write(f"- step_number: {step_number}")
+        st.write(f"- variable_key: {variable_key}")
+        st.write(f"- filename: {filename}")
+
     # Load data from cache based on step
     try:
         if step_number == 1:
-            # Step 1: Raw data
-            data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
-            if data:
-                #st.write(f"✅ Loaded {len(data)} raw responses from cache")
-                show_raw_samples(data)
-            else:
-                st.write("⏳ No raw data in cache - run preprocessing first")
-                
-        elif step_number == 1.5:
-            # Step 1.5: Preprocessed data (after preprocessing completion)
+            # Step 1: Preprocessed data (after preprocessing completion)
             data = cache_manager.load_from_cache(filename, "preprocessed", variable_key, models.PreprocessedModel)
+            if True:  # Debug cache lookup result
+                st.write(f"- Cache lookup result: {' Found data!' if data else 'No data'}")
+                if data:
+                    st.write(f"- Number of items: {len(data)}")
             if data:
                 show_preprocessed_samples(data)
             else:
                 st.write("⏳ No preprocessed data in cache - run preprocessing first")
-                
+
         elif step_number == 2:
             # Step 2: Quality filtered data
             data = cache_manager.load_from_cache(filename, "quality_filter", variable_key, models.QualityFilteredModel)
@@ -2728,6 +2779,7 @@ def show_info_panel():
                      st.session_state.get('waiting_for_continue_theme_identification', False) or
                      st.session_state.get('waiting_for_continue_code_assignment', False) or
                      st.session_state.get('waiting_for_continue_export', False) or
+                     
                      st.session_state.get('waiting_for_debug_continue_preprocessing', False) or
                      st.session_state.get('waiting_for_debug_continue_idea_extraction', False) or
                      st.session_state.get('waiting_for_debug_continue_clustering', False) or
@@ -2736,11 +2788,11 @@ def show_info_panel():
     if in_wait_state and st.session_state.get('completed_step'):
         # Show results from the step that just completed
         display_step = st.session_state.completed_step
-        st.header(f"Stap {display_step}: Resultaten" if lang == "nl" else f"Step {display_step}: Results")
+        st.header(f"Stap {display_step + 1}: Resultaten" if lang == "nl" else f"Step {display_step + 1}: Results")
         show_step_samples(display_step)
     elif st.session_state.step in sampling_steps:
         # Normal display for current step
-        st.header(f"Stap {st.session_state.step}: Voorbeelden" if lang == "nl" else f"Step {st.session_state.step}: Samples")
+        st.header(f"Stap {st.session_state.step + 1}: Voorbeelden" if lang == "nl" else f"Step {st.session_state.step + 1}: Samples")
         show_step_samples(st.session_state.step)
     
     if st.session_state.step in sampling_steps or (in_wait_state and st.session_state.get('completed_step')):
