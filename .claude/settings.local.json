@@ -42,7 +42,9 @@
       "mcp__playwright__browser_console_messages",
       "Bash(cat:*)",
       "mcp__playwright__browser_close",
-      "mcp__playwright__browser_evaluate"
+      "mcp__playwright__browser_evaluate",
+      "WebSearch",
+      "Bash(del test_cache_keys.py)"
     ],
     "deny": []
   },

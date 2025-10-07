@@ -138,6 +138,16 @@ class TextFinalizer:
         stats.output_count = len(results)
         stats.end_timing()
 
+        # Store statistics as instance attributes for app display
+        self.stats = {
+            'input_count': stats.input_count,
+            'output_count': stats.output_count,
+            'capitalization_fixes': capitalization_fixes,
+            'punctuation_additions': punctuation_additions,
+            'format_cleanup': format_cleanup,
+            'spacing_fixes': spacing_fixes
+        }
+
         # Always show main completion stats (as was before)
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line(f"Finalization completed: {stats.input_count} → {stats.output_count} responses")

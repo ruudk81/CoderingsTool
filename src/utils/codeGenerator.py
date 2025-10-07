@@ -1301,7 +1301,7 @@ class InductiveCodeGenerator:
         }
         
         # Initialize components
-        self.model_config = ModelConfig()
+        self.model_config = kwargs.get('model_config') or ModelConfig()
         self.verbose_reporter = verbose_reporter or VerboseReporter(verbose, capture_logging=True)
         
         # Initialize config-aware concurrency control
