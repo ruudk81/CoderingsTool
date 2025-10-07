@@ -107,9 +107,40 @@ class DataLoader:
             variables[var_name] = var_label 
             
         return variables
-    
+
+    def _is_datetime_string_column(self, series: pd.Series, sample_size: int = 100) -> bool:
+        """Check if a string column contains datetime values by attempting conversion
+
+        Args:
+            series: Pandas series to check
+            sample_size: Number of non-null values to sample for testing
+
+        Returns:
+            True if >80% of sampled values successfully parse as datetime
+        """
+        # Get non-null sample
+        non_null = series.dropna()
+        if len(non_null) == 0:
+            return False
+
+        # Sample for performance
+        sample = non_null.head(min(sample_size, len(non_null)))
+
+        # Try to convert to datetime
+        try:
+            # Suppress format inference warnings
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                converted = pd.to_datetime(sample, errors='coerce')
+            # If >80% convert successfully, it's likely a datetime column
+            success_rate = converted.notna().sum() / len(sample)
+            return success_rate > 0.8
+        except Exception:
+            return False
+
     def list_variables_with_types(self, filename: str, encoding: str = None):
-        """List all variables with their types (string vs numeric)"""
+        """List all variables with their types (string vs numeric), excluding datetime strings"""
         df, meta = self.load_sav(filename, encoding)
 
         variables_with_types = {}
@@ -119,9 +150,16 @@ class DataLoader:
             # Use readstat_variable_types which correctly identifies SPSS string variables
             readstat_type = meta.readstat_variable_types.get(var_name) if hasattr(meta, 'readstat_variable_types') else None
             is_string = readstat_type == 'string'
+
+            # Check if "string" is actually datetime converted to string
+            is_datetime_string = False
+            if is_string:
+                is_datetime_string = self._is_datetime_string_column(df[var_name])
+
             variables_with_types[var_name] = {
                 'label': var_label,
-                'is_string': is_string,
+                'is_string': is_string and not is_datetime_string,  # Exclude datetime strings
+                'is_datetime_string': is_datetime_string,  # Track separately for debugging
                 'dtype': str(df[var_name].dtype)
             }
 

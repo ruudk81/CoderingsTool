@@ -893,7 +893,19 @@ class IdeaExtractor:
             single_idea_responses = len([r for r in self._results if r.response_ideas and len(r.response_ideas) == 1])
             self.verbose_reporter.stat_line(f"Single idea responses: {single_idea_responses} ({single_idea_responses/len(self._results)*100:.1f}%)")
             self.verbose_reporter.stat_line(f"Multiple idea responses: {multi_idea_responses} ({multi_idea_responses/len(self._results)*100:.1f}%)")
-        
+
+        # Store statistics as instance attributes for app display
+        single_idea_responses = len([r for r in self._results if r.response_ideas and len(r.response_ideas) == 1]) if multi_idea_responses > 0 else 0
+        self.stats = {
+            'total_responses': len(self._results),
+            'total_ideas': idea_count,
+            'unique_ideas': len(unique_ideas),
+            'single_idea_responses': single_idea_responses,
+            'multi_idea_responses': multi_idea_responses,
+            'single_idea_percentage': (single_idea_responses / len(self._results) * 100) if len(self._results) > 0 and multi_idea_responses > 0 else 0,
+            'multi_idea_percentage': (multi_idea_responses / len(self._results) * 100) if len(self._results) > 0 else 0
+        }
+
         # Show idea examples with enhanced format
         if response_examples:
             print("\n📋 Sample extracted ideas:")

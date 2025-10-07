@@ -9,7 +9,7 @@ AVAILABLE_LANGUAGES = ["nl", "en"]
 UI_TEXTS = {
     "nl": {
         # App Configuration
-        "APP_TITLE": "CoderingsTool - Enquete Respons Analyse",
+        "APP_TITLE": "CoderingsTool",
         "APP_DESCRIPTION": """
         Analyseer open antwoorden uit enquetes met AI-gestuurde tekstverwerking. 
         Deze tool helpt u kwalitatieve data uit SPSS-bestanden te verwerken, clusteren en categoriseren.
@@ -36,6 +36,13 @@ UI_TEXTS = {
         - Antwoorden beoordelen op inhouds kwaliteit
         - Antwoorden onder kwaliteitsdrempel wegfilteren
         """,
+        
+        "EXTRACTION_INFO": """
+        Deze stap zal:
+        - Responsies segmenteren in discrete ideeën
+        - Elke idee een unieke ID geven
+        - Voorbereiden voor embedding generatie
+        """ ,
         
         "EMBEDDING_INFO": """
         Genereer embeddings om:
@@ -107,7 +114,7 @@ UI_TEXTS = {
     
     "en": {
         # App Configuration
-        "APP_TITLE": "CoderingsTool - Survey Response Analysis",
+        "APP_TITLE": "CodingTool",
         "APP_DESCRIPTION": """
         Analyze open-ended survey responses with AI-powered text processing. 
         This tool helps you preprocess, cluster, and categorize qualitative data from SPSS files.
@@ -133,6 +140,13 @@ UI_TEXTS = {
         - Identify meaningless or low-quality responses
         - Grade responses based on content quality
         - Filter out responses below quality threshold
+        """,
+        
+        "EXTRACTION_INFO": """
+        This step will:
+        - Segment responses into discrete ideas  
+        - Assign unique IDs to each idea
+        - Prepare for embedding generation
         """,
         
         "EMBEDDING_INFO": """

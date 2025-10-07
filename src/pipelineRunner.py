@@ -231,17 +231,22 @@ class StreamlitPipelineRunner:
         step_name = "data"
         verbose_reporter = self.create_verbose_reporter(streamlit_container, None, step_name)  # No debug_capture in step 1
         
-        # Generate enhanced variable key for caching (includes sample size)
+        # Generate enhanced variable key for caching (includes sample size and merge config)
         if var_names and len(var_names) > 1:
             selected_variables = var_names
             is_merged = True
+            # Get merge configuration for cache key
+            session_state = get_session_state()
+            merge_config = (session_state.get('merge_config') or
+                          session_state.get('merge_config_confirmed', {}))
         else:
             selected_variables = [var_name] if var_name else ["unknown"]
             is_merged = False
-        
-        # Use enhanced cache key that includes sample size
+            merge_config = None
+
+        # Use enhanced cache key that includes sample size and merge configuration
         from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(selected_variables, is_merged, sample_size)
+        variable_key = generate_enhanced_variable_key(selected_variables, is_merged, sample_size, merge_config)
         
         if streamlit_container:
             if var_names and len(var_names) > 1:
@@ -437,10 +442,17 @@ class StreamlitPipelineRunner:
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(preprocessed_text, filename, step_name, variable_key, elapsed_time)
-            
+
+            # Store preprocessing statistics for app display
+            self.preprocessing_stats = {
+                'normalizer_stats': text_normalizer.stats if hasattr(text_normalizer, 'stats') else {},
+                'spellchecker_stats': spell_checker.stats if hasattr(spell_checker, 'stats') else {},
+                'finalizer_stats': text_finalizer.stats if hasattr(text_finalizer, 'stats') else {}
+            }
+
             if streamlit_container:
                 streamlit_container.success(f"✅ Preprocessed {len(preprocessed_text)} responses in {elapsed_time:.2f}s")
-        
+
         return preprocessed_text
     
     def step_3_quality_filter(self, preprocessed_text: List[models.PreprocessedModel], filename: str, var_lab: str,
@@ -525,7 +537,10 @@ class StreamlitPipelineRunner:
             end_time = time.time()
             elapsed_time = end_time - start_time
             self.cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
-            
+
+            # Store idea extraction statistics for app display
+            self.idea_extraction_stats = encoder.stats if hasattr(encoder, 'stats') else {}
+
             # Debug capture: idea extraction samples
             if debug_capture and debug_capture.show_samples and encoded_text:
                 sample_gen = SampleGenerator(debug_capture, step_name)

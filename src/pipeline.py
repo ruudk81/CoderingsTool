@@ -59,14 +59,16 @@ else:
     # This should not happen when running via app_v2.py -> pipeline_executor
     # But keep fallback for standalone pipeline.py execution
     from utils.cacheManager import generate_enhanced_variable_key
+    merge_config = globals().get('merge_config', None) if is_merged else None
     variable_key = generate_enhanced_variable_key(
         selected_variables=selected_variables,
         is_merged=is_merged,
-        sample_size=sample_size
+        sample_size=sample_size,
+        merge_config=merge_config
     )
 
 # Pipeline behavior flags
-FORCE_RECALCULATE_ALL = True  # Set to True to bypass all cache and recalculate everything
+FORCE_RECALCULATE_ALL = False  # Set to True to bypass all cache and recalculate everything
 FORCE_STEP = ""  # # Options: "data", "preprocessed", "quality_filter", "extracted_ideas", "embeddings", "initial_clusters", "gatos_codebook", "theme_identification", "code_assignment"
 USE_SPECULATIVE_STARTER_CODES = False  # Set to True to enable speculative starter codes generation
 VERBOSE = True  # Enable verbose output for debugging in Spyder
@@ -392,7 +394,7 @@ if False :
 """Response segments/ideas"""
 from utils import ideaExtractor
 
-FORCE = False
+FORCE = True
 VERBOSE = True
 PROMPT_PRINTER = False
 

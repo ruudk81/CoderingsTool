@@ -123,6 +123,16 @@ class TextNormalizer:
         stats.output_count = len(results) - invalid_filtered
         stats.end_timing()
 
+        # Store statistics as instance attributes for app display
+        self.stats = {
+            'input_count': stats.input_count,
+            'output_count': stats.output_count,
+            'case_changes': case_changes,
+            'whitespace_changes': whitespace_changes,
+            'slash_changes': slash_changes,
+            'invalid_filtered': invalid_filtered
+        }
+
         # Always show main completion stats (as was before)
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line(f"Normalization completed: {stats.input_count} → {stats.output_count} responses")
