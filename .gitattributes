@@ -7,6 +7,7 @@
 *.md   text eol=lf
 *.json text eol=lf
 *.csv  text eol=lf
+.editorconfig text eol=lf
 
 # Treat these as binary (no useless diffs, no eol conversion)
 *.xlsx binary
