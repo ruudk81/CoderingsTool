@@ -2,7 +2,7 @@ import streamlit as st
 import sys
 import pandas as pd
 from pathlib import Path
-import random
+import html, random
 
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root / "src"))
@@ -114,266 +114,301 @@ def reset_navigation_tracking():
     st.session_state.max_step_reached = 0
     st.session_state.pipeline_results = {}
 
+def clear_all_wait_states():
+    """Clear all waiting states when navigating between steps"""
+    wait_states = [
+        'waiting_for_continue_preprocessing',
+        'waiting_for_continue_filtering',
+        'waiting_for_continue_idea_extraction',
+        'waiting_for_continue_embedding',
+        'waiting_for_continue_clustering',
+        'waiting_for_continue_codebook_generation',
+        'waiting_for_continue_theme_identification',
+        'waiting_for_continue_code_assignment',
+        'waiting_for_continue_export',
+        'waiting_for_debug_continue_preprocessing',
+        'waiting_for_debug_continue_idea_extraction',
+        'waiting_for_debug_continue_clustering',
+        'waiting_for_debug_continue_code_assignment',
+        'completed_step'
+    ]
+    for state in wait_states:
+        if state in st.session_state:
+            del st.session_state[state]
+
 # Side bar: session settings c.q. cofiguration of processing "models" ################################################################################################################################
 
-def show_advanced_settings():
-    """Show advanced settings UI in sidebar"""
+def show_advanced_settings(current_step=0):
+    """Show advanced settings UI in sidebar - only shows settings relevant to current step
+
+    Args:
+        current_step: Current pipeline step (0-10)
+    """
     with st.expander("⚙️ Advanced Settings", expanded=False):
         st.markdown("### Pipeline Configuration")
         st.markdown("*Settings apply only to current session*")
-        
+
         # Model options for dropdowns
         gpt4_models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
         gpt5_models = ["gpt-5-mini", "gpt-5-nano", "gpt-5"]
         all_models = gpt4_models + gpt5_models
         embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "gemini-embedding-001"]
-        
+
         # Reasoning and verbosity options
         reasoning_options = ["minimal", "low", "medium", "high"]
         verbosity_options = ["low", "medium", "high"]
-        
-        # Step 2: Preprocessing
-        st.markdown("#### 📝 Step 2: Preprocessing")
-        current_spell_model = st.session_state.model_config.get_model_for_stage('spell_check')
-        spell_model = st.selectbox(
-            "Spell Check Model",
-            options=all_models,
-            index=all_models.index(current_spell_model) if current_spell_model in all_models else 0,
-            key="spell_check_model"
-        )
-        if spell_model != current_spell_model:
-            st.session_state.model_config.spell_check_model = spell_model
-        
-        st.markdown("---")
-        
-        # Step 3: Quality Filter
-        st.markdown("#### 🔍 Step 3: Quality Filter")
-        current_quality_model = st.session_state.model_config.get_model_for_stage('quality_filter')
-        quality_model = st.selectbox(
-            "Quality Filter Model",
-            options=all_models,
-            index=all_models.index(current_quality_model) if current_quality_model in all_models else 0,
-            key="quality_filter_model"
-        )
-        if quality_model != current_quality_model:
-            st.session_state.model_config.quality_filter_model = quality_model
-        
-        st.markdown("---")
-        
-        # Step 4: Idea Extraction  
-        st.markdown("#### 💡 Step 4: Idea Extraction")
-        current_seg_model = st.session_state.model_config.get_model_for_stage('segmentation')
-        seg_model = st.selectbox(
-            "Segmentation Model",
-            options=all_models,
-            index=all_models.index(current_seg_model) if current_seg_model in all_models else 0,
-            key="segmentation_model"
-        )
-        if seg_model != current_seg_model:
-            st.session_state.model_config.segmentation_model = seg_model
-        
-        st.markdown("---")
-        
-        # Step 5: Embeddings
-        st.markdown("#### 🔗 Step 5: Embeddings")
-        current_emb_model = st.session_state.model_config.get_model_for_stage('embedding')
-        emb_model = st.selectbox(
-            "Embedding Model",
-            options=embedding_models,
-            index=embedding_models.index(current_emb_model) if current_emb_model in embedding_models else 0,
-            key="embedding_model"
-        )
-        if emb_model != current_emb_model:
-            st.session_state.model_config.embedding_model = emb_model
-        
-        st.markdown("---")
-        
-        # Step 6: Clustering
-        st.markdown("#### 📊 Step 6: Clustering")
-        st.markdown("*Automatic clustering determines optimal parameters*")
-        st.info("Clustering now uses an automatic approach that analyzes the data to find the optimal epsilon value based on k-nearest neighbor distances.")
-        
-        st.markdown("---")
-        
-        # Step 7: Code Generation 
-        st.markdown("#### 🏗️ Step 7: Code Generation ⭐")
-        st.markdown("*Core code generation models and parameters*")
-        
-        # Theme Summary Model
-        current_theme_model = st.session_state.model_config.get_model_for_stage('theme_extraction')
-        theme_model = st.selectbox(
-                "Theme Summary Model",
+
+        # Step 2: Preprocessing (shown on step 1)
+        if current_step == 1:
+            st.markdown("#### 📝 Step 2: Preprocessing")
+            current_spell_model = st.session_state.model_config.get_model_for_stage('spell_check')
+            spell_model = st.selectbox(
+                "Spell Check Model",
+                options=all_models,
+                index=all_models.index(current_spell_model) if current_spell_model in all_models else 0,
+                key="spell_check_model"
+            )
+            if spell_model != current_spell_model:
+                st.session_state.model_config.spell_check_model = spell_model
+
+            st.markdown("---")
+
+        # Step 3: Quality Filter (shown on step 2)
+        if current_step == 2:
+            st.markdown("#### 🔍 Step 3: Quality Filter")
+            current_quality_model = st.session_state.model_config.get_model_for_stage('quality_filter')
+            quality_model = st.selectbox(
+                "Quality Filter Model",
+                options=all_models,
+                index=all_models.index(current_quality_model) if current_quality_model in all_models else 0,
+                key="quality_filter_model"
+            )
+            if quality_model != current_quality_model:
+                st.session_state.model_config.quality_filter_model = quality_model
+
+            st.markdown("---")
+
+        # Step 4: Idea Extraction (shown on step 3)
+        if current_step == 3:
+            st.markdown("#### 💡 Step 4: Idea Extraction")
+            current_seg_model = st.session_state.model_config.get_model_for_stage('segmentation')
+            seg_model = st.selectbox(
+                "Segmentation Model",
+                options=all_models,
+                index=all_models.index(current_seg_model) if current_seg_model in all_models else 0,
+                key="segmentation_model"
+            )
+            if seg_model != current_seg_model:
+                st.session_state.model_config.segmentation_model = seg_model
+
+            st.markdown("---")
+
+        # Step 5: Embeddings (shown on step 4)
+        if current_step == 4:
+            st.markdown("#### 🔗 Step 5: Embeddings")
+            current_emb_model = st.session_state.model_config.get_model_for_stage('embedding')
+            emb_model = st.selectbox(
+                "Embedding Model",
+                options=embedding_models,
+                index=embedding_models.index(current_emb_model) if current_emb_model in embedding_models else 0,
+                key="embedding_model"
+            )
+            if emb_model != current_emb_model:
+                st.session_state.model_config.embedding_model = emb_model
+
+            st.markdown("---")
+
+        # Step 6: Clustering (shown on step 5)
+        if current_step == 5:
+            st.markdown("#### 📊 Step 6: Clustering")
+            st.markdown("*Automatic clustering determines optimal parameters*")
+            st.info("Clustering now uses an automatic approach that analyzes the data to find the optimal epsilon value based on k-nearest neighbor distances.")
+
+            st.markdown("---")
+
+        # Step 7: Code Generation (shown on step 6 and 7)
+        if current_step in [6, 7]:
+            st.markdown("#### 🏗️ Step 7: Code Generation ⭐")
+            st.markdown("*Core code generation models and parameters*")
+
+            # Theme Summary Model
+            current_theme_model = st.session_state.model_config.get_model_for_stage('theme_extraction')
+            theme_model = st.selectbox(
+                    "Theme Summary Model",
+                    options=gpt5_models + gpt4_models,
+                    index=(gpt5_models + gpt4_models).index(current_theme_model) if current_theme_model in (gpt5_models + gpt4_models) else 0,
+                    key="theme_summary_model"
+            )
+            if theme_model != current_theme_model:
+                st.session_state.model_config.thematic_summary_model = theme_model
+
+            # Candidate Selection Model
+            current_candidate_model = st.session_state.model_config.get_model_for_stage('candidate_selection')
+            candidate_model = st.selectbox(
+                "Candidate Selection Model",
                 options=gpt5_models + gpt4_models,
-                index=(gpt5_models + gpt4_models).index(current_theme_model) if current_theme_model in (gpt5_models + gpt4_models) else 0,
-                key="theme_summary_model"
-        )
-        if theme_model != current_theme_model:
-            st.session_state.model_config.thematic_summary_model = theme_model
+                index=(gpt5_models + gpt4_models).index(current_candidate_model) if current_candidate_model in (gpt5_models + gpt4_models) else 0,
+                key="candidate_selection_model"
+            )
+            if candidate_model != current_candidate_model:
+                st.session_state.model_config.candidate_selection_model = candidate_model
 
-        # Candidate Selection Model
-        current_candidate_model = st.session_state.model_config.get_model_for_stage('candidate_selection')
-        candidate_model = st.selectbox(
-            "Candidate Selection Model",
-            options=gpt5_models + gpt4_models,
-            index=(gpt5_models + gpt4_models).index(current_candidate_model) if current_candidate_model in (gpt5_models + gpt4_models) else 0,
-            key="candidate_selection_model"
-        )
-        if candidate_model != current_candidate_model:
-            st.session_state.model_config.candidate_selection_model = candidate_model
+            # Code Generation Model
+            current_codegen_model = st.session_state.model_config.get_model_for_stage('code_recommendation')
+            codegen_model = st.selectbox(
+                "Code Generation Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_codegen_model) if current_codegen_model in (gpt5_models + gpt4_models) else 0,
+                key="code_generation_model"
+            )
+            if codegen_model != current_codegen_model:
+                st.session_state.model_config.code_generation_model = codegen_model
 
-        # Code Generation Model
-        current_codegen_model = st.session_state.model_config.get_model_for_stage('code_recommendation')
-        codegen_model = st.selectbox(
-            "Code Generation Model",
-            options=gpt5_models + gpt4_models,
-            index=(gpt5_models + gpt4_models).index(current_codegen_model) if current_codegen_model in (gpt5_models + gpt4_models) else 0,
-            key="code_generation_model"
-        )
-        if codegen_model != current_codegen_model:
-            st.session_state.model_config.code_generation_model = codegen_model
+            # Validation Model
+            current_validation_model = st.session_state.model_config.get_model_for_stage('recommendation_validation')
+            validation_model = st.selectbox(
+                "Validation Model",
+                options=gpt5_models + gpt4_models,
+                index=(gpt5_models + gpt4_models).index(current_validation_model) if current_validation_model in (gpt5_models + gpt4_models) else 0,
+                key="validation_model"
+            )
+            if validation_model != current_validation_model:
+                st.session_state.model_config.validation_model = validation_model
 
-        # Validation Model
-        current_validation_model = st.session_state.model_config.get_model_for_stage('recommendation_validation')
-        validation_model = st.selectbox(
-            "Validation Model",
-            options=gpt5_models + gpt4_models,
-            index=(gpt5_models + gpt4_models).index(current_validation_model) if current_validation_model in (gpt5_models + gpt4_models) else 0,
-            key="validation_model"
-        )
-        if validation_model != current_validation_model:
-            st.session_state.model_config.validation_model = validation_model
+            st.markdown("**GPT-5 Reasoning Parameters**")
 
-        st.markdown("**GPT-5 Reasoning Parameters**")
+            # Theme Extraction Parameters
+            st.markdown("*Theme Extraction*")
+            theme_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.theme_extraction_reasoning_effort),
+                key="theme_reasoning"
+            )
+            if theme_reasoning != st.session_state.model_config.theme_extraction_reasoning_effort:
+                st.session_state.model_config.theme_extraction_reasoning_effort = theme_reasoning
 
-        # Theme Extraction Parameters
-        st.markdown("*Theme Extraction*")
-        theme_reasoning = st.selectbox(
-            "Reasoning Effort",
-            options=reasoning_options,
-            index=reasoning_options.index(st.session_state.model_config.theme_extraction_reasoning_effort),
-            key="theme_reasoning"
-        )
-        if theme_reasoning != st.session_state.model_config.theme_extraction_reasoning_effort:
-            st.session_state.model_config.theme_extraction_reasoning_effort = theme_reasoning
+            theme_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.theme_extraction_text_verbosity),
+                key="theme_verbosity"
+            )
+            if theme_verbosity != st.session_state.model_config.theme_extraction_text_verbosity:
+                st.session_state.model_config.theme_extraction_text_verbosity = theme_verbosity
 
-        theme_verbosity = st.selectbox(
-            "Text Verbosity",
-            options=verbosity_options,
-            index=verbosity_options.index(st.session_state.model_config.theme_extraction_text_verbosity),
-            key="theme_verbosity"
-        )
-        if theme_verbosity != st.session_state.model_config.theme_extraction_text_verbosity:
-            st.session_state.model_config.theme_extraction_text_verbosity = theme_verbosity
+            # Candidate Selection Parameters
+            st.markdown("*Candidate Selection*")
+            candidate_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.candidate_selection_reasoning_effort),
+                key="candidate_reasoning"
+            )
+            if candidate_reasoning != st.session_state.model_config.candidate_selection_reasoning_effort:
+                st.session_state.model_config.candidate_selection_reasoning_effort = candidate_reasoning
 
-        # Candidate Selection Parameters
-        st.markdown("*Candidate Selection*")
-        candidate_reasoning = st.selectbox(
-            "Reasoning Effort",
-            options=reasoning_options,
-            index=reasoning_options.index(st.session_state.model_config.candidate_selection_reasoning_effort),
-            key="candidate_reasoning"
-        )
-        if candidate_reasoning != st.session_state.model_config.candidate_selection_reasoning_effort:
-            st.session_state.model_config.candidate_selection_reasoning_effort = candidate_reasoning
+            candidate_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.candidate_selection_text_verbosity),
+                key="candidate_verbosity"
+            )
+            if candidate_verbosity != st.session_state.model_config.candidate_selection_text_verbosity:
+                st.session_state.model_config.candidate_selection_text_verbosity = candidate_verbosity
 
-        candidate_verbosity = st.selectbox(
-            "Text Verbosity",
-            options=verbosity_options,
-            index=verbosity_options.index(st.session_state.model_config.candidate_selection_text_verbosity),
-            key="candidate_verbosity"
-        )
-        if candidate_verbosity != st.session_state.model_config.candidate_selection_text_verbosity:
-            st.session_state.model_config.candidate_selection_text_verbosity = candidate_verbosity
+            # Code Generation Parameters
+            st.markdown("*Code Generation*")
+            codegen_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.code_generation_reasoning_effort),
+                key="codegen_reasoning"
+            )
+            if codegen_reasoning != st.session_state.model_config.code_generation_reasoning_effort:
+                st.session_state.model_config.code_generation_reasoning_effort = codegen_reasoning
 
-        # Code Generation Parameters
-        st.markdown("*Code Generation*")
-        codegen_reasoning = st.selectbox(
-            "Reasoning Effort",
-            options=reasoning_options,
-            index=reasoning_options.index(st.session_state.model_config.code_generation_reasoning_effort),
-            key="codegen_reasoning"
-        )
-        if codegen_reasoning != st.session_state.model_config.code_generation_reasoning_effort:
-            st.session_state.model_config.code_generation_reasoning_effort = codegen_reasoning
+            codegen_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.code_generation_text_verbosity),
+                key="codegen_verbosity"
+            )
+            if codegen_verbosity != st.session_state.model_config.code_generation_text_verbosity:
+                st.session_state.model_config.code_generation_text_verbosity = codegen_verbosity
 
-        codegen_verbosity = st.selectbox(
-            "Text Verbosity",
-            options=verbosity_options,
-            index=verbosity_options.index(st.session_state.model_config.code_generation_text_verbosity),
-            key="codegen_verbosity"
-        )
-        if codegen_verbosity != st.session_state.model_config.code_generation_text_verbosity:
-            st.session_state.model_config.code_generation_text_verbosity = codegen_verbosity
+            # Validation Parameters
+            st.markdown("*Validation*")
+            validation_reasoning = st.selectbox(
+                "Reasoning Effort",
+                options=reasoning_options,
+                index=reasoning_options.index(st.session_state.model_config.validation_reasoning_effort),
+                key="validation_reasoning"
+            )
+            if validation_reasoning != st.session_state.model_config.validation_reasoning_effort:
+                st.session_state.model_config.validation_reasoning_effort = validation_reasoning
 
-        # Validation Parameters
-        st.markdown("*Validation*")
-        validation_reasoning = st.selectbox(
-            "Reasoning Effort",
-            options=reasoning_options,
-            index=reasoning_options.index(st.session_state.model_config.validation_reasoning_effort),
-            key="validation_reasoning"
-        )
-        if validation_reasoning != st.session_state.model_config.validation_reasoning_effort:
-            st.session_state.model_config.validation_reasoning_effort = validation_reasoning
+            validation_verbosity = st.selectbox(
+                "Text Verbosity",
+                options=verbosity_options,
+                index=verbosity_options.index(st.session_state.model_config.validation_text_verbosity),
+                key="validation_verbosity"
+            )
+            if validation_verbosity != st.session_state.model_config.validation_text_verbosity:
+                st.session_state.model_config.validation_text_verbosity = validation_verbosity
 
-        validation_verbosity = st.selectbox(
-            "Text Verbosity",
-            options=verbosity_options,
-            index=verbosity_options.index(st.session_state.model_config.validation_text_verbosity),
-            key="validation_verbosity"
-        )
-        if validation_verbosity != st.session_state.model_config.validation_text_verbosity:
-            st.session_state.model_config.validation_text_verbosity = validation_verbosity
-        
-        st.markdown("---")
-        
-        # Step 9: Code Assignment
-        st.markdown("#### 🎯 Step 9: Code Assignment")
-        current_assign_model = st.session_state.model_config.get_model_for_stage('code_assignment')
-        assign_model = st.selectbox(
-            "Code Assignment Model",
-            options=all_models,
-            index=all_models.index(current_assign_model) if current_assign_model in all_models else 0,
-            key="code_assignment_model"
-        )
-        if assign_model != current_assign_model:
-            st.session_state.model_config.code_assignment_model = assign_model
-        
-        top_k = st.number_input(
-            "Top K Similar Codes",
-            min_value=1,
-            max_value=10,
-            value=st.session_state.code_assignment_config.top_k_similar_codes,
-            help="Number of most similar codes to present to the model",
-            key="top_k_codes"
-        )
-        if top_k != st.session_state.code_assignment_config.top_k_similar_codes:
-            st.session_state.code_assignment_config.top_k_similar_codes = top_k
-        
-        confidence = st.slider(
-            "Confidence Threshold",
-            min_value=0.1,
-            max_value=0.9,
-            value=st.session_state.code_assignment_config.min_confidence_threshold,
-            step=0.1,
-            help="Minimum confidence for valid assignment",
-            key="confidence_threshold"
-        )
-        if confidence != st.session_state.code_assignment_config.min_confidence_threshold:
-            st.session_state.code_assignment_config.min_confidence_threshold = confidence
-        
-        batch_size = st.number_input(
-            "Batch Size",
-            min_value=5,
-            max_value=50,
-            value=st.session_state.code_assignment_config.batch_size,
-            help="Ideas processed per batch",
-            key="assignment_batch_size"
-        )
-        if batch_size != st.session_state.code_assignment_config.batch_size:
-            st.session_state.code_assignment_config.batch_size = batch_size
-        
-        # Reset to defaults button
+            st.markdown("---")
+
+        # Step 9: Code Assignment (shown on step 8)
+        if current_step == 8:
+            st.markdown("#### 🎯 Step 9: Code Assignment")
+            current_assign_model = st.session_state.model_config.get_model_for_stage('code_assignment')
+            assign_model = st.selectbox(
+                "Code Assignment Model",
+                options=all_models,
+                index=all_models.index(current_assign_model) if current_assign_model in all_models else 0,
+                key="code_assignment_model"
+            )
+            if assign_model != current_assign_model:
+                st.session_state.model_config.code_assignment_model = assign_model
+
+            top_k = st.number_input(
+                "Top K Similar Codes",
+                min_value=1,
+                max_value=10,
+                value=st.session_state.code_assignment_config.top_k_similar_codes,
+                help="Number of most similar codes to present to the model",
+                key="top_k_codes"
+            )
+            if top_k != st.session_state.code_assignment_config.top_k_similar_codes:
+                st.session_state.code_assignment_config.top_k_similar_codes = top_k
+
+            confidence = st.slider(
+                "Confidence Threshold",
+                min_value=0.1,
+                max_value=0.9,
+                value=st.session_state.code_assignment_config.min_confidence_threshold,
+                step=0.1,
+                help="Minimum confidence for valid assignment",
+                key="confidence_threshold"
+            )
+            if confidence != st.session_state.code_assignment_config.min_confidence_threshold:
+                st.session_state.code_assignment_config.min_confidence_threshold = confidence
+
+            batch_size = st.number_input(
+                "Batch Size",
+                min_value=5,
+                max_value=50,
+                value=st.session_state.code_assignment_config.batch_size,
+                help="Ideas processed per batch",
+                key="assignment_batch_size"
+            )
+            if batch_size != st.session_state.code_assignment_config.batch_size:
+                st.session_state.code_assignment_config.batch_size = batch_size
+
+            st.markdown("---")
+
+        # Reset to defaults button (always shown)
         if st.button("🔄 Reset All to Defaults", type="secondary"):
             st.session_state.model_config = ModelConfig()
             st.session_state.spellcheck_config = SpellCheckConfig()
@@ -446,6 +481,7 @@ def main():
                     use_container_width=True,
                     key="nav_previous"
                 ):
+                    clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step -= 1
                     st.rerun()
 
@@ -458,13 +494,14 @@ def main():
                     use_container_width=True,
                     key="nav_next"
                 ):
+                    clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step += 1
                     st.rerun()
 
         st.markdown("---")
-        
+
         # Advanced Settings
-        show_advanced_settings()
+        show_advanced_settings(st.session_state.step)
  
     #---------
     # Main body  
@@ -1170,8 +1207,11 @@ def show_upload_page():
                 st.dataframe(sample_data, use_container_width=True)
             else:
                 st.warning("Geen niet-lege gegevens gevonden" if lang == "nl" else "No non-empty data found")
-
-            # 7. Ready to proceed button
+            
+            # 7.store variable label / question   
+            st.session_state.var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable)
+            
+            # 8. Ready to proceed button
             if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
                 # Store session state based on variable mode
                 current_mode = st.session_state.get('variable_mode_confirmed', 'single')
@@ -1192,7 +1232,10 @@ def show_upload_page():
 
 def show_preprocessing_page():
     lang = st.session_state.language
-    st.header("Stap 2: Preprocessing" if lang == "nl" else "Step 2: Preprocessing")
+    
+    #st.error(st.session_state.var_lab)
+    
+    st.header("Stap 2: Tekstverwerking" if lang == "nl" else "Step 2: Text preprocessing")
     
     #----------------- 
     # state: AFTER preprocessing.  
@@ -1204,26 +1247,25 @@ def show_preprocessing_page():
         
         # Ensure we have the core selections
         if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
-            # Sample / dataset label
-            # if st.session_state.get('selected_sample_size'):
-            #     sample_info = (
-            #         f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
-            #         if lang == "nl"
-            #         else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
-            #     )
-            # else:
-            #     sample_info = (
-            #         "\n\n**Dataset:** Volledig"
-            #         if lang == "nl"
-            #         else "\n\n**Dataset:** Full"
-            #     )
             
-            # st.info (
-            #     f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
-            #     f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variable}\n\n"
-            #     f"{sample_info}")
+            sample_info = (f"**{'Vraag' if lang == 'nl' else 'Questionl'}:** {st.session_state.var_lab}\n\n")
             
-            # Stats sections (safe defaults)
+            if st.session_state.get('selected_sample_size'):
+                sample_info += (
+                    f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
+                    if lang == "nl"
+                    else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+                )
+            else:
+                sample_info += (
+                    "\n\n**Dataset:** Volledig"
+                    if lang == "nl"
+                    else "\n\n**Dataset:** Full")
+            
+            #st.info = blue box
+            st.info(sample_info)
+            
+            #st.markdwon = yellow box
             normal_info = ""
             spell_info = ""
             final_info = ""
@@ -1233,23 +1275,23 @@ def show_preprocessing_page():
             # A) Normalizer stats
             norm_stats = stats.get('normalizer_stats') or {}
             if norm_stats:
-                nl = (lang == "nl")
+                nl = (st.session_state.language == "nl")
                 normal_info = (
                     "\n\n" + ("**Normalisatie:**" if nl else "**Normalization:**")
                     + f"\n- { 'Hoofdletterwijzigingen' if nl else 'Case changes' }: {norm_stats.get('case_changes', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                     + f"\n- { 'Witruimte opgeschoond' if nl else 'Whitespace cleanup' }: {norm_stats.get('whitespace_changes', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                     + f"\n- { 'Schuine strepen vervangen' if nl else 'Slash replacements' }: {norm_stats.get('slash_changes', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                     + f"\n- { 'Lege strings gefilterd' if nl else 'Empty strings filtered' }: {norm_stats.get('invalid_filtered', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                 )
         
             # B) Spell checker stats
             spell_stats = stats.get('spellchecker_stats') or {}
             if spell_stats:
-                nl = (lang == "nl")
+                nl = (st.session_state.language == "nl")
                 spell_info = (
                     "\n\n" + ("**Spellingcontrole:**" if nl else "**Spell checking:**")
                     + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}"
@@ -1258,28 +1300,36 @@ def show_preprocessing_page():
             # C) Finalizer stats
             final_stats = stats.get('finalizer_stats') or {}
             if final_stats:
-                nl = (lang == "nl")
+                nl = (st.session_state.language == "nl")
                 final_info = (
                     "\n\n" + ("**Finaliseren:**" if nl else "**Finalization:**")
                     + f"\n- { 'Leestekens toegevoegd' if nl else 'Punctuation additions' }: {final_stats.get('punctuation_additions', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                     + f"\n- { 'Opmaak opgeschoond' if nl else 'Format cleanup' }: {final_stats.get('format_cleanup', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                     + f"\n- { 'Spatieaanpassingen' if nl else 'Spacing fixes' }: {final_stats.get('spacing_fixes', 0)} "
-                      f"{ 'responsen' if nl else 'responses' }"
+                      f"{ 'antwoorden' if nl else 'responses' }"
                 )
-        
-            # Compose the blue info box content (once)
+
             summary_info = (
-                #f"{'Samenvatting' if nl else 'Summary'}"
                 f"{normal_info}"
                 f"{spell_info}"
                 f"{final_info}"
             )
+             
+            #F8F9FB = gray
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_info}
+            </div>
+            """, unsafe_allow_html=True)
+
         
-            #st.code(summary_info, language= "text")
-            st.info(summary_info)
-     
     #-----------------
     #state = DEBUGGING
     #-----------------
@@ -1302,47 +1352,24 @@ def show_preprocessing_page():
     elif st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
         
         if st.session_state.selected_variable and st.session_state.selected_id_column:
+            
+            sample_info = (f"**{'Vraag' if lang == 'nl' else 'Questionl'}:** {st.session_state.var_lab}\n\n")
+            
             if st.session_state.get('selected_sample_size'):
-                sample_info = (
+                sample_info += (
                     f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
                     if lang == "nl"
                     else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
                 )
             else:
-                sample_info = (
+                sample_info += (
                     "\n\n**Dataset:** Volledig"
                     if lang == "nl"
-                    else "\n\n**Dataset:** Full"
-                )
+                    else "\n\n**Dataset:** Full")
             
-            st.info (
-                f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
-                f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variable}\n\n"
-                f"{sample_info}")
-            
-            
-            # # Check if this is a merged variable scenario
-            # is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or st.session_state.get('is_merged_variable', False))
-            
-            # selected_vars = (st.session_state.get('selected_variables') or st.session_state.get('selected_variables_confirmed', []))
-            
-            # sample_info = ""
-            # if st.session_state.get('selected_sample_size'):
-            #     sample_info = f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
-            # else:
-            #     sample_info = "\n\n**Dataset:** Volledig" if lang == "nl" else "\n\n**Dataset:** Full"
-            
-            # if is_multiple_mode and len(selected_vars) > 1:
-            #     merge_config = (st.session_state.get('merge_config') or 
-            #                    st.session_state.get('merge_config_confirmed', {}))
-        
-            # else:
-            #     #st.info = blue box
-            #     st.info (
-            #         f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
-            #         f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}\n\n"
-            #         f"**{'Steekproef' if lang == 'nl' else 'Sample'}:** {sample_info}") 
-                
+            #st.info = blue box
+            st.info(sample_info)
+
             st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
 
         else:
@@ -1488,29 +1515,29 @@ def show_filtering_page():
     #------------------------
     if st.session_state.get('waiting_for_continue_filtering', False):
         
+        #st.success = green box
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
         
         # Ensure we have the core selections
         if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
           
-            # Sample / dataset label
-            if st.session_state.get('selected_sample_size'):
-                sample_info = (
+           sample_info = (f"**{'Vraag' if lang == 'nl' else 'Questionl'}:** {st.session_state.var_lab}\n\n")
+            
+           if st.session_state.get('selected_sample_size'):
+                sample_info += (
                     f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
                     if lang == "nl"
                     else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
                 )
-            else:
-                sample_info = (
+           else:
+                sample_info += (
                     "\n\n**Dataset:** Volledig"
                     if lang == "nl"
-                    else "\n\n**Dataset:** Full"
-                )
+                    else "\n\n**Dataset:** Full")
             
-            st.info (
-                f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column} \n\n"
-                f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}"
-                f"{sample_info}")
+           #st.info = blue box
+           st.info(sample_info)
+
         
         if 'quality_filter_stats' in st.session_state:
             stats = st.session_state['quality_filter_stats']
@@ -1528,24 +1555,52 @@ def show_filtering_page():
                     or code_meanings.get(str(code))
                     or 'Unknown'
                 )
-                lines.append(f"- Code {code}: {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
+                lines.append(f"- **Code {code}**:  {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
         
             total = stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)
             perc_with = (stats.get('total_with_codes', 0) / total * 100) if total else 0
         
-            header = "Summary:" if lang == "en" else "Samenvatting:"
-            filtered_label = "Filtered" if lang == "en" else "Uitgefilterd"
-        
-            summary_text = f"{header}\n- {filtered_label}: {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n" + "\n".join(lines)
-        
-            # no syntax highlighting / colors
-            st.code(summary_text, language="text")
+            filtered_label = "**Filtered**" if lang == "en" else "**Uitgefilterd**"
+            
+            summary_text = f"\n\n- {filtered_label}:  {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n\n" + "\n\n".join(lines)
+            
+            #F8F9FB = gray
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_text}
+            </div>
+            """, unsafe_allow_html=True)
+
                 
     #------------------------
     #state = BEFORE processing
     #------------------------
     elif st.button(ui.get_text("BTN_FILTER", lang), type="primary"):
+        
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Questionl'}:** {st.session_state.var_lab}\n\n")
+         
+        if st.session_state.get('selected_sample_size'):
+             sample_info += (
+                 f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
+                 if lang == "nl"
+                 else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+             )
+        else:
+             sample_info += (
+                 "\n\n**Dataset:** Volledig"
+                 if lang == "nl"
+                 else "\n\n**Dataset:** Full")
+         
+        #st.info = blue box
+        st.info(sample_info)   
+        
         st.markdown(ui.get_text("FILTERING_INFO", lang))
+
         progress_container = st.empty()
         try:
             quality_filtered_text = _get_pipeline_runner().step_3_quality_filter(
@@ -2459,52 +2514,73 @@ def show_raw_samples(raw_text_list, n_samples=5):
 def show_preprocessed_samples(preprocessed_text, n_samples=10):
     """Show random samples from Step 1.5 - Preprocessed Data"""
     
-    if not preprocessed_text:
-        st.write("{'Geen verwerkte data beschikbaar' if st.session_state.language == 'nl' else 'No preprocessed data available'}")
-        return
-        
-    if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw random examples'}", key="preprocessed_samples"):
-        st.rerun()
+    st.write("\n")
     
-    # Original pattern: random.sample(range(len(preprocessed_text)), n_samples)
+    if not preprocessed_text:
+        st.write(f"{'Geen verwerkte data beschikbaar' if st.session_state.language == 'nl' else 'No preprocessed data available'}")
+        return
+    
     indices = random.sample(range(len(preprocessed_text)), min(n_samples, len(preprocessed_text)))
     
-    #st.write(f"**Random samples from {len(preprocessed_text)} preprocessed responses:**")
-    
     if indices:
-        sample_text = ""
-        for i in indices:
-            response_text = preprocessed_text[i].response if preprocessed_text[i].response is not None else "(empty response)"
-            sample_text += f"{response_text}\n"
+        items = "".join( f"<li>{html.escape(preprocessed_text[i].response or '(empty response)')}</li>"  for i in indices)
+        header = ('Willekeurige selectie' if st.session_state.language == 'nl' else 'Random sample')
         
-        # Display in gray container
-        st.code(sample_text.strip(), language=None)
+        st.markdown(f"""
+        <div style="
+            border-radius: 10px;
+            padding: 16px 20px;
+            background-color: #F8F9FB;
+            margin-top: 8px;
+            line-height: 1.6;">
+        <b style="display:block; margin-bottom:12px;">{header}:</b>
+        <ul style="margin-top:10px;margin-bottom:0;padding-left:0;">
+        {items}
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
     
+        st.write("\n")
+        
+        if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw new sample'}", key="preprocessed_samples"):
+            st.rerun()
 
 def show_filtered_samples(quality_filtered_text, n_samples=10):
     """Show random samples from Step 3 - Quality Filtered Data"""
     
+    #st.write("\n")
+    
     if not quality_filtered_text:
         st.write("{'Geen gefiltered data beschikbaar' if st.session_state.language == 'nl' else 'No filtered data available'}")
         return
-    
-    if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw random examples'}", key="filtered_samples"):
-        st.rerun()
-    
-    
-    #indices = random.sample(range(len(quality_filtered_text)), min(n_samples, len(quality_filtered_text)))
+ 
     filtered_text = [item for item in quality_filtered_text if item.quality_filter]
     indices = random.sample(range(len(filtered_text)), min(n_samples, len(filtered_text)))
     
-    st.write(f"**Random samples from {len(quality_filtered_text)} filtered responses:**")
+    if indices:
+        items = "".join( f"<li>{html.escape(filtered_text[i].response or '(empty response)')}</li>"  for i in indices)
+        header = ('Willekeurige selectie van ruis' if st.session_state.language == 'nl' else 'Random sample of the noise')
+        
+        st.markdown(f"""
+        <div style="
+            border-radius: 10px;
+            padding: 16px 20px;
+            background-color: #F8F9FB;
+            margin-top: 8px;
+            line-height: 1.6;">
+        <b style="display:block; margin-bottom:12px;">{header}:</b>
+        <ul style="margin-top:10px;margin-bottom:0;padding-left:0;">
+        {items}
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
     
-    sample_text = ""
-    for i in indices:
-        response_text = filtered_text[i].response if filtered_text[i].response is not None else "(empty response)"
-        sample_text += f"{response_text}\n"
+        st.write("\n")
+        
+        if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw new sample'}", key="preprocessed_samples"):
+            st.rerun()
     
-    # Display in gray container
-    st.code(sample_text.strip(), language=None)
+    
 
 def show_idea_samples(encoded_text, n_samples=10):
     """Show random samples from Step 4 - Ideas"""
@@ -2852,12 +2928,23 @@ def show_step9_random_sample():
 
 def show_step_samples(step_number):
     """Master function to route to appropriate sampling function - loads data from cache"""
-        
+
     # Check if we have the required info to load from cache
     if not st.session_state.get('filename') or not st.session_state.get('selected_variable'):
         st.write("❌ No filename or variable selected - cannot load data")
         return
-    
+
+    # Session-based filtering: Only show results from current session when in force_recalculate mode
+    if st.session_state.get('force_recalculate_all', False):
+        # Upload from file route - only show if step was completed in current session
+        # Note: step_number maps to display (1=preprocessed, 2=quality_filter, etc.)
+        # but completion tracking is off by 1 (preprocessing completes step 2, quality_filter completes step 3)
+        if not is_step_completed(step_number + 1):
+            lang = st.session_state.language
+            st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl"
+                             else "Data not yet processed in current session - run processing first"))
+            return
+
     # Get cache manager
     cache_manager = _get_cache_manager()
     filename = st.session_state.filename
