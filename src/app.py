@@ -93,6 +93,32 @@ if 'session_cache_tracker' not in st.session_state:
 if 'max_step_reached' not in st.session_state:
     st.session_state.max_step_reached = 0  # Highest step number reached in current session
 
+# Helper functions for navigation and session cache tracking ################################################################################################################################
+
+def is_step_completed(step_num: int) -> bool:
+    """Check if a step has been completed in the current session"""
+    return step_num in st.session_state.completed_steps
+
+def mark_step_completed(step_num: int, step_name: str = None):
+    """Mark a step as completed and update max step reached"""
+    st.session_state.completed_steps.add(step_num)
+    if step_num > st.session_state.max_step_reached:
+        st.session_state.max_step_reached = step_num
+    if step_name:
+        st.session_state.session_cache_tracker[step_num] = step_name
+
+def can_navigate_to_step(target_step: int) -> bool:
+    """Check if user can navigate to a specific step"""
+    # Can navigate to any completed step or the next sequential step
+    return target_step <= st.session_state.max_step_reached or target_step == st.session_state.step + 1
+
+def reset_navigation_tracking():
+    """Reset navigation tracking (e.g., when uploading new file)"""
+    st.session_state.completed_steps = set()
+    st.session_state.session_cache_tracker = {}
+    st.session_state.max_step_reached = 0
+    st.session_state.pipeline_results = {}
+
 # Session settings (cofiguration of processing models) ################################################################################################################################
 
 def show_advanced_settings():
@@ -402,7 +428,35 @@ def main():
         # Progress indicator - Updated to 10 steps
         #progress = st.progress(st.session_state.step / 10)
         st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step + 1}/10")
-        
+
+        # Navigation buttons
+        if st.session_state.step > 0:  # Only show navigation when not on upload page
+            nav_col1, nav_col2 = st.columns(2)
+
+            with nav_col1:
+                # Previous button - enabled if we can go back
+                can_go_back = st.session_state.step > 1 and (st.session_state.step - 1) in st.session_state.completed_steps
+                if st.button(
+                    "⬅️ " + ("Vorige" if st.session_state.language == "nl" else "Previous"),
+                    disabled=not can_go_back,
+                    use_container_width=True,
+                    key="nav_previous"
+                ):
+                    st.session_state.step -= 1
+                    st.rerun()
+
+            with nav_col2:
+                # Next button - enabled if current step is completed
+                can_go_forward = st.session_state.step < 10 and st.session_state.step in st.session_state.completed_steps
+                if st.button(
+                    ("Volgende" if st.session_state.language == "nl" else "Next") + " ➡️",
+                    disabled=not can_go_forward,
+                    use_container_width=True,
+                    key="nav_next"
+                ):
+                    st.session_state.step += 1
+                    st.rerun()
+
         st.markdown("---")
         
         # Advanced Settings
@@ -721,7 +775,10 @@ def show_upload_page():
                     st.session_state.uploaded_file_path = str(file_path)
                     st.session_state.loaded_from_cache = False
                     st.session_state.force_recalculate_all = True  # Force recalc for new data
-                    
+
+                    # Reset navigation tracking for new file upload
+                    reset_navigation_tracking()
+
                     # 2. Load variables from SPSS file with type information
                     try:
                         variables_with_types = _get_data_loader().list_variables_with_types(uploaded_file.name)
@@ -1327,7 +1384,10 @@ def show_preprocessing_page():
                     )
                 st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                 st.session_state.pipeline_results['var_lab'] = var_lab
-            
+
+                # Mark step 1 (data loading) as completed
+                mark_step_completed(1, "data")
+
             # B. Preprocessing
             preprocessed_text = _get_pipeline_runner().step_2_preprocess(
                 raw_text_list=st.session_state.pipeline_results['raw_text_list'],
@@ -1377,6 +1437,10 @@ def show_preprocessing_page():
                 # Set waiting state so user can see results before continuing
                 st.session_state['completed_step'] = 1  # Mark preprocessing as completed - show preprocessed results
                 st.session_state['waiting_for_continue_preprocessing'] = True
+
+                # Mark step 2 (preprocessing) as completed in navigation tracker
+                mark_step_completed(2, "preprocessed")
+
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
@@ -1488,6 +1552,10 @@ def show_filtering_page():
             # Set waiting state and mark step as completed so left panel shows results
             st.session_state['completed_step'] = 2
             st.session_state['waiting_for_continue_filtering'] = True
+
+            # Mark step 3 (quality filtering) as completed in navigation tracker
+            mark_step_completed(3, "quality_filter")
+
             st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
@@ -1599,6 +1667,9 @@ def show_idea_extraction_page():
                 # Set waiting state so user can see results before continuing
                 st.session_state['completed_step'] = 3  # Mark idea extraction as completed
                 st.session_state['waiting_for_continue_idea_extraction'] = True
+
+                # Mark step 4 (idea extraction) as completed in navigation tracker
+                mark_step_completed(4, "extracted_ideas")
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Extractie fout: {str(e)}" if lang == "nl" else f"Extraction error: {str(e)}")
@@ -1654,6 +1725,9 @@ def show_embedding_page():
                 # Set waiting state and mark step as completed so left panel shows results
                 st.session_state['completed_step'] = 4
                 st.session_state['waiting_for_continue_embedding'] = True
+
+                # Mark step 5 (embedding generation) as completed in navigation tracker
+                mark_step_completed(5, "embeddings")
                 st.rerun()  # Rerun to show the continue button interface
             except Exception as e:
                 progress_container.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
@@ -1736,6 +1810,9 @@ def show_clustering_page():
                 # Set waiting state so user can see results before continuing
                 st.session_state['completed_step'] = 5  # Mark clustering as completed
                 st.session_state['waiting_for_continue_clustering'] = True
+
+                # Mark step 6 (clustering) as completed in navigation tracker
+                mark_step_completed(6, "initial_clusters")
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
@@ -1808,6 +1885,9 @@ def show_codebook_generation_page():
                 # Set waiting state and mark step as completed so left panel shows results
                 st.session_state['completed_step'] = 6
                 st.session_state['waiting_for_continue_codebook_generation'] = True
+
+                # Mark step 7 (codebook generation) as completed in navigation tracker
+                mark_step_completed(7, "codebook_generation")
                 st.rerun()  # Rerun to show the continue button interface
             except Exception as e:
                 progress_container.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
@@ -1880,6 +1960,9 @@ def show_theme_identification_page():
             # Set waiting state and mark step as completed so left panel shows results
             st.session_state['completed_step'] = 7
             st.session_state['waiting_for_continue_theme_identification'] = True
+
+            # Mark step 8 (theme identification/refinement) as completed in navigation tracker
+            mark_step_completed(8, "theme_enriched_codebook")
             st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
@@ -1978,6 +2061,9 @@ def show_code_assignment_page():
                 # Set waiting state so user can see results before continuing
                 st.session_state['completed_step'] = 8  # Mark code assignment as completed
                 st.session_state['waiting_for_continue_code_assignment'] = True
+
+                # Mark step 9 (code assignment) as completed in navigation tracker
+                mark_step_completed(9, "code_assignment")
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Toewijzing fout: {str(e)}" if lang == "nl" else f"Assignment error: {str(e)}")
@@ -2139,6 +2225,9 @@ def show_export_page():
                 # Set waiting state and mark step as completed so left panel shows results
                 st.session_state['completed_step'] = 9
                 st.session_state['waiting_for_continue_export'] = True
+
+                # Mark step 10 (export) as completed in navigation tracker
+                mark_step_completed(10, "export")
                 st.rerun()  # Rerun to show the continue button interface
                 
             except Exception as e:
