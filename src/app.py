@@ -114,7 +114,7 @@ def reset_navigation_tracking():
     st.session_state.max_step_reached = 0
     st.session_state.pipeline_results = {}
 
-# Session settings (cofiguration of processing models) ################################################################################################################################
+# Side bar: session settings c.q. cofiguration of processing "models" ################################################################################################################################
 
 def show_advanced_settings():
     """Show advanced settings UI in sidebar"""
@@ -1302,27 +1302,46 @@ def show_preprocessing_page():
     elif st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
         
         if st.session_state.selected_variable and st.session_state.selected_id_column:
-            # Check if this is a merged variable scenario
-            is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or st.session_state.get('is_merged_variable', False))
-            
-            selected_vars = (st.session_state.get('selected_variables') or st.session_state.get('selected_variables_confirmed', []))
-            
-            sample_info = ""
             if st.session_state.get('selected_sample_size'):
-                sample_info = f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+                sample_info = (
+                    f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
+                    if lang == "nl"
+                    else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+                )
             else:
-                sample_info = "\n\n**Dataset:** Volledig" if lang == "nl" else "\n\n**Dataset:** Full"
+                sample_info = (
+                    "\n\n**Dataset:** Volledig"
+                    if lang == "nl"
+                    else "\n\n**Dataset:** Full"
+                )
             
-            if is_multiple_mode and len(selected_vars) > 1:
-                merge_config = (st.session_state.get('merge_config') or 
-                               st.session_state.get('merge_config_confirmed', {}))
+            st.info (
+                f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
+                f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variable}\n\n"
+                f"{sample_info}")
+            
+            
+            # # Check if this is a merged variable scenario
+            # is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or st.session_state.get('is_merged_variable', False))
+            
+            # selected_vars = (st.session_state.get('selected_variables') or st.session_state.get('selected_variables_confirmed', []))
+            
+            # sample_info = ""
+            # if st.session_state.get('selected_sample_size'):
+            #     sample_info = f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+            # else:
+            #     sample_info = "\n\n**Dataset:** Volledig" if lang == "nl" else "\n\n**Dataset:** Full"
+            
+            # if is_multiple_mode and len(selected_vars) > 1:
+            #     merge_config = (st.session_state.get('merge_config') or 
+            #                    st.session_state.get('merge_config_confirmed', {}))
         
-            else:
-                #st.info = blue box
-                st.info (
-                    f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
-                    f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}\n\n"
-                    f"**{'Steekproef' if lang == 'nl' else 'Sample'}:** {sample_info}") 
+            # else:
+            #     #st.info = blue box
+            #     st.info (
+            #         f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
+            #         f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}\n\n"
+            #         f"**{'Steekproef' if lang == 'nl' else 'Sample'}:** {sample_info}") 
                 
             st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
 

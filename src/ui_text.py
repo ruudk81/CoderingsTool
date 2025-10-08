@@ -11,8 +11,8 @@ UI_TEXTS = {
         # App Configuration
         "APP_TITLE": "CoderingsTool",
         "APP_DESCRIPTION": """
-        Analyseer open antwoorden uit enquetes met AI-gestuurde tekstverwerking. 
-        Deze tool helpt u kwalitatieve data uit SPSS-bestanden te verwerken, clusteren en categoriseren.
+        AI-gestuurde analyse van open antwoorden.
+        Verwerk, cluster en codeer kwalitatieve data uit enquêtes
         """,
         
         # Sidebar
@@ -116,8 +116,8 @@ UI_TEXTS = {
         # App Configuration
         "APP_TITLE": "CodingTool",
         "APP_DESCRIPTION": """
-        Analyze open-ended survey responses with AI-powered text processing. 
-        This tool helps you preprocess, cluster, and categorize qualitative data from SPSS files.
+        AI-driven analysis of open-ended responses.
+        Process, cluster, and code qualitative survey data.
         """,
         
         # Sidebar
