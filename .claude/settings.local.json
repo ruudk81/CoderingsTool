@@ -44,7 +44,9 @@
       "mcp__playwright__browser_close",
       "mcp__playwright__browser_evaluate",
       "WebSearch",
-      "Bash(del test_cache_keys.py)"
+      "Bash(del test_cache_keys.py)",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_press_key"
     ],
     "deny": []
   },
