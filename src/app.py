@@ -85,6 +85,14 @@ if 'code_designer_config' not in st.session_state:
 if 'code_assignment_config' not in st.session_state:
     st.session_state.code_assignment_config = CodeAssignmentConfig()
 
+# Navigation and session cache tracking
+if 'completed_steps' not in st.session_state:
+    st.session_state.completed_steps = set()  # Track which steps are completed in current session
+if 'session_cache_tracker' not in st.session_state:
+    st.session_state.session_cache_tracker = {}  # Track session-specific cache keys for each step
+if 'max_step_reached' not in st.session_state:
+    st.session_state.max_step_reached = 0  # Highest step number reached in current session
+
 # Session settings (cofiguration of processing models) ################################################################################################################################
 
 def show_advanced_settings():
@@ -1125,23 +1133,23 @@ def show_preprocessing_page():
         # Ensure we have the core selections
         if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
             # Sample / dataset label
-            if st.session_state.get('selected_sample_size'):
-                sample_info = (
-                    f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
-                    if lang == "nl"
-                    else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
-                )
-            else:
-                sample_info = (
-                    "\n\n**Dataset:** Volledig"
-                    if lang == "nl"
-                    else "\n\n**Dataset:** Full"
-                )
+            # if st.session_state.get('selected_sample_size'):
+            #     sample_info = (
+            #         f"\n\n**Steekproef:** {st.session_state.selected_sample_size} gevallen"
+            #         if lang == "nl"
+            #         else f"\n\n**Sample:** {st.session_state.selected_sample_size} cases"
+            #     )
+            # else:
+            #     sample_info = (
+            #         "\n\n**Dataset:** Volledig"
+            #         if lang == "nl"
+            #         else "\n\n**Dataset:** Full"
+            #     )
             
-            st.info (
-                f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
-                f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variable}\n\n"
-                f"{sample_info}")
+            # st.info (
+            #     f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
+            #     f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variable}\n\n"
+            #     f"{sample_info}")
             
             # Stats sections (safe defaults)
             normal_info = ""
@@ -1155,7 +1163,7 @@ def show_preprocessing_page():
             if norm_stats:
                 nl = (lang == "nl")
                 normal_info = (
-                    "\n\n" + ("Normalisatie:" if nl else "Normalization:")
+                    "\n\n" + ("**Normalisatie:**" if nl else "**Normalization:**")
                     + f"\n- { 'Hoofdletterwijzigingen' if nl else 'Case changes' }: {norm_stats.get('case_changes', 0)} "
                       f"{ 'responsen' if nl else 'responses' }"
                     + f"\n- { 'Witruimte opgeschoond' if nl else 'Whitespace cleanup' }: {norm_stats.get('whitespace_changes', 0)} "
@@ -1171,7 +1179,7 @@ def show_preprocessing_page():
             if spell_stats:
                 nl = (lang == "nl")
                 spell_info = (
-                    "\n\n" + ("Spellingcontrole:" if nl else "Spell checking:")
+                    "\n\n" + ("**Spellingcontrole:**" if nl else "**Spell checking:**")
                     + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}"
                 )
         
@@ -1180,7 +1188,7 @@ def show_preprocessing_page():
             if final_stats:
                 nl = (lang == "nl")
                 final_info = (
-                    "\n\n" + ("Finaliseren:" if nl else "Finalization:")
+                    "\n\n" + ("**Finaliseren:**" if nl else "**Finalization:**")
                     + f"\n- { 'Leestekens toegevoegd' if nl else 'Punctuation additions' }: {final_stats.get('punctuation_additions', 0)} "
                       f"{ 'responsen' if nl else 'responses' }"
                     + f"\n- { 'Opmaak opgeschoond' if nl else 'Format cleanup' }: {final_stats.get('format_cleanup', 0)} "
@@ -1191,12 +1199,14 @@ def show_preprocessing_page():
         
             # Compose the blue info box content (once)
             summary_info = (
+                #f"{'Samenvatting' if nl else 'Summary'}"
                 f"{normal_info}"
                 f"{spell_info}"
                 f"{final_info}"
             )
         
-            st.code(summary_info, language= "text")
+            #st.code(summary_info, language= "text")
+            st.info(summary_info)
      
     #-----------------
     #state = DEBUGGING
@@ -1219,8 +1229,6 @@ def show_preprocessing_page():
     # A. Information text
     elif st.button(ui.get_text("BTN_PREPROCESS", lang), type="primary"):
         
-        st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
-        
         if st.session_state.selected_variable and st.session_state.selected_id_column:
             # Check if this is a merged variable scenario
             is_multiple_mode = (st.session_state.get('variable_mode_confirmed') == 'multiple' or st.session_state.get('is_merged_variable', False))
@@ -1240,9 +1248,12 @@ def show_preprocessing_page():
             else:
                 #st.info = blue box
                 st.info (
-                    f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}"
-                    f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}"
+                    f"**{'ID Kolom' if lang == 'nl' else 'ID Column'}:** {st.session_state.selected_id_column}\n\n"
+                    f"**{'Variabele(n)' if lang == 'nl' else 'Variable(s)'}:** {st.session_state.selected_variables}\n\n"
                     f"**{'Steekproef' if lang == 'nl' else 'Sample'}:** {sample_info}") 
+                
+            st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
+
         else:
             # ERROR / DEBUG INFO
             missing_items = []
@@ -2322,19 +2333,20 @@ def show_raw_samples(raw_text_list, n_samples=5):
         st.code(sample_text.strip(), language=None)
     
 
-def show_preprocessed_samples(preprocessed_text, n_samples=5):
+def show_preprocessed_samples(preprocessed_text, n_samples=10):
     """Show random samples from Step 1.5 - Preprocessed Data"""
-    if not preprocessed_text:
-        st.write("No preprocessed data available")
-        return
     
-    if st.button("🎲 Draw new random examples", key="preprocessed_samples"):
+    if not preprocessed_text:
+        st.write("{'Geen verwerkte data beschikbaar' if st.session_state.language == 'nl' else 'No preprocessed data available'}")
+        return
+        
+    if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw random examples'}", key="preprocessed_samples"):
         st.rerun()
     
     # Original pattern: random.sample(range(len(preprocessed_text)), n_samples)
     indices = random.sample(range(len(preprocessed_text)), min(n_samples, len(preprocessed_text)))
     
-    st.write(f"**Random samples from {len(preprocessed_text)} preprocessed responses:**")
+    #st.write(f"**Random samples from {len(preprocessed_text)} preprocessed responses:**")
     
     if indices:
         sample_text = ""
@@ -2346,14 +2358,16 @@ def show_preprocessed_samples(preprocessed_text, n_samples=5):
         st.code(sample_text.strip(), language=None)
     
 
-def show_filtered_samples(quality_filtered_text, n_samples=5):
+def show_filtered_samples(quality_filtered_text, n_samples=10):
     """Show random samples from Step 3 - Quality Filtered Data"""
+    
     if not quality_filtered_text:
-        st.write("No filtered data available")
+        st.write("{'Geen gefiltered data beschikbaar' if st.session_state.language == 'nl' else 'No filtered data available'}")
         return
     
-    if st.button("🎲 Draw new random examples", key="filtered_samples"):
+    if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw random examples'}", key="filtered_samples"):
         st.rerun()
+    
     
     #indices = random.sample(range(len(quality_filtered_text)), min(n_samples, len(quality_filtered_text)))
     filtered_text = [item for item in quality_filtered_text if item.quality_filter]
@@ -2369,7 +2383,7 @@ def show_filtered_samples(quality_filtered_text, n_samples=5):
     # Display in gray container
     st.code(sample_text.strip(), language=None)
 
-def show_idea_samples(encoded_text, n_samples=1):
+def show_idea_samples(encoded_text, n_samples=10):
     """Show random samples from Step 4 - Ideas"""
     
     if not encoded_text:
@@ -2715,7 +2729,7 @@ def show_step9_random_sample():
 
 def show_step_samples(step_number):
     """Master function to route to appropriate sampling function - loads data from cache"""
-    
+        
     # Check if we have the required info to load from cache
     if not st.session_state.get('filename') or not st.session_state.get('selected_variable'):
         st.write("❌ No filename or variable selected - cannot load data")
@@ -2788,7 +2802,6 @@ def show_step_samples(step_number):
             st.write(f"❌ Error generating variable key: {e}")
             return
         
-        # DEBUG: Show current state
         st.write("🔍 **CACHE DEBUG INFO:**")
         st.write(f"- Current step: {st.session_state.step}")
         st.write(f"- Requested step_number: {step_number}")
@@ -2820,7 +2833,7 @@ def show_step_samples(step_number):
    
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
-                    if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="preprocessing_continue_normal"):
+                    if st.button(f"{'🔄 Ga naar volgende stap' if st.session_state.language == 'nl' else '🔄 Continue to Next Step'}", type="primary", use_container_width=True, key="preprocessing_continue_normal"):
                         # Clear the waiting state and advance
                         del st.session_state['waiting_for_continue_preprocessing']
                         if 'completed_step' in st.session_state:
@@ -2839,7 +2852,7 @@ def show_step_samples(step_number):
                 
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
-                    if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="filtering_continue"):
+                    if st.button(f"{'🔄 Ga naar volgende stap' if st.session_state.language == 'nl' else '🔄 Continue to Next Step'}", type="primary", use_container_width=True, key="filtering_continue"):    
                         # Clear the waiting state and advance
                         del st.session_state['waiting_for_continue_filtering']
                         if 'completed_step' in st.session_state:
@@ -2860,7 +2873,7 @@ def show_step_samples(step_number):
          
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
-                    if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="idea_extraction_continue_normal"):
+                    if st.button(f"{'🔄 Ga naar volgende stap' if st.session_state.language == 'nl' else '🔄 Continue to Next Step'}", type="primary", use_container_width=True, key="idea_extraction_continue_normal"):        
                         # Clear the waiting state and advance
                         del st.session_state['waiting_for_continue_idea_extraction']
                         if 'completed_step' in st.session_state:
