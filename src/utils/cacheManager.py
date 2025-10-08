@@ -409,7 +409,42 @@ class CacheManager:
         
         logger.info(f"Cleaned up {deleted_count} old cache files")
         return deleted_count
-    
+
+    def get_cached_steps_for_dataset(self, filename: str, variable_key: str) -> list:
+        """
+        Return list of step numbers that have valid cache entries for a dataset
+
+        Args:
+            filename: The SPSS filename
+            variable_key: The variable key (e.g., 'Q1_1+Q1_10+..._100')
+
+        Returns:
+            List of integers representing cached step numbers (e.g., [1, 2, 3])
+        """
+        # Mapping of step names to step numbers
+        step_mapping = {
+            "data": 1,
+            "preprocessed": 2,
+            "quality_filter": 3,
+            "extracted_ideas": 4,
+            "embeddings": 5,
+            "initial_clusters": 6,
+            "codebook_generation": 7,
+            "theme_enriched_codebook": 8,
+            "code_assignment_direct": 9,
+            "code_assignment": 9,  # Alternative name for step 9
+            "export": 10
+        }
+
+        cached_steps = []
+        for step_name, step_num in step_mapping.items():
+            if self.is_cache_valid(filename, step_name, variable_key):
+                # Avoid duplicates (for alternative names like code_assignment)
+                if step_num not in cached_steps:
+                    cached_steps.append(step_num)
+
+        return sorted(cached_steps)
+
     def get_statistics(self) -> Dict:
         """Get cache usage statistics"""
         with self.db._get_connection() as conn:
