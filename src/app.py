@@ -85,11 +85,9 @@ if 'code_designer_config' not in st.session_state:
 if 'code_assignment_config' not in st.session_state:
     st.session_state.code_assignment_config = CodeAssignmentConfig()
 
-# Navigation and session cache tracking
+# Navigation tracking
 if 'completed_steps' not in st.session_state:
     st.session_state.completed_steps = set()  # Track which steps are completed in current session
-if 'session_cache_tracker' not in st.session_state:
-    st.session_state.session_cache_tracker = {}  # Track session-specific cache keys for each step
 if 'max_step_reached' not in st.session_state:
     st.session_state.max_step_reached = 0  # Highest step number reached in current session
 
@@ -99,13 +97,11 @@ def is_step_completed(step_num: int) -> bool:
     """Check if a step has been completed in the current session"""
     return step_num in st.session_state.completed_steps
 
-def mark_step_completed(step_num: int, step_name: str = None):
+def mark_step_completed(step_num: int):
     """Mark a step as completed and update max step reached"""
     st.session_state.completed_steps.add(step_num)
     if step_num > st.session_state.max_step_reached:
         st.session_state.max_step_reached = step_num
-    if step_name:
-        st.session_state.session_cache_tracker[step_num] = step_name
 
 def can_navigate_to_step(target_step: int) -> bool:
     """Check if user can navigate to a specific step"""
@@ -115,7 +111,6 @@ def can_navigate_to_step(target_step: int) -> bool:
 def reset_navigation_tracking():
     """Reset navigation tracking (e.g., when uploading new file)"""
     st.session_state.completed_steps = set()
-    st.session_state.session_cache_tracker = {}
     st.session_state.max_step_reached = 0
     st.session_state.pipeline_results = {}
 
@@ -431,6 +426,15 @@ def main():
 
         # Navigation buttons
         if st.session_state.step > 0:  # Only show navigation when not on upload page
+            # Home button to return to upload page
+            if st.button(
+                "🏠 " + ("Start" if st.session_state.language == "nl" else "Home"),
+                use_container_width=True,
+                key="nav_home"
+            ):
+                st.session_state.step = 0
+                st.rerun()
+
             nav_col1, nav_col2 = st.columns(2)
 
             with nav_col1:
@@ -681,7 +685,18 @@ def load_cached_dataset(dataset_info):
                 'variable_key': variable_key,
                 'filename': filename
             }
-            
+
+            # NEW: Detect which steps are cached and mark them as completed
+            cached_steps = cache_manager.get_cached_steps_for_dataset(filename, variable_key)
+            for step_num in cached_steps:
+                mark_step_completed(step_num)
+
+            # Navigate to the last cached step (or step 1 if only data is cached)
+            if cached_steps:
+                st.session_state.step = max(cached_steps)
+            else:
+                st.session_state.step = 1  # Default to step 1 (preprocessing)
+
             return True, len(data)
         else:
             return False, 0
@@ -1386,7 +1401,7 @@ def show_preprocessing_page():
                 st.session_state.pipeline_results['var_lab'] = var_lab
 
                 # Mark step 1 (data loading) as completed
-                mark_step_completed(1, "data")
+                mark_step_completed(1)
 
             # B. Preprocessing
             preprocessed_text = _get_pipeline_runner().step_2_preprocess(
@@ -1439,7 +1454,7 @@ def show_preprocessing_page():
                 st.session_state['waiting_for_continue_preprocessing'] = True
 
                 # Mark step 2 (preprocessing) as completed in navigation tracker
-                mark_step_completed(2, "preprocessed")
+                mark_step_completed(2)
 
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
@@ -1554,7 +1569,7 @@ def show_filtering_page():
             st.session_state['waiting_for_continue_filtering'] = True
 
             # Mark step 3 (quality filtering) as completed in navigation tracker
-            mark_step_completed(3, "quality_filter")
+            mark_step_completed(3)
 
             st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
@@ -1669,7 +1684,7 @@ def show_idea_extraction_page():
                 st.session_state['waiting_for_continue_idea_extraction'] = True
 
                 # Mark step 4 (idea extraction) as completed in navigation tracker
-                mark_step_completed(4, "extracted_ideas")
+                mark_step_completed(4)
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Extractie fout: {str(e)}" if lang == "nl" else f"Extraction error: {str(e)}")
@@ -1727,7 +1742,7 @@ def show_embedding_page():
                 st.session_state['waiting_for_continue_embedding'] = True
 
                 # Mark step 5 (embedding generation) as completed in navigation tracker
-                mark_step_completed(5, "embeddings")
+                mark_step_completed(5)
                 st.rerun()  # Rerun to show the continue button interface
             except Exception as e:
                 progress_container.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
@@ -1812,7 +1827,7 @@ def show_clustering_page():
                 st.session_state['waiting_for_continue_clustering'] = True
 
                 # Mark step 6 (clustering) as completed in navigation tracker
-                mark_step_completed(6, "initial_clusters")
+                mark_step_completed(6)
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
@@ -1887,7 +1902,7 @@ def show_codebook_generation_page():
                 st.session_state['waiting_for_continue_codebook_generation'] = True
 
                 # Mark step 7 (codebook generation) as completed in navigation tracker
-                mark_step_completed(7, "codebook_generation")
+                mark_step_completed(7)
                 st.rerun()  # Rerun to show the continue button interface
             except Exception as e:
                 progress_container.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
@@ -1962,7 +1977,7 @@ def show_theme_identification_page():
             st.session_state['waiting_for_continue_theme_identification'] = True
 
             # Mark step 8 (theme identification/refinement) as completed in navigation tracker
-            mark_step_completed(8, "theme_enriched_codebook")
+            mark_step_completed(8)
             st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
@@ -2063,7 +2078,7 @@ def show_code_assignment_page():
                 st.session_state['waiting_for_continue_code_assignment'] = True
 
                 # Mark step 9 (code assignment) as completed in navigation tracker
-                mark_step_completed(9, "code_assignment")
+                mark_step_completed(9)
                 st.rerun()  # Rerun to show the continue button interface
         except Exception as e:
             progress_container.error(f"Toewijzing fout: {str(e)}" if lang == "nl" else f"Assignment error: {str(e)}")
@@ -2227,7 +2242,7 @@ def show_export_page():
                 st.session_state['waiting_for_continue_export'] = True
 
                 # Mark step 10 (export) as completed in navigation tracker
-                mark_step_completed(10, "export")
+                mark_step_completed(10)
                 st.rerun()  # Rerun to show the continue button interface
                 
             except Exception as e:
