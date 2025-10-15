@@ -10,7 +10,7 @@ from hdbscan.validity import validity_index
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize #StandardScaler
 from sklearn.metrics import silhouette_score, silhouette_samples
-from sklearn.cluster import AgglomerativeClustering
+#from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score
 
@@ -187,10 +187,7 @@ class Clusterer:
         return float(np.mean(hdbscan_model.probabilities_[mask]))
     
     def _cluster_stability(self, model: HDBSCAN, labels: np.ndarray) -> float:
-        """
-        Size-weighted cluster persistence (Stability*), aligned with HDBSCAN's objective.
-        Returns 0.0 if not available.
-        """
+        """ Size-weighted cluster persistence (Stability*), aligned with HDBSCAN's objective. Returns 0.0 if not available. """
 
         # labels: -1 = noise
         mask = labels >= 0
@@ -488,13 +485,11 @@ class Clusterer:
     def _auto_hdbscan_grid(self, U: np.ndarray) -> Tuple[HDBSCAN, np.ndarray, ClusterSummary]:
         
         n = U.shape[0]
-        mcs =  max(5,  int(0.25 * np.sqrt(n)))
+
+        mcs = int(np.clip(np.ceil(np.max([np.log(n), 0.02*n, 0.5*np.sqrt(n)])), 2, n))
+        ms  = int(np.clip(np.ceil(np.max([np.log(n), 0.5*mcs])), 1, mcs))
         
-        ms_grid = sorted(set([
-                max(3, int(0.4 * mcs)), # granular
-                max(3, int(0.5 * mcs)), # moderate
-                max(3, int(0.6 * mcs)) # conservatie
-                ]))
+        ms_grid  = sorted({int(np.clip(f * ms,  1, mcs)) for f in [0.8, 1.0, 1.2]})
         
         results = self._grid_search(U, ms_grid, mcs)
                
@@ -586,165 +581,10 @@ class Clusterer:
                 f"{cdist5}")
         
         self.verbose_reporter.empty_line()
-        self.verbose_reporter.stat_line(f"🏆 Best configuration: min_cluster_size={best_result['summary'].min_cluster_size}")
+        self.verbose_reporter.stat_line(f"🏆 Best configuration: min sample size ={best_result['summary'].min_samples}")
         
         return best_result["hdbscan_model"], best_result["labels"], best_result["summary"]
-    
-    # def _merge_clusters_by_similarity(self, embeddings: np.ndarray, labels: np.ndarray, sim_threshold: Optional[float] = None, linkage: str = "complete") -> np.ndarray:
-    #     """Merge clusters based on centroid cosine similarity"""
-    #     assert embeddings.shape[0] == labels.shape[0], "embeddings/labels length mismatch"
-    #     
-    #     # Use provided threshold or default from config
-    #     if sim_threshold is None:
-    #         sim_threshold = self.clustering_config.default_merge_threshold
-    #     
-    #     # Build centroids in original embedding space
-    #     centroids, sizes = self._compute_centroids(embeddings, labels)
-    #     
-    #     if not centroids:
-    #         return labels.copy()
-    #     
-    #     orig_ids = sorted(centroids.keys())
-    #     C = np.vstack([centroids[cid] for cid in orig_ids])
-    #     
-    #     # L2-normalize for cosine similarity
-    #     Cn = normalize(C)
-    #     
-    #     # Agglomerative clustering on centroids
-    #     dist_threshold = 1.0 - sim_threshold
-    #     
-    #     try:
-    #         ag = AgglomerativeClustering(
-    #             n_clusters=None,
-    #             metric="cosine",
-    #             linkage=linkage,
-    #             distance_threshold=dist_threshold,
-    #             compute_full_tree=True,
-    #         )
-    #     except TypeError:
-    #         # Older scikit-learn versions
-    #         ag = AgglomerativeClustering(
-    #             n_clusters=None,
-    #             affinity="cosine",
-    #             linkage=linkage,
-    #             distance_threshold=dist_threshold,
-    #             compute_full_tree=True,
-    #         )
-    #     
-    #     merged_ids = ag.fit_predict(Cn)
-    #     
-    #     # Build mapping old_id -> merged_group_id
-    #     uniq_groups = {g: i for i, g in enumerate(sorted(np.unique(merged_ids)))}
-    #     old_to_new_group = {old: uniq_groups[g] for old, g in zip(orig_ids, merged_ids)}
-    #     
-    #     # Remap point labels
-    #     new_labels = labels.copy()
-    #     for i, y in enumerate(labels):
-    #         if y is not None and y >= 0:
-    #             new_labels[i] = old_to_new_group[int(y)]
-    #         else:
-    #             new_labels[i] = -1
-    #     
-    #     # Report merges
-    #     groups = defaultdict(list)
-    #     for old, g in old_to_new_group.items():
-    #         groups[g].append(old)
-    #     groups_list = [sorted(v) for _, v in sorted(groups.items(), key=lambda kv: kv[0])]
-    #     
-    #     self.verbose_reporter.section_header(f"CLUSTER MERGING (cosine ≥ {sim_threshold:.2f})")
-    #     self.verbose_reporter.stat_line(f"Original clusters: {len(orig_ids)} → Merged clusters: {len(groups_list)}")
-    #     
-    #     # Show merged groups
-    #     merged_groups = [g for g in groups_list if len(g) > 1]
-    #     if merged_groups:
-    #         self.verbose_reporter.stat_line("Merged groups:")
-    #         for g in merged_groups[:10]:
-    #             total_n = sum(sizes.get(cid, 0) for cid in g)
-    #             parts = ", ".join(f"{cid}(n={sizes.get(cid,0)})" for cid in g)
-    #             self.verbose_reporter.stat_line(f"  {{{parts}}} → total n={total_n}")
-    #         if len(merged_groups) > 10:
-    #             self.verbose_reporter.stat_line(f"  ... and {len(merged_groups)-10} more groups")
-    #     else:
-    #         self.verbose_reporter.stat_line("No merges needed at this threshold")
-    #     
-    #     return new_labels
-    
-    # def _analyze_cluster_similarity(self, embeddings: np.ndarray, labels: np.ndarray) -> None:
-    #     """Analyze and report similarity between clusters"""
-    #     self.verbose_reporter.section_header("CLUSTER SIMILARITY ANALYSIS")
-    #     
-    #     # Extract cluster embeddings and calculate centroids
-    #     cluster_embeddings = defaultdict(list)
-    #     cluster_sizes = defaultdict(int)
-    #     
-    #     # Group embeddings by cluster ID
-    #     for embedding, label in zip(embeddings, labels):
-    #         if label is not None and label != -1:  # Exclude noise points
-    #             cluster_id = label
-    #             cluster_embeddings[cluster_id].append(embedding)
-    #             cluster_sizes[cluster_id] += 1
-    #     
-    #     # Calculate cluster centroids
-    #     cluster_centroids = {}
-    #     for id_cluster, embeddings_cluster in cluster_embeddings.items():
-    #         if embeddings_cluster:
-    #             centroid = np.mean(embeddings_cluster, axis=0)
-    #             cluster_centroids[id_cluster] = centroid
-    #     
-    #     # Sort cluster IDs for consistent output
-    #     sorted_cluster_ids = sorted(cluster_centroids.keys())
-    #     num_clusters = len(sorted_cluster_ids)
-    #     
-    #     if num_clusters > 1:
-    #         # Create centroid matrix
-    #         centroid_matrix = np.array([cluster_centroids[cid] for cid in sorted_cluster_ids])
-    #         
-    #         # Calculate pairwise cosine similarities
-    #         similarity_matrix = cosine_similarity(centroid_matrix)
-    #         
-    #         # Extract upper triangle (excluding diagonal)
-    #         similarities = similarity_matrix[np.triu_indices(num_clusters, k=1)]
-    #         total_pairs = len(similarities)
-    #         
-    #         # Report similarity distribution
-    #         self.verbose_reporter.stat_line(f"Analyzing {num_clusters} clusters ({total_pairs} unique pairs)")
-    #         
-    #         # Thresholds to analyze
-    #         thresholds = self.clustering_config.similarity_analysis_thresholds
-    #         
-    #         for threshold in thresholds:
-    #             count = np.sum(similarities >= threshold)
-    #             percentage = (count / total_pairs * 100) if total_pairs > 0 else 0
-    #             self.verbose_reporter.stat_line(f"Similarity >= {threshold:.2f}: {count:4d} pairs ({percentage:5.1f}%)")
-    #         
-    #         # Find and display most similar cluster pairs
-    #         self.verbose_reporter.empty_line()
-    #         self.verbose_reporter.stat_line("Top 10 most similar cluster pairs:")
-    #         
-    #         # Get indices of top similarities
-    #         top_k = min(10, total_pairs)
-    #         top_indices = np.argpartition(similarities, -top_k)[-top_k:]
-    #         top_indices = top_indices[np.argsort(-similarities[top_indices])]
-    #         
-    #         # Convert flat indices back to cluster pairs
-    #         triu_indices = np.triu_indices(num_clusters, k=1)
-    #         
-    #         for rank, idx in enumerate(top_indices, 1):
-    #             i = triu_indices[0][idx]
-    #             j = triu_indices[1][idx]
-    #             cluster_i = sorted_cluster_ids[i]
-    #             cluster_j = sorted_cluster_ids[j]
-    #             similarity = similarities[idx]
-    #             size_i = cluster_sizes.get(cluster_i, 0)
-    #             size_j = cluster_sizes.get(cluster_j, 0)
-    #             
-    #             self.verbose_reporter.stat_line(
-    #                 f"  {rank:2d}. Cluster {cluster_i} ({size_i} ideas) <-> "
-    #                 f"Cluster {cluster_j} ({size_j} ideas): {similarity:.3f}"
-    #             )
-    #     else:
-    #         self.verbose_reporter.stat_line("Not enough clusters for similarity analysis (need at least 2)")
-
+  
     def run(self):
         """Enhanced clustering pipeline with automatic optimization"""
         # Display input statistics

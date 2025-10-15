@@ -14,7 +14,7 @@ cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
 model_config = ModelConfig()
 
-# === STANDALONE CONFIGS ========================================================================================
+# === MANUAL STANDALONE CONFIGS ========================================================================================
 
 # filename = "M250285 input voor coderen - met Q18Q19.sav"
 # id_column = "respondentid"
@@ -38,24 +38,31 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 100
 
-RUN_UNTIL_STEP = 3                          
-# None = run all steps
-
-# FORCE_STEP = "data"                          #step 0
-# FORCE_STEP = "preprocessed"                  #step 1 
-# FORCE_STEP = "quality_filter"                #step 2
-FORCE_STEP = "extracted_ideas"               #step 3 
-# FORCE_STEP = "embeddings"                    #step 4
-# FORCE_STEP = "initial_clusters"              #step 5 
-# FORCE_STEP = "codebook_generation"           #step 6
-# FORCE_STEP = "codebook_refinement"           #step 7
-# FORCE_STEP = "code_assignment_direct"        #step 8
-# FORCE_STEP = "export"                        #step 9
-
+RUN_UNTIL_STEP = 3 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = True
-LANGUAGE = "nl" 
+LANGUAGE = "nl"
+
+# === AUTO STANDALONE CONFIGS ========================================================================================
+
+STEP_NAMES = {
+    0: "data",
+    1: "preprocessed",
+    2: "quality_filter",
+    3: "extracted_ideas",
+    4: "embeddings",
+    5: "initial_clusters",
+    6: "codebook_generation",
+    7: "codebook_refinement",
+    8: "code_assignment_direct",
+    9: "export"
+}
+
+if RUN_UNTIL_STEP is not None and not FORCE_RECALCULATE_ALL:
+    FORCE_STEP = STEP_NAMES.get(RUN_UNTIL_STEP, "")
+else:
+    FORCE_STEP = ""
 
 USE_SPECULATIVE_STARTER_CODES = False
 data_loader = dataLoader.DataLoader(verbose=False)
@@ -66,8 +73,9 @@ print("CODERINGSTOOL PIPELINE")
 print("=" * 80)
 print(f"Data file: {filename}")
 print(f"Variable: {var_name} - {var_lab}")
-print(f"Truncate sample size: {sample_size}")
-print(f"Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
+print(f"Sample size: {sample_size if sample_size else 'All responses'}")
+print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-9)'}")
+print(f"Force recalculate: {'ALL STEPS' if FORCE_RECALCULATE_ALL else (f'Step {RUN_UNTIL_STEP} ({FORCE_STEP})' if FORCE_STEP else 'None')}")
 print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
 print(f"Verbose mode: {VERBOSE}")
 print(f"Prompt printer: {PROMPT_PRINTER}")

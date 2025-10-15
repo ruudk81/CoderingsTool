@@ -167,10 +167,10 @@ Template requirement
 4. The result should sound natural and complete up to the placeholder.
 
 Output format (return **only** this JSON object)
-{
+{{
   "canonical_term": "canonical noun entity in {language}",
   "canonical_phrasing": "template with canonical term and verb/state inserted in {language}, e.g. 'Elektrische voertuigen zijn [EIGENSCHAP_OF_ACTIE]'"
-}
+}}
 
 Validation checklist before returning:
 - Exactly two keys: `canonical_term`, `canonical_phrasing`

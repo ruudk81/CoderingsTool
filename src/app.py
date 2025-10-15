@@ -305,7 +305,7 @@ def show_advanced_settings(current_step=0):
         reasoning_options = ["minimal", "low", "medium", "high"]
         verbosity_options = ["low", "medium", "high"]
 
-        # Step 2: Preprocessing (shown on step 1)
+        # Step 1: Preprocessing (
         if current_step == 1:
             st.markdown("#### 📝 Step 2: Preprocessing")
             current_spell_model = st.session_state.model_config.get_model_for_stage('spell_check')
@@ -320,7 +320,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 3: Quality Filter (shown on step 2)
+        # Step 2: Quality Filter 
         if current_step == 2:
             st.markdown("#### 🔍 Step 3: Quality Filter")
             current_quality_model = st.session_state.model_config.get_model_for_stage('quality_filter')
@@ -335,7 +335,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 4: Idea Extraction (shown on step 3)
+        # Step 3: Idea Extraction 
         if current_step == 3:
             st.markdown("#### 💡 Step 4: Idea Extraction")
             current_seg_model = st.session_state.model_config.get_model_for_stage('segmentation')
@@ -350,7 +350,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 5: Embeddings (shown on step 4)
+        # Step 4: Embeddings 
         if current_step == 4:
             st.markdown("#### 🔗 Step 5: Embeddings")
             current_emb_model = st.session_state.model_config.get_model_for_stage('embedding')
@@ -365,7 +365,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 6: Clustering (shown on step 5)
+        # Step 5: Clustering 
         if current_step == 5:
             st.markdown("#### 📊 Step 6: Clustering")
             st.markdown("*Automatic clustering determines optimal parameters*")
@@ -373,7 +373,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 7: Code Generation (shown on step 6 and 7)
+        # Step 6 and 7: Codebook Generation 
         if current_step in [6, 7]:
             st.markdown("#### 🏗️ Step 7: Code Generation ⭐")
             st.markdown("*Core code generation models and parameters*")
@@ -506,7 +506,7 @@ def show_advanced_settings(current_step=0):
 
             st.markdown("---")
 
-        # Step 9: Code Assignment (shown on step 8)
+        # Step 8: Code Assignment 
         if current_step == 8:
             st.markdown("#### 🎯 Step 9: Code Assignment")
             current_assign_model = st.session_state.model_config.get_model_for_stage('code_assignment')
@@ -659,6 +659,7 @@ def main():
             
         # BOTTOM SECTION: Results display
         show_info_panel()
+
 
 # STEP 0. RETRIEVING / UPLOADING DATA  ################################################################################################################################
 
@@ -1322,7 +1323,7 @@ def show_upload_page():
                 st.session_state.step = 1  # Move to preprocessing step
                 st.rerun()
 
-# STEP 1. PREPROCESSING RESPONSES ################################################################################################################################
+# STEP 1. PREPROCESSING DATA ################################################################################################################################
 
 def show_preprocessing_page():
     lang = st.session_state.language
@@ -1413,12 +1414,7 @@ def show_preprocessing_page():
                     for var in selected_vars:
                             label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
                             var_labels.append(label or var)
-                        
 
-                    # Load multiple variables
-                    # NOTE: pipeline.step_0_load_data doesn't support var_names (merged variables)
-                    # For now, load the first variable only
-                    # TODO: Add merged variable support to pipeline.py
                     progress_container.text("🔄 Data laden...")
 
                     # Get variable_key for caching
