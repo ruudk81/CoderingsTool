@@ -12,12 +12,9 @@ import models
 from config import CacheConfig, ModelConfig, SpellCheckConfig,QualityFilterConfig,  SegmentationConfig, EmbeddingConfig, HDBSCANConfig, CodeDesignerConfig, CodeAssignmentConfig
 
 from utils.dataLoader import DataLoader
-from utils.cacheManager import CacheManager, generate_variable_key
+from utils.cacheManager import CacheManager
 import ui_text as ui
-
-# Import pipeline functions directly
-import pipeline
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Optional
 
 # DatasetConfig dataclass ################################################################################################################################
@@ -69,120 +66,13 @@ class DatasetConfig:
             loaded_from_cache=st.session_state.get('loaded_from_cache', False)
         )
 
-    def validate_text_variables(self, var_types: dict) -> tuple[bool, list[str]]:
-        """ Validate that selected variables are text/string types. """
-        non_string_vars = []
-        for var in self.selected_variables:
-            var_info = var_types.get(var, {})
-            if not var_info.get('is_string', False):
-                dtype = var_info.get('dtype', 'numeric')
-                non_string_vars.append(f"{var} (type: {dtype})")
-
-        return len(non_string_vars) == 0, non_string_vars
-
-    def get_validation_error_message(self, non_string_vars: list[str], lang: str = "en") -> str:
-        """  Format error message for non-string variable selection. """
-        if lang == "nl":
-            msg = "⚠️ Let op: De volgende variabelen zijn geen tekstvariabelen:\n\n"
-            msg += "\n".join(f"• {var}" for var in non_string_vars)
-            msg += "\n\nDeze tool is ontworpen voor het analyseren van open tekstvragen. "
-            msg += "Numerieke variabelen kunnen niet worden verwerkt.\n\n"
-            msg += "Selecteer alleen variabelen met het type [Tekst] of [object]."
-        else:
-            msg = "⚠️ Warning: The following variables are not text variables:\n\n"
-            msg += "\n".join(f"• {var}" for var in non_string_vars)
-            msg += "\n\nThis tool is designed for analyzing open text responses. "
-            msg += "Numeric variables cannot be processed.\n\n"
-            msg += "Please select only variables marked as [Text] or [object]."
-
-        return msg
-
-    def get_preview_summary(self, lang: str = "en") -> str:
-        """ Generate summary info string for preview display (st.info box)."""
-        if self.variable_mode == 'multiple' and len(self.selected_variables) > 1:
-            # Multiple variables display
-            var_list = ', '.join(self.selected_variables)
-            strategy = self.merge_config.get('strategy', 'concatenate') if self.merge_config else 'concatenate'
-            separator = self.merge_config.get('separator', ' ') if self.merge_config else ' '
-
-            info = (f"🔗 **{'Samengevoegd' if lang == 'nl' else 'Merged'}:** {len(self.selected_variables)} "
-                    f"{'variabelen' if lang == 'nl' else 'variables'} ({var_list})")
-            info += f" | **{'Strategie' if lang == 'nl' else 'Strategy'}:** {strategy}"
-            info += f" | **{'Scheidingsteken' if lang == 'nl' else 'Separator'}:** '{separator}'"
-        else:
-            # Single variable display
-            var_name = self.selected_variables[0] if self.selected_variables else "Unknown"
-            info = f"📊 **{'Variabele' if lang == 'nl' else 'Variable'}:** {var_name}"
-
-        # Add sample size
-        if self.sample_size:
-            info += f" | **{'Steekproef' if lang == 'nl' else 'Sample'}:** {self.sample_size} "
-            info += "gevallen" if lang == "nl" else "cases"
-
-        return info
-
-    def format_preview_dataframe(self, df, text_col: str):
-        """
-        Clean up dataframe for display: remove .0 from IDs, escape format strings. """
-        import pandas as pd
-
-        df = df.copy()  # Avoid modifying original
-
-        # Format ID column - remove .0 from whole numbers
-        if self.id_column in df.columns:
-            if df[self.id_column].dtype in ['int64', 'float64']:
-                df[self.id_column] = df[self.id_column].apply(
-                    lambda x: str(int(x)) if pd.notna(x) and x == int(x) else str(x)
-                )
-            else:
-                df[self.id_column] = df[self.id_column].astype(str)
-
-        # Escape format strings in non-text columns to avoid streamlit errors
-        for col in df.columns:
-            if col != text_col and df[col].dtype == 'object':
-                try:
-                    df[col] = df[col].apply(
-                        lambda x: str(x).replace('%s', '%%s').replace('%d', '%%d').replace('%f', '%%f')
-                        if isinstance(x, str) else x
-                    )
-                except Exception:
-                    pass  # Skip if conversion fails
-
-        return df
-
-    @staticmethod
-    def filter_string_variables(available_vars: dict, var_types: dict) -> list[str]:
-        """ Filter variables to only string/text types. """
-        if not var_types:
-            return list(available_vars.keys())
-
-        string_vars = [
-            var for var, info in var_types.items()
-            if info.get('is_string', False)
-        ]
-
-        # Fallback: if no string vars found, return all vars
-        return string_vars if string_vars else list(available_vars.keys())
-
-    @staticmethod
-    def build_variable_format_func(available_vars: dict, var_types: dict, lang: str):
-        """ Create format function for variable selectbox that shows type info. """
-        def format_var(var_name: str) -> str:
-            label = available_vars.get(var_name, '(No label)')
-
-            if var_types and var_name in var_types:
-                var_info = var_types[var_name]
-                if var_info.get('is_string', False):
-                    type_label = "Tekst" if lang == "nl" else "Text"
-                else:
-                    type_label = var_info.get('dtype', 'unknown')
-                return f"{var_name} - {label} [{type_label}]"
-            else:
-                return f"{var_name} - {label} [unknown]"
-
-        return format_var
-
 # Lazy loaders ################################################################################################################################
+
+def _get_pipeline_runner():
+    if st.session_state.pipeline_runner is None:
+        from pipelineRunner import get_pipeline_runner
+        st.session_state.pipeline_runner = get_pipeline_runner()
+    return st.session_state.pipeline_runner
 
 def _get_data_loader():
     if st.session_state.data_loader is None:
@@ -225,6 +115,8 @@ if 'cache_manager' not in st.session_state:
     st.session_state.cache_manager = None  # Lazy load when needed
 if 'data_loader' not in st.session_state:
     st.session_state.data_loader = None  # Lazy load when needed
+if 'pipeline_runner' not in st.session_state:
+    st.session_state.pipeline_runner = None  # Lazy load when needed
 
 # Initialize configuration objects for session-specific settings
 if 'model_config' not in st.session_state:
@@ -290,7 +182,11 @@ def clear_all_wait_states():
 # Side bar: session processing settings ################################################################################################################################
 
 def show_advanced_settings(current_step=0):
-    """Show advanced settings UI in sidebar - only shows settings relevant to current step """
+    """Show advanced settings UI in sidebar - only shows settings relevant to current step
+
+    Args:
+        current_step: Current pipeline step (0-10)
+    """
     with st.expander("⚙️ Advanced Settings", expanded=False):
         st.markdown("### Pipeline Configuration")
         st.markdown("*Settings apply only to current session*")
@@ -575,8 +471,12 @@ def show_advanced_settings(current_step=0):
 def main():
     st.title(ui.get_text("APP_TITLE", st.session_state.language))
     st.markdown(ui.get_text("APP_DESCRIPTION", st.session_state.language))
-
+    
+    #---------
+    # Sidebar
+    #---------
     with st.sidebar:
+        # Language selector at the top
         col1, col2 = st.columns([1, 2])
         with col1:
             st.markdown(f"**{ui.get_text('LANGUAGE_LABEL', st.session_state.language)}**")
@@ -599,28 +499,44 @@ def main():
         st.markdown(ui.get_text("SIDEBAR_DESCRIPTION", st.session_state.language))
         
         # Progress indicator - Updated to 10 steps
+        #progress = st.progress(st.session_state.step / 10)
         st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step + 1}/10")
 
         # Navigation buttons
         if st.session_state.step > 0:  # Only show navigation when not on upload page
-            if st.button("🏠 " + ("Start" if st.session_state.language == "nl" else "Home"), use_container_width=True, key="nav_home"):
-
+            # Home button to return to upload page
+            if st.button(
+                "🏠 " + ("Start" if st.session_state.language == "nl" else "Home"),
+                use_container_width=True,
+                key="nav_home"
+            ):
                 st.session_state.step = 0
                 st.rerun()
 
             nav_col1, nav_col2 = st.columns(2)
 
             with nav_col1:
-                loaded_from_cache = st.session_state.get('loaded_from_cache', False)
-                can_go_back = st.session_state.step > 1 and (loaded_from_cache or(st.session_state.step - 1) in st.session_state.completed_steps)
-                if st.button("⬅️ " + ("Vorige" if st.session_state.language == "nl" else "Previous"),disabled=not can_go_back, use_container_width=True, key="nav_previous"):
+                # Previous button - enabled if we can go back
+                can_go_back = st.session_state.step > 1 and (st.session_state.step - 1) in st.session_state.completed_steps
+                if st.button(
+                    "⬅️ " + ("Vorige" if st.session_state.language == "nl" else "Previous"),
+                    disabled=not can_go_back,
+                    use_container_width=True,
+                    key="nav_previous"
+                ):
                     clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step -= 1
                     st.rerun()
 
             with nav_col2:
-                can_go_forward = st.session_state.step < 10 and (loaded_from_cache or st.session_state.step in st.session_state.completed_steps)
-                if st.button(("Volgende" if st.session_state.language == "nl" else "Next") + " ➡️", disabled=not can_go_forward, use_container_width=True, key="nav_next"):
+                # Next button - enabled if current step is completed
+                can_go_forward = st.session_state.step < 10 and st.session_state.step in st.session_state.completed_steps
+                if st.button(
+                    ("Volgende" if st.session_state.language == "nl" else "Next") + " ➡️",
+                    disabled=not can_go_forward,
+                    use_container_width=True,
+                    key="nav_next"
+                ):
                     clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step += 1
                     st.rerun()
@@ -630,35 +546,74 @@ def main():
         # Advanced Settings
         show_advanced_settings(st.session_state.step)
  
+    #---------
     # Main body  
+    #---------
     sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
     if not st.session_state.step in sampling_steps: 
         show_upload_page()
     else:
-        # TOP SECTION: Processing step controls
-        if st.session_state.step == 1:
-            show_preprocessing_page()
-        elif st.session_state.step == 2:
-            show_filtering_page()
-        elif st.session_state.step == 3:
-            show_idea_extraction_page()
-        elif st.session_state.step == 4:
-            show_embedding_page()
-        elif st.session_state.step == 5:
-            show_clustering_page()
-        elif st.session_state.step == 6:
-            show_codebook_generation_page()
-        elif st.session_state.step == 7:
-            show_theme_identification_page()
-        elif st.session_state.step == 8:
-            show_code_assignment_page()
-        elif st.session_state.step == 9:
-            show_export_page()
-        elif st.session_state.step == 10:
-            show_results_page()    
+        
+        #-----
+        # Split screen : vertcial
+        #-----
+        if False: 
+            col1, col2 = st.columns([1, 1])
+            # LEFT SECTION: Processing step controls
+            with col1:
+                if st.session_state.step == 1:
+                    show_preprocessing_page()
+                elif st.session_state.step == 2:
+                    show_filtering_page()
+                elif st.session_state.step == 3:
+                    show_idea_extraction_page()
+                elif st.session_state.step == 4:
+                    show_embedding_page()
+                elif st.session_state.step == 5:
+                    show_clustering_page()
+                elif st.session_state.step == 6:
+                    show_codebook_generation_page()
+                elif st.session_state.step == 7:
+                    show_theme_identification_page()
+                elif st.session_state.step == 8:
+                    show_code_assignment_page()
+                elif st.session_state.step == 9:
+                    show_export_page()
+                elif st.session_state.step == 10:
+                    show_results_page()
+            with col2:
+                # RIGHT SECTION: Processing step controls
+                show_info_panel()
             
-        # BOTTOM SECTION: Results display
-        show_info_panel()
+        #-----
+        # Split screen : horizontal
+        #-----
+        if True: 
+            # TOP SECTION: Processing step controls
+            if st.session_state.step == 1:
+                show_preprocessing_page()
+            elif st.session_state.step == 2:
+                show_filtering_page()
+            elif st.session_state.step == 3:
+                show_idea_extraction_page()
+            elif st.session_state.step == 4:
+                show_embedding_page()
+            elif st.session_state.step == 5:
+                show_clustering_page()
+            elif st.session_state.step == 6:
+                show_codebook_generation_page()
+            elif st.session_state.step == 7:
+                show_theme_identification_page()
+            elif st.session_state.step == 8:
+                show_code_assignment_page()
+            elif st.session_state.step == 9:
+                show_export_page()
+            elif st.session_state.step == 10:
+                show_results_page()    
+                
+            # BOTTOM SECTION: Results display
+            show_info_panel()
+
 
 # STEP 0. RETRIEVING / UPLOADING DATA  ################################################################################################################################
 
@@ -726,8 +681,127 @@ def get_available_cached_datasets():
     return datasets
 
 
-def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
-    """ Load cached dataset and build DatasetConfig """
+def load_cached_dataset(dataset_info):
+    """Load a cached dataset and set up session state"""
+    try:
+        cache_manager = _get_cache_manager()
+        
+        dataset_name = dataset_info['dataset_name']
+        variables = dataset_info['variables']
+        sample_suffix = dataset_info['sample_suffix']
+        
+        # Reconstruct the variable key for cache manager
+        if sample_suffix:
+            variable_key = f"{variables}{sample_suffix}"
+        else:
+            variable_key = variables
+            
+        # Construct filename for cache lookup
+        filename = f"{dataset_name}.sav"
+        
+        # Load from cache
+        data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
+        
+        if data:
+            # Set up session state to continue with cached data
+            st.session_state.filename = filename
+            st.session_state.uploaded_file_path = None  # No physical file
+            
+            # Parse variables from variable key
+            if '+' in variables:
+                # Multiple variables
+                parsed_vars = variables.split('+')
+                st.session_state.selected_variables = parsed_vars
+                st.session_state.selected_variable = parsed_vars[0]  # Backward compatibility
+                st.session_state.variable_mode = 'multiple'
+                st.session_state.is_merged_variable = True
+            else:
+                # Single variable
+                st.session_state.selected_variable = variables
+                st.session_state.selected_variables = [variables]
+                st.session_state.variable_mode = 'single'
+                st.session_state.is_merged_variable = False
+            
+            # Set sample size if specified
+            if sample_suffix and sample_suffix != "_full":
+                sample_size = sample_suffix.replace("_", "")
+                if sample_size.isdigit():
+                    st.session_state.sample_size_config = int(sample_size)
+                    st.session_state.truncate_data = True
+                else:
+                    st.session_state.sample_size_config = None
+                    st.session_state.truncate_data = False
+            else:
+                st.session_state.sample_size_config = None
+                st.session_state.truncate_data = False
+            
+            # Get var_dict
+            if '+' in variables:
+                var_dict = {var: f"Variable {var}" for var in variables.split('+')}
+            else:
+                var_dict = {variables: f"Variable {variables}"}
+            
+            # Add ID column (assume first response has id_column set)
+            if data and hasattr(data[0], 'id_column') and data[0].id_column:
+                var_dict[data[0].id_column] = f"ID Column ({data[0].id_column})"
+                st.session_state.selected_id_column = data[0].id_column
+            else:
+                var_dict['id'] = 'ID Column (assumed)'
+                st.session_state.selected_id_column = 'id'
+            
+            st.session_state.available_variables = var_dict
+
+            # Set var_lab for compatibility with preprocessing and other steps
+            try:
+                data_loader = _get_data_loader()
+                # For both single and merged variables, use the first variable name
+                first_var = variables.split('+')[0] if '+' in variables else variables
+                st.session_state.var_lab = data_loader.get_varlab(filename, first_var)
+            except Exception:
+                # Fallback if label retrieval fails
+                st.session_state.var_lab = variables
+
+            # Store the cache key for consistent use throughout the session
+            st.session_state.current_cache_key = variable_key
+            st.session_state.current_variable_key = variable_key
+            
+            # Store original cache info for reference
+            st.session_state.loaded_from_cache = True
+            st.session_state.force_recalculate_all = False  # Use cache for all steps
+            st.session_state.cache_dataset_info = {
+                'dataset_name': dataset_name,
+                'variables': variables,
+                'sample_suffix': sample_suffix,
+                'variable_key': variable_key,
+                'filename': filename
+            }
+
+            # NEW: Detect which steps are cached and mark them as completed
+            cached_steps = cache_manager.get_cached_steps_for_dataset(filename, variable_key)
+            for step_num in cached_steps:
+                mark_step_completed(step_num)
+
+            # Navigate to the last cached step (or step 1 if only data is cached)
+            if cached_steps:
+                st.session_state.step = max(cached_steps)
+            else:
+                st.session_state.step = 1  # Default to step 1 (preprocessing)
+
+            return True, len(data)
+        else:
+            return False, 0
+            
+    except Exception as e:
+        st.error(f"Error loading cached dataset: {str(e)}")
+        return False, 0
+
+# NEW Utility functions for Step 0 refactoring ################################################################################################################################
+
+def load_from_cache_v2(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
+    """
+    Load cached dataset and build DatasetConfig
+    Returns: (config, data, record_count)
+    """
     try:
         cache_manager = _get_cache_manager()
 
@@ -756,13 +830,13 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
             parsed_vars = variables.split('+')
             variable_mode = 'multiple'
             is_merged = True
-            #selected_variable = parsed_vars[0]  # Backward compatibility
+            selected_variable = parsed_vars[0]  # Backward compatibility
         else:
             # Single variable
             parsed_vars = [variables]
             variable_mode = 'single'
             is_merged = False
-            #selected_variable = variables
+            selected_variable = variables
 
         # Parse sample size from suffix
         sample_size = None
@@ -806,8 +880,11 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
         return None, None, 0
 
 
-def load_from_file(uploaded_file) -> tuple[str, dict, dict]:
-    """ Save uploaded file and load variable metadata """
+def load_from_file_v2(uploaded_file) -> tuple[str, dict, dict]:
+    """
+    Save uploaded file and load variable metadata
+    Returns: (filename, variables_dict, variables_types_dict)
+    """
     try:
         # Save uploaded file
         file_path = project_root / "data" / uploaded_file.name
@@ -830,7 +907,16 @@ def load_from_file(uploaded_file) -> tuple[str, dict, dict]:
 
 def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
                           encoding: Optional[str] = None) -> DatasetConfig:
-    """ Build DatasetConfig from UI selections. Reads widget-controlled settings directly from session_state widget keys. """
+    """
+    Build DatasetConfig from UI selections.
+    Reads widget-controlled settings directly from session_state widget keys.
+
+    Args:
+        filename: Name of the SPSS file
+        id_var: ID column name
+        selected_vars: List of selected variable names
+        encoding: File encoding (optional)
+    """
     # Read widget-controlled settings from widget session_state keys
     variable_mode = st.session_state.get('variable_mode', 'single')
     sample_size = st.session_state.get('sample_size')  # From number_input widget
@@ -873,8 +959,10 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
     return config
 
 
-def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
-    """ Load and preview dataset based on configuration """
+def preview_dataset_v2(config: DatasetConfig) -> pd.DataFrame:
+    """
+    Load and preview dataset based on configuration
+    """
     data_loader = _get_data_loader()
 
     # Determine encoding
@@ -912,7 +1000,7 @@ def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
 
 def show_upload_page():
     lang = st.session_state.language
-    st.header(f"{ui.get_text('BTN_UPLOAD', lang)}" if lang == "nl" else "Upload Data")
+    st.header(f"Stap 1: {ui.get_text('BTN_UPLOAD', lang)}" if lang == "nl" else "Step 1: Upload Data")
     
     #----------------------
     # Option 1: from cache
@@ -955,7 +1043,7 @@ def show_upload_page():
                 if st.button("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"), type="primary"):
                     with st.spinner("Data wordt geladen uit cache..." if lang == "nl" else "Loading data from cache..."):
                         # Use new utility function
-                        config, data, record_count = load_from_cache(selected_dataset)
+                        config, data, record_count = load_from_cache_v2(selected_dataset)
 
                         if config and data:
                             # Save configuration to session state
@@ -1011,7 +1099,7 @@ def show_upload_page():
             with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
                 try:
                     # Use new utility function
-                    filename, simple_variables, variables_with_types = load_from_file(uploaded_file)
+                    filename, simple_variables, variables_with_types = load_from_file_v2(uploaded_file)
 
                     # Store in session state
                     st.session_state.filename = filename
@@ -1058,53 +1146,57 @@ def show_upload_page():
         
         # 3a Variable selection based on mode
         if variable_mode == "single":
-            # Single variable selection - Filter for string variables using DatasetConfig
-            string_vars = DatasetConfig.filter_string_variables(
-                st.session_state.available_variables,
-                st.session_state.get('available_variables_types', {})
-            )
-
-            if not string_vars:
-                st.warning("Geen tekstvariabelen gevonden. Alle variabelen worden getoond." if lang == "nl"
-                         else "No text variables found. Showing all variables.")
-
-            # Build format function using DatasetConfig
-            format_var = DatasetConfig.build_variable_format_func(
-                st.session_state.available_variables,
-                st.session_state.get('available_variables_types', {}),
-                lang
-            )
-
+            # Single variable selection
+            # Filter for string variables only
+            if hasattr(st.session_state, 'available_variables_types') and st.session_state.available_variables_types:
+                string_vars = [var for var, info in st.session_state.available_variables_types.items() 
+                             if info.get('is_string', False)]  # Only include confirmed string variables
+                # If no string variables found, show all variables with warning
+                if not string_vars:
+                    st.warning("Geen tekstvariabelen gevonden. Alle variabelen worden getoond." if lang == "nl" 
+                             else "No text variables found. Showing all variables.")
+                    string_vars = list(st.session_state.available_variables.keys())
+            else:
+                string_vars = list(st.session_state.available_variables.keys())
+            
             text_var = st.selectbox(
                 "📄 " + ("Selecteer tekst variabele" if lang == "nl" else "Select text variable"),
                 options=string_vars,
-                format_func=format_var,
+                format_func=lambda x: (
+                    f"{x} - {st.session_state.available_variables.get(x, '(No label)')} [{'Tekst' if lang == 'nl' else 'Text'}]" 
+                    if hasattr(st.session_state, 'available_variables_types') and 
+                       st.session_state.available_variables_types and 
+                       st.session_state.available_variables_types.get(x, {}).get('is_string', False)
+                    else f"{x} - {st.session_state.available_variables.get(x, '(No label)')} [{st.session_state.available_variables_types.get(x, {}).get('dtype', 'unknown') if hasattr(st.session_state, 'available_variables_types') and st.session_state.available_variables_types else 'unknown'}]"
+                ),
                 key="text_variable"
             )
             selected_variables = [text_var] if text_var else []
         else:
-            # 3b Multiple variable selection - Filter for string variables using DatasetConfig
-            string_vars = DatasetConfig.filter_string_variables(
-                st.session_state.available_variables,
-                st.session_state.get('available_variables_types', {})
-            )
-
-            if not string_vars:
-                st.warning("Geen tekstvariabelen gevonden. Alle variabelen worden getoond." if lang == "nl"
-                         else "No text variables found. Showing all variables.")
-
-            # Build format function using DatasetConfig
-            format_var = DatasetConfig.build_variable_format_func(
-                st.session_state.available_variables,
-                st.session_state.get('available_variables_types', {}),
-                lang
-            )
-
+            # 3b Multiple variable selection
+            # Filter for string variables only
+            if hasattr(st.session_state, 'available_variables_types') and st.session_state.available_variables_types:
+                string_vars = [var for var, info in st.session_state.available_variables_types.items() 
+                             if info.get('is_string', False)]  # Only include confirmed string variables
+                # If no string variables found, show all variables with warning
+                if not string_vars:
+                    st.warning("Geen tekstvariabelen gevonden. Alle variabelen worden getoond." if lang == "nl" 
+                             else "No text variables found. Showing all variables.")
+                    string_vars = list(st.session_state.available_variables.keys())
+            else:
+                string_vars = list(st.session_state.available_variables.keys())
+            
             selected_variables = st.multiselect(
-                "📄 " + ("Selecteer tekst variabelen om samen te voegen" if lang == "nl"
+                "📄 " + ("Selecteer tekst variabelen om samen te voegen" if lang == "nl" 
                        else "Select text variables to merge"),
                 options=string_vars,
-                format_func=format_var,
+                format_func=lambda x: (
+                    f"{x} - {st.session_state.available_variables.get(x, '(No label)')} [{'Tekst' if lang == 'nl' else 'Text'}]" 
+                    if hasattr(st.session_state, 'available_variables_types') and 
+                       st.session_state.available_variables_types and 
+                       st.session_state.available_variables_types.get(x, {}).get('is_string', False)
+                    else f"{x} - {st.session_state.available_variables.get(x, '(No label)')} [{st.session_state.available_variables_types.get(x, {}).get('dtype', 'unknown') if hasattr(st.session_state, 'available_variables_types') and st.session_state.available_variables_types else 'unknown'}]"
+                ),
                 key="text_variables_multi",
                 help="Selecteer meerdere variabelen die samengevoegd zullen worden tot één tekst" if lang == "nl"
                      else "Select multiple variables that will be merged into one text"
@@ -1116,7 +1208,7 @@ def show_upload_page():
                     merge_col1, merge_col2 = st.columns(2)
                     
                     with merge_col1:
-                        st.selectbox(
+                        merge_strategy = st.selectbox(
                             "Samenvoeg Strategie" if lang == "nl" else "Merge Strategy",
                             ["concatenate", "first_available", "all_combined"],
                             format_func=lambda x: {
@@ -1131,7 +1223,7 @@ def show_upload_page():
                     
                     with merge_col2:
                         separator_options = ["; ", ", ", " | "]
-                        st.selectbox(
+                        separator = st.selectbox(
                             "Scheidingsteken" if lang == "nl" else "Separator",
                             separator_options,
                             format_func=lambda x: {
@@ -1145,7 +1237,7 @@ def show_upload_page():
                                  else "Separator between merged texts"
                         )
                     
-                    st.checkbox(
+                    skip_empty = st.checkbox(
                         "Lege waarden overslaan" if lang == "nl" else "Skip empty values",
                         value=True,
                         key="skip_empty",
@@ -1193,23 +1285,22 @@ def show_upload_page():
             
         if st.button(preview_button_label):
             if selected_variables and id_var:
-                # Validate variable types using DatasetConfig
+                # Check if any selected variables are non-string types
                 if hasattr(st.session_state, 'available_variables_types') and st.session_state.available_variables_types:
-                    # Build temp config for validation
-                    temp_config = build_config_from_ui(
-                        filename=st.session_state.filename,
-                        id_var=id_var,
-                        selected_vars=selected_variables,
-                        encoding=st.session_state.get('file_encoding')
-                    )
+                    non_string_vars = []
+                    for var in selected_variables:
+                        var_info = st.session_state.available_variables_types.get(var, {})
+                        if not var_info.get('is_string', False):
+                            dtype = var_info.get('dtype', 'numeric')
+                            non_string_vars.append(f"{var} (type: {dtype})")
 
-                    is_valid, non_string_vars = temp_config.validate_text_variables(
-                        st.session_state.available_variables_types
-                    )
-
-                    if not is_valid:
-                        error_msg = temp_config.get_validation_error_message(non_string_vars, lang)
-                        st.error(error_msg)
+                    if non_string_vars:
+                        st.error(
+                            f"⚠️ {'Let op: De volgende variabelen zijn geen tekstvariabelen' if lang == 'nl' else 'Warning: The following variables are not text variables'}:\n\n"
+                            f"{chr(10).join('• ' + var for var in non_string_vars)}\n\n"
+                            f"{'Deze tool is ontworpen voor het analyseren van open tekstvragen. Numerieke variabelen kunnen niet worden verwerkt.' if lang == 'nl' else 'This tool is designed for analyzing open text responses. Numeric variables cannot be processed.'}\n\n"
+                            f"{'Selecteer alleen variabelen met het type [Tekst] of [object].' if lang == 'nl' else 'Please select only variables marked as [Text] or [object].'}"
+                        )
                         return
 
                 with st.spinner("Data wordt geladen..." if lang == "nl" else "Loading data..."):
@@ -1224,7 +1315,7 @@ def show_upload_page():
                         )
 
                         # Load preview data using utility function
-                        preview_data = preview_dataset(config)
+                        preview_data = preview_dataset_v2(config)
 
                         # Save configuration to storage keys (no widget conflicts!)
                         config.to_session_state()
@@ -1269,20 +1360,80 @@ def show_upload_page():
                 else:
                     st.metric("Steekproef" if lang == "nl" else "Sample", "Volledig" if lang == "nl" else "Full")
 
-            # Show configuration summary using DatasetConfig
-            config = DatasetConfig.from_session_state()
-            if config:
-                summary_info = config.get_preview_summary(lang)
-                st.info(summary_info)
+            # Show merge information for multiple variables
+            selected_vars = st.session_state.get('selected_variables_config', [])
+            if st.session_state.get('variable_mode_config') == 'multiple' and len(selected_vars) > 1:
+                merge_config = st.session_state.get('merge_config', {})
+                sample_info = ""
+                sample_size = st.session_state.get('sample_size_config')
+                if sample_size:
+                    sample_info = f" | **Steekproef:** {sample_size} gevallen" if lang == "nl" else f" | **Sample:** {sample_size} cases"
+
+                st.info(
+                    f"🔗 **Samengevoegd:** {len(selected_vars)} variabelen "
+                    f"({', '.join(selected_vars)}) | "
+                    f"**Strategie:** {merge_config.get('strategy', 'concatenate')} | "
+                    f"**Scheidingsteken:** '{merge_config.get('separator', ' ')}'{sample_info}"
+                    if lang == "nl" else
+                    f"🔗 **Merged:** {len(selected_vars)} variables "
+                    f"({', '.join(selected_vars)}) | "
+                    f"**Strategy:** {merge_config.get('strategy', 'concatenate')} | "
+                    f"**Separator:** '{merge_config.get('separator', ' ')}'{sample_info}"
+                )
+            else:
+                # Single variable display
+                sample_info = ""
+                sample_size = st.session_state.get('sample_size_config')
+                if sample_size:
+                    sample_info = f" | **Steekproef:** {sample_size} gevallen" if lang == "nl" else f" | **Sample:** {sample_size} cases"
+
+                # Get the selected variable name
+                selected_var = selected_vars[0] if selected_vars else "Unknown"
+                st.info(
+                    f"📊 **Variabele:** {selected_var}{sample_info}"
+                )
 
             # Show sample data
             st.subheader("📝 " + ("Voorbeeldgegevens" if lang == "nl" else "Sample Data"))
             sample_data = preview_df[preview_df[display_text_column].notna()].head(10)
             if len(sample_data) > 0:
-                # Format data for display using DatasetConfig
-                config = DatasetConfig.from_session_state()
-                if config:
-                    sample_data = config.format_preview_dataframe(sample_data, display_text_column)
+                # Format data for clean display
+                sample_data = sample_data.copy()  # Avoid modifying original
+
+                # Convert all columns to appropriate display format
+                for col in sample_data.columns:
+                    if col == id_var:
+                        # Convert ID column to string, handling floats with .0
+                        try:
+                            # Check if it's numeric
+                            if sample_data[col].dtype in ['int64', 'float64']:
+                                # Convert to string and remove .0 for whole numbers
+                                sample_data[col] = sample_data[col].apply(
+                                    lambda x: str(int(x)) if pd.notna(x) and x == int(x) else str(x)
+                                )
+                            else:
+                                # Already string or other type
+                                sample_data[col] = sample_data[col].astype(str)
+                        except Exception:
+                            # Fallback: just convert to string
+                            sample_data[col] = sample_data[col].astype(str)
+                    elif sample_data[col].dtype in ['int64', 'float64'] and col != display_text_column:
+                        # For other numeric columns, keep as numeric but handle display
+                        try:
+                            # Don't convert type, let streamlit handle display
+                            pass
+                        except Exception:
+                            pass
+                    elif sample_data[col].dtype == 'object' and col != display_text_column:
+                        # For string columns, ensure no format string issues
+                        try:
+                            # Replace format string placeholders to avoid errors
+                            sample_data[col] = sample_data[col].apply(
+                                lambda x: str(x).replace('%s', '%%s').replace('%d', '%%d').replace('%f', '%%f')
+                                if isinstance(x, str) else x
+                            )
+                        except Exception:
+                            pass
 
                 st.dataframe(sample_data, use_container_width=True)
             else:
@@ -1326,26 +1477,30 @@ def show_upload_page():
 
 def show_preprocessing_page():
     lang = st.session_state.language
-  
+    
+    #-----
+    # state: START 
+    #-----
     st.header("Stap 1: Tekstverwerking" if lang == "nl" else "Step 1: Text preprocessing")
 
-    #1. green box/completion
-    if is_step_completed(2): 
+    if is_step_completed(2): #green box/completion
         st.success("✅ " + ("Preprocessing voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Preprocessing completed! Review the results on the right, then click continue."))
+        
     
-    #2. blue box/sample info
-    if is_step_completed(1):  
-        sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Steekproef:** {st.session_state.sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** { st.session_state.sample_size} cases")
-        st.info(sample_info)    
+    if True: #blue box/sample info
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += ( f"\n\n**Steekproef:** {st.session_state.sample_size_config} gevallen" if lang == "nl" else f"\n\n**Sample:** {st.session_state.sample_size_config} cases")
+        st.info(sample_info)
 
-    #3. yelow box/results
-    if is_step_completed(2):  
+    #-----
+    # state: AFTER processing
+    #-----
+    if is_step_completed(2): #yellow box/results
 
        summary_info  = ""
        stats = st.session_state.get('preprocessing_stats', {})
         
-       # a) Normalizer stats
+       # A) Normalizer stats
        norm_stats = stats.get('normalizer_stats') or {}
        if norm_stats:
            nl = (st.session_state.language == "nl")
@@ -1356,17 +1511,19 @@ def show_preprocessing_page():
                     + f"\n- { 'Witruimte opgeschoond' if nl else 'Whitespace cleanup' }: {norm_stats.get('whitespace_changes', 0)} "
                       f"{ 'reacties' if nl else 'responses' }"
                     + f"\n- { 'Schuine strepen vervangen' if nl else 'Slash replacements' }: {norm_stats.get('slash_changes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }")
+                      f"{ 'reacties' if nl else 'responses' }"
+            )
         
-       # b) Spell checker stats
+       # B) Spell checker stats
        spell_stats = stats.get('spellchecker_stats') or {}
        if spell_stats:
             nl = (st.session_state.language == "nl")
             summary_info += (
                     "\n\n" + ("**Spellingcontrole:**" if nl else "**Spell checking:**")
-                    + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}")
+                    + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}"
+                )
         
-       # c) Finalizer stats
+       # C) Finalizer stats
        final_stats = stats.get('finalizer_stats') or {}
        if final_stats:
            nl = (st.session_state.language == "nl")
@@ -1377,8 +1534,10 @@ def show_preprocessing_page():
                     + f"\n- { 'Opmaak opgeschoond' if nl else 'Format cleanup' }: {final_stats.get('format_cleanup', 0)} "
                       f"{ 'reacties' if nl else 'responses' }"
                     + f"\n- { 'Spatieaanpassingen' if nl else 'Spacing fixes' }: {final_stats.get('spacing_fixes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }")
+                      f"{ 'reacties' if nl else 'responses' }"
+                )
 
+       # D) Displaying stats
        st.markdown(f"""
             <div style="
             border-radius: 10px;
@@ -1390,13 +1549,15 @@ def show_preprocessing_page():
             </div>
             """, unsafe_allow_html=True)
 
-    # 4. Show processing button, if not in cache
-    if is_step_completed(1) and not is_step_completed(2): 
+    #-----
+    # state: BEFORE processing
+    #-----
+    else:
         st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
         progress_container = st.empty()
-        
         try: 
-            # a. Load data
+
+            # A. Load data
             if 'raw_text_list' not in st.session_state.pipeline_results: 
                 # Use selected encoding, None if auto-detect
                 encoding = st.session_state.get('file_encoding', 'auto')
@@ -1404,7 +1565,7 @@ def show_preprocessing_page():
 
                 # Handle variable label for single vs multiple variables (use confirmed values to avoid widget conflicts)
                 is_multiple_mode = (st.session_state.get('variable_mode_config') == 'multiple' or st.session_state.get('is_merged_variable', False))
-                selected_vars = st.session_state.get('selected_variables_config', [])
+                selected_vars = (st.session_state.get('selected_variables') or st.session_state.get('selected_variables_config', []))
 
                 if is_multiple_mode and len(selected_vars) > 1:
                     # Multiple variables - create combined label
@@ -1416,47 +1577,32 @@ def show_preprocessing_page():
                         
 
                     # Load multiple variables
-                    # NOTE: pipeline.step_0_load_data doesn't support var_names (merged variables)
-                    # For now, load the first variable only
-                    # TODO: Add merged variable support to pipeline.py
-                    progress_container.text("🔄 Data laden...")
-
-                    # Get variable_key for caching
-                    variable_key = generate_variable_key(selected_vars, is_merged=True)
-
-                    raw_text_list = pipeline.step_0_load_data(
+                    raw_text_list = _get_pipeline_runner().step_1_load_data(
                             filename=st.session_state.filename,
                             id_column=st.session_state.selected_id_column,
-                            var_name=selected_vars[0],  # Use first variable (merged not supported yet)
-                            variable_key=variable_key,
-                            cache_manager=_get_cache_manager(),
+                            var_names=selected_vars,
+                            sample_size=st.session_state.get('sample_size_config'),
                             force_recalc=st.session_state.get('force_recalculate_all', False),
-                            verbose=True
+                            streamlit_container=progress_container,
+                            encoding=encoding
                         )
-                    progress_container.success("✅ Data laden voltooid")
                         
                     var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
                     var_lab = var_labs[0]
                         
                 else:
                     var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
-
-                    progress_container.text("🔄 Data laden...")
-
-                    # Get variable_key for caching
-                    variable_key = generate_variable_key([st.session_state.selected_variable], is_merged=False)
-
-                    raw_text_list = pipeline.step_0_load_data(
+                    raw_text_list = _get_pipeline_runner().step_1_load_data(
                             filename=st.session_state.filename,
                             id_column=st.session_state.selected_id_column,
                             var_name=st.session_state.selected_variable,
-                            variable_key=variable_key,
-                            cache_manager=_get_cache_manager(),
+                            sample_size=st.session_state.get('sample_size_config'),
                             force_recalc=st.session_state.get('force_recalculate_all', False),
-                            verbose=True)
-
-                    progress_container.success("✅ Data laden voltooid")
-       
+                            streamlit_container=progress_container,
+                            encoding=encoding
+                        )
+      
+                    
                 last_bracket = var_lab.rfind("]")
                 st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                 st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
@@ -1464,32 +1610,26 @@ def show_preprocessing_page():
                 # Mark step 1 (data loading) as completed
                 mark_step_completed(1)
 
-            # b. Preprocessing
-            progress_container.text("🔄 Tekst aan het voorbewerken...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            preprocessed_text = pipeline.step_1_preprocess(
+            # B. Preprocessing
+            preprocessed_text = _get_pipeline_runner().step_2_preprocess(
                     raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
-                    run_mode='app',
+                    spellcheck_config=st.session_state.spellcheck_config,
                     force_recalc=st.session_state.get('force_recalculate_all', False),
-                    verbose=True,
-                    prompt_printer_enabled=False)
-
-            progress_container.success("✅ Voorbewerking voltooid")
-
+                    streamlit_container=progress_container
+            )
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
 
-            # Store variable_key in session_state for column 2 display after rerun
-            st.session_state['current_variable_key'] = variable_key
+            # Explicitly store variable_key in session_state for column 2 display after rerun
+            pipeline_runner = _get_pipeline_runner()
+            if hasattr(pipeline_runner, 'get_variable_key'):
+                    st.session_state['current_variable_key'] = pipeline_runner.get_variable_key()
+
+            # Collect preprocessing statistics for display
+            if hasattr(pipeline_runner, 'preprocessing_stats'):
+                    st.session_state['preprocessing_stats'] = pipeline_runner.preprocessing_stats
 
             # App-level cache storage with correct cache key (force_recalculate_all route)
             if st.session_state.get('force_recalculate_all', False):
@@ -1509,86 +1649,109 @@ def show_preprocessing_page():
             # Rerun to show AFTER state with completion info
             st.rerun()
 
-        except Exception as e:
+        except Exception as e: 
             st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
-
-
 
 def show_filtering_page():
     lang = st.session_state.language
+    st.header("Stap 3: Kwaliteitsfiltering" if lang == "nl" else "Step 3: Quality Filtering")
     
-    st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 3: Quality Filtering")
-
-    # 1. green box/completion
-    if is_step_completed(3): 
+    #------------------------
+    #state = AFTER processing
+    #------------------------
+    if st.session_state.get('waiting_for_continue_filtering', False):
+        
+        #st.success = green box
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
-    
-    # 2. blue box/sample info
-    if is_step_completed(2):  
-        sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Steekproef:** {st.session_state.sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** { st.session_state.sample_size} cases")
-        st.info(sample_info)    
-    
-    # 3. yelow box/results
-    if is_step_completed(3):
         
-        stats = st.session_state['quality_filter_stats']
+        if 'quality_filter_stats' in st.session_state:
+            stats = st.session_state['quality_filter_stats']
 
-        lines = []  # collect all code lines
-        code_counts = stats.get('code_counts', {})
-        code_meanings = stats.get('code_meanings', {})
-        
-        # sort safely even if keys are strings/ints
-        for code in sorted(code_counts.keys(), key=str):
-            count = code_counts.get(code, 0)
-            meaning = (code_meanings.get(code) or code_meanings.get(str(code)) or 'Unknown')
-            lines.append(f"- **Code {code}**:  {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
-    
-        total = stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)
-        perc_with = (stats.get('total_with_codes', 0) / total * 100) if total else 0
-    
-        filtered_label = "**Excluded from further analysis**" if lang == "en" else "**Uitgesloten van verdere analyse**"
-        
-        summary_text = f"\n\n- {filtered_label}:  {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n\n" + "\n\n".join(lines)
-        
-        #F8F9FB = gray
-        st.markdown(f"""
-        <div style="
-        border-radius: 10px;
-        padding: 12px 16px;
-        background-color: #FFF8E6;
-        margin-top: 8px;
-        color: #5C4102;">
-        {summary_text}
-        </div>
-        """, unsafe_allow_html=True)    
+        # Ensure we have the core selections
+        if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
+            
+           sample_size = f"{stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)}" if stats else f"{st.session_state.sample_size_config}"
+           
+           sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+           sample_info += (f"\n\n**Steekproef:** {sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** {sample_size} cases")
+           
+           
+           #st.info = blue box
+           st.info(sample_info)
 
-    # 4. Show processing button, if not in cache
-    if is_step_completed(2) and not is_step_completed(3): 
+        
+        if 'quality_filter_stats' in st.session_state:
+            stats = st.session_state['quality_filter_stats']
+        
+            lines = []  # collect all code lines
+            code_counts = stats.get('code_counts', {})
+            code_meanings = stats.get('code_meanings', {})
+        
+            # sort safely even if keys are strings/ints
+            for code in sorted(code_counts.keys(), key=str):
+                count = code_counts.get(code, 0)
+                meaning = (code_meanings.get(code) or code_meanings.get(str(code)) or 'Unknown')
+                lines.append(f"- **Code {code}**:  {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
+        
+        
+        
+        
+            total = stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)
+            perc_with = (stats.get('total_with_codes', 0) / total * 100) if total else 0
+        
+            filtered_label = "**Excluded from further analysis**" if lang == "en" else "**Uitgesloten van verdere analyse**"
+            
+            summary_text = f"\n\n- {filtered_label}:  {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n\n" + "\n\n".join(lines)
+            
+            #F8F9FB = gray
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_text}
+            </div>
+            """, unsafe_allow_html=True)
+
+                
+    #------------------------
+    #state = BEFORE processing
+    #------------------------
+    elif st.button(ui.get_text("BTN_FILTER", lang), type="primary"):
+        
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+         
+        if st.session_state.get('sample_size_config'):
+            
+            sample_info += (
+                 f"\n\n**Steekproef:** {st.session_state.sample_size_config} gevallen"
+                 if lang == "nl"
+                 else f"\n\n**Sample:** {st.session_state.sample_size_config} cases"
+             )
+        else:
+             sample_info += (
+                 "\n\n**Dataset:** Volledig"
+                 if lang == "nl"
+                 else "\n\n**Dataset:** Full")
+         
+        #st.info = blue box
+        st.info(sample_info)   
+        
         st.markdown(ui.get_text("FILTERING_INFO", lang))
+
         progress_container = st.empty()
-
         try:
-            progress_container.text("🔄 Kwaliteit aan het filteren...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            quality_filtered_text = pipeline.step_2_quality_filter(
+            quality_filtered_text = _get_pipeline_runner().step_3_quality_filter(
                 preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
                 model_config=st.session_state.model_config,
+                quality_filter_config=st.session_state.quality_filter_config,
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
+                streamlit_container=progress_container
             )
-
-            progress_container.success("✅ Kwaliteitsfiltering voltooid")
             st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
 
             # Calculate statistics from results for display
@@ -1600,7 +1763,7 @@ def show_filtering_page():
             }
 
             for item in quality_filtered_text:
-                if item.quality_filter and item.quality_filter_code is not None:
+                if item.quality_filter and item.quality_filter_code:
                     code = item.quality_filter_code
                     code_counts[code] = code_counts.get(code, 0) + 1
 
@@ -1640,7 +1803,7 @@ def show_idea_extraction_page():
             "Extraction completed! Review the results, then click continue."
         ))
 
-        if st.session_state.get('selected_variables_config') and st.session_state.get('selected_id_column'):
+        if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
             stats = st.session_state.get('idea_extraction_stats', {})
             var_lab = st.session_state.var_lab
             total_responses = stats.get('total_responses', 0)
@@ -1696,28 +1859,22 @@ def show_idea_extraction_page():
         st.markdown(ui.get_text("EXTRACTION_INFO", lang))
 
         try:
-            progress_container.text("🔄 Ideeën aan het extraheren...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            encoded_text = pipeline.step_3_extract_ideas(
+            encoded_text = _get_pipeline_runner().step_4_extract_ideas(
                 quality_filtered_text=st.session_state['pipeline_results']['quality_filtered_text'],
                 filename=st.session_state['filename'],
                 var_lab=var_lab,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
                 model_config=st.session_state['model_config'],
+                segmentation_config=st.session_state['segmentation_config'],
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
+                streamlit_container=progress_container,
+                debug_capture=None  # debug disabled
             )
-
-            progress_container.success("✅ Idee-extractie voltooid")
-
             st.session_state['pipeline_results']['encoded_text'] = encoded_text
+
+            # Collect stats if available
+            pipeline_runner = _get_pipeline_runner()
+            if hasattr(pipeline_runner, 'idea_extraction_stats'):
+                st.session_state['idea_extraction_stats'] = pipeline_runner.idea_extraction_stats
 
             # Normal flow: mark step complete and show continue UI
             st.session_state['completed_step'] = 3
@@ -1741,7 +1898,7 @@ def show_embedding_page():
 
         st.success("✅ " + ("Embeddings gegenereerd! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Embeddings generated! Review the results, then click continue." ))
 
-        if st.session_state.get('selected_variables_config') and st.session_state.get('selected_id_column'):
+        if st.session_state.get('selected_variable') and st.session_state.get('selected_id_column'):
             stats = st.session_state.get('idea_extraction_stats', {})
             total_ideas = stats.get('total_ideas', 0)
 
@@ -1779,25 +1936,17 @@ def show_embedding_page():
         st.markdown(ui.get_text("EMBEDDING_INFO", lang))
 
         try:
-            progress_container.text("🔄 Embeddings aan het genereren...")
+            embedding_config = st.session_state.embedding_config
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            embedded_text = pipeline.step_4_generate_embeddings(
+            embedded_text = _get_pipeline_runner().step_5_generate_embeddings(
                 encoded_text=st.session_state['pipeline_results']['encoded_text'],
                 filename=st.session_state['filename'],
                 var_lab=var_lab,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
                 model_config=st.session_state['model_config'],
+                embedding_config=embedding_config,
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
-            )
-
-            progress_container.success("✅ Embeddings gegenereerd")
+                streamlit_container=progress_container
+            )  # provider removed; defaults inside embedder
 
             st.session_state['pipeline_results']['embedded_text'] = embedded_text
 
@@ -1861,24 +2010,17 @@ def show_clustering_page():
         debug_capture = None  # Disabled debug functionality
         
         try:
-            progress_container.text("🔄 Clustering aan het uitvoeren...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            initial_cluster_results = pipeline.step_5_cluster(
+            # Use the default hdbscan_config (automatic clustering)
+            clustering_config = st.session_state.hdbscan_config
+            
+            initial_cluster_results = _get_pipeline_runner().step_6_cluster(
                 embedded_text=st.session_state.pipeline_results['embedded_text'],
                 filename=st.session_state.filename,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
+                hdbscan_config=clustering_config,
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
-
-            progress_container.success("✅ Clustering voltooid")
-
             st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
             
             # Check if debug features are enabled and have captured data
@@ -1951,31 +2093,17 @@ def show_codebook_generation_page():
                     if len(selected_vars) > 1:
                         var_name_for_codebook = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
                 
-                progress_container.text("🔄 Codebook aan het genereren...")
-
-                # Get variable_key for caching
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                variable_key = generate_variable_key(selected_variables, is_merged)
-
-                codebook_main, reasoning_results = pipeline.step_6_generate_codebook(
+                codebook_main, reasoning_results = _get_pipeline_runner().step_7_generate_codebook(
                     initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_codebook,
                     var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
+                    code_designer_config=st.session_state.code_designer_config,
                     use_speculative_starter_codes=use_speculative,
                     force_recalc=st.session_state.get('force_recalculate_all', False),
-                    verbose=True,
-                    verbose_detailed=False,
-                    prompt_printer_enabled=False,
-                    cache_reasoning=True
+                    streamlit_container=progress_container
                 )
-
-                progress_container.success("✅ Codebook generatie voltooid")
-
                 st.session_state.pipeline_results['codebook_main'] = codebook_main
                 st.session_state.pipeline_results['reasoning_results'] = reasoning_results
                 
@@ -2030,29 +2158,25 @@ def show_theme_identification_page():
                 if len(selected_vars) > 1:
                     var_name_for_themes = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
             
-            # Step 8a: Refine codebook
-            progress_container.text("🔄 Codebook aan het verfijnen...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            refinement_results, theme_enriched_codebook = pipeline.step_7_refine_codebook(
+            # Step 8a: Refine codebook (matches pipeline's refine_codebook() call)
+            refinement_results = _get_pipeline_runner().step_8_refine_codebook(
                 codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
                 filename=st.session_state.filename,
                 var_name=var_name_for_themes,
                 var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state.model_config,
-                default_language=st.session_state.get('language', 'nl'),
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
+                streamlit_container=progress_container
             )
-
-            progress_container.success("✅ Codebook verfijning voltooid")
-
+            
+            # Step 8b: Create theme enriched codebook (matches pipeline's inline conversion)
+            theme_enriched_codebook = _get_pipeline_runner().step_8_identify_themes(
+                refinement_results=refinement_results,  # CORRECT: use refinement_results, not codebook_main
+                filename=st.session_state.filename,
+                var_name=var_name_for_themes,
+                var_lab=st.session_state.pipeline_results['var_lab'],
+                force_recalc=st.session_state.get('force_recalculate_all', False),
+                streamlit_container=progress_container
+            )
             st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_codebook
             
             # Set waiting state and mark step as completed so left panel shows results
@@ -2127,28 +2251,18 @@ def show_code_assignment_page():
         debug_capture = None  # Disabled debug functionality
         
         try:
-            progress_container.text("🔄 Codes aan het toewijzen...")
-
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
-            code_assigned_results = pipeline.step_8_assign_codes(
+            code_assigned_results = _get_pipeline_runner().step_9a_assign_codes(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                 theme_enriched_codebook=st.session_state.pipeline_results['theme_enriched_codebook'],
                 filename=st.session_state.filename,
                 var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
+                method=method,
                 model_config=st.session_state.model_config,
+                code_assignment_config=st.session_state.code_assignment_config,
                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
+                streamlit_container=progress_container,
+                debug_capture=debug_capture
             )
-
-            progress_container.success("✅ Code toewijzing voltooid")
-
             st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
             
             # Check if debug features are enabled and have captured data
@@ -2282,18 +2396,18 @@ def show_export_page():
                         if len(selected_vars) > 1:
                             var_name_for_export = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
                     
-                    progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
-
-                    excel_path = pipeline.step_9_export_results(
+                    excel_path = _get_pipeline_runner().step_10_export_excel_with_reasoning(
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
                         var_name=var_name_for_export,
-                        verbose=True
+                        export_dir=None,
+                        reasoning_results=st.session_state.pipeline_results.get('reasoning_results'),
+                        streamlit_container=progress_container
                     )
-
-                    progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}"
-                                              if lang == "nl" else f"Code assignments exported to Excel: {excel_path}"))
+                    
+                    progress_container.success("✅ " + (f"Code toewijzingen met redenering geëxporteerd naar Excel: {excel_path}" 
+                                              if lang == "nl" else f"Code assignments with reasoning exported to Excel: {excel_path}"))
                 else:
                     # Use regular export without reasoning data (via pipelineRunner for consistency)
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
@@ -2307,15 +2421,16 @@ def show_export_page():
                         if len(selected_vars) > 1:
                             var_name_for_export = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
                     
-                    excel_path = pipeline.step_9_export_results(
+                    excel_path = _get_pipeline_runner().step_10_export_excel(
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
                         var_name=var_name_for_export,
-                        verbose=True
+                        export_dir=None,
+                        streamlit_container=progress_container
                     )
-
-                    progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}"
+                    
+                    progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}" 
                                               if lang == "nl" else f"Code assignments exported to Excel: {excel_path}"))
                 
                 # Store in session for download
@@ -2460,47 +2575,39 @@ def load_preview_raw_data(n_samples=5):
         if not st.session_state.get('filename'):
             return None
         
+        # Use pipeline runner to load a small sample
+        pipeline_runner = _get_pipeline_runner()
+        
         # Check if we're in multiple variable mode
         is_multiple_mode = (st.session_state.get('variable_mode_config') == 'multiple' or
                            st.session_state.get('is_merged_variable', False))
-
-        selected_vars = (st.session_state.get('selected_variables') or
+        
+        selected_vars = (st.session_state.get('selected_variables') or 
                         st.session_state.get('selected_variables_config', []))
-
+        
         if is_multiple_mode and selected_vars and len(selected_vars) > 1:
-            # Multiple variables mode - use first variable for preview
-            # NOTE: pipeline.step_0_load_data doesn't support var_names or sample_size
-            variable_key = generate_variable_key(selected_vars, is_merged=True)
-
-            preview_data = pipeline.step_0_load_data(
+            # Multiple variables mode
+            preview_data = pipeline_runner.step_1_load_data(
                 filename=st.session_state.filename,
                 id_column=st.session_state.selected_id_column,
-                var_name=selected_vars[0],  # Use first variable only
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
+                var_names=selected_vars,
+                sample_size=n_samples,
                 force_recalc=True,  # Always force recalc for preview
-                verbose=False
+                streamlit_container=None
             )
-            # Take first n_samples for preview
-            preview_data = preview_data[:n_samples] if len(preview_data) > n_samples else preview_data
         elif st.session_state.get('selected_variable'):
             # Single variable mode
-            variable_key = generate_variable_key([st.session_state.selected_variable], is_merged=False)
-
-            preview_data = pipeline.step_0_load_data(
+            preview_data = pipeline_runner.step_1_load_data(
                 filename=st.session_state.filename,
                 id_column=st.session_state.selected_id_column,
                 var_name=st.session_state.selected_variable,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
+                sample_size=n_samples,
                 force_recalc=True,  # Always force recalc for preview
-                verbose=False
+                streamlit_container=None
             )
-            # Take first n_samples for preview
-            preview_data = preview_data[:n_samples] if len(preview_data) > n_samples else preview_data
         else:
             return None
-
+            
         return preview_data
             
     except Exception as e:
@@ -2512,26 +2619,19 @@ def show_raw_samples(raw_text_list, n_samples=5):
     if not raw_text_list:
         st.write("No raw data available")
         return
-
+    
     if st.button("🎲 Draw new random examples", key="raw_samples"):
         st.rerun()
-
-    # Filter out empty/filtered items before sampling
-    valid_items = [item for item in raw_text_list if not getattr(item, 'quality_filter', False)]
-
-    if not valid_items:
-        st.write("No valid data to display")
-        return
-
+    
     # Original pattern: random.sample(range(len(raw_text_list)), n_samples)
-    indices = random.sample(range(len(valid_items)), min(n_samples, len(valid_items)))
-
-    st.write(f"**Random samples from {len(valid_items)} filtered responses:**")
-
+    indices = random.sample(range(len(raw_text_list)), min(n_samples, len(raw_text_list)))
+    
+    st.write(f"**Random samples from {len(raw_text_list)} filtered responses:**")
+    
     if indices:
         sample_text = ""
         for i in indices:
-            response_text = valid_items[i].response if valid_items[i].response is not None else ""
+            response_text = raw_text_list[i].response if raw_text_list[i].response is not None else ""
             sample_text += f"{response_text}\n"
         
         # Display in gray container
@@ -2540,24 +2640,17 @@ def show_raw_samples(raw_text_list, n_samples=5):
 
 def show_preprocessed_samples(preprocessed_text, n_samples=10):
     """Show random samples from Step 1.5 - Preprocessed Data"""
-
+    
     st.write("\n")
-
+    
     if not preprocessed_text:
         st.write(f"{'Geen verwerkte data beschikbaar' if st.session_state.language == 'nl' else 'No preprocessed data available'}")
         return
-
-    # Filter out empty/filtered items before sampling
-    valid_items = [item for item in preprocessed_text if not getattr(item, 'quality_filter', False)]
-
-    if not valid_items:
-        st.write(f"{'Geen geldige data om weer te geven' if st.session_state.language == 'nl' else 'No valid data to display'}")
-        return
-
-    indices = random.sample(range(len(valid_items)), min(n_samples, len(valid_items)))
-
+    
+    indices = random.sample(range(len(preprocessed_text)), min(n_samples, len(preprocessed_text)))
+    
     if indices:
-        items = "".join( f"<li>{html.escape(valid_items[i].response or '')}</li>"  for i in indices)
+        items = "".join( f"<li>{html.escape(preprocessed_text[i].response or '')}</li>"  for i in indices)
         header = ('Willekeurige selectie' if st.session_state.language == 'nl' else 'Random sample')
         
         st.markdown(f"""
@@ -2581,20 +2674,14 @@ def show_preprocessed_samples(preprocessed_text, n_samples=10):
 
 def show_filtered_samples(quality_filtered_text, n_samples=10):
     """Show random samples from Step 3 - Quality Filtered Data"""
-
+    
     #st.write("\n")
-
+    
     if not quality_filtered_text:
         st.write("{'Geen gefilterde data beschikbaar' if st.session_state.language == 'nl' else 'No filtered data available'}")
         return
-
-    # Filter out empty strings (code 99999999) from display while keeping them in statistics
-    filtered_text = [item for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999999]
-
-    if not filtered_text:
-        st.write(f"{'Geen gefilterde data om weer te geven' if st.session_state.language == 'nl' else 'No filtered data to display'}")
-        return
-
+ 
+    filtered_text = [item for item in quality_filtered_text if item.quality_filter]
     indices = random.sample(range(len(filtered_text)), min(n_samples, len(filtered_text)))
     
     if indices:
@@ -3015,7 +3102,7 @@ def show_step_samples(step_number):
     lang = st.session_state.language
 
     # Check if we have the required info to load from cache
-    if not st.session_state.get('filename') or not st.session_state.get('selected_variables_config'):
+    if not st.session_state.get('filename') or not st.session_state.get('selected_variable'):
         st.write("❌ No filename or variable selected - cannot load data")
         return
 
@@ -3055,16 +3142,22 @@ def show_step_samples(step_number):
                     variable_key = stored_key
                     st.write(f"- **Using stored key: {variable_key}**")
             
-            # If no stored key, generate from session state
+            # If no stored key, try pipeline runner
             if not variable_key:
-                st.write("🔄 **Generating variable key from session state...**")
+                st.write("🔄 **Trying pipeline runner for variable key...**")
                 try:
-                    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.get('selected_variable')])
-                    is_merged = st.session_state.get('is_merged_variable', False)
-                    variable_key = generate_variable_key(selected_variables, is_merged)
-                    st.write(f"- Generated variable key: {variable_key}")
+                    pipeline_runner = _get_pipeline_runner()
+                    st.write(f"- Pipeline runner loaded: {type(pipeline_runner)}")
+                    
+                    if hasattr(pipeline_runner, 'get_variable_key'):
+                        st.write("- get_variable_key method exists, calling it...")
+                        variable_key = pipeline_runner.get_variable_key()
+                        st.write(f"- Pipeline runner variable key: {variable_key}")
+                    else:
+                        st.write("- get_variable_key method does not exist")
+                        
                 except Exception as e:
-                    st.write(f"- Error generating variable key: {e}")
+                    st.write(f"- Error with pipeline runner: {e}")
             
             # Fallback: generate basic variable key
             if not variable_key or variable_key == "unknown":

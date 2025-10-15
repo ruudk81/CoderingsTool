@@ -132,37 +132,61 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # =============================================================================
 
 EXTRACT_SUBJECT = """
+You are a {language} language expert in interpreting survey questions.
+Your task is to extract the canonical focus entity — the single main product, brand, service, actor, or topic the question is about — and produce a reusable phrasing template.
+
 <input>
+Language: {language}
 Survey question: {survey_question}
 </input>
 
-Read the survey question and analyze it to extract the canonical subject or actor.
+Definitions
+- Canonical focus entity: the main noun phrase that answers “what or who is this question about?”
+  It can be:
+  - a product/brand/service being evaluated
+  - a person/group/institution expected to act
+  - a topic/concept/event being discussed
 
-Instructions:
-- Identify the **CANONICAL SUBJECT** (the main product/service/event named or implied by the question). 
-- Identify the **CANONICAL ACTOR** (who is expected to act, if applicable). 
-- Decide whether to use **SUBJECT phrasing** or **ACTOR phrasing** for all ideas: 
-    - Prefer **SUBJECT phrasing** unless the survey question explicitly asks about what the actor must do. 
-    - Use the same phrasing type consistently for all ideas.
+Constraints
+- Choose exactly one canonical focus.
+- Return a **concise, normalized noun phrase** in {language}.
+- Do **not** include determiners (e.g., “the”, “de”, “het”), quotes, brackets, or trailing punctuation.
+- Preserve capitalization for proper nouns/brands; otherwise use lowercase.
+- If the question uses pronouns/deictics (e.g., “this brand”, “our app”), resolve to the most specific **named** entity present; if none, use the most specific generic noun (“app”, “klantenservice”, “bezorgproces”).
+- If multiple entities appear, pick the one **most central** to what is being evaluated, judged, or requested.
+- If the question refers to a sub-part/feature (e.g., “payment process” of a store), pick the **sub-part** if that is clearly the evaluation target.
 
-Return your response as JSON in this exact format:
-{{
-  "decision": "CANONICAL_SUBJECT" or "CANONICAL_ACTOR",
-  "canonical_term": "the canonical subject or actor as a single word or short phrase"
-}}
+Template requirement
+1. Create a phrasing template that downstream steps can use to express evaluations or actions.
+2. Use this structure:  
+   **"[CANONICAL_TERM] [VERB/STATE] [ATTRIBUTE_OR_ACTION]"**
+3. Insert:
+   - The canonical term (noun phrase)
+   - The most natural verb/state in {language} (e.g., “is”, “zijn”, “bieden”, “doet”, “heeft”)
+   - Leave `[ATTRIBUTE_OR_ACTION]` as a placeholder
+4. The result should sound natural and complete up to the placeholder.
 
-Examples:
-- Question: "What could the manufacturer of electric vehicles do better?" → {{"decision": "CANONICAL_SUBJECT", "canonical_term": "electric vehicles"}}
-- Question: "What should doctors do to improve patient care?" → {{"decision": "CANONICAL_ACTOR", "canonical_term": "doctors"}}
+Output format (return **only** this JSON object)
+{
+  "canonical_term": "canonical noun entity in {language}",
+  "canonical_phrasing": "template with canonical term and verb/state inserted in {language}, e.g. 'Elektrische voertuigen zijn [EIGENSCHAP_OF_ACTIE]'"
+}
+
+Validation checklist before returning:
+- Exactly two keys: `canonical_term`, `canonical_phrasing`
+- Values are in {language}
+- `canonical_term` is a noun phrase with no article or punctuation
+- `canonical_phrasing` includes the correct verb/state (no placeholders for it) and ends with `[ATTRIBUTE_OR_ACTION]`
+
 """
 
 IDEA_EXTRACTION_PROMPT = """
-You are a {language} language expert in analyzing written responses to open-ended questions in {language} collected in surveys. 
+You are a {language} language expert in analyzing written responses to open-ended questions in surveys. 
 Your task is to extract ALL distinct ideas expressed in a respondent's written answer.  
 
 <inputs>
 Survey question: {var_lab}
-Subject: {canonical_phrasing}
+Canonical subject focus: {subject}
 Respondent ID: {respondent_id}
 Written response: {response}
 </inputs>
@@ -187,8 +211,6 @@ Written response: {response}
 
 4. Phrasing template
     - Use this exact phrasing template in your output: {phrasing_template}
-    - Normalize synonyms/abbreviations/omissions of the canonical term "{canonical_phrasing}". Do not add extra qualifiers.
-    - Example: If the question is about “electric vehicles” and the respondent says “cars” or “EVs,” standardize to “electric vehicles.”
     - Do not change sentiment or tone during normalization.
 
 5. Include Implicit Ideas
@@ -238,7 +260,7 @@ Notice how:
 - The meaning and sentiment of the original statement are preserved.
 - Terms are consistent across all ideas, even if the respondent used different or less specific words.    
     
-Begin your analysis now and return ONLY the JSON array in {language}.
+Return ONLY the JSON array. Keep field names in English; write values in {language}.
 """
 
 
@@ -387,7 +409,8 @@ Provide your response as a valid JSON dictionary using this exact structure:
 
 Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation before or after.
-- Replace "cluster_id" and "language" with the actual values provided.
+- Keep field names in English; write values in {language}.
+- Replace "cluster_id"  with the actual values provided.
 - Conduct your analysis in the specified language.
 """
 
@@ -469,6 +492,7 @@ Output schema:
 Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation.
 - Use theme_id provided.
+- Keep field names in English; write values in {language}.
 - Justification must clearly state the estimated overlap percentage and reference the decision rule applied (coverage thresholds and/or abstraction level).
 """
 

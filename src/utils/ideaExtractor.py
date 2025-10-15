@@ -159,8 +159,9 @@ async def bootstrap_measure_async(call_fn, n_probes: int = 3):
 
 class SubjectExtractionResponse(BaseModel):
     """Response model for subject/actor extraction"""
-    decision: Literal["CANONICAL_SUBJECT", "CANONICAL_ACTOR"] = Field(description="Whether to use subject or actor phrasing")
+    decision: Literal["CANONICAL_SUBJECT", "CANONICAL_ACTOR"] = Field(default="CANONICAL_SUBJECT", description="Whether to use subject or actor phrasing")
     canonical_term: str = Field(description="The canonical subject or actor as a single word or short phrase")
+    canonical_phrasing: str = Field(description="Template with canonical term and verb/state")
 
 class IdeaResponse(BaseModel):
     """Pydantic model for idea extraction response - matches prompt output format"""
@@ -273,12 +274,15 @@ class IdeaExtractor:
     async def _extract_subject(self, survey_question: str) -> SubjectExtractionResponse:
         """Extract canonical subject/actor from survey question with caching"""
         # Check cache first
+        
         if survey_question in self._subject_cache:
             return self._subject_cache[survey_question]
         
         try:
             # Build subject extraction prompt
-            prompt = EXTRACT_SUBJECT.format(survey_question=survey_question)
+            prompt = EXTRACT_SUBJECT.format(
+                language=self.language,
+                survey_question=survey_question)
             
             # Make API call with structured output
             response = await self.client.chat.completions.create(
@@ -305,7 +309,8 @@ class IdeaExtractor:
             # Fallback: extract a reasonable default from the question
             fallback = SubjectExtractionResponse(
                 decision="CANONICAL_SUBJECT",
-                canonical_term="the subject"
+                canonical_term="the subject",
+                canonical_phrasing="the subject [ATTRIBUTE_OR_ACTION]"
             )
             self._subject_cache[survey_question] = fallback
             return fallback
@@ -314,7 +319,7 @@ class IdeaExtractor:
         """Build prompt for a single response"""
         return IDEA_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
-            canonical_phrasing=canonical_phrasing,
+            subject=canonical_phrasing,
             phrasing_template=phrasing_template,
             language=self.language,
             respondent_id=respondent_id,
@@ -466,16 +471,10 @@ class IdeaExtractor:
             # Extract subject first (will be cached after first call)
             subject_response = await self._extract_subject(self.var_lab)
             subject = subject_response.canonical_term
-            
-            if subject_response.decision == "CANONICAL_SUBJECT": 
-                canonical_phrasing = f"{subject.capitalize()}"
-                phrasing_template = "[CANONICAL_SUBJECT] [should/needs to/must/is/are] [property or outcome]".replace("[CANONICAL_SUBJECT]", subject.capitalize())
-            else:
-                canonical_phrasing = f"{subject.capitalize()}"
-                phrasing_template = "[CANONICAL_ACTOR] [should/needs to/must] [action] [on/for/to]".replace("[CANONICAL_ACTOR]", subject.capitalize())
-            
+            phrasing_template =subject_response.canonical_phrasing
+
             # Build prompt with subject
-            prompt = self._build_prompt(task['respondent_id'], task['response'], canonical_phrasing, phrasing_template)
+            prompt = self._build_prompt(task['respondent_id'], task['response'], subject, phrasing_template)
             
             # Capture prompt for debugging if enabled (first time only)
             if self.prompt_printer and not self._captured_prompt:

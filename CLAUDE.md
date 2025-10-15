@@ -109,10 +109,20 @@ conda activate coderingtool
 - **Streamlit**: Web interface framework
 
 ### Collaboration Workflow
-- Our workflow: 
+- Our workflow:
   * Users suggests ideas for modification
   * Claude proposes strategies, plans and todo lists
   * User approves
   * Claude implements and adds, commits and pushes modification to the GitHub repo
   * User pulls to test modification locally
+
+### Development Philosophy
+
+**Avoid Backward Compatibility During Development**
+- We are in active development, not production
+- Backward compatibility creates technical debt and code cluttering
+- Complex codebases become impossible to untangle during debugging
+- When refactoring, replace old patterns completely - don't maintain both
+- Clean, single-path solutions over redundant compatibility layers
+- Remove legacy code rather than maintaining parallel implementations
 
