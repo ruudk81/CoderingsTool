@@ -209,8 +209,26 @@ Written response: {response}
     - The idea you will return must not contain coordinating conjunctions or list markers in {language}.
     - Forbid list/coordination punctuation: "/", "&", ",", ";", ":", "-", "–" (hyphens allowed only inside a single lexicalized word, not to join ideas).
 
-4. Phrasing template
-    - Use this exact phrasing template in your output: {phrasing_template}
+4. MANDATORY Phrasing template
+    - **CRITICAL REQUIREMENT**: EVERY idea you extract MUST follow this EXACT structure:
+      {phrasing_template}
+
+    - This is NOT optional. The template structure is MANDATORY for EVERY single idea.
+
+    - Replace [ATTRIBUTE_OR_ACTION] with the actual content, but keep everything before it EXACTLY as shown.
+
+    - WRONG examples (DO NOT do this):
+      ✗ Starting with different words than the template
+      ✗ Omitting the template prefix entirely
+      ✗ Reordering or rephrasing the template structure
+
+    - CORRECT approach:
+      ✓ Take the exact prefix from the template (everything before [ATTRIBUTE_OR_ACTION])
+      ✓ Add your specific content after that prefix
+      ✓ Verify the final idea starts with the template prefix character-for-character
+
+    - Validation: Before outputting each idea, verify it starts with the exact prefix shown in the template.
+
     - Do not change sentiment or tone during normalization.
 
 5. Include Implicit Ideas
@@ -227,6 +245,11 @@ Return the extracted ideas as a JSON array. Each item should include:
 - "respondent_id": exactly as provided
 - "idea_id": a string number (numbering always starts at "1" and increments sequentially -e.g. "1", "2", etc.).
 - "idea": the descriptive phrase in {language}, normalized and phrased using the provided phrasing template.
+
+**TEMPLATE COMPLIANCE CHECK:**
+Before returning, verify that EVERY "idea" field starts with the exact prefix from the phrasing template.
+If an idea doesn't match the template, reformulate it to match.
+
 Always output in {language}.
 </output_format>
 
