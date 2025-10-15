@@ -38,10 +38,10 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 100
 
-RUN_UNTIL_STEP = 3 # None = run all steps
+RUN_UNTIL_STEP = 6 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
-PROMPT_PRINTER = True
+PROMPT_PRINTER = False
 LANGUAGE = "nl"
 
 # === AUTO STANDALONE CONFIGS ========================================================================================
@@ -979,8 +979,7 @@ def step_6_generate_codebook(
         tuple: (codebook_main: CodebookModel, codebook_reasoning: CodeGeneratorReasoningResults or None)
     """
     from utils import speculativeStarterCodes, codeGenerator, verboseReporter, promptPrinter
-    from utils.codebookDisplayer import display_clustered_codebook
-
+    
     step_name = "codebook_generation"
 
     # Auto-generate variable_key if not provided
@@ -1159,14 +1158,12 @@ def step_6_generate_codebook(
         elif 'results' in locals():
             reasoning_for_display = results
 
-        display_clustered_codebook(codebook_main, generator, model_config, verbose=verbose, reasoning_results=reasoning_for_display)
-
         # Always cache codebook reasoning if available for consistent exports
         if 'results' in locals() and results:
             try:
                 codebook_reasoning = results
                 cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time)
-                print("v Cached codebook reasoning for export consistency")
+                print("Cached codebook reasoning for export consistency")
             except Exception as e:
                 print(f"WARNING: Failed to cache reasoning results: {e}")
                 print("   Export will fall back to basic format without reasoning columns")

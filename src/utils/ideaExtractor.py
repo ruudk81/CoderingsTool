@@ -22,7 +22,7 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import models
 
 # === CONFIG ========================================================================================================
@@ -167,6 +167,29 @@ class IdeaResponse(BaseModel):
     respondent_id: str = Field(alias_choices=['respondent_id', 'respond_id', 'respondent', 'respondrespondent_id'])
     idea_id: str = Field(default="1", alias_choices=['idea_id', 'id'])
     idea: str = Field(description="The extracted idea text", alias_choices=['idea', 'content'])
+
+    # Class variable to hold expected template prefix (set dynamically per extraction)
+    _expected_template_prefix: str = ""
+
+    @field_validator('idea')
+    @classmethod
+    def validate_template_compliance(cls, v: str) -> str:
+        """Ensure idea follows the required phrasing template"""
+        if not v or v in ["", "NA", "N/A"]:
+            return v
+
+        # Get expected prefix (set by extractor before calling API)
+        expected_prefix = getattr(cls, '_expected_template_prefix', '')
+
+        if expected_prefix and not v.startswith(expected_prefix):
+            # Validation fails - instructor will retry with error message
+            raise ValueError(
+                f"Idea must start with the required template prefix: '{expected_prefix}'. "
+                f"Got: '{v}'. "
+                f"Please reformulate to match the template exactly."
+            )
+
+        return v
 
 
 # === MAIN IDEA EXTRACTOR CLASS ========================================================================================================
@@ -321,14 +344,6 @@ class IdeaExtractor:
 
     def _build_prompt(self, respondent_id: str, response: str, canonical_phrasing: str, phrasing_template: str) -> str:
         """Build prompt for a single response"""
-
-        # Debug: log what parameters were received (only once)
-        if not hasattr(self, '_debug_build_prompt_logged'):
-            logger.info(f"[DEBUG] _build_prompt called with:")
-            logger.info(f"  - Parameter 'canonical_phrasing' (maps to {{subject}}): '{canonical_phrasing}'")
-            logger.info(f"  - Parameter 'phrasing_template' (maps to {{phrasing_template}}): '{phrasing_template}'")
-            self._debug_build_prompt_logged = True
-
         return IDEA_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
             subject=canonical_phrasing,
@@ -485,12 +500,11 @@ class IdeaExtractor:
             subject = subject_response.canonical_term
             phrasing_template = subject_response.canonical_phrasing
 
-            # Debug: verify what's being passed to prompt builder
-            if task.get('task_index', 0) == 0:  # Only for first task
-                logger.info(f"[DEBUG] First task prompt building:")
-                logger.info(f"  - canonical_term (subject param): '{subject}'")
-                logger.info(f"  - canonical_phrasing (phrasing_template param): '{phrasing_template}'")
-                logger.info(f"  - survey_question: '{self.var_lab}'")
+            # Extract the template prefix (everything before [ATTRIBUTE_OR_ACTION])
+            template_prefix = phrasing_template.split('[ATTRIBUTE_OR_ACTION]')[0].strip() if '[ATTRIBUTE_OR_ACTION]' in phrasing_template else phrasing_template
+
+            # Set the expected prefix for Pydantic validation
+            IdeaResponse._expected_template_prefix = template_prefix
 
             # Build prompt with subject
             prompt = self._build_prompt(task['respondent_id'], task['response'], subject, phrasing_template)
@@ -537,7 +551,7 @@ class IdeaExtractor:
             async with self.semaphore:
                 async with self.rate_limiter:
                     
-                    # Make API call
+                    # Make API call with Pydantic validation and retries
                     response = await asyncio.wait_for(
                         self.client.chat.completions.create(
                             model=self.model,
@@ -545,7 +559,8 @@ class IdeaExtractor:
                             messages=[{"role": "user", "content": prompt}],
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
-                            seed=self.model_config.seed
+                            seed=self.model_config.seed,
+                            max_retries=3  # Instructor will retry on ValidationError
                         ),
                         timeout=timeout
                     )
