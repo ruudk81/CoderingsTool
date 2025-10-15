@@ -201,24 +201,23 @@ class StreamlitPipelineRunner:
         """Extract variable key from session state for caching"""
         try:
             session_state = get_session_state()
-            
+
             # First, check if we have a stored variable key from Step 1
             stored_variable_key = session_state.get('current_variable_key')
             if stored_variable_key:
                 return stored_variable_key
-            
-            # Fallback: generate from session state variables (for backward compatibility)
-            # Check if we have multiple variables (merged)
-            selected_variables = session_state.get('selected_variables_confirmed') or session_state.get('selected_variables')
-            is_merged = session_state.get('is_merged_variable', False) or session_state.get('variable_mode_confirmed') == 'multiple'
-            
-            # Fall back to single variable if no multiple variables found
+
+            # Generate from DatasetConfig
+            selected_variables = session_state.get('selected_variables_config', [])
+            is_merged = session_state.get('is_merged_variable', False)
+
+            # Fall back to unknown if no variables found
             if not selected_variables:
-                selected_variables = [session_state.get('selected_variable', 'unknown')]
+                selected_variables = ['unknown']
                 is_merged = False
-            
+
             return generate_variable_key(selected_variables, is_merged)
-            
+
         except Exception:
             # Fallback for when session state is not available
             return "unknown"
@@ -237,8 +236,7 @@ class StreamlitPipelineRunner:
             is_merged = True
             # Get merge configuration for cache key
             session_state = get_session_state()
-            merge_config = (session_state.get('merge_config') or
-                          session_state.get('merge_config_confirmed', {}))
+            merge_config = session_state.get('merge_config')
         else:
             selected_variables = [var_name] if var_name else ["unknown"]
             is_merged = False
@@ -268,12 +266,18 @@ class StreamlitPipelineRunner:
             
             # Determine loading mode: single or multiple variables
             if var_names and len(var_names) > 1:
-                # Multiple variables mode - get merge configuration from session state (with fallback to confirmed values)
+                # Multiple variables mode - get merge configuration from session state
                 session_state = get_session_state()
-                merge_config = (session_state.get('merge_config') or 
-                              session_state.get('merge_config_confirmed', {}))
+                merge_config = session_state.get('merge_config', {})
                 merge_strategy = merge_config.get('strategy', 'concatenate')
-                separator = merge_config.get('separator', ' ')
+
+                # Get separator with explicit fallback chain:
+                # 1. Try merge_config dict
+                # 2. Try direct session_state.merge_separator (user's widget selection)
+                # 3. Default to '; ' (semicolon + space)
+                separator = (merge_config.get('separator') or
+                            session_state.get('merge_separator') or
+                            '; ')
                 skip_empty = merge_config.get('skip_empty', True)
                 
                 verbose_reporter.stat_line(f"Loading multiple variables: {var_names}")
@@ -556,12 +560,17 @@ class StreamlitPipelineRunner:
         
         return encoded_text
     
-    def step_5_generate_embeddings(self, encoded_text: List[models.IdeasExtractedModel], filename: str, var_lab: str,
-                                  model_config: Optional[ModelConfig] = None,
-                                  embedding_config: Optional[EmbeddingConfig] = None,
-                                  provider: str = "openai",
-                                  force_recalc: bool = False,
-                                  streamlit_container=None) -> List[models.EmbeddingsModel]:
+    def step_5_generate_embeddings(
+            self, encoded_text: List[models.IdeasExtractedModel], 
+            filename: str, 
+            var_lab: str,
+            model_config: Optional[ModelConfig] = None,
+            embedding_config: Optional[EmbeddingConfig] = None,
+            provider: str = "openai",
+            force_recalc: bool = False,
+            streamlit_container=None
+            ) -> List[models.EmbeddingsModel]:
+        
         """Step 5: Generate embeddings"""
         
         step_name = "embeddings"
@@ -584,9 +593,9 @@ class StreamlitPipelineRunner:
             get_embeddings = Embedder(
                 config=embedding_config,
                 model_config=model_config,
-                provider=provider,
                 verbose=self.verbose
-            )
+            ) # removed: provider=provider,
+            
             input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
             embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
             
