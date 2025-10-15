@@ -79,7 +79,6 @@ class TokenBucket:
         """Reconcile actual vs estimated tokens"""
         if delta_tokens < 0:
             async with self.lock:
-                old_available = self.available
                 self.available = min(self.tpm, self.available - delta_tokens)
 
 
@@ -171,7 +170,6 @@ class IdeaResponse(BaseModel):
 
 
 # === MAIN IDEA EXTRACTOR CLASS ========================================================================================================
-
 
 class IdeaExtractor:
     def __init__(
@@ -273,34 +271,40 @@ class IdeaExtractor:
 
     async def _extract_subject(self, survey_question: str) -> SubjectExtractionResponse:
         """Extract canonical subject/actor from survey question with caching"""
-        # Check cache first
-        
+
         if survey_question in self._subject_cache:
             return self._subject_cache[survey_question]
         
         try:
-            # Build subject extraction prompt
-            prompt = EXTRACT_SUBJECT.format(
-                language=self.language,
-                survey_question=survey_question)
             
-            # Make API call with structured output
+            prompt = EXTRACT_SUBJECT.format(language=self.language, survey_question=survey_question)
+            
             response = await self.client.chat.completions.create(
                 model=self.model,
                 response_model=SubjectExtractionResponse,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,  # Use deterministic temperature for consistency
-                seed=self.model_config.seed
-            )
-            
-            # Cache the result
-            self._subject_cache[survey_question] = response
-            
-            # Log if verbose
-            if self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(
-                    f"Extracted {response.decision}: '{response.canonical_term}'"
+                seed=self.model_config.seed)
+
+            # Capture subject extraction prompt if prompt_printer enabled
+            if self.prompt_printer:
+                self.prompt_printer.capture_prompt(
+                    step_name="idea_extraction_subject",
+                    utility_name="IdeaExtractor",
+                    prompt_content=prompt,
+                    prompt_type="subject_extraction",
+                    metadata={
+                        "model": self.model,
+                        "survey_question": survey_question,
+                        "language": self.language
+                    }
                 )
+
+            self._subject_cache[survey_question] = response
+
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Extracted canonical_term: '{response.canonical_term}'")
+                self.verbose_reporter.stat_line(f"Extracted canonical_phrasing: '{response.canonical_phrasing}'")
             
             return response
             
@@ -317,6 +321,14 @@ class IdeaExtractor:
 
     def _build_prompt(self, respondent_id: str, response: str, canonical_phrasing: str, phrasing_template: str) -> str:
         """Build prompt for a single response"""
+
+        # Debug: log what parameters were received (only once)
+        if not hasattr(self, '_debug_build_prompt_logged'):
+            logger.info(f"[DEBUG] _build_prompt called with:")
+            logger.info(f"  - Parameter 'canonical_phrasing' (maps to {{subject}}): '{canonical_phrasing}'")
+            logger.info(f"  - Parameter 'phrasing_template' (maps to {{phrasing_template}}): '{phrasing_template}'")
+            self._debug_build_prompt_logged = True
+
         return IDEA_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
             subject=canonical_phrasing,
@@ -471,7 +483,14 @@ class IdeaExtractor:
             # Extract subject first (will be cached after first call)
             subject_response = await self._extract_subject(self.var_lab)
             subject = subject_response.canonical_term
-            phrasing_template =subject_response.canonical_phrasing
+            phrasing_template = subject_response.canonical_phrasing
+
+            # Debug: verify what's being passed to prompt builder
+            if task.get('task_index', 0) == 0:  # Only for first task
+                logger.info(f"[DEBUG] First task prompt building:")
+                logger.info(f"  - canonical_term (subject param): '{subject}'")
+                logger.info(f"  - canonical_phrasing (phrasing_template param): '{phrasing_template}'")
+                logger.info(f"  - survey_question: '{self.var_lab}'")
 
             # Build prompt with subject
             prompt = self._build_prompt(task['respondent_id'], task['response'], subject, phrasing_template)
@@ -480,14 +499,17 @@ class IdeaExtractor:
             if self.prompt_printer and not self._captured_prompt:
                 self.prompt_printer.capture_prompt(
                     step_name="idea_extraction",
-                    utility_name="IdeaExtractor", 
+                    utility_name="IdeaExtractor",
                     prompt_content=prompt,
                     prompt_type="idea_extraction",
                     metadata={
                         "model": self.model,
                         "var_lab": self.var_lab,
                         "language": self.language,
-                        "respondent_id": task['respondent_id']
+                        "respondent_id": task['respondent_id'],
+                        "canonical_term_used": subject,
+                        "canonical_phrasing_used": phrasing_template,
+                        "cache_hit": self.var_lab in self._subject_cache
                     }
                 )
                 self._captured_prompt = True
