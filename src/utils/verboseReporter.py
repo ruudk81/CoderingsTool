@@ -54,12 +54,37 @@ class VerboseReporter:
             print(text)  # Always print to terminal (existing behavior)
         except UnicodeEncodeError:
             # Replace problematic Unicode characters for Windows console
-            safe_text = (text.replace('→', '->')
+            # Note: Some emojis may have variation selectors (U+FE0F), replace base chars first
+            safe_text = (text.replace('\uFE0F', '')  # Remove variation selectors
+                            .replace('→', '->')
                             .replace('✓', 'v')
+                            .replace('✅', '[OK]')
+                            .replace('❌', 'X')
                             .replace('⚠️', 'WARNING')
+                            .replace('⚠', 'WARNING')  # Without variation selector
                             .replace('‑', '-')
                             .replace('×', 'x')
-                            .replace('•', '*'))
+                            .replace('•', '*')
+                            .replace('🔍', '[DEBUG]')
+                            .replace('🔄', '[RETRY]')
+                            .replace('⏳', '[WAIT]')
+                            .replace('📋', '[LIST]')
+                            .replace('💡', '[IDEA]')
+                            .replace('🔗', '[LINK]')
+                            .replace('📊', '[STATS]')
+                            .replace('🏆', '[BEST]')
+                            .replace('🎯', '[TARGET]')
+                            .replace('🎨', '[DESIGN]')
+                            .replace('🤖', '[BOT]')
+                            .replace('🏷️', '[TAG]')
+                            .replace('🏷', '[TAG]')  # Label emoji
+                            .replace('📈', '[CHART]')
+                            .replace('📉', '[CHART_DOWN]')
+                            .replace('📌', '[PIN]')
+                            .replace('🔔', '[BELL]')
+                            .replace('🎉', '[CELEBRATE]')
+                            .replace('⭐', '[STAR]')
+                            .replace('🌟', '[SPARKLE]'))
             print(safe_text)
         if self.capture_callback:
             self.capture_callback(text)  # Also capture for Streamlit if callback provided

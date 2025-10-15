@@ -287,7 +287,7 @@ def clear_all_wait_states():
         if state in st.session_state:
             del st.session_state[state]
 
-# Side bar: session processing settings ################################################################################################################################
+# Side bar ################################################################################################################################
 
 def show_advanced_settings(current_step=0):
     """Show advanced settings UI in sidebar - only shows settings relevant to current step """
@@ -2083,12 +2083,12 @@ def show_code_assignment_page():
     st.markdown(info_text)
     
     # Assignment method selection
-    method = st.radio(
-        "Toewijzing Methode" if lang == "nl" else "Assignment Method",
-        options=["direct_llm", "embedding_similarity"],
-        format_func=lambda x: "Directe LLM Verwerking" if x == "direct_llm" else "Embedding Similariteit"
-        if lang == "nl" else "Direct LLM Processing" if x == "direct_llm" else "Embedding Similarity"
-    )
+    # method = st.radio(
+    #     "Toewijzing Methode" if lang == "nl" else "Assignment Method",
+    #     options=["direct_llm", "embedding_similarity"],
+    #     format_func=lambda x: "Directe LLM Verwerking" if x == "direct_llm" else "Embedding Similariteit"
+    #     if lang == "nl" else "Direct LLM Processing" if x == "direct_llm" else "Embedding Similarity"
+    # )
     
     # Check if we're waiting for user to continue after code assignment
     if st.session_state.get('waiting_for_continue_code_assignment', False):

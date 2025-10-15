@@ -1922,7 +1922,9 @@ class InductiveCodeGenerator:
                         result = await self._extract_single_theme(task['cluster_id'], task['ideas'])
                         theme_results[task['cluster_id']] = result
                     except Exception as e:
-                        self.verbose_reporter.error(f"Theme extraction failed for cluster {task['cluster_id']}: {e}")
+                        # Sanitize exception message for Windows console
+                        error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
+                        self.verbose_reporter.error(f"Theme extraction failed for cluster {task['cluster_id']}: {error_msg}")
                         failed_clusters.append(task['cluster_id'])
                     finally:
                         queue.task_done()
@@ -2628,7 +2630,9 @@ class InductiveCodeGenerator:
                 return None
             
         except Exception as e:
-            self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {e}")
+            # Sanitize exception message for Windows console
+            error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
+            self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {error_msg}")
             return None
         
     async def _measure_code_generation_tokens(self, clusters: Dict[int, Dict[str, Any]], themes: Dict[int, ClusterSummaryOutput]) -> Dict[str, float]:
