@@ -36,15 +36,28 @@ model_config = ModelConfig()
 filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
 id_column = "DLNMID"
 var_name = "Q10"
-sample_size = None
+sample_size = 100
 
-FORCE_RECALCULATE_ALL = False  
-FORCE_STEP = ""  
-USE_SPECULATIVE_STARTER_CODES = False  
-VERBOSE = True  
-PROMPT_PRINTER = True  
+RUN_UNTIL_STEP = 3                          
+# None = run all steps
+
+# FORCE_STEP = "data"                          #step 0
+# FORCE_STEP = "preprocessed"                  #step 1 
+# FORCE_STEP = "quality_filter"                #step 2
+FORCE_STEP = "extracted_ideas"               #step 3 
+# FORCE_STEP = "embeddings"                    #step 4
+# FORCE_STEP = "initial_clusters"              #step 5 
+# FORCE_STEP = "codebook_generation"           #step 6
+# FORCE_STEP = "codebook_refinement"           #step 7
+# FORCE_STEP = "code_assignment_direct"        #step 8
+# FORCE_STEP = "export"                        #step 9
+
+FORCE_RECALCULATE_ALL = False
+VERBOSE = True
+PROMPT_PRINTER = True
 LANGUAGE = "nl" 
 
+USE_SPECULATIVE_STARTER_CODES = False
 data_loader = dataLoader.DataLoader(verbose=False)
 var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
@@ -53,6 +66,7 @@ print("CODERINGSTOOL PIPELINE")
 print("=" * 80)
 print(f"Data file: {filename}")
 print(f"Variable: {var_name} - {var_lab}")
+print(f"Truncate sample size: {sample_size}")
 print(f"Force recalculate: {'ALL' if FORCE_RECALCULATE_ALL else FORCE_STEP or 'None'}")
 print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
 print(f"Verbose mode: {VERBOSE}")
@@ -66,27 +80,51 @@ test_mode = globals().get('is_test_mode', True)
 sample_size =  globals().get('test_sample_size', sample_size) if test_mode else None
                
 if 'variable_key' in globals():
-    variable_key = globals()['variable_key']   
+    variable_key = globals()['variable_key']
 else:
-    # Generate variable_key for standalone mode
-    from utils.cacheManager import generate_variable_key
-    variable_key = generate_variable_key(selected_variables, is_merged)
+    # Generate variable_key for standalone mode 
+    from utils.cacheManager import generate_enhanced_variable_key
+    merge_config = globals().get('merge_config', None)
+    variable_key = generate_enhanced_variable_key(
+        selected_variables,
+        is_merged,
+        sample_size=sample_size,   
+        merge_config=merge_config
+    )
 
 # ===================================================================================================================
 # PROCESSING STEPS
 # ===================================================================================================================
 
-def step_0_load_data(filename, id_column, var_name, variable_key, cache_manager, force_recalc=False, verbose=True):
-    """Step 0: Load data from SPSS file
+def step_0_load_data(
+    filename,
+    id_column,
+    var_name=None,                    # Single variable (optional)
+    var_names=None,                   # Multiple variables (optional)
+    variable_key=None,                # Auto-generate if None
+    cache_manager=None,               # Use global if None
+    sample_size=None,                 # Limit sample size
+    encoding=None,                    # SPSS file encoding
+    merge_config=None,                # How to merge multiple vars
+    force_recalc=False,
+    verbose=True,
+    streamlit_container=None          # NEW: Optional progress updates
+):
+    """Step 0: Load data from SPSS file (single or multiple variables)
 
     Args:
         filename: SPSS filename to load
         id_column: Column name containing respondent IDs
-        var_name: Variable name to extract
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
+        var_name: Single variable name to extract (or None if using var_names)
+        var_names: List of variable names for merged loading (or None if using var_name)
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        sample_size: Limit to N responses (None = all)
+        encoding: SPSS file encoding (None = auto-detect)
+        merge_config: Dict with 'strategy', 'separator', 'skip_empty' for multiple vars
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.ResponseModel]: List of response models
@@ -95,29 +133,116 @@ def step_0_load_data(filename, id_column, var_name, variable_key, cache_manager,
 
     step_name = "data"
     verbose_reporter = VerboseReporter(verbose)
-    data_loader_inst = dataLoader.DataLoader(verbose=verbose)
 
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        from utils.cacheManager import generate_enhanced_variable_key
+        if var_names and len(var_names) > 1:
+            selected_vars = var_names
+            is_merged = True
+        else:
+            selected_vars = [var_name] if var_name else (var_names if var_names else ["unknown"])
+            is_merged = False
+        variable_key = generate_enhanced_variable_key(selected_vars, is_merged, sample_size, merge_config)
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        if var_names and len(var_names) > 1:
+            streamlit_container.text(f"🔄 Loading and merging {len(var_names)} variables...")
+        else:
+            streamlit_container.text("🔄 Loading data from SPSS file...")
+
+    # Check cache
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
         raw_text_list = cache_manager.load_from_cache(filename, step_name, variable_key, models.ResponseModel)
         verbose_reporter.summary("DATA FROM CACHE", {"Input": f"{len(raw_text_list)} responses"})
     else:
         verbose_reporter.section_header("DATA LOADING SUMMARY")
         start_time = time.time()
-        # loading data from spss file
-        raw_text_df = data_loader_inst.get_variable_with_IDs(filename=filename, id_column=id_column, var_name=var_name)
-        raw_unstructured = list(zip([int(id_int) for id_int in raw_text_df[id_column].tolist()], raw_text_df[var_name].tolist()))
+
+        # Determine loading mode: single or multiple variables
+        data_loader_inst = dataLoader.DataLoader(verbose=verbose)
+
+        if var_names and len(var_names) > 1:
+            # Multiple variables mode - merge them
+            if merge_config is None:
+                merge_config = {'strategy': 'concatenate', 'separator': '; ', 'skip_empty': True}
+
+            merge_strategy = merge_config.get('strategy', 'concatenate')
+            separator = merge_config.get('separator', '; ')
+            skip_empty = merge_config.get('skip_empty', True)
+
+            verbose_reporter.stat_line(f"Loading multiple variables: {var_names}")
+            verbose_reporter.stat_line(f"Merge strategy: {merge_strategy}, separator: '{separator}', skip_empty: {skip_empty}")
+
+            raw_text_df = data_loader_inst.get_multiple_variables_with_IDs(
+                filename=filename,
+                id_column=id_column,
+                var_names=var_names,
+                merge_strategy=merge_strategy,
+                separator=separator,
+                skip_empty=skip_empty,
+                encoding=encoding
+            )
+            text_column = 'merged_text'
+        else:
+            # Single variable mode
+            if var_names and len(var_names) == 1:
+                var_name = var_names[0]
+            elif not var_name:
+                raise ValueError("Either var_name or var_names must be provided")
+
+            raw_text_df = data_loader_inst.get_variable_with_IDs(
+                filename=filename,
+                id_column=id_column,
+                var_name=var_name,
+                encoding=encoding
+            )
+            text_column = var_name
+
+        # Extract data from dataframe
+        raw_unstructured = list(zip(
+            [int(id_int) for id_int in raw_text_df[id_column].tolist()],
+            raw_text_df[text_column].tolist()
+        ))
+
         raw_text_list = []
-        # structuring data NaN=system missing; Numeric=undefined user missing; String=response
+        # Structure data: NaN=system missing; Numeric=user missing; String=response
         for resp_id, resp in raw_unstructured:
-            if pd.isna(resp):
+            if pd.isna(resp) or resp is None:
                 response_type = 'nan'
+                response_value = None
             elif isinstance(resp, (int, float)):
                 response_type = 'numeric'
+                response_value = resp
             elif isinstance(resp, str):
                 response_type = 'string'
+                response_value = resp
             else:
                 response_type = 'unknown'
-            raw_text_list.append(models.ResponseModel(respondent_id=resp_id, response=resp, response_type=response_type))
+                response_value = resp
+            raw_text_list.append(models.ResponseModel(
+                respondent_id=resp_id,
+                response=response_value,
+                response_type=response_type
+            ))
+
+        # Apply sample size truncation if specified
+        original_count = len(raw_text_list)
+        if sample_size and len(raw_text_list) > sample_size:
+            raw_text_list = raw_text_list[:sample_size]
+            verbose_reporter.stat_line(f"Applied truncation: {len(raw_text_list)} of {original_count} responses (sample size: {sample_size})")
+        else:
+            verbose_reporter.stat_line(f"No truncation: {len(raw_text_list)} responses (full dataset)")
+
         end_time = time.time()
         elapsed_time = end_time - start_time
         cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time)
@@ -130,22 +255,38 @@ def step_0_load_data(filename, id_column, var_name, variable_key, cache_manager,
             print(f"{data_type}: {count} items")
         print(f"\n\n'Import data' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Loaded {len(raw_text_list)} responses in {elapsed_time:.2f}s")
+
     return raw_text_list
 
 
-def step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_manager, model_config, force_recalc=False, verbose=True, prompt_printer_enabled=False):
+def step_1_preprocess(
+    raw_text_list,
+    filename,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 1: Preprocess text responses
 
     Args:
         raw_text_list: List of ResponseModel instances from step 0
         filename: SPSS filename for caching
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.PreprocessedModel]: List of preprocessed response models
@@ -154,6 +295,41 @@ def step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_mana
     from config import SpellCheckConfig
 
     step_name = "preprocessed"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        # Try to infer from context
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Preprocessing text responses...")
     spell_check_config = SpellCheckConfig(
         minimum_timeout_seconds=15.0,
         maximum_timeout_seconds=60.0)
@@ -177,6 +353,10 @@ def step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_mana
         for code, count in code_counts.items():
             verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
         verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success("✅ Preprocessing completed (from cache)")
     else:
         verbose_reporter.section_header("PREPROCESSING PHASE")
         # intialize utils
@@ -263,7 +443,7 @@ def step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_mana
         # Show consolidated sample corrections from all preprocessing steps
         if verbose:
             print()
-            print("📋 Sample preprocessing corrections:")
+            print("[SAMPLES] Sample preprocessing corrections:")
 
             # Collect samples from all processing steps
             all_samples = []
@@ -295,22 +475,38 @@ def step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_mana
 
         print(f"\n'Preprocessing phase' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Preprocessing completed in {elapsed_time:.2f}s")
+
     return preprocessed_text
 
 
-def step_2_quality_filter(preprocessed_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc=False, verbose=True, prompt_printer_enabled=False):
+def step_2_quality_filter(
+    preprocessed_text,
+    filename,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 2: Filter low-quality responses using LLM-based quality assessment
 
     Args:
         preprocessed_text: List of PreprocessedModel instances from step 1
         filename: SPSS filename for caching
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.QualityFilteredModel]: List of quality-filtered response models
@@ -318,6 +514,40 @@ def step_2_quality_filter(preprocessed_text, filename, var_lab, variable_key, ca
     from utils import qualityFilter, verboseReporter, promptPrinter
 
     step_name = "quality_filter"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Filtering low-quality responses...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
 
@@ -340,6 +570,10 @@ def step_2_quality_filter(preprocessed_text, filename, var_lab, variable_key, ca
             if code != 99999998:
                 verbose_reporter.stat_line(f"{code_meanings.get(code, 'Unknown code')} = {count} responses")
         verbose_reporter.stat_line(f"Output: {len(preprocessed_text) - sum(code_counts.values())}")
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success("✅ Quality filtering completed (from cache)")
     else:
         verbose_reporter.section_header("QUALITY FILTERING PHASE")
         start_time = time.time()
@@ -367,22 +601,38 @@ def step_2_quality_filter(preprocessed_text, filename, var_lab, variable_key, ca
         print(f"Total items without codes: {len(preprocessed_text) - sum(code_counts.values())}\n")
         print(f"\n\n'Quality filtering phase' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Quality filtering completed in {elapsed_time:.2f}s")
+
     return quality_filtered_text
 
 
-def step_3_extract_ideas(quality_filtered_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc=False, verbose=True, prompt_printer_enabled=False):
+def step_3_extract_ideas(
+    quality_filtered_text,
+    filename,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 3: Extract discrete ideas from multi-idea responses
 
     Args:
         quality_filtered_text: List of QualityFilteredModel instances from step 2
         filename: SPSS filename for caching
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.IdeasExtractedModel]: List of models with extracted ideas
@@ -390,6 +640,40 @@ def step_3_extract_ideas(quality_filtered_text, filename, var_lab, variable_key,
     from utils import ideaExtractor, verboseReporter, promptPrinter
 
     step_name = "extracted_ideas"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Extracting discrete ideas from responses...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
 
@@ -397,6 +681,10 @@ def step_3_extract_ideas(quality_filtered_text, filename, var_lab, variable_key,
         encoded_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.IdeasExtractedModel)
         segments = sum(item.idea_count for item in encoded_text)
         verbose_reporter.summary("IDEAS EXPRESSED AND EXTRACTED FROM RESPONSES IN CACHE", {f"Input: {len(encoded_text)} filtered responses -> Output": f"{segments} response segments"})
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success("✅ Idea extraction completed (from cache)")
     else:
         verbose_reporter.section_header("EXTRACTION OF IDEAS EXPRESSED PHASE")
         start_time = time.time()
@@ -416,21 +704,36 @@ def step_3_extract_ideas(quality_filtered_text, filename, var_lab, variable_key,
         cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Idea extraction completed in {elapsed_time:.2f}s")
+
     return encoded_text
 
 
-def step_4_generate_embeddings(encoded_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc=False, verbose=True):
+def step_4_generate_embeddings(
+    encoded_text,
+    filename,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    force_recalc=False,
+    verbose=True,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 4: Generate embeddings for extracted ideas
 
     Args:
         encoded_text: List of IdeasExtractedModel instances from step 3
         filename: SPSS filename for caching
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for API configuration
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for API configuration (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.EmbeddingsModel]: List of models with embeddings
@@ -440,6 +743,40 @@ def step_4_generate_embeddings(encoded_text, filename, var_lab, variable_key, ca
     from utils.verboseReporter import VerboseReporter
 
     step_name = "embeddings"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Generating embeddings for ideas...")
     verbose_reporter = VerboseReporter(verbose)
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
@@ -449,6 +786,10 @@ def step_4_generate_embeddings(encoded_text, filename, var_lab, variable_key, ca
             "Input": f"{len(encoded_text)} responses",
             "Total embeddings": f"{total_embeddings}"
         })
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success("✅ Embedding generation completed (from cache)")
     else:
         verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
         start_time = time.time()
@@ -467,19 +808,32 @@ def step_4_generate_embeddings(encoded_text, filename, var_lab, variable_key, ca
         cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time)
         print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Embedding generation completed in {elapsed_time:.2f}s")
+
     return embedded_text
 
 
-def step_5_cluster(embedded_text, filename, variable_key, cache_manager, force_recalc=False, verbose=True):
+def step_5_cluster(
+    embedded_text,
+    filename,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    force_recalc=False,
+    verbose=True,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 5: Perform dimensionality reduction and clustering
 
     Args:
         embedded_text: List of EmbeddingsModel instances from step 4
         filename: SPSS filename for caching
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.ClusterModel]: List of models with cluster assignments
@@ -489,6 +843,33 @@ def step_5_cluster(embedded_text, filename, variable_key, cache_manager, force_r
     from config import HDBSCANConfig, DEFAULT_HDBSCAN_CONFIG, DEFAULT_UMAP_CONFIG, DEFAULT_CLUSTERING_CONFIG
 
     step_name = "initial_clusters"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Clustering ideas with UMAP + HDBSCAN...")
     verbose_reporter = VerboseReporter(verbose)
 
     CLUSTERING_ALPHA = HDBSCANConfig.alpha
@@ -504,6 +885,10 @@ def step_5_cluster(embedded_text, filename, variable_key, cache_manager, force_r
             "Total segments": f"{total_segments}",
             "Initial clusters": f"{num_initial_clusters}"
         })
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Clustering completed (from cache): {num_initial_clusters} clusters")
     else:
         verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
         start_time = time.time()
@@ -540,10 +925,30 @@ def step_5_cluster(embedded_text, filename, variable_key, cache_manager, force_r
         cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time)
         print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            num_clusters = len(set([segment.initial_cluster for result in initial_cluster_results for segment in result.response_ideas if segment.initial_cluster is not None]))
+            streamlit_container.success(f"✅ Clustering completed in {elapsed_time:.2f}s: {num_clusters} clusters")
+
     return initial_cluster_results
 
 
-def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_lab, variable_key, cache_manager, model_config, use_speculative_starter_codes=False, force_recalc=False, verbose=True, verbose_detailed=False, prompt_printer_enabled=False, cache_reasoning=True):
+def step_6_generate_codebook(
+    initial_cluster_results,
+    filename,
+    var_name,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    use_speculative_starter_codes=False,
+    force_recalc=False,
+    verbose=True,
+    verbose_detailed=False,
+    prompt_printer_enabled=False,
+    cache_reasoning=True,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 6: Generate codebook from clusters using inductive coding
 
     Args:
@@ -551,15 +956,16 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
         filename: SPSS filename for caching
         var_name: Variable name for metadata
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
         use_speculative_starter_codes: Whether to use speculative starter codes
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         verbose_detailed: Enable detailed verbose output
         prompt_printer_enabled: Enable prompt printing
         cache_reasoning: Cache reasoning results for export
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         tuple: (codebook_main: CodebookModel, codebook_reasoning: CodeGeneratorReasoningResults or None)
@@ -568,6 +974,40 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
     from utils.codebookDisplayer import display_clustered_codebook
 
     step_name = "codebook_generation"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Generating codebook from clusters...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
     codebook_reasoning = None
@@ -580,6 +1020,11 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
                 "Total codes": len(codebook_main.codes),
                 "Source variable": codebook_main.source_variable
             })
+
+            # Optional Streamlit success message
+            if streamlit_container:
+                streamlit_container.success(f"✅ Codebook generation completed (from cache): {len(codebook_main.codes)} codes")
+
             # Extract legacy codebook list for backward compatibility
             codebook = [models.Codebook(code=entry.code, definition=entry.definition)
                         for entry in codebook_main.codes]
@@ -592,7 +1037,7 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
                     )
                     if reasoning_models and len(reasoning_models) > 0:
                         codebook_reasoning = reasoning_models[0]
-                        print("✓ Loaded codebook reasoning from cache")
+                        print("[OK] Loaded codebook reasoning from cache")
                     else:
                         print("Note: Reasoning cache not found (run with CACHE_CODEGENERATOR_REASONING=True to create)")
                 except Exception as e:
@@ -649,12 +1094,12 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
                 # Display final codebook summary
                 if verbose and final_codebook:
                     verbose_reporter.empty_line()
-                    print("📊 FINAL CODEBOOK SUMMARY")
+                    print("[STATS] FINAL CODEBOOK SUMMARY")
                     verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
 
                     # Show sample codes
                     verbose_reporter.empty_line()
-                    print("📋 Complete codebook:")
+                    print("[LIST] Complete codebook:")
 
                 idx = 1
                 # Process the extracted final codebook
@@ -723,10 +1168,27 @@ def step_6_generate_codebook(initial_cluster_results, filename, var_name, var_la
 
         print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            num_codes = len(codebook_main.codes) if codebook_main else 0
+            streamlit_container.success(f"✅ Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
+
     return codebook_main, codebook_reasoning
 
 
-def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, variable_key, cache_manager, model_config, default_language, force_recalc=False, verbose=True):
+def step_7_refine_codebook(
+    codebook_reasoning,
+    filename,
+    var_name,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    default_language=None,          # Use DEFAULT_LANGUAGE if None
+    force_recalc=False,
+    verbose=True,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 7: Refine codebook into hierarchical themes
 
     Args:
@@ -734,12 +1196,13 @@ def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, vari
         filename: SPSS filename for caching
         var_name: Variable name for metadata
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
-        default_language: Language for refinement
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
+        default_language: Language for refinement (uses DEFAULT_LANGUAGE if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel)
@@ -748,6 +1211,45 @@ def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, vari
     from utils.verboseReporter import VerboseReporter
 
     step_name = "codebook_refinement"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Use DEFAULT_LANGUAGE if not provided
+    if default_language is None:
+        from config import DEFAULT_LANGUAGE as DEFAULT_LANG
+        default_language = DEFAULT_LANG
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Refining codebook into hierarchical themes...")
     verbose_reporter = VerboseReporter(verbose)
     start_time = time.time()
 
@@ -760,6 +1262,11 @@ def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, vari
                 "Refined categories": refinement_results.processing_stats.get('refined_category_count', 0),
                 "Total subcodes": refinement_results.processing_stats.get('total_refined_subcodes', 0)
             })
+
+            # Optional Streamlit success message
+            if streamlit_container:
+                num_categories = refinement_results.processing_stats.get('refined_category_count', 0)
+                streamlit_container.success(f"✅ Codebook refinement completed (from cache): {num_categories} themes")
         else:
             print("ERROR: Failed to load codebook refinement from cache")
             refinement_results = None
@@ -791,6 +1298,14 @@ def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, vari
 
     elapsed_time = time.time() - start_time
     print(f"\n'codebook refinement' completed in {elapsed_time:.2f} seconds.\n")
+
+    # Optional Streamlit success message
+    if streamlit_container:
+        if refinement_results:
+            num_categories = refinement_results.processing_stats.get('refined_category_count', 0)
+            streamlit_container.success(f"✅ Codebook refinement completed in {elapsed_time:.2f}s: {num_categories} themes")
+        else:
+            streamlit_container.warning("⚠️ Codebook refinement had issues")
 
     # Create theme enriched codebook
     if refinement_results and refinement_results.refined_codebook.refined_codebook:
@@ -856,7 +1371,19 @@ def step_7_refine_codebook(codebook_reasoning, filename, var_name, var_lab, vari
     return refinement_results, theme_enriched_codebook
 
 
-def step_8_assign_codes(initial_cluster_results, theme_enriched_codebook, filename, var_lab, variable_key, cache_manager, model_config, force_recalc=False, verbose=True, prompt_printer_enabled=False):
+def step_8_assign_codes(
+    initial_cluster_results,
+    theme_enriched_codebook,
+    filename,
+    var_lab,
+    variable_key=None,              # Auto-generate if None
+    cache_manager=None,             # Use global if None
+    model_config=None,              # Use global if None
+    force_recalc=False,
+    verbose=True,
+    prompt_printer_enabled=False,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 8: Assign codes to individual ideas
 
     Args:
@@ -864,12 +1391,13 @@ def step_8_assign_codes(initial_cluster_results, theme_enriched_codebook, filena
         theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
         filename: SPSS filename for caching
         var_lab: Variable label for context
-        variable_key: Cache key for this variable
-        cache_manager: CacheManager instance
-        model_config: ModelConfig instance for LLM calls
+        variable_key: Cache key (auto-generated if None)
+        cache_manager: CacheManager instance (uses global if None)
+        model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
         prompt_printer_enabled: Enable prompt printing
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         List[models.CodeAssignedModel]: List of models with code assignments
@@ -877,6 +1405,40 @@ def step_8_assign_codes(initial_cluster_results, theme_enriched_codebook, filena
     from utils import codeAssigner, verboseReporter, promptPrinter
 
     step_name = "code_assignment_direct"
+
+    # Auto-generate variable_key if not provided
+    if variable_key is None:
+        selected_variables = globals().get('selected_variables', [])
+        is_merged = globals().get('is_merged', False)
+        sample_size = globals().get('sample_size', None)
+        merge_config = globals().get('merge_config', None)
+
+        from utils.cacheManager import generate_enhanced_variable_key
+        variable_key = generate_enhanced_variable_key(
+            selected_variables if selected_variables else ["unknown"],
+            is_merged,
+            sample_size=sample_size,
+            merge_config=merge_config
+        )
+
+    # Use global cache_manager if not provided
+    if cache_manager is None:
+        cache_manager = globals().get('cache_manager')
+        if cache_manager is None:
+            from utils.cacheManager import CacheManager
+            from config import CacheConfig
+            cache_manager = CacheManager(CacheConfig())
+
+    # Use global model_config if not provided
+    if model_config is None:
+        model_config = globals().get('model_config')
+        if model_config is None:
+            from config import ModelConfig
+            model_config = ModelConfig()
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Assigning codes to individual ideas...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
 
@@ -890,6 +1452,10 @@ def step_8_assign_codes(initial_cluster_results, theme_enriched_codebook, filena
             "Code assignments": total_assignments,
             "Theme assignments": sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_themes]) for resp in code_assigned_results if resp.response_ideas)
         })
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Code assignment completed (from cache): {total_assignments} assignments")
     else:
         verbose_reporter.section_header("DIRECT CODE ASSIGNMENT PHASE (NO EMBEDDINGS)")
         start_time = time.time()
@@ -939,10 +1505,22 @@ def step_8_assign_codes(initial_cluster_results, theme_enriched_codebook, filena
         cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time)
         print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
+        # Optional Streamlit success message
+        if streamlit_container:
+            total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
+            streamlit_container.success(f"✅ Code assignment completed in {elapsed_time:.2f}s: {total_assignments} assignments")
+
     return code_assigned_results
 
 
-def step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=True):
+def step_9_export_results(
+    code_assigned_results,
+    theme_enriched_codebook,
+    filename,
+    var_name,
+    verbose=True,
+    streamlit_container=None        # Optional progress updates
+):
     """Step 9: Export results to Excel
 
     Args:
@@ -951,11 +1529,16 @@ def step_9_export_results(code_assigned_results, theme_enriched_codebook, filena
         filename: SPSS filename for export naming
         var_name: Variable name for export naming
         verbose: Enable verbose output
+        streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
         str: Path to exported Excel file
     """
     from utils.resultsExporter import ResultsExporter
+
+    # Optional Streamlit progress
+    if streamlit_container:
+        streamlit_container.text("🔄 Exporting results to Excel...")
 
     try:
         exporter = ResultsExporter(verbose=verbose)
@@ -966,27 +1549,65 @@ def step_9_export_results(code_assigned_results, theme_enriched_codebook, filena
             var_name,
             export_dir=None  # Will create default export directory
         )
-        print(f"✅ Code assignments exported to Excel: {excel_path}")
+        print(f"[SUCCESS] Code assignments exported to Excel: {excel_path}")
+
+        # Optional Streamlit success message
+        if streamlit_container:
+            streamlit_container.success(f"✅ Results exported to Excel: {excel_path}")
+
         return excel_path
     except Exception as e:
-        print(f"⚠️ Excel export failed: {str(e)}")
+        print(f"[WARNING] Excel export failed: {str(e)}")
+
+        # Optional Streamlit error message
+        if streamlit_container:
+            streamlit_container.error(f"⚠️ Excel export failed: {str(e)}")
+
         return None
 
 
 # ===================================================================================================================
-# STANDALONE 
+# STANDALONE
 # ===================================================================================================================
+
+import sys
+
+def check_execution_stop(current_step: int):
+    """Check if execution should stop after current step"""
+    if RUN_UNTIL_STEP is not None and current_step >= RUN_UNTIL_STEP:
+        print(f"\n{'='*80}")
+        print(f"EXECUTION STOPPED: RUN_UNTIL_STEP set to {RUN_UNTIL_STEP}")
+        print(f"Completed steps 0-{current_step}")
+        print(f"{'='*80}\n")
+        sys.exit(0)
 
 # === STEP 0 ========================================================================================================
 """get data"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "data"
-raw_text_list = step_0_load_data(filename, id_column, var_name, variable_key, cache_manager, force_recalc, VERBOSE)        
+raw_text_list = step_0_load_data(
+    filename, id_column, var_name,
+    sample_size=sample_size,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    force_recalc=force_recalc,
+    verbose=VERBOSE
+)
+check_execution_stop(0)
 
 # === STEP 1 ========================================================================================================
 """preprocess data"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "preprocessed"
-preprocessed_text = step_1_preprocess(raw_text_list, filename, var_lab, variable_key, cache_manager, model_config, force_recalc, VERBOSE, PROMPT_PRINTER)
-    
+preprocessed_text = step_1_preprocess(
+    raw_text_list, filename, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    force_recalc=force_recalc,
+    verbose=VERBOSE,
+    prompt_printer_enabled=PROMPT_PRINTER
+)
+check_execution_stop(1)
+
 if False: #debug if true
     import random
     n_samples = 5
@@ -998,7 +1619,16 @@ if False: #debug if true
 # === STEP 2 ========================================================================================================
 """quality filter"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "quality_filter"
-quality_filtered_text = step_2_quality_filter(preprocessed_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc, VERBOSE, PROMPT_PRINTER)
+quality_filtered_text = step_2_quality_filter(
+    preprocessed_text, filename, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    force_recalc=force_recalc,
+    verbose=VERBOSE,
+    prompt_printer_enabled=PROMPT_PRINTER
+)
+check_execution_stop(2)
 
 # debug if true
 if False : 
@@ -1013,8 +1643,16 @@ if False :
 # === STEP 3 ========================================================================================================
 """Response segments/ideas"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "extracted_ideas"
-encoded_text = step_3_extract_ideas(quality_filtered_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc, VERBOSE, PROMPT_PRINTER)
-    
+encoded_text = step_3_extract_ideas(
+    quality_filtered_text, filename, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    force_recalc=force_recalc,
+    verbose=VERBOSE,
+    prompt_printer_enabled=PROMPT_PRINTER
+)
+check_execution_stop(3)
 
 if False : # debug if true
     import random
@@ -1028,7 +1666,15 @@ if False : # debug if true
 # === STEP 4 =======================================================================================================
 """Generate embeddings"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "embeddings"
-embedded_text = step_4_generate_embeddings(encoded_text, filename, var_lab, variable_key, cache_manager, model_config, force_recalc, VERBOSE)
+embedded_text = step_4_generate_embeddings(
+    encoded_text, filename, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    force_recalc=force_recalc,
+    verbose=VERBOSE
+)
+check_execution_stop(4)
 
 if False: #debug if true
     import random
@@ -1042,7 +1688,14 @@ if False: #debug if true
 # === STEP 5 =======================================================================================================
 """Reduce data/get clusters"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
-initial_cluster_results = step_5_cluster(embedded_text, filename, variable_key, cache_manager, force_recalc, VERBOSE)
+initial_cluster_results = step_5_cluster(
+    embedded_text, filename,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    force_recalc=force_recalc,
+    verbose=VERBOSE
+)
+check_execution_stop(5)
 
 if False: #debug - print random clusters  
     import random
@@ -1090,6 +1743,7 @@ codebook_main, codebook_reasoning = step_6_generate_codebook(
     force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
     prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
 )
+check_execution_stop(6)
 
 if False: #debug if true (reasoning)
     if codebook_reasoning is not None:
@@ -1123,9 +1777,15 @@ if False: #debug if true (prompts + reasoning)
 """Codebook Refinement"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
 refinement_results, theme_enriched_codebook = step_7_refine_codebook(
-    codebook_reasoning, filename, var_name, var_lab, variable_key, cache_manager, model_config,
-    default_language=DEFAULT_LANGUAGE, force_recalc=force_recalc, verbose=VERBOSE
+    codebook_reasoning, filename, var_name, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    default_language=DEFAULT_LANGUAGE,
+    force_recalc=force_recalc,
+    verbose=VERBOSE
 )
+check_execution_stop(7)
 
 if False: #debug
     final_codebook = refinement_results.refined_codebook
@@ -1139,9 +1799,15 @@ if False: #debug
 """Assign codes (and themes)"""
 force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
 code_assigned_results = step_8_assign_codes(
-    initial_cluster_results, theme_enriched_codebook, filename, var_lab, variable_key, cache_manager, model_config,
-    force_recalc=force_recalc, verbose=VERBOSE, prompt_printer_enabled=PROMPT_PRINTER
+    initial_cluster_results, theme_enriched_codebook, filename, var_lab,
+    variable_key=variable_key,
+    cache_manager=cache_manager,
+    model_config=model_config,
+    force_recalc=force_recalc,
+    verbose=VERBOSE,
+    prompt_printer_enabled=PROMPT_PRINTER
 )
+check_execution_stop(8)
 
 # codebook
 for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
@@ -1203,7 +1869,7 @@ if False: #debug
         idea_text = random_idea['idea']
         respondent_id = random_idea['respondent_id']
         
-        print("🎯 Random Selected Idea:")
+        print("[TARGET] Random Selected Idea:")
         print(f"  ID: {idea_id}")
         print(f"  Respondent: {respondent_id}")
         print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
@@ -1261,3 +1927,11 @@ if False: #debug
 # === STEP 9  ========================================================================================================
 """Export Results"""
 excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=VERBOSE)
+check_execution_stop(9)
+
+# Pipeline completed successfully
+print(f"\n{'='*80}")
+print("PIPELINE COMPLETED SUCCESSFULLY")
+print(f"All steps (0-9) executed")
+print(f"Results exported to: {excel_path}")
+print(f"{'='*80}\n")

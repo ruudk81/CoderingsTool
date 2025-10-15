@@ -299,7 +299,7 @@ def print_refinement_report(results: CodeRefinementResults):
     print(f"Total Subcodes: {stats.get('total_refined_subcodes', 0)}")
     
     if 'error' in stats:
-        print(f"\n⚠️  ERROR: {stats['error']}")
+        print(f"\n[WARNING] ERROR: {stats['error']}")
     else:
         print(f"\nProcessing completed in {stats.get('processing_time_seconds', 0):.2f} seconds")
         
