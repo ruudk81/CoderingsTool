@@ -30,6 +30,10 @@ Technical description.docx
 # === JUPYTER NOTEBOOK CHECKPOINTS ===
 .ipynb_checkpoints/
 
+
+# === playwright CHECKPOINTS ===
+.playwright-mcp/
+
 # === MISC ===
 .Python
 claude-edits.zip

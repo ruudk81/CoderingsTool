@@ -338,11 +338,7 @@ class CacheManager:
                 cache_path.unlink()
             return False
     
-    def load_from_cache(self, 
-                       filename: str, 
-                       step: str, 
-                       variable_key: str,
-                       model_cls: Type[T]) -> Optional[List[T]]:
+    def load_from_cache(self,  filename: str,  step: str,  variable_key: str, model_cls: Type[T]) -> Optional[List[T]]:
         """Load data from cache and reconstruct Pydantic models"""
         cache_info = self.db.get_cache_info(filename, step, variable_key)
         
