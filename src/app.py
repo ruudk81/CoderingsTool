@@ -1299,13 +1299,7 @@ def show_preprocessing_page():
                     last_bracket = var_lab.rfind("]")
                     st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                     st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
-                
-                #retreive from cache
-                var_lab = st.session_state.var_lab
-                last_bracket = var_lab.rfind("]")
-                st.session_state.pipeline_results['raw_text_list'] = st.session_state.pipeline_results['cached_data']
-                st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
-         
+
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
@@ -1333,7 +1327,6 @@ def show_preprocessing_page():
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
-                    run_mode='app',
                     force_recalc=st.session_state.get('force_recalculate_all', False),
                     verbose=True,
                     prompt_printer_enabled=False)
@@ -1345,9 +1338,6 @@ def show_preprocessing_page():
 
         except Exception as e:
             st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
-    
-
-
 
 def show_filtering_page():
     lang = st.session_state.language
