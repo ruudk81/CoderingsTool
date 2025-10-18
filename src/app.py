@@ -1303,41 +1303,44 @@ def show_preprocessing_page():
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
-    # b. Preprocess data
-    if is_step_completed(0) and st.session_state.get('force_recalculate_all', False) and not is_step_completed(1):
+    # b. Preprocess data - button-triggered
+    if is_step_completed(0) and not is_step_completed(1):
         st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
-        progress_container = st.empty()
-        try:
-            progress_container.text("🔄 Tekst aan het voorbewerken...")
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
-            preprocessed_text = pipeline.step_1_preprocess(
-                    raw_text_list=st.session_state.pipeline_results['raw_text_list'],
-                    filename=st.session_state.filename,
-                    var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
-                    model_config=st.session_state.model_config,
-                    force_recalc=st.session_state.get('force_recalculate_all', False),
-                    verbose=True,
-                    prompt_printer_enabled=False)
-            progress_container.success("✅ Voorbewerking voltooid")
-            st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
 
-            mark_step_completed(1)
-            st.rerun()
+        # Show button to start preprocessing
+        if st.button("🚀 " + ("Start Voorbewerking" if lang == "nl" else "Start Preprocessing"), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 Tekst aan het voorbewerken...")
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                # Generate enhanced variable key with sample size
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+                preprocessed_text = pipeline.step_1_preprocess(
+                        raw_text_list=st.session_state.pipeline_results['raw_text_list'],
+                        filename=st.session_state.filename,
+                        var_lab=st.session_state.pipeline_results['var_lab'],
+                        variable_key=variable_key,
+                        cache_manager=_get_cache_manager(),
+                        model_config=st.session_state.model_config,
+                        force_recalc=st.session_state.get('force_recalculate_all', False),
+                        verbose=True,
+                        prompt_printer_enabled=False)
+                progress_container.success("✅ Voorbewerking voltooid")
+                st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
 
-        except Exception as e:
-            st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
+                mark_step_completed(1)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
 def show_filtering_page():
     lang = st.session_state.language
