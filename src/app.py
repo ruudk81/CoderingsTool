@@ -12,7 +12,7 @@ import models
 from config import CacheConfig, ModelConfig, SpellCheckConfig,QualityFilterConfig,  SegmentationConfig, EmbeddingConfig, HDBSCANConfig, CodeDesignerConfig, CodeAssignmentConfig
 
 from utils.dataLoader import DataLoader
-from utils.cacheManager import CacheManager, generate_variable_key
+from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 import ui_text as ui
 
 # Import pipeline functions directly
@@ -864,8 +864,7 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
         encoding=encoding or st.session_state.get('file_encoding'),
         var_lab=var_lab,
         is_merged_variable=is_merged,
-        loaded_from_cache=False
-    )
+        loaded_from_cache=False)
 
     return config
 
@@ -934,6 +933,7 @@ def show_upload_page():
                 if st.button("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"), type="primary"):
                     with st.spinner("Data wordt geladen uit cache..." if lang == "nl" else "Loading data from cache..."):
                         config, data, record_count = load_from_cache(selected_dataset)
+                        st.session_state.pipeline_results['cached_data'] = data
                         if config and data:
                             config.to_session_state()
                             mark_step_completed(0) 
@@ -1152,10 +1152,9 @@ def show_upload_page():
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
 
 def show_preprocessing_page():
-    
     lang = st.session_state.language
     
-    if False:     
+    if True: #debug    
         debug_info = ""
         debug_info += f"Filename: {st.session_state.get('filename')}\n\n"
         debug_info += f"ID column: {st.session_state.get('id_column')}\n\n"
@@ -1168,6 +1167,7 @@ def show_preprocessing_page():
         debug_info += f"Is merged variable: {st.session_state.get('is_merged_variable')}\n\n"
         debug_info += f"Loaded from cache: {st.session_state.get('loaded_from_cache')}\n\n"
         debug_info += f"Force recalculate all: {st.session_state.get('force_recalculate_all')}\n\n"
+        debug_info += f"current_cache_key: {st.session_state.get('current_cache_key')}\n\n"
     
         st.info(debug_info)
       
@@ -1233,85 +1233,104 @@ def show_preprocessing_page():
             {summary_info}
             </div>
             """, unsafe_allow_html=True)
+ 
+    # a. get data    
+    if is_step_completed(0) and not is_step_completed(1): 
+        progress_container = st.empty()
+        try: 
+            if 'raw_text_list' not in st.session_state.pipeline_results: 
+                #load data from file
+                if not st.session_state.get('loaded_from_cache', False):
+                    encoding = st.session_state.get('file_encoding', 'auto')
+                    encoding = None if encoding == 'auto' else encoding
+                    is_multiple_mode = (st.session_state.get('variable_mode_config') == 'multiple' or st.session_state.get('is_merged_variable', False))
+                    selected_vars = st.session_state.get('selected_variables_config', [])
+    
+                    #multiple vars
+                    if is_multiple_mode and len(selected_vars) > 1:
+                        merge_config = st.session_state.get('merge_config', {})
+                        var_labels = []
+                        for var in selected_vars:
+                                label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
+                                var_labels.append(label or var)
 
-    in_cache = False  
+                        progress_container.text("🔄 Data laden...")
+                        # Generate enhanced variable key with sample size
+                        sample_size = st.session_state.get('sample_size_config')
+                        variable_key = generate_enhanced_variable_key(
+                            selected_vars,
+                            is_merged=True,
+                            sample_size=sample_size,
+                            merge_config=merge_config
+                        )
+                        raw_text_list = pipeline.step_0_load_data(
+                                filename=st.session_state.filename,
+                                id_column=st.session_state.selected_id_column,
+                                var_name=selected_vars[0],  # Use first variable (merged not supported yet)
+                                variable_key=variable_key,
+                                cache_manager=_get_cache_manager(),
+                                sample_size=sample_size,
+                                merge_config=merge_config,
+                                force_recalc=st.session_state.get('force_recalculate_all', False),
+                                verbose=True)
+                        progress_container.success("✅ Data laden voltooid")
+                        var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
+                        var_lab = var_labs[0]
+                            
+                    else: #single vars
+                        var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
+                        progress_container.text("🔄 Data laden...")
+                        # Generate enhanced variable key with sample size
+                        sample_size = st.session_state.get('sample_size_config')
+                        merge_config = st.session_state.get('merge_config')
+                        variable_key = generate_enhanced_variable_key(
+                            [st.session_state.selected_variable],
+                            is_merged=False,
+                            sample_size=sample_size,
+                            merge_config=merge_config
+                        )
+                        raw_text_list = pipeline.step_0_load_data(
+                                filename=st.session_state.filename,
+                                id_column=st.session_state.selected_id_column,
+                                var_name=st.session_state.selected_variable,
+                                variable_key=variable_key,
+                                cache_manager=_get_cache_manager(),
+                                sample_size=sample_size,
+                                merge_config=merge_config,
+                                force_recalc=st.session_state.get('force_recalculate_all', False),
+                                verbose=True)
+                        progress_container.success("✅ Data laden voltooid")
+           
+                    last_bracket = var_lab.rfind("]")
+                    st.session_state.pipeline_results['raw_text_list'] = raw_text_list
+                    st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                
+                #retreive from cache
+                var_lab = st.session_state.var_lab
+                last_bracket = var_lab.rfind("]")
+                st.session_state.pipeline_results['raw_text_list'] = st.session_state.pipeline_results['cached_data']
+                st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+         
+        except Exception as e:
+             st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
-    if is_step_completed(0) and not is_step_completed(1) and not in_cache: 
+    # b. Preprocess data
+    if is_step_completed(0) and st.session_state.get('force_recalculate_all', False) and not is_step_completed(1):
         st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
         progress_container = st.empty()
-        
-        try: 
-            # a. Load data
-            if 'raw_text_list' not in st.session_state.pipeline_results: 
-                # Use selected encoding, None if auto-detect
-                encoding = st.session_state.get('file_encoding', 'auto')
-                encoding = None if encoding == 'auto' else encoding
-
-                # Handle variable label for single vs multiple variables (use confirmed values to avoid widget conflicts)
-                is_multiple_mode = (st.session_state.get('variable_mode_config') == 'multiple' or st.session_state.get('is_merged_variable', False))
-                selected_vars = st.session_state.get('selected_variables_config', [])
-
-                if is_multiple_mode and len(selected_vars) > 1:
-                    # Multiple variables - create combined label
-                    merge_config = st.session_state.get('merge_config', {})
-                    var_labels = []
-                    for var in selected_vars:
-                            label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
-                            var_labels.append(label or var)
-
-                    progress_container.text("🔄 Data laden...")
-
-                    # Get variable_key for caching
-                    variable_key = generate_variable_key(selected_vars, is_merged=True)
-
-                    raw_text_list = pipeline.step_0_load_data(
-                            filename=st.session_state.filename,
-                            id_column=st.session_state.selected_id_column,
-                            var_name=selected_vars[0],  # Use first variable (merged not supported yet)
-                            variable_key=variable_key,
-                            cache_manager=_get_cache_manager(),
-                            force_recalc=st.session_state.get('force_recalculate_all', False),
-                            verbose=True
-                        )
-                    progress_container.success("✅ Data laden voltooid")
-                        
-                    var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
-                    var_lab = var_labs[0]
-                        
-                else:
-                    var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
-
-                    progress_container.text("🔄 Data laden...")
-
-                    # Get variable_key for caching
-                    variable_key = generate_variable_key([st.session_state.selected_variable], is_merged=False)
-
-                    raw_text_list = pipeline.step_0_load_data(
-                            filename=st.session_state.filename,
-                            id_column=st.session_state.selected_id_column,
-                            var_name=st.session_state.selected_variable,
-                            variable_key=variable_key,
-                            cache_manager=_get_cache_manager(),
-                            force_recalc=st.session_state.get('force_recalculate_all', False),
-                            verbose=True)
-
-                    progress_container.success("✅ Data laden voltooid")
-       
-                last_bracket = var_lab.rfind("]")
-                st.session_state.pipeline_results['raw_text_list'] = raw_text_list
-                st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
-
-                # Mark step 1 (data loading) as completed
-                mark_step_completed(1)
-
-            # b. Preprocessing
+        try:
             progress_container.text("🔄 Tekst aan het voorbewerken...")
-
-            # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
-
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
             preprocessed_text = pipeline.step_1_preprocess(
                     raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                     filename=st.session_state.filename,
@@ -1323,30 +1342,16 @@ def show_preprocessing_page():
                     force_recalc=st.session_state.get('force_recalculate_all', False),
                     verbose=True,
                     prompt_printer_enabled=False)
-
             progress_container.success("✅ Voorbewerking voltooid")
-
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
-
-            # Store variable_key in session_state for column 2 display after rerun
             st.session_state['current_variable_key'] = variable_key
 
-            # App-level cache storage with correct cache key (force_recalculate_all route)
-            if st.session_state.get('force_recalculate_all', False):
-                    cache_manager = _get_cache_manager()
-                    app_cache_key = st.session_state.get('current_cache_key')
-                    if app_cache_key:
-                        cache_manager.save_to_cache(
-                            preprocessed_text,
-                            st.session_state.filename,
-                            "preprocessed",
-                            app_cache_key
-                        )
+            cache_manager = _get_cache_manager()
+            app_cache_key = st.session_state.get('current_cache_key')
+            if app_cache_key:
+                cache_manager.save_to_cache(preprocessed_text, st.session_state.filename, "preprocessed", app_cache_key)
 
-            # Mark step 2 (preprocessing) as completed in navigation tracker
             mark_step_completed(1)
-
-            # Rerun to show AFTER state with completion info
             st.rerun()
 
         except Exception as e:
@@ -1414,7 +1419,15 @@ def show_filtering_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             quality_filtered_text = pipeline.step_2_quality_filter(
                 preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
@@ -1542,7 +1555,15 @@ def show_idea_extraction_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             encoded_text = pipeline.step_3_extract_ideas(
                 quality_filtered_text=st.session_state['pipeline_results']['quality_filtered_text'],
@@ -1625,7 +1646,15 @@ def show_embedding_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             embedded_text = pipeline.step_4_generate_embeddings(
                 encoded_text=st.session_state['pipeline_results']['encoded_text'],
@@ -1707,7 +1736,15 @@ def show_clustering_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             initial_cluster_results = pipeline.step_5_cluster(
                 embedded_text=st.session_state.pipeline_results['embedded_text'],
@@ -1797,7 +1834,15 @@ def show_codebook_generation_page():
                 # Get variable_key for caching
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
                 is_merged = st.session_state.get('is_merged_variable', False)
-                variable_key = generate_variable_key(selected_variables, is_merged)
+                # Generate enhanced variable key with sample size
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
                 codebook_main, reasoning_results = pipeline.step_6_generate_codebook(
                     initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
@@ -1877,7 +1922,15 @@ def show_theme_identification_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             refinement_results, theme_enriched_codebook = pipeline.step_7_refine_codebook(
                 codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
@@ -1973,7 +2026,15 @@ def show_code_assignment_page():
             # Get variable_key for caching
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            variable_key = generate_variable_key(selected_variables, is_merged)
+            # Generate enhanced variable key with sample size
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             code_assigned_results = pipeline.step_8_assign_codes(
                 initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
@@ -2310,8 +2371,15 @@ def load_preview_raw_data(n_samples=5):
 
         if is_multiple_mode and selected_vars and len(selected_vars) > 1:
             # Multiple variables mode - use first variable for preview
-            # NOTE: pipeline.step_0_load_data doesn't support var_names or sample_size
-            variable_key = generate_variable_key(selected_vars, is_merged=True)
+            merge_config = st.session_state.get('merge_config')
+            sample_size = st.session_state.get('sample_size_config')
+            # Generate enhanced variable key with sample size for preview
+            variable_key = generate_enhanced_variable_key(
+                selected_vars,
+                is_merged=True,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             preview_data = pipeline.step_0_load_data(
                 filename=st.session_state.filename,
@@ -2319,6 +2387,8 @@ def load_preview_raw_data(n_samples=5):
                 var_name=selected_vars[0],  # Use first variable only
                 variable_key=variable_key,
                 cache_manager=_get_cache_manager(),
+                sample_size=sample_size,
+                merge_config=merge_config,
                 force_recalc=True,  # Always force recalc for preview
                 verbose=False
             )
@@ -2326,7 +2396,15 @@ def load_preview_raw_data(n_samples=5):
             preview_data = preview_data[:n_samples] if len(preview_data) > n_samples else preview_data
         elif st.session_state.get('selected_variable'):
             # Single variable mode
-            variable_key = generate_variable_key([st.session_state.selected_variable], is_merged=False)
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            # Generate enhanced variable key with sample size for preview
+            variable_key = generate_enhanced_variable_key(
+                [st.session_state.selected_variable],
+                is_merged=False,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
 
             preview_data = pipeline.step_0_load_data(
                 filename=st.session_state.filename,
@@ -2334,6 +2412,8 @@ def load_preview_raw_data(n_samples=5):
                 var_name=st.session_state.selected_variable,
                 variable_key=variable_key,
                 cache_manager=_get_cache_manager(),
+                sample_size=sample_size,
+                merge_config=merge_config,
                 force_recalc=True,  # Always force recalc for preview
                 verbose=False
             )
