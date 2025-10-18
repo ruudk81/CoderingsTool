@@ -559,9 +559,6 @@ def show_advanced_settings(current_step=0):
             st.session_state.hdbscan_config = HDBSCANConfig()
             st.session_state.code_designer_config = CodeDesignerConfig()
             st.session_state.code_assignment_config = CodeAssignmentConfig()
-            # Clear stored variable key to ensure fresh cache naming
-            if 'current_variable_key' in st.session_state:
-                del st.session_state.current_variable_key
             st.rerun()
 
 # App architecture ################################################################################################################################
@@ -1167,7 +1164,6 @@ def show_preprocessing_page():
         debug_info += f"Is merged variable: {st.session_state.get('is_merged_variable')}\n\n"
         debug_info += f"Loaded from cache: {st.session_state.get('loaded_from_cache')}\n\n"
         debug_info += f"Force recalculate all: {st.session_state.get('force_recalculate_all')}\n\n"
-        debug_info += f"current_cache_key: {st.session_state.get('current_cache_key')}\n\n"
     
         st.info(debug_info)
       
@@ -1344,12 +1340,6 @@ def show_preprocessing_page():
                     prompt_printer_enabled=False)
             progress_container.success("✅ Voorbewerking voltooid")
             st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
-            st.session_state['current_variable_key'] = variable_key
-
-            cache_manager = _get_cache_manager()
-            app_cache_key = st.session_state.get('current_cache_key')
-            if app_cache_key:
-                cache_manager.save_to_cache(preprocessed_text, st.session_state.filename, "preprocessed", app_cache_key)
 
             mark_step_completed(1)
             st.rerun()
@@ -2787,8 +2777,17 @@ def show_assignment_samples(code_assigned_results):
         st.write("-" * 40)
 
 def _get_variable_key_for_cache():
-    """Get variable key for cache operations - matches existing pattern"""
-    return st.session_state.get('current_cache_key')
+    """Generate enhanced variable key for cache operations"""
+    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+    is_merged = st.session_state.get('is_merged_variable', False)
+    sample_size = st.session_state.get('sample_size_config')
+    merge_config = st.session_state.get('merge_config')
+    return generate_enhanced_variable_key(
+        selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size,
+        merge_config=merge_config
+    )
 
 def show_step8_refined_codebook():
     """Display refined codebook structure - exact pipeline pattern"""
@@ -2953,74 +2952,18 @@ def show_step_samples(step_number):
     # Get cache manager
     cache_manager = _get_cache_manager()
     filename = st.session_state.filename
-    
-    if False: #debug
-        #Get variable key for cache lookup (similar to pipeline_runner)
-        try:
-            # Try to get variable key from session state first (if loaded from cache)
-            st.write("🔍 **VARIABLE KEY DEBUG:**")
-            variable_key = None
-            
-            # Check if we have a stored cache key from cache loading
-            if st.session_state.get('loaded_from_cache', False):
-                stored_key = st.session_state.get('current_cache_key')
-                cache_info = st.session_state.get('cache_dataset_info', {})
-                
-                st.write("✅ **Loaded from cache - using stored key**")
-                st.write(f"- Stored cache key: {stored_key}")
-                st.write(f"- Dataset: {cache_info.get('dataset_name', 'unknown')}")
-                st.write(f"- Variables: {cache_info.get('variables', 'unknown')}")
-                st.write(f"- Sample suffix: {cache_info.get('sample_suffix', 'none')}")
-                
-                if stored_key:
-                    variable_key = stored_key
-                    st.write(f"- **Using stored key: {variable_key}**")
-            
-            # If no stored key, generate from session state
-            if not variable_key:
-                st.write("🔄 **Generating variable key from session state...**")
-                try:
-                    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.get('selected_variable')])
-                    is_merged = st.session_state.get('is_merged_variable', False)
-                    variable_key = generate_variable_key(selected_variables, is_merged)
-                    st.write(f"- Generated variable key: {variable_key}")
-                except Exception as e:
-                    st.write(f"- Error generating variable key: {e}")
-            
-            # Fallback: generate basic variable key
-            if not variable_key or variable_key == "unknown":
-                st.write("- Using fallback variable key generation...")
-                try:
-                    selected_variables = [st.session_state.selected_variable]
-                    st.write(f"- Selected variables: {selected_variables}")
-                    
-                    from utils.cacheManager import generate_variable_key
-                    variable_key = generate_variable_key(selected_variables, False)
-                    st.write(f"- Fallback generated key: {variable_key}")
-                    
-                except Exception as e:
-                    st.write(f"- Error in fallback generation: {e}")
-                    
-            if not variable_key:
-                variable_key = "unknown"
-                
-            st.write(f"- **Final variable key: {variable_key}**")
-            st.write("---")
-            
-        except Exception as e:
-            st.write(f"❌ Error generating variable key: {e}")
-            return
-        
-        st.write("🔍 **CACHE DEBUG INFO:**")
-        st.write(f"- Current step: {st.session_state.step}")
-        st.write(f"- Requested step_number: {step_number}")
-        st.write(f"- Filename: {filename}")
-        st.write(f"- Selected variable: {st.session_state.selected_variable}")
-        st.write(f"- Variable key: {variable_key}")
-        st.write("---")
-    
-    # Load variabe/cache key
-    variable_key = st.session_state.get('current_variable_key')
+
+    # Generate enhanced variable key for cache lookup
+    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+    is_merged = st.session_state.get('is_merged_variable', False)
+    sample_size = st.session_state.get('sample_size_config')
+    merge_config = st.session_state.get('merge_config')
+    variable_key = generate_enhanced_variable_key(
+        selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size,
+        merge_config=merge_config
+    )
 
     if False:  # Additional debug for column 2 display
         st.write("🔍 **Column 2 Debug:**")
