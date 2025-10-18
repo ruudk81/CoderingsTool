@@ -45,7 +45,6 @@ class DatasetConfig:
         st.session_state.selected_variables_config = self.selected_variables
         st.session_state.variable_mode_config = self.variable_mode
         st.session_state.sample_size_config = self.sample_size
-        st.session_state.sample_size = self.sample_size
         st.session_state.merge_config = self.merge_config
         st.session_state.encoding = self.encoding
         st.session_state.var_lab = self.var_lab
@@ -1346,6 +1345,7 @@ def show_preprocessing_page():
 
         except Exception as e:
             st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
+    
 
 
 
