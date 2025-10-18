@@ -1148,9 +1148,12 @@ def show_upload_page():
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
 
 def show_preprocessing_page():
+    
+    st.session_state.sample_size = st.session_state.sample_size_config
+    
     lang = st.session_state.language
     
-    if True: #debug    
+    if False: #debug    
         debug_info = ""
         debug_info += f"Filename: {st.session_state.get('filename')}\n\n"
         debug_info += f"ID column: {st.session_state.get('id_column')}\n\n"
@@ -1323,7 +1326,7 @@ def show_preprocessing_page():
                     sample_size=sample_size,
                     merge_config=merge_config
                 )
-                preprocessed_text = pipeline.step_1_preprocess(
+                preprocessed_text, preprocessing_stats = pipeline.step_1_preprocess(
                         raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                         filename=st.session_state.filename,
                         var_lab=st.session_state.pipeline_results['var_lab'],
@@ -1335,6 +1338,7 @@ def show_preprocessing_page():
                         prompt_printer_enabled=False)
                 progress_container.success("✅ Voorbewerking voltooid")
                 st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+                st.session_state['preprocessing_stats'] = preprocessing_stats
 
                 mark_step_completed(1)
                 st.rerun()
@@ -2935,9 +2939,8 @@ def show_step_samples(step_number):
     # Session-based filtering: Only show results from current session when in force_recalculate mode
     if st.session_state.get('force_recalculate_all', False):
         # Upload from file route - only show if step was completed in current session
-        # Note: step_number maps to display (1=preprocessed, 2=quality_filter, etc.)
-        # but completion tracking is off by 1 (preprocessing completes step 2, quality_filter completes step 3)
-        if not is_step_completed(step_number + 1):
+        # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
+        if not is_step_completed(step_number):
             lang = st.session_state.language
             st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
             return

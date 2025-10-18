@@ -444,7 +444,16 @@ def step_1_preprocess(
         if streamlit_container:
             streamlit_container.success(f"✅ Preprocessing completed in {elapsed_time:.2f}s")
 
-    return preprocessed_text
+    # Collect stats from preprocessing utilities
+    stats = {}
+    if 'text_normalizer' in locals() and hasattr(text_normalizer, 'stats'):
+        stats['normalizer_stats'] = text_normalizer.stats
+    if 'spell_checker' in locals() and hasattr(spell_checker, 'stats'):
+        stats['spell_check_stats'] = spell_checker.stats
+    if 'text_finalizer' in locals() and hasattr(text_finalizer, 'stats'):
+        stats['finalizer_stats'] = text_finalizer.stats
+
+    return preprocessed_text, stats
 
 
 def step_2_quality_filter(
