@@ -14,8 +14,7 @@ cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
 model_config = ModelConfig()
 
-# === MANUAL STANDALONE CONFIGS ========================================================================================
-
+#  ===  STANDALONE ======================================================================================================== 
 # filename = "M250285 input voor coderen - met Q18Q19.sav"
 # id_column = "respondentid"
 # var_name = "q19"
@@ -44,8 +43,6 @@ VERBOSE = True
 PROMPT_PRINTER = False
 LANGUAGE = "nl"
 
-# === AUTO STANDALONE CONFIGS ========================================================================================
-
 STEP_NAMES = {
     0: "data",
     1: "preprocessed",
@@ -59,46 +56,6 @@ STEP_NAMES = {
     9: "export"
 }
 
-if RUN_UNTIL_STEP is not None and not FORCE_RECALCULATE_ALL:
-    FORCE_STEP = STEP_NAMES.get(RUN_UNTIL_STEP, "")
-else:
-    FORCE_STEP = ""
-
-USE_SPECULATIVE_STARTER_CODES = False
-data_loader = dataLoader.DataLoader(verbose=False)
-var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
-
-print("=" * 80)
-print("CODERINGSTOOL PIPELINE")
-print("=" * 80)
-print(f"Data file: {filename}")
-print(f"Variable: {var_name} - {var_lab}")
-print(f"Sample size: {sample_size if sample_size else 'All responses'}")
-print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-9)'}")
-print(f"Force recalculate: {'ALL STEPS' if FORCE_RECALCULATE_ALL else (f'Step {RUN_UNTIL_STEP} ({FORCE_STEP})' if FORCE_STEP else 'None')}")
-print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
-print(f"Verbose mode: {VERBOSE}")
-print(f"Prompt printer: {PROMPT_PRINTER}")
-print("=" * 80)
-
-# === CACHE KEYS ========================================================================================
-selected_variables = globals().get('selected_variables', [var_name])
-is_merged = globals().get('is_merged', False)
-test_mode = globals().get('is_test_mode', True)
-sample_size =  globals().get('test_sample_size', sample_size) if test_mode else None
-               
-if 'variable_key' in globals():
-    variable_key = globals()['variable_key']
-else:
-    # Generate variable_key for standalone mode 
-    from utils.cacheManager import generate_enhanced_variable_key
-    merge_config = globals().get('merge_config', None)
-    variable_key = generate_enhanced_variable_key(
-        selected_variables,
-        is_merged,
-        sample_size=sample_size,   
-        merge_config=merge_config
-    )
 
 # ===================================================================================================================
 # PROCESSING STEPS
@@ -1571,372 +1528,409 @@ def step_9_export_results(
         return None
 
 
-# ===================================================================================================================
-# STANDALONE
-# ===================================================================================================================
 
-import sys
+if __name__ == '__main__':
+    import sys
 
-def check_execution_stop(current_step: int):
-    """Check if execution should stop after current step"""
-    if RUN_UNTIL_STEP is not None and current_step >= RUN_UNTIL_STEP:
-        print(f"\n{'='*80}")
-        print(f"EXECUTION STOPPED: RUN_UNTIL_STEP set to {RUN_UNTIL_STEP}")
-        print(f"Completed steps 0-{current_step}")
-        print(f"{'='*80}\n")
-        sys.exit(0)
-
-# === STEP 0 ========================================================================================================
-"""get data"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "data"
-raw_text_list = step_0_load_data(
-    filename, id_column, var_name,
-    sample_size=sample_size,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    force_recalc=force_recalc,
-    verbose=VERBOSE
-)
-check_execution_stop(0)
-
-# === STEP 1 ========================================================================================================
-"""preprocess data"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "preprocessed"
-preprocessed_text = step_1_preprocess(
-    raw_text_list, filename, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    force_recalc=force_recalc,
-    verbose=VERBOSE,
-    prompt_printer_enabled=PROMPT_PRINTER
-)
-check_execution_stop(1)
-
-if False: #debug if true
-    import random
-    n_samples = 5
-    indices = random.sample(range(len(preprocessed_text)), n_samples)
-    for i in indices:
-        print("Raw structured:", raw_text_list[i])
-        print("---")        
-
-# === STEP 2 ========================================================================================================
-"""quality filter"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "quality_filter"
-quality_filtered_text = step_2_quality_filter(
-    preprocessed_text, filename, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    force_recalc=force_recalc,
-    verbose=VERBOSE,
-    prompt_printer_enabled=PROMPT_PRINTER
-)
-check_execution_stop(2)
-
-# debug if true
-if False : 
-    import random
-    n_samples = 5
-    filtered_text = [item.response for item in quality_filtered_text if item.quality_filter]
-    indices = random.sample(range(len(filtered_text)), n_samples)
-    for i in indices:
-        print(filtered_text[i])
-
-
-# === STEP 3 ========================================================================================================
-"""Response segments/ideas"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "extracted_ideas"
-encoded_text = step_3_extract_ideas(
-    quality_filtered_text, filename, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    force_recalc=force_recalc,
-    verbose=VERBOSE,
-    prompt_printer_enabled=PROMPT_PRINTER
-)
-check_execution_stop(3)
-
-if False : # debug if true
-    import random
-    n_samples = 1
-    sampled_items = random.sample(encoded_text, n_samples)
-    for item in sampled_items:
-        print(item.response)
-        for segment in item.response_ideas:
-            print(f"- {segment.idea}")
-
-# === STEP 4 =======================================================================================================
-"""Generate embeddings"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "embeddings"
-embedded_text = step_4_generate_embeddings(
-    encoded_text, filename, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    force_recalc=force_recalc,
-    verbose=VERBOSE
-)
-check_execution_stop(4)
-
-if False: #debug if true
-    import random
-    n_samples = 1
-    sampled_items = random.sample(embedded_text, n_samples)
-    for item in sampled_items:
-        print(f"{item.response}\n")
-        for segment in item.response_ideas:
-            print(f"- {segment.idea}")
-
-# === STEP 5 =======================================================================================================
-"""Reduce data/get clusters"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
-initial_cluster_results = step_5_cluster(
-    embedded_text, filename,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    force_recalc=force_recalc,
-    verbose=VERBOSE
-)
-check_execution_stop(5)
-
-if False: #debug - print random clusters  
-    import random
-    cluster_ids = list(set([
-        response_idea.initial_cluster 
-        for result in initial_cluster_results 
-        for response_idea in result.response_ideas   
-        if response_idea.initial_cluster is not None]))
-    sampled_cluster = random.sample(cluster_ids, 1)[0]
-    print(f"\nCluster {sampled_cluster}:\n")
-    cluster_segments = []
-    for result in initial_cluster_results:
-        for response_idea in result.response_ideas:   
-            if response_idea.initial_cluster == sampled_cluster:
-                cluster_segments.append(response_idea.idea)
-    sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-    for segment_desc in sampled_segments:
-        print(f"-    {segment_desc}")
-    
-if False: #debug if true - print all clusters
-    cluster_ids = list(set([
-        response_idea.initial_cluster 
-        for result in initial_cluster_results 
-        for response_idea in result.response_ideas  # This has initial_cluster
-        if response_idea.initial_cluster is not None]))
-    for x in range(1, round(len(cluster_ids) / 1) + 1):
-        y = x * 1
-        print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
-    
-        for z in range(y - 1, y):
-            if z < len(cluster_ids):
-                print(f"\nCluster {z}")
-                for item in initial_cluster_results:
-                    for subitem in item.response_ideas:
-                        if subitem.initial_cluster == z:
-                            print(subitem.idea)
-        input("\n🔸 Press Enter to continue to the next batch of clusters...")
-
-# === STEP 6 ========================================================================================================
-"""Generate codes"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
-codebook_main, codebook_reasoning = step_6_generate_codebook(
-    initial_cluster_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
-    use_speculative_starter_codes=USE_SPECULATIVE_STARTER_CODES,
-    force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
-    prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
-)
-check_execution_stop(6)
-
-if False: #debug if true (reasoning)
-    if codebook_reasoning is not None:
-        from utils.codegenResults import display_cluster_analysis
-        display_cluster_analysis(codebook_reasoning)
+    if RUN_UNTIL_STEP is not None and not FORCE_RECALCULATE_ALL:
+        FORCE_STEP = STEP_NAMES.get(RUN_UNTIL_STEP, "")
     else:
-        print("Note: codebook_reasoning not available for display")
-
-if False: #debug if true (prompts + reasoning)
-    import random
-    step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
-    step3_recommendations = codebook_reasoning.step3_recommendations
-    available_ids = list(step3_recommendations.keys())
-    cluster_id = random.choice(available_ids)
-    cluster_id = '117-2'
-
-    from utils import codegenPromptTester
-    tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
-    tester.test_prompt_1()
-    tester.test_prompt_2()
-    tester.test_prompt_3()
-    tester.test_prompt_4()
-
-    if codebook_reasoning is not None:
-        from utils.codegenResults import display_cluster_analysis
-        display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
+        FORCE_STEP = ""
+    
+    USE_SPECULATIVE_STARTER_CODES = False
+    data_loader = dataLoader.DataLoader(verbose=False)
+    var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
+    
+    print("=" * 80)
+    print("CODERINGSTOOL PIPELINE")
+    print("=" * 80)
+    print(f"Data file: {filename}")
+    print(f"Variable: {var_name} - {var_lab}")
+    print(f"Sample size: {sample_size if sample_size else 'All responses'}")
+    print(f"Run until step: {RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 'All (0-9)'}")
+    print(f"Force recalculate: {'ALL STEPS' if FORCE_RECALCULATE_ALL else (f'Step {RUN_UNTIL_STEP} ({FORCE_STEP})' if FORCE_STEP else 'None')}")
+    print(f"Speculative starter codes: {USE_SPECULATIVE_STARTER_CODES}")
+    print(f"Verbose mode: {VERBOSE}")
+    print(f"Prompt printer: {PROMPT_PRINTER}")
+    print("=" * 80)
+    
+    selected_variables = globals().get('selected_variables', [var_name])
+    is_merged = globals().get('is_merged', False)
+    test_mode = globals().get('is_test_mode', True)
+    sample_size =  globals().get('test_sample_size', sample_size) if test_mode else None
+                   
+    if 'variable_key' in globals():
+        variable_key = globals()['variable_key']
     else:
-        print("Note: codebook_reasoning not available for display")
-
-# === STEP 7 =======================================================================================================
-"""Codebook Refinement"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
-refinement_results, theme_enriched_codebook = step_7_refine_codebook(
-    codebook_reasoning, filename, var_name, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    default_language=DEFAULT_LANGUAGE,
-    force_recalc=force_recalc,
-    verbose=VERBOSE
-)
-check_execution_stop(7)
-
-if False: #debug
-    final_codebook = refinement_results.refined_codebook
-    for entry in final_codebook.refined_codebook:
-        print(entry.category)
-        for x in  entry.subcodes:
-            print(f"- {x.code}")
-        print("\n")
-                
-# === STEP 8 =======================================================================================================
-"""Assign codes (and themes)"""
-force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
-code_assigned_results = step_8_assign_codes(
-    initial_cluster_results, theme_enriched_codebook, filename, var_lab,
-    variable_key=variable_key,
-    cache_manager=cache_manager,
-    model_config=model_config,
-    force_recalc=force_recalc,
-    verbose=VERBOSE,
-    prompt_printer_enabled=PROMPT_PRINTER
-)
-check_execution_stop(8)
-
-# codebook
-for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
-    print(f"{idx}) {entry.code}")
-
-# assignment stats 
-from utils.pipelineSummarizer import PipelineSummarizer
-summarizer = PipelineSummarizer(verbose=True)
-summarizer.generate_summary(
-    code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-    theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
-
-# random assignments
-if False: #debug
-    import random
-    sampled_result = random.choice(code_assigned_results)
-    print(f"Respondent ID: {sampled_result.respondent_id}")
-    print(f"Response: {sampled_result.response}")
-    #print(f"Idea count: {sampled_result.idea_count}")
-    #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-    #print("---- Assigned Codes ----")
-    for idea in sampled_result.response_ideas:
-        print("-" * 40)
-        print(f"Idea ID: {idea.idea_id}")
-        print(f"Idea: {idea.idea}")
-        print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
-        #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
-        print(f"Rationale: {idea.assignment_rationale}")
-        print(f"Assignment Confidence: {idea.assignment_confidence}")
-        print("-" * 40)
-
-# random prompt
-if False: #debug
-
-    print("\n" + "="*80)
-    print("RANDOM PROMPT TESTING (DEBUG)")
-    print("="*80)
-
-    # Extract ideas directly from initial_cluster_results
-    all_ideas_for_debug = []
-    for result in initial_cluster_results:
-        if result.response_ideas:
-            for idea in result.response_ideas:
-                all_ideas_for_debug.append({
-                    'idea_id': idea.idea_id,
-                    'idea': idea.idea,
-                    'respondent_id': result.respondent_id
-                })
-
+        # Generate variable_key for standalone mode 
+        from utils.cacheManager import generate_enhanced_variable_key
+        merge_config = globals().get('merge_config', None)
+        variable_key = generate_enhanced_variable_key(
+            selected_variables,
+            is_merged,
+            sample_size=sample_size,   
+            merge_config=merge_config)
     
-    from prompts import CODE_ASSIGNMENT_PROMPT
+    def check_execution_stop(current_step: int):
+        """Check if execution should stop after current step"""
+        if RUN_UNTIL_STEP is not None and current_step >= RUN_UNTIL_STEP:
+            print(f"\n{'='*80}")
+            print(f"EXECUTION STOPPED: RUN_UNTIL_STEP set to {RUN_UNTIL_STEP}")
+            print(f"Completed steps 0-{current_step}")
+            print(f"{'='*80}\n")
+            sys.exit(0)
     
-    if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
-        # Pick random idea from debug data
-        random_idea = random.choice(all_ideas_for_debug)
+    # === STEP 0 ====
+    """get data"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "data"
+    raw_text_list = step_0_load_data(
+        filename, id_column, var_name,
+        sample_size=sample_size,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        force_recalc=force_recalc,
+        verbose=VERBOSE
+    )
+    check_execution_stop(0)
+    
+    # === STEP 1 ====
+    """preprocess data"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "preprocessed"
+    preprocessed_text = step_1_preprocess(
+        raw_text_list, filename, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        force_recalc=force_recalc,
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
+    )
+    check_execution_stop(1)
+    
+    if False: #debug if true
+        import random
+        n_samples = 5
+        indices = random.sample(range(len(preprocessed_text)), n_samples)
+        for i in indices:
+            print("Raw structured:", raw_text_list[i])
+            print("---")        
+    
+    # === STEP 2 ====
+    """quality filter"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "quality_filter"
+    quality_filtered_text = step_2_quality_filter(
+        preprocessed_text, filename, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        force_recalc=force_recalc,
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
+    )
+    check_execution_stop(2)
+    
+    # debug if true
+    if False : 
+        import random
+        n_samples = 5
+        filtered_text = [item.response for item in quality_filtered_text if item.quality_filter]
+        indices = random.sample(range(len(filtered_text)), n_samples)
+        for i in indices:
+            print(filtered_text[i])
+    
+    
+    # === STEP 3 ====
+    """Response segments/ideas"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "extracted_ideas"
+    encoded_text = step_3_extract_ideas(
+        quality_filtered_text, filename, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        force_recalc=force_recalc,
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
+    )
+    check_execution_stop(3)
+    
+    if False : # debug if true
+        import random
+        n_samples = 1
+        sampled_items = random.sample(encoded_text, n_samples)
+        for item in sampled_items:
+            print(item.response)
+            for segment in item.response_ideas:
+                print(f"- {segment.idea}")
+    
+    # === STEP 4 ====
+    """Generate embeddings"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "embeddings"
+    embedded_text = step_4_generate_embeddings(
+        encoded_text, filename, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        force_recalc=force_recalc,
+        verbose=VERBOSE
+    )
+    check_execution_stop(4)
+    
+    if False: #debug if true
+        import random
+        n_samples = 1
+        sampled_items = random.sample(embedded_text, n_samples)
+        for item in sampled_items:
+            print(f"{item.response}\n")
+            for segment in item.response_ideas:
+                print(f"- {segment.idea}")
+    
+    # === STEP 5 ====
+    """Reduce data/get clusters"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
+    initial_cluster_results = step_5_cluster(
+        embedded_text, filename,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        force_recalc=force_recalc,
+        verbose=VERBOSE
+    )
+    check_execution_stop(5)
+    
+    if False: #debug - print random clusters  
+        import random
+        cluster_ids = list(set([
+            response_idea.initial_cluster 
+            for result in initial_cluster_results 
+            for response_idea in result.response_ideas   
+            if response_idea.initial_cluster is not None]))
+        sampled_cluster = random.sample(cluster_ids, 1)[0]
+        print(f"\nCluster {sampled_cluster}:\n")
+        cluster_segments = []
+        for result in initial_cluster_results:
+            for response_idea in result.response_ideas:   
+                if response_idea.initial_cluster == sampled_cluster:
+                    cluster_segments.append(response_idea.idea)
+        sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+        for segment_desc in sampled_segments:
+            print(f"-    {segment_desc}")
         
-        # Get idea details
-        idea_id = random_idea['idea_id']
-        idea_text = random_idea['idea']
-        respondent_id = random_idea['respondent_id']
+    if False: #debug if true - print all clusters
+        cluster_ids = list(set([
+            response_idea.initial_cluster 
+            for result in initial_cluster_results 
+            for response_idea in result.response_ideas  # This has initial_cluster
+            if response_idea.initial_cluster is not None]))
+        for x in range(1, round(len(cluster_ids) / 1) + 1):
+            y = x * 1
+            print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
         
-        print("[TARGET] Random Selected Idea:")
-        print(f"  ID: {idea_id}")
-        print(f"  Respondent: {respondent_id}")
-        print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
-        print(f"  Text ({len(idea_text)} chars): {idea_text}")
-        
-        # Get first 5 codes as candidate codes (simplified for demo)
-        if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
-            similar_codes = theme_enriched_codebook.codes # First 5 codes as example
-            
-            # print("\nCandidate Codes (first 5):")
-            # for j, code in enumerate(similar_codes, 1):
-            #     print(f"  {j}. {code.code}: {code.definition}")
-            
-            # Format candidate codes for prompt (match CodeAssigner format)
-            candidate_codes_text = "\n".join([
-                f"Code label: {code.code}\nCode description: {code.definition}\n" 
-                #f"Code: {code.definition}\n"
-                for code in similar_codes
-            ])
-            
-            # Create prompt using same logic as CodeAssigner
-            prompt = CODE_ASSIGNMENT_PROMPT.format(
-                language="Dutch",  # Match pipeline language
-                var_lab=var_lab,
-                idea_id=idea_id,
-                idea_text=idea_text,
-                candidate_codes=candidate_codes_text
-            )
-            
-            print(f"\n{'='*60}")
-            print("FORMATTED PROMPT:")
-            print(f"{'='*60}")
-            print(prompt)
-            #print("="*60)
-            
-            for result in code_assigned_results:
-                segments = result.response_ideas
-                for segment in segments:
-                    if segment.idea_id == idea_id:
-                        print(f"\n{'='*60}")
-                        print("llM RESPNSE:")
-                        print(f"{'='*60}")
-                        # print(f"Response: {segment.idea_id}")
-                        print(f"Response: {segment.idea}")
-                        print("Assigned code:\n", "".join(segment.assigned_codes))
-                        print(f"\nReasoning:\n {segment.assignment_rationale}")
-                        print(f"\nConfidence: {segment.assignment_confidence}")
-                        #print("\n")
-            
+            for z in range(y - 1, y):
+                if z < len(cluster_ids):
+                    print(f"\nCluster {z}")
+                    for item in initial_cluster_results:
+                        for subitem in item.response_ideas:
+                            if subitem.initial_cluster == z:
+                                print(subitem.idea)
+            input("\n🔸 Press Enter to continue to the next batch of clusters...")
+    
+    # === STEP 6 ====
+    """Generate codes"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
+    codebook_main, codebook_reasoning = step_6_generate_codebook(
+        initial_cluster_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
+        use_speculative_starter_codes=USE_SPECULATIVE_STARTER_CODES,
+        force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
+        prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
+    )
+    check_execution_stop(6)
+    
+    if False: #debug if true (reasoning)
+        if codebook_reasoning is not None:
+            from utils.codegenResults import display_cluster_analysis
+            display_cluster_analysis(codebook_reasoning)
         else:
-            print("ERROR: No codebook available for prompt generation")
-    else:
-        print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
-   
-# === STEP 9  ========================================================================================================
-"""Export Results"""
-excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=VERBOSE)
-check_execution_stop(9)
-
-# Pipeline completed successfully
-print(f"\n{'='*80}")
-print("PIPELINE COMPLETED SUCCESSFULLY")
-print(f"All steps (0-9) executed")
-print(f"Results exported to: {excel_path}")
-print(f"{'='*80}\n")
+            print("Note: codebook_reasoning not available for display")
+    
+    if False: #debug if true (prompts + reasoning)
+        import random
+        step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+        step3_recommendations = codebook_reasoning.step3_recommendations
+        available_ids = list(step3_recommendations.keys())
+        cluster_id = random.choice(available_ids)
+        cluster_id = '117-2'
+    
+        from utils import codegenPromptTester
+        tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
+        tester.test_prompt_1()
+        tester.test_prompt_2()
+        tester.test_prompt_3()
+        tester.test_prompt_4()
+    
+        if codebook_reasoning is not None:
+            from utils.codegenResults import display_cluster_analysis
+            display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
+        else:
+            print("Note: codebook_reasoning not available for display")
+    
+    # === STEP 7 ====
+    """Codebook Refinement"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
+    refinement_results, theme_enriched_codebook = step_7_refine_codebook(
+        codebook_reasoning, filename, var_name, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        default_language=DEFAULT_LANGUAGE,
+        force_recalc=force_recalc,
+        verbose=VERBOSE
+    )
+    check_execution_stop(7)
+    
+    if False: #debug
+        final_codebook = refinement_results.refined_codebook
+        for entry in final_codebook.refined_codebook:
+            print(entry.category)
+            for x in  entry.subcodes:
+                print(f"- {x.code}")
+            print("\n")
+                    
+    # === STEP 8 ====
+    """Assign codes (and themes)"""
+    force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
+    code_assigned_results = step_8_assign_codes(
+        initial_cluster_results, theme_enriched_codebook, filename, var_lab,
+        variable_key=variable_key,
+        cache_manager=cache_manager,
+        model_config=model_config,
+        force_recalc=force_recalc,
+        verbose=VERBOSE,
+        prompt_printer_enabled=PROMPT_PRINTER
+    )
+    check_execution_stop(8)
+    
+    # codebook
+    for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
+        print(f"{idx}) {entry.code}")
+    
+    # assignment stats 
+    from utils.pipelineSummarizer import PipelineSummarizer
+    summarizer = PipelineSummarizer(verbose=True)
+    summarizer.generate_summary(
+        code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+        theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
+    
+    # random assignments
+    if False: #debug
+        import random
+        sampled_result = random.choice(code_assigned_results)
+        print(f"Respondent ID: {sampled_result.respondent_id}")
+        print(f"Response: {sampled_result.response}")
+        #print(f"Idea count: {sampled_result.idea_count}")
+        #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
+        #print("---- Assigned Codes ----")
+        for idea in sampled_result.response_ideas:
+            print("-" * 40)
+            print(f"Idea ID: {idea.idea_id}")
+            print(f"Idea: {idea.idea}")
+            print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
+            #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
+            print(f"Rationale: {idea.assignment_rationale}")
+            print(f"Assignment Confidence: {idea.assignment_confidence}")
+            print("-" * 40)
+    
+    # random prompt
+    if False: #debug
+    
+        print("\n" + "="*80)
+        print("RANDOM PROMPT TESTING (DEBUG)")
+        print("="*80)
+    
+        # Extract ideas directly from initial_cluster_results
+        all_ideas_for_debug = []
+        for result in initial_cluster_results:
+            if result.response_ideas:
+                for idea in result.response_ideas:
+                    all_ideas_for_debug.append({
+                        'idea_id': idea.idea_id,
+                        'idea': idea.idea,
+                        'respondent_id': result.respondent_id
+                    })
+    
+        
+        from prompts import CODE_ASSIGNMENT_PROMPT
+        
+        if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
+            # Pick random idea from debug data
+            random_idea = random.choice(all_ideas_for_debug)
+            
+            # Get idea details
+            idea_id = random_idea['idea_id']
+            idea_text = random_idea['idea']
+            respondent_id = random_idea['respondent_id']
+            
+            print("[TARGET] Random Selected Idea:")
+            print(f"  ID: {idea_id}")
+            print(f"  Respondent: {respondent_id}")
+            print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
+            print(f"  Text ({len(idea_text)} chars): {idea_text}")
+            
+            # Get first 5 codes as candidate codes (simplified for demo)
+            if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
+                similar_codes = theme_enriched_codebook.codes # First 5 codes as example
+                
+                # print("\nCandidate Codes (first 5):")
+                # for j, code in enumerate(similar_codes, 1):
+                #     print(f"  {j}. {code.code}: {code.definition}")
+                
+                # Format candidate codes for prompt (match CodeAssigner format)
+                candidate_codes_text = "\n".join([
+                    f"Code label: {code.code}\nCode description: {code.definition}\n" 
+                    #f"Code: {code.definition}\n"
+                    for code in similar_codes
+                ])
+                
+                # Create prompt using same logic as CodeAssigner
+                prompt = CODE_ASSIGNMENT_PROMPT.format(
+                    language="Dutch",  # Match pipeline language
+                    var_lab=var_lab,
+                    idea_id=idea_id,
+                    idea_text=idea_text,
+                    candidate_codes=candidate_codes_text
+                )
+                
+                print(f"\n{'='*60}")
+                print("FORMATTED PROMPT:")
+                print(f"{'='*60}")
+                print(prompt)
+                #print("="*60)
+                
+                for result in code_assigned_results:
+                    segments = result.response_ideas
+                    for segment in segments:
+                        if segment.idea_id == idea_id:
+                            print(f"\n{'='*60}")
+                            print("llM RESPNSE:")
+                            print(f"{'='*60}")
+                            # print(f"Response: {segment.idea_id}")
+                            print(f"Response: {segment.idea}")
+                            print("Assigned code:\n", "".join(segment.assigned_codes))
+                            print(f"\nReasoning:\n {segment.assignment_rationale}")
+                            print(f"\nConfidence: {segment.assignment_confidence}")
+                            #print("\n")
+                
+            else:
+                print("ERROR: No codebook available for prompt generation")
+        else:
+            print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
+       
+    # === STEP 9  =====
+    """Export Results"""
+    excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=VERBOSE)
+    check_execution_stop(9)
+    
+    # Pipeline completed successfully
+    print(f"\n{'='*80}")
+    print("PIPELINE COMPLETED SUCCESSFULLY")
+    print("All steps (0-9) executed")
+    print(f"Results exported to: {excel_path}")
+    print(f"{'='*80}\n")
