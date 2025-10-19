@@ -9,10 +9,15 @@ import io
 # Fix Windows console encoding for Unicode characters (emojis)
 if sys.platform == 'win32':
     try:
-        # Reconfigure stdout/stderr to use UTF-8 encoding with error handling
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except (AttributeError, io.UnsupportedOperation):
+        # Only reconfigure if stdout/stderr are not already wrapped or closed
+        # Skip reconfiguration in Streamlit context to avoid conflicts
+        if (hasattr(sys.stdout, 'buffer') and
+            hasattr(sys.stderr, 'buffer') and
+            not sys.stdout.buffer.closed and
+            not sys.stderr.buffer.closed):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except (AttributeError, io.UnsupportedOperation, ValueError):
         # If reconfiguration fails, fallback to existing encoding
         pass
 
