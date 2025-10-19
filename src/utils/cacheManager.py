@@ -292,12 +292,7 @@ class CacheManager:
         """Check if cached data exists and is valid"""
         return self.db.is_cache_valid(filename, step, variable_key)
     
-    def save_to_cache(self, 
-                     data: List[T], 
-                     filename: str, 
-                     step: str,
-                     variable_key: str,
-                     processing_time: float = None) -> bool:
+    def save_to_cache(self, data: List[T], filename: str, step: str, variable_key: str, processing_time: float = None) -> bool:
         """Save list of Pydantic models to cache using pickle"""
         if not data:
             logger.warning(f"No data to save for {filename} at step {step} with variable {variable_key}")
