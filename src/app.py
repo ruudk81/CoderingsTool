@@ -45,6 +45,7 @@ class DatasetConfig:
         st.session_state.selected_variables_config = self.selected_variables
         st.session_state.variable_mode_config = self.variable_mode
         st.session_state.sample_size_config = self.sample_size
+        st.session_state.sample_size = self.sample_size  # Also set non-config version
         st.session_state.merge_config = self.merge_config
         st.session_state.encoding = self.encoding
         st.session_state.var_lab = self.var_lab
@@ -225,6 +226,10 @@ if 'cache_manager' not in st.session_state:
     st.session_state.cache_manager = None  # Lazy load when needed
 if 'data_loader' not in st.session_state:
     st.session_state.data_loader = None  # Lazy load when needed
+if 'sample_size' not in st.session_state:
+    st.session_state.sample_size = None
+if 'sample_size_config' not in st.session_state:
+    st.session_state.sample_size_config = None
 
 # Initialize configuration objects for session-specific settings
 if 'model_config' not in st.session_state:
@@ -279,6 +284,48 @@ def clear_all_wait_states():
     for state in wait_states:
         if state in st.session_state:
             del st.session_state[state]
+
+def invalidate_from_step(start_step: int):
+    """Invalidate cache and completion tracking from start_step onwards"""
+
+    # 1. Clear completion tracking
+    steps_to_remove = [s for s in st.session_state.completed_steps if s >= start_step]
+    for step in steps_to_remove:
+        st.session_state.completed_steps.remove(step)
+
+    # 2. Update max_step_reached
+    if start_step <= st.session_state.max_step_reached:
+        st.session_state.max_step_reached = start_step - 1
+
+    # 3. Set force_recalculate flag for pipeline functions
+    st.session_state.force_recalculate_from_step = start_step
+
+    # 4. Invalidate cache entries in database
+    cache_manager = _get_cache_manager()
+    step_mapping = {
+        0: "data", 1: "preprocessed", 2: "quality_filter",
+        3: "extracted_ideas", 4: "embeddings", 5: "initial_clusters",
+        6: "codebook_generation", 7: "theme_identification",
+        8: "code_assignment", 9: "export"
+    }
+
+    # Get current dataset info
+    filename = st.session_state.get('filename')
+    selected_vars = st.session_state.get('selected_variables_config', [])
+    is_merged = st.session_state.get('is_merged_variable', False)
+    sample_size = st.session_state.get('sample_size_config')
+    merge_config = st.session_state.get('merge_config')
+
+    if filename and selected_vars:
+        variable_key = generate_enhanced_variable_key(
+            selected_vars, is_merged, sample_size, merge_config
+        )
+
+        # Invalidate cache entries for affected steps
+        for step_num in range(start_step, 10):
+            step_name = step_mapping.get(step_num)
+            if step_name:
+                cache_manager.db.invalidate_cache(filename, step_name, variable_key)
 
 # Side bar ################################################################################################################################
 
@@ -619,7 +666,25 @@ def main():
 
         # Advanced Settings
         show_advanced_settings(st.session_state.step)
- 
+
+        # Cache Management
+        if st.session_state.step > 0 and is_step_completed(st.session_state.step):
+            with st.expander("🔧 Cache Management", expanded=False):
+                st.markdown("### Reprocess Pipeline")
+                st.warning("⚠️ **Warning**: Reprocessing will invalidate all downstream cached steps and require recalculation.")
+
+                current_step = st.session_state.step
+
+                if st.button(
+                    f"🔄 " + ("Herverwerk vanaf stap" if st.session_state.language == "nl" else "Reprocess from step") + f" {current_step} " + ("en verder" if st.session_state.language == "nl" else "onwards"),
+                    type="secondary",
+                    use_container_width=True,
+                    key="reprocess_from_step"
+                ):
+                    invalidate_from_step(current_step)
+                    st.success("✅ " + ("Cache gewist vanaf stap" if st.session_state.language == "nl" else "Cache cleared from step") + f" {current_step}")
+                    st.rerun()
+
     # Main body  
     sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
     if not st.session_state.step in sampling_steps: 
@@ -715,7 +780,33 @@ def get_available_cached_datasets():
     datasets.sort(key=lambda x: x['created_date'], reverse=True)
     return datasets
 
-def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
+def determine_max_step_from_cache(filename: str, variable_key: str, cache_manager) -> int:
+    """Determine the maximum completed step from cached data"""
+
+    # Step name to step number mapping
+    step_mapping = {
+        "data": 0,
+        "preprocessed": 1,
+        "quality_filter": 2,
+        "extracted_ideas": 3,
+        "embeddings": 4,
+        "initial_clusters": 5,
+        "codebook_generation": 6,
+        "theme_identification": 7,
+        "code_assignment": 8,
+        "export": 9
+    }
+
+    # Get all cached steps from database
+    cached_steps = cache_manager.db.get_all_cached_steps(filename, variable_key)
+
+    # Map step names to numbers
+    step_numbers = [step_mapping.get(step, -1) for step in cached_steps if step in step_mapping]
+
+    # Return max step number (or 0 if none found)
+    return max(step_numbers) if step_numbers else 0
+
+def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int, int]:
     """ Load cached dataset and build DatasetConfig """
     try:
         cache_manager = _get_cache_manager()
@@ -737,7 +828,7 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
         data = cache_manager.load_from_cache(filename, "data", variable_key, models.ResponseModel)
 
         if not data:
-            return None, None, 0
+            return None, None, 0, 0
 
         # Parse variables from variable key
         if '+' in variables:
@@ -792,11 +883,14 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int]:
             force_recalculate_all = False
         )
 
-        return config, data, len(data)
+        # Determine max step reached from cache
+        max_step = determine_max_step_from_cache(filename, variable_key, cache_manager)
+
+        return config, data, len(data), max_step
 
     except Exception as e:
         st.error(f"Error loading cached dataset: {str(e)}")
-        return None, None, 0
+        return None, None, 0, 0
 
 
 def load_from_file(uploaded_file) -> tuple[str, dict, dict]:
@@ -928,13 +1022,22 @@ def show_upload_page():
                     st.write(f"**Size:** {file_size_mb:.1f} MB")
                 if st.button("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"), type="primary"):
                     with st.spinner("Data wordt geladen uit cache..." if lang == "nl" else "Loading data from cache..."):
-                        config, data, record_count = load_from_cache(selected_dataset)
+                        config, data, record_count, max_step = load_from_cache(selected_dataset)
                         st.session_state.pipeline_results['cached_data'] = data
                         if config and data:
                             config.to_session_state()
-                            mark_step_completed(0) 
-                            st.session_state.step = 1
-                            st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records)" if lang == "nl" else f"Dataset loaded from cache! ({record_count} records)"))
+
+                            # Mark all completed steps based on cached data
+                            for step in range(max_step + 1):
+                                mark_step_completed(step)
+
+                            # Set max step reached
+                            st.session_state.max_step_reached = max_step
+
+                            # Jump to max completed step
+                            st.session_state.step = max_step
+
+                            st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records, voltooid t/m stap {max_step})" if lang == "nl" else f"Dataset loaded from cache! ({record_count} records, completed through step {max_step})"))
                             st.rerun()
                         else:
                             st.error("❌ " + ("Fout bij laden uit cache" if lang == "nl" else "Error loading from cache"))
@@ -1327,6 +1430,9 @@ def show_preprocessing_page():
                     sample_size=sample_size,
                     merge_config=merge_config
                 )
+                # Check if we need to force recalculation due to cache invalidation
+                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 1)
+
                 preprocessed_text, preprocessing_stats = pipeline.step_1_preprocess(
                         raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                         filename=st.session_state.filename,
@@ -1334,7 +1440,7 @@ def show_preprocessing_page():
                         variable_key=variable_key,
                         cache_manager=_get_cache_manager(),
                         model_config=st.session_state.model_config,
-                        force_recalc=st.session_state.get('force_recalculate_all', False),
+                        force_recalc=force_recalc,
                         verbose=True,
                         prompt_printer_enabled=False)
                 progress_container.success("✅ Voorbewerking voltooid")
