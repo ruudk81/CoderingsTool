@@ -1232,7 +1232,7 @@ def show_preprocessing_page():
             </div>
             """, unsafe_allow_html=True)
  
-    # a. get data    
+    # Getting data from step0 selections
     if is_step_completed(0) and not is_step_completed(1): 
         progress_container = st.empty()
         try: 
@@ -1306,7 +1306,7 @@ def show_preprocessing_page():
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
-    # b. Preprocess data - button-triggered
+    # Preprocessing data - button-triggered
     if is_step_completed(0) and not is_step_completed(1):
         st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
 
@@ -1352,17 +1352,17 @@ def show_filtering_page():
     st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 3: Quality Filtering")
 
     # 1. green box/completion
-    if is_step_completed(3): 
+    if is_step_completed(2): 
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
     
     # 2. blue box/sample info
-    if is_step_completed(2):  
+    if is_step_completed(1):  
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         sample_info += (f"\n\n**Steekproef:** {st.session_state.sample_size} gevallen" if lang == "nl" else f"\n\n**Sample:** { st.session_state.sample_size} cases")
         st.info(sample_info)    
     
     # 3. yelow box/results
-    if is_step_completed(3):
+    if is_step_completed(2):
         
         stats = st.session_state['quality_filter_stats']
 
