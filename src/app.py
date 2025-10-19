@@ -1248,9 +1248,6 @@ def show_upload_page():
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
 
 def show_preprocessing_page():
-    
-    st.session_state.sample_size = st.session_state.sample_size_config
-    
     lang = st.session_state.language
     
     if False: #debug    
