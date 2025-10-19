@@ -44,8 +44,7 @@ class DatasetConfig:
         st.session_state.id_column_config = self.id_column
         st.session_state.selected_variables_config = self.selected_variables
         st.session_state.variable_mode_config = self.variable_mode
-        st.session_state.sample_size_config = self.sample_size
-        st.session_state.sample_size = self.sample_size  # Also set non-config version
+        st.session_state.sample_size = self.sample_size  # Code-owned version
         st.session_state.merge_config = self.merge_config
         st.session_state.encoding = self.encoding
         st.session_state.var_lab = self.var_lab
@@ -228,8 +227,6 @@ if 'data_loader' not in st.session_state:
     st.session_state.data_loader = None  # Lazy load when needed
 if 'sample_size' not in st.session_state:
     st.session_state.sample_size = None
-if 'sample_size_config' not in st.session_state:
-    st.session_state.sample_size_config = None
 
 # Initialize configuration objects for session-specific settings
 if 'model_config' not in st.session_state:
@@ -1128,7 +1125,7 @@ def show_upload_page():
         
         sample_size = None
         if sample_option == ("Beperk steekproefgrootte" if lang == "nl" else "Limit sample size"):
-            sample_size = st.number_input("Aantal gevallen" if lang == "nl" else "Number of cases",min_value=10, max_value=10000, value=50, step=10, key="sample_size", help="Aantal gevallen om te gebruiken (bijv. 250 voor snelle tests)" if lang == "nl" else "Number of cases to use (e.g., 250 for quick tests)" )
+            sample_size = st.number_input("Aantal gevallen" if lang == "nl" else "Number of cases",min_value=10, max_value=10000, value=50, step=10, key="sample_size_config", help="Aantal gevallen om te gebruiken (bijv. 250 voor snelle tests)" if lang == "nl" else "Number of cases to use (e.g., 250 for quick tests)" )
             
         # Preview config
         preview_button_label = "Voorbeeld Bekijken" if lang == "nl" else "Preview Variables"
