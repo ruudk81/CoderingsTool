@@ -1568,8 +1568,8 @@ def show_filtering_page():
     Processes preprocessed_text from step 1 and exclude noise from further analysis.
 
     Pipeline function: step_2_extract_ideas
-    Cache name: extracted_ideas
-    Model: models.IdeasExtractedModel
+    Cache name: quality_filter
+    Model: models.QualityFilteredModel
     """
     lang = st.session_state.language
 
@@ -2074,101 +2074,189 @@ def show_embedding_page():
 
 
 def show_clustering_page():
+    """
+    Step 5: Clustering
+
+    Performs UMAP dimensionality reduction and HDBSCAN clustering on embeddings from step 4.
+
+    Pipeline function: step_5_cluster
+    Cache name: initial_clusters
+    Model: models.ClusterModel
+    """
     lang = st.session_state.language
-    st.header("Stap 6: Clustering" if lang == "nl" else "Step 6: Clustering")
-    st.markdown(ui.get_text("CLUSTERING_INFO", lang))
-    
-    # Automatic clustering info
-    st.info("🎯 " + ("Automatische clustering bepaalt de optimale parameters op basis van de data" 
-             if lang == "nl" else 
-             "Automatic clustering determines optimal parameters based on the data"))
-    
-    # Check if we're waiting for user to continue after clustering
-    if st.session_state.get('waiting_for_continue_clustering', False):
-        st.success("✅ " + ("Clustering voltooid! Bekijk de resultaten rechts en klik dan op doorgaan." 
-                           if lang == "nl" else "Clustering completed! Review the results on the right, then click continue."))
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="clustering_continue_normal"):
-                # Advance to next step
-                st.session_state.step = 6
-                st.rerun()
-    # Check if we're waiting for debug continue
-    elif st.session_state.get('waiting_for_debug_continue_clustering'):
-        # Display the stored debug information - commented out as requested
-        # debug_capture = st.session_state.get('debug_capture_clustering')
-        # if debug_capture:
-        #     display_all_debug_info(debug_capture)
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="clustering_continue_debug"):
-                # Clear the waiting state and advance
-                del st.session_state['waiting_for_debug_continue_clustering']
-                if 'debug_capture_clustering' in st.session_state:
-                    del st.session_state['debug_capture_clustering']
-                st.session_state.step = 6
-                st.rerun()
-    elif st.button(ui.get_text("BTN_CLUSTER", lang), type="primary"):
+
+    # ==================== HEADER ====================
+    st.header("Stap 5: Clustering" if lang == "nl" else "Step 5: Clustering")
+
+    # ==================== BLOCK 1: GREEN BOX ====================
+    # Show completion status
+    if is_step_completed(5):
+        st.success("✅ " + (
+            "Clustering voltooid! Bekijk de resultaten rechts en klik dan op doorgaan."
+            if lang == "nl" else
+            "Clustering completed! Review the results on the right, then click continue."
+        ))
+
+    # ==================== BLOCK 2: BLUE BOX ====================
+    # Show input data info when previous step is complete
+    if is_step_completed(4):
+        # Get embedding count from idea extraction stats
+        stats = st.session_state.get('idea_extraction_stats', {})
+        total_embeddings = stats.get('total_ideas', 0)
+
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += (f"\n\n**Data:** {total_embeddings} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
+        st.info(sample_info)
+
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    # Show results/stats when current step is complete
+    if is_step_completed(5):
+        if st.session_state.get('clustering_stats', {}):
+            stats = st.session_state.get('clustering_stats', {})
+            nl = (lang == "nl")
+
+            summary_info = (
+                f"\n\n- {'Aantal clusters' if nl else 'Number of clusters'}: {stats.get('num_clusters', 0)}"
+                + f"\n\n- {'Totaal gesegmenteerd' if nl else 'Total segments'}: {stats.get('total_segments', 0)}"
+                + f"\n\n- {'Uitschieters' if nl else 'Outliers'}: {stats.get('outliers', 0)} "
+                + f"({stats.get('outlier_percentage', 0):.1f}%)"
+            )
+
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_info}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ==================== BLOCK 4: DATA LOADING ====================
+    # Load embedded_text if not already in pipeline_results
+    if is_step_completed(4) and not is_step_completed(5):
         progress_container = st.empty()
-        
-        # Create debug capture from session state
-        # debug_capture = create_debug_capture_from_session()
-        debug_capture = None  # Disabled debug functionality
-        
         try:
-            progress_container.text("🔄 Clustering aan het uitvoeren...")
+            if 'embedded_text' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
+                cache_manager = _get_cache_manager()
 
-            initial_cluster_results = pipeline.step_5_cluster(
-                embedded_text=st.session_state.pipeline_results['embedded_text'],
-                filename=st.session_state.filename,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
-            )
-
-            progress_container.success("✅ Clustering voltooid")
-
-            st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
-            
-            # Check if debug features are enabled and have captured data
-            debug_has_data = (debug_capture and 
-                            (debug_capture.verbose_outputs or 
-                             debug_capture.first_prompts or 
-                             debug_capture.sample_results))
-            
-            if debug_has_data:
-                # Store debug capture and set waiting state
-                st.session_state['debug_capture_clustering'] = debug_capture
-                st.session_state['waiting_for_debug_continue_clustering'] = True
-                st.rerun()  # Rerun to show the continue button interface
-            else:
-                # Set waiting state so user can see results before continuing
-                st.session_state['completed_step'] = 5  # Mark clustering as completed
-                st.session_state['waiting_for_continue_clustering'] = True
-
-                # Mark step 6 (clustering) as completed in navigation tracker
-                mark_step_completed(6)
-                st.rerun()  # Rerun to show the continue button interface
+                # Try to load from cache first (works for both upload and cache routes)
+                if cache_manager.is_cache_valid(st.session_state.filename, "embeddings", variable_key):
+                    progress_container.text("🔄 " + ("Embeddings laden uit cache..." if lang == "nl" else "Loading embeddings from cache..."))
+                    embedded_text = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "embeddings",
+                        variable_key,
+                        models.EmbeddingsModel
+                    )
+                    st.session_state.pipeline_results['embedded_text'] = embedded_text
+                    # Also populate var_lab if not already in pipeline_results
+                    if 'var_lab' not in st.session_state.pipeline_results:
+                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                else:
+                    progress_container.error("❌ " + ("Geen embeddings gevonden. Voer eerst stap 4 uit." if lang == "nl" else "No embeddings found. Please run step 4 first."))
         except Exception as e:
-            progress_container.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
+            st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
+
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
+    # Show processing button when ready to process
+    if is_step_completed(4) and not is_step_completed(5):
+        st.markdown(ui.get_text("CLUSTERING_INFO", lang))
+
+        # Automatic clustering info
+        st.info("🎯 " + ("Automatische clustering bepaalt de optimale parameters op basis van de data"
+                 if lang == "nl" else
+                 "Automatic clustering determines optimal parameters based on the data"))
+
+        # Show button to start clustering
+        if st.button("🚀 " + (
+            "Start Clustering" if lang == "nl"
+            else "Start Clustering"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + (
+                    "Clustering aan het uitvoeren..." if lang == "nl"
+                    else "Running clustering..."
+                ))
+
+                # Generate variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or \
+                               (st.session_state.get('force_recalculate_from_step', 99) <= 5)
+
+                # Call pipeline processing function
+                initial_cluster_results = pipeline.step_5_cluster(
+                    embedded_text=st.session_state.pipeline_results['embedded_text'],
+                    filename=st.session_state.filename,
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    force_recalc=force_recalc,
+                    verbose=False
+                )
+
+                progress_container.success("✅ " + (
+                    "Clustering voltooid" if lang == "nl"
+                    else "Clustering completed"
+                ))
+
+                # Store results
+                st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+
+                # Calculate clustering statistics
+                cluster_ids = set([
+                    segment.initial_cluster
+                    for result in initial_cluster_results
+                    for segment in result.response_ideas
+                    if segment.initial_cluster is not None and segment.initial_cluster >= 0
+                ])
+
+                outliers = sum(
+                    1 for result in initial_cluster_results
+                    for segment in result.response_ideas
+                    if segment.initial_cluster == -1
+                )
+
+                total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
+
+                st.session_state['clustering_stats'] = {
+                    'num_clusters': len(cluster_ids),
+                    'total_segments': total_segments,
+                    'outliers': outliers,
+                    'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
+                }
+
+                # Mark step completed
+                mark_step_completed(5)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
 
 def show_codebook_generation_page():
     lang = st.session_state.language
