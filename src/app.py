@@ -3057,14 +3057,14 @@ def show_step_samples(step_number):
         st.write("❌ No filename or variable selected - cannot load data")
         return
 
-    # # Session-based filtering: Only show results from current session when in force_recalculate mode
-    # if st.session_state.get('force_recalculate_all', False):
-    #     # Upload from file route - only show if step was completed in current session
-    #     # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
-    #     if not is_step_completed(step_number):
-    #         lang = st.session_state.language
-    #         st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
-    #         return
+    # Session-based filtering: Only show results from current session when in force_recalculate mode
+    if st.session_state.get('force_recalculate_all', False):
+        # Upload from file route - only show if step was completed in current session
+        # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
+        if not is_step_completed(step_number):
+            lang = st.session_state.language
+            st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
+            return
 
     # Get cache manager
     cache_manager = _get_cache_manager()
