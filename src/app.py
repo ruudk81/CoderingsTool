@@ -1512,7 +1512,9 @@ def show_preprocessing_page():
                     st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                     st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
             else:
-                 st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab')
+                 # Data already loaded from preview - var_lab should already be in pipeline_results
+                 if 'var_lab' not in st.session_state.pipeline_results:
+                     st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', 'Unknown Variable')
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
@@ -1560,6 +1562,15 @@ def show_preprocessing_page():
                 st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
 def show_filtering_page():
+    """
+    Step 2: Quality filtering (kwaliteitsfilter)
+
+    Processes preprocessed_text from step 1 and exclude noise from further analysis.
+
+    Pipeline function: step_2_extract_ideas
+    Cache name: extracted_ideas
+    Model: models.IdeasExtractedModel
+    """
     lang = st.session_state.language
 
     st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 2: Quality Filtering")
@@ -1931,95 +1942,135 @@ def show_idea_extraction_page():
                 st.error(f"Idee-extractie fout: {str(e)}" if lang == "nl" else f"Idea extraction error: {str(e)}")
 
 def show_embedding_page():
-    lang = st.session_state.get("language", "nl")
-    st.header("Stap 5: Genereer Embeddings" if lang == "nl" else "Step 5: Generate Embeddings")
+    """
+    Step 4: Embedding Generation (Genereer Embeddings)
 
-    # ------------------------
-    # AFTER: embeddings generated, show success + continue
-    # ------------------------
-    if st.session_state.get('waiting_for_continue_embedding', False):
+    Generates vector embeddings for extracted ideas from step 3.
 
-        st.success("✅ " + ("Embeddings gegenereerd! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Embeddings generated! Review the results, then click continue." ))
+    Pipeline function: step_4_generate_embeddings
+    Cache name: embeddings
+    Model: models.EmbeddingsModel
+    """
+    lang = st.session_state.language
 
-        if st.session_state.get('selected_variables_config') and st.session_state.get('selected_id_column'):
-            stats = st.session_state.get('idea_extraction_stats', {})
-            total_ideas = stats.get('total_ideas', 0)
+    # ==================== HEADER ====================
+    st.header("Stap 4: Genereer Embeddings" if lang == "nl" else "Step 4: Generate Embeddings")
 
-            # prefer pipeline var_lab, fallback to session
-            var_lab = (
-                st.session_state.get('pipeline_results', {}).get('var_lab')
-                or st.session_state.get('var_lab', '')
-            )
+    # ==================== BLOCK 1: GREEN BOX ====================
+    # Show completion status
+    if is_step_completed(4):
+        st.success("✅ " + (
+            "Embeddings gegenereerd! Klik op doorgaan."
+            if lang == "nl" else
+            "Embeddings generated! Click continue."
+        ))
 
-            sample_info = (
-                f"**{'Vraag' if lang == 'nl' else 'Question'}:** {var_lab}\n\n"
-                f"{'**Aantal embeddings**' if lang == 'nl' else '**Total embeddings**'}: "
-                f"{total_ideas} {'gevallen' if lang == 'nl' else 'cases'}"
-            )
-            st.info(sample_info)
-
-    # ------------------------
-    # BEFORE: run embeddings
-    # ------------------------
-    elif st.button(ui.get_text("BTN_EMBED", lang), type="primary"):
-        progress_container = st.empty()
-
+    # ==================== BLOCK 2: BLUE BOX ====================
+    # Show input data info when previous step is complete
+    if is_step_completed(3):
         stats = st.session_state.get('idea_extraction_stats', {})
         total_ideas = stats.get('total_ideas', 0)
-        var_lab = (
-            st.session_state.get('pipeline_results', {}).get('var_lab')
-            or st.session_state.get('var_lab', '')
-        )
-        sample_info = (
-            f"**{'Vraag' if lang == 'nl' else 'Question'}:** {var_lab}\n\n"
-            f"{'**Aantal (deel-) antwoorden**' if lang == 'nl' else '**Total (sub-) answers**'}: "
-            f"{total_ideas} {'gevallen' if lang == 'nl' else 'cases'}"
-        )
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += (f"\n\n**Data:** {total_ideas} {'ideeën te embedden' if lang == 'nl' else 'ideas to embed'}")
         st.info(sample_info)
+
+    # ==================== BLOCK 3: DATA LOADING ====================
+    # Load encoded_text if not already in pipeline_results
+    if is_step_completed(3) and not is_step_completed(4):
+        progress_container = st.empty()
+        try:
+            if 'encoded_text' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                cache_manager = _get_cache_manager()
+
+                # Try to load from cache first (works for both upload and cache routes)
+                if cache_manager.is_cache_valid(st.session_state.filename, "extracted_ideas", variable_key):
+                    progress_container.text("🔄 " + ("Geëxtraheerde ideeën laden uit cache..." if lang == "nl" else "Loading extracted ideas from cache..."))
+                    encoded_text = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "extracted_ideas",
+                        variable_key,
+                        models.IdeasExtractedModel
+                    )
+                    st.session_state.pipeline_results['encoded_text'] = encoded_text
+                    # Also populate var_lab if not already in pipeline_results
+                    if 'var_lab' not in st.session_state.pipeline_results:
+                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                else:
+                    progress_container.error("❌ " + ("Geen geëxtraheerde ideeën gevonden. Voer eerst stap 3 uit." if lang == "nl" else "No extracted ideas found. Please run step 3 first."))
+        except Exception as e:
+            st.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
+
+    # ==================== BLOCK 4: PROCESSING BUTTON ====================
+    # Show processing button when ready to process
+    if is_step_completed(3) and not is_step_completed(4):
         st.markdown(ui.get_text("EMBEDDING_INFO", lang))
 
-        try:
-            progress_container.text("🔄 Embeddings aan het genereren...")
+        # Show button to start embedding generation
+        if st.button("🚀 " + (
+            "Genereer Embeddings" if lang == "nl"
+            else "Generate Embeddings"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + (
+                    "Embeddings aan het genereren..." if lang == "nl"
+                    else "Generating embeddings..."
+                ))
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
+                # Generate variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-            embedded_text = pipeline.step_4_generate_embeddings(
-                encoded_text=st.session_state['pipeline_results']['encoded_text'],
-                filename=st.session_state['filename'],
-                var_lab=var_lab,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state['model_config'],
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
-            )
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 4)
 
-            progress_container.success("✅ Embeddings gegenereerd")
+                # Call pipeline processing function
+                embedded_text = pipeline.step_4_generate_embeddings(
+                    encoded_text=st.session_state.pipeline_results['encoded_text'],
+                    filename=st.session_state.filename,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    force_recalc=force_recalc,
+                    verbose=False
+                )
 
-            st.session_state['pipeline_results']['embedded_text'] = embedded_text
+                progress_container.success("✅ " + (
+                    "Embeddings gegenereerd" if lang == "nl"
+                    else "Embeddings generated"
+                ))
 
-            # mark step and show continue UI
-            st.session_state['completed_step'] = 4
-            st.session_state['waiting_for_continue_embedding'] = True
+                # Store results
+                st.session_state.pipeline_results['embedded_text'] = embedded_text
 
-            mark_step_completed(5)
-            st.rerun()
+                # Mark step completed
+                mark_step_completed(4)
+                st.rerun()
 
-        except Exception as e:
-            progress_container.error(
-                f"Embedding fout: {e}" if lang == "nl" else f"Embedding error: {e}"
-            )
+            except Exception as e:
+                st.error(f"Embedding fout: {str(e)}" if lang == "nl" else f"Embedding error: {str(e)}")
 
 
 def show_clustering_page():
