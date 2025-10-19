@@ -676,7 +676,7 @@ def main():
                 current_step = st.session_state.step
 
                 if st.button(
-                    f"🔄 " + ("Herverwerk vanaf stap" if st.session_state.language == "nl" else "Reprocess from step") + f" {current_step} " + ("en verder" if st.session_state.language == "nl" else "onwards"),
+                    "🔄 " + ("Herverwerk vanaf stap" if st.session_state.language == "nl" else "Reprocess from step") + f" {current_step} " + ("en verder" if st.session_state.language == "nl" else "onwards"),
                     type="secondary",
                     use_container_width=True,
                     key="reprocess_from_step"
@@ -1336,28 +1336,31 @@ def show_preprocessing_page():
                 </div>
                 """, unsafe_allow_html=True)
  
-    # Getting data from step0 selections
-    if is_step_completed(0) and not is_step_completed(1): 
-        progress_container = st.empty()
-        try: 
-            if 'raw_text_list' not in st.session_state.pipeline_results: 
-                #load data from file
+    # Preprocessing data - button-triggered
+    if is_step_completed(0) and not is_step_completed(1):
+        st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
+
+        # Show button to start preprocessing
+        if st.button("🚀 " + ("Start Voorbewerking" if lang == "nl" else "Start Preprocessing"), type="primary"):
+            progress_container = st.empty()
+            try:
+                # Step 1: Load raw data if not from cache
                 if not st.session_state.get('loaded_from_cache', False):
                     encoding = st.session_state.get('file_encoding', 'auto')
                     encoding = None if encoding == 'auto' else encoding
                     is_multiple_mode = (st.session_state.get('variable_mode_config') == 'multiple' or st.session_state.get('is_merged_variable', False))
                     selected_vars = st.session_state.get('selected_variables_config', [])
-    
-                    #multiple vars
+
+                    progress_container.text("🔄 " + ("Data laden..." if lang == "nl" else "Loading data..."))
+
+                    # Multiple variables
                     if is_multiple_mode and len(selected_vars) > 1:
                         merge_config = st.session_state.get('merge_config', {})
                         var_labels = []
                         for var in selected_vars:
-                                label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
-                                var_labels.append(label or var)
+                            label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
+                            var_labels.append(label or var)
 
-                        progress_container.text("🔄 Data laden...")
-                        # Generate enhanced variable key with sample size
                         sample_size = st.session_state.get('sample_size_config')
                         variable_key = generate_enhanced_variable_key(
                             selected_vars,
@@ -1366,23 +1369,21 @@ def show_preprocessing_page():
                             merge_config=merge_config
                         )
                         raw_text_list = pipeline.step_0_load_data(
-                                filename=st.session_state.filename,
-                                id_column=st.session_state.selected_id_column,
-                                var_name=selected_vars[0],  # Use first variable (merged not supported yet)
-                                variable_key=variable_key,
-                                cache_manager=_get_cache_manager(),
-                                sample_size=sample_size,
-                                merge_config=merge_config,
-                                force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True)
-                        progress_container.success("✅ Data laden voltooid")
+                            filename=st.session_state.filename,
+                            id_column=st.session_state.selected_id_column,
+                            var_name=selected_vars[0],
+                            variable_key=variable_key,
+                            cache_manager=_get_cache_manager(),
+                            sample_size=sample_size,
+                            merge_config=merge_config,
+                            force_recalc=st.session_state.get('force_recalculate_all', False),
+                            verbose=True)
                         var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
                         var_lab = var_labs[0]
-                            
-                    else: #single vars
+
+                    # Single variable
+                    else:
                         var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
-                        progress_container.text("🔄 Data laden...")
-                        # Generate enhanced variable key with sample size
                         sample_size = st.session_state.get('sample_size_config')
                         merge_config = st.session_state.get('merge_config')
                         variable_key = generate_enhanced_variable_key(
@@ -1392,36 +1393,43 @@ def show_preprocessing_page():
                             merge_config=merge_config
                         )
                         raw_text_list = pipeline.step_0_load_data(
-                                filename=st.session_state.filename,
-                                id_column=st.session_state.selected_id_column,
-                                var_name=st.session_state.selected_variable,
-                                variable_key=variable_key,
-                                cache_manager=_get_cache_manager(),
-                                sample_size=sample_size,
-                                merge_config=merge_config,
-                                force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True)
-                        progress_container.success("✅ Data laden voltooid")
-           
+                            filename=st.session_state.filename,
+                            id_column=st.session_state.selected_id_column,
+                            var_name=st.session_state.selected_variable,
+                            variable_key=variable_key,
+                            cache_manager=_get_cache_manager(),
+                            sample_size=sample_size,
+                            merge_config=merge_config,
+                            force_recalc=st.session_state.get('force_recalculate_all', False),
+                            verbose=True)
+
                     last_bracket = var_lab.rfind("]")
-                    st.session_state.pipeline_results['raw_text_list'] = raw_text_list
-                    st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                    var_lab = var_lab[last_bracket + 1:].strip()
+                else:
+                    # Loading from cache - load raw_text_list from cache
+                    progress_container.text("🔄 " + ("Data laden uit cache..." if lang == "nl" else "Loading data from cache..."))
+                    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                    is_merged = st.session_state.get('is_merged_variable', False)
+                    sample_size = st.session_state.get('sample_size_config')
+                    merge_config = st.session_state.get('merge_config')
+                    variable_key = generate_enhanced_variable_key(
+                        selected_variables,
+                        is_merged=is_merged,
+                        sample_size=sample_size,
+                        merge_config=merge_config
+                    )
+                    raw_text_list = _get_cache_manager().load_from_cache(
+                        st.session_state.filename,
+                        "data",
+                        variable_key,
+                        models.ResponseModel
+                    )
+                    var_lab = st.session_state.var_lab
 
-        except Exception as e:
-             st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
-
-    # Preprocessing data - button-triggered
-    if is_step_completed(0) and not is_step_completed(1):
-        st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
-
-        # Show button to start preprocessing
-        if st.button("🚀 " + ("Start Voorbewerking" if lang == "nl" else "Start Preprocessing"), type="primary"):
-            progress_container = st.empty()
-            try:
-                progress_container.text("🔄 Tekst aan het voorbewerken...")
+                # Step 2: Preprocess the data
+                progress_container.text("🔄 " + ("Tekst aan het voorbewerken..." if lang == "nl" else "Preprocessing text..."))
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
                 is_merged = st.session_state.get('is_merged_variable', False)
-                # Generate enhanced variable key with sample size
                 sample_size = st.session_state.get('sample_size_config')
                 merge_config = st.session_state.get('merge_config')
                 variable_key = generate_enhanced_variable_key(
@@ -1430,21 +1438,24 @@ def show_preprocessing_page():
                     sample_size=sample_size,
                     merge_config=merge_config
                 )
+
                 # Check if we need to force recalculation due to cache invalidation
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 1)
 
                 preprocessed_text, preprocessing_stats = pipeline.step_1_preprocess(
-                        raw_text_list=st.session_state.pipeline_results['raw_text_list'],
-                        filename=st.session_state.filename,
-                        var_lab=st.session_state.pipeline_results['var_lab'],
-                        variable_key=variable_key,
-                        cache_manager=_get_cache_manager(),
-                        model_config=st.session_state.model_config,
-                        force_recalc=force_recalc,
-                        verbose=True,
-                        prompt_printer_enabled=False)
-                progress_container.success("✅ Voorbewerking voltooid")
-                st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+                    raw_text_list=raw_text_list,
+                    filename=st.session_state.filename,
+                    var_lab=var_lab,
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    force_recalc=force_recalc,
+                    verbose=True,
+                    prompt_printer_enabled=False)
+
+                progress_container.success("✅ " + ("Voorbewerking voltooid" if lang == "nl" else "Preprocessing completed"))
+
+                # Store only stats (not data - data is in cache)
                 st.session_state['preprocessing_stats'] = preprocessing_stats
 
                 mark_step_completed(1)
