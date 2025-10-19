@@ -234,8 +234,18 @@ class CacheDatabase:
         age = datetime.now() - created_at
         
         return age <= timedelta(days=max_age_days)
-    
-    def invalidate_cache(self, 
+
+    def get_all_cached_steps(self, filename: str, variable_key: str) -> List[str]:
+        """Get all valid cached step names for a filename and variable_key"""
+        with self._get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT DISTINCT step_name FROM cache_metadata
+                WHERE filename = ? AND variable_key = ? AND status = 'valid'
+                ORDER BY step_name
+            ''', (filename, variable_key))
+            return [row['step_name'] for row in cursor.fetchall()]
+
+    def invalidate_cache(self,
                         filename: Optional[str] = None, 
                         step_name: Optional[str] = None,
                         variable_key: Optional[str] = None):
