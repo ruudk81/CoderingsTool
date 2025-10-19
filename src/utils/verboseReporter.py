@@ -4,6 +4,17 @@ import time
 import random
 import logging
 from typing import List, Dict, Any, Tuple, Optional
+import io
+
+# Fix Windows console encoding for Unicode characters (emojis)
+if sys.platform == 'win32':
+    try:
+        # Reconfigure stdout/stderr to use UTF-8 encoding with error handling
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except (AttributeError, io.UnsupportedOperation):
+        # If reconfiguration fails, fallback to existing encoding
+        pass
 
 class VerboseLoggingHandler(logging.Handler):
     """Custom logging handler that routes log messages through VerboseReporter."""
