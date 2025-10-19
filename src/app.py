@@ -2259,59 +2259,120 @@ def show_clustering_page():
                 st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
 
 def show_codebook_generation_page():
-    lang = st.session_state.language
-    st.header("Stap 7: Codebook Generatie" if lang == "nl" else "Step 7: Codebook Generation")
-    
-    info_text = """
-    Deze stap zal:
-    - Codes genereren voor elk cluster
-    - Een gestructureerd codebook maken
-    - Codes optimaliseren en dedupliceren
-    """ if lang == "nl" else """
-    This step will:
-    - Generate codes for each cluster
-    - Create a structured codebook
-    - Optimize and deduplicate codes
     """
-    st.markdown(info_text)
-    
-    # Check if we're waiting for user to continue after codebook generation
-    if st.session_state.get('waiting_for_continue_codebook_generation', False):
-        st.success("✅ " + ("Codebook gegenereerd! Bekijk de resultaten links en klik dan op doorgaan." 
-                           if lang == "nl" else "Codebook generated! Review the results on the left, then click continue."))
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="codebook_generation_continue"):
-                # Advance to next step
-                st.session_state.step = 7
-                st.rerun()
-    else:
-        # Codebook generation options
-        use_speculative = st.checkbox(
-            "Gebruik speculatieve starter codes" if lang == "nl" else "Use speculative starter codes",
-            value=False
-        )
-        
-        if st.button("Genereer Codebook" if lang == "nl" else "Generate Codebook", type="primary"):
-            progress_container = st.empty()
-            try:
-                # Determine variable name for codebook generation (use meaningful name for merged variables)
-                var_name_for_codebook = st.session_state.selected_variable
-                if (st.session_state.get('is_merged_variable', False) and 
-                    st.session_state.get('selected_variables_config')):
-                    # Use first variable name or create composite name for merged variables
-                    selected_vars = st.session_state.get('selected_variables_config', [])
-                    if len(selected_vars) > 1:
-                        var_name_for_codebook = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
-                
-                progress_container.text("🔄 Codebook aan het genereren...")
+    Step 6: Codebook Generation (Codebook Generatie)
 
-                # Get variable_key for caching
+    Generates codes for each cluster from step 5 using inductive coding.
+
+    Pipeline function: step_6_generate_codebook
+    Cache name: codebook_generation
+    Model: models.CodebookModel
+    """
+    lang = st.session_state.language
+
+    # ==================== HEADER ====================
+    st.header("Stap 6: Codebook Generatie" if lang == "nl" else "Step 6: Codebook Generation")
+
+    # ==================== BLOCK 1: GREEN BOX ====================
+    # Show completion status
+    if is_step_completed(6):
+        st.success("✅ " + (
+            "Codebook gegenereerd! Bekijk de resultaten rechts en klik dan op doorgaan."
+            if lang == "nl" else
+            "Codebook generated! Review the results on the right, then click continue."
+        ))
+
+    # ==================== BLOCK 2: BLUE BOX ====================
+    # Show input data info when previous step is complete
+    if is_step_completed(5):
+        # Get or calculate clustering stats
+        if 'clustering_stats' in st.session_state:
+            stats = st.session_state['clustering_stats']
+            num_clusters = stats.get('num_clusters', 0)
+        elif 'initial_cluster_results' in st.session_state.pipeline_results:
+            # Calculate stats from initial_cluster_results (cache route fallback)
+            initial_cluster_results = st.session_state.pipeline_results['initial_cluster_results']
+            cluster_ids = set(
+                segment.initial_cluster
+                for result in initial_cluster_results
+                for segment in result.response_ideas
+                if segment.initial_cluster != -1
+            )
+            num_clusters = len(cluster_ids)
+        else:
+            # Last resort: load from cache to calculate stats (for cache route when step 6 already completed)
+            try:
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
                 is_merged = st.session_state.get('is_merged_variable', False)
-                # Generate enhanced variable key with sample size
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+                cache_manager = _get_cache_manager()
+
+                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
+                    initial_cluster_results = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "initial_clusters",
+                        variable_key,
+                        models.ClusterModel
+                    )
+                    # Store in pipeline_results for future use
+                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+
+                    # Calculate stats
+                    cluster_ids = set(
+                        segment.initial_cluster
+                        for result in initial_cluster_results
+                        for segment in result.response_ideas
+                        if segment.initial_cluster != -1
+                    )
+                    num_clusters = len(cluster_ids)
+                else:
+                    num_clusters = 0
+            except Exception:
+                num_clusters = 0
+
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
+        st.info(sample_info)
+
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    # Show results/stats when current step is complete
+    if is_step_completed(6):
+        if st.session_state.get('codebook_stats', {}):
+            stats = st.session_state.get('codebook_stats', {})
+            nl = (lang == "nl")
+
+            summary_info = (
+                f"\n\n- {'Aantal codes' if nl else 'Number of codes'}: {stats.get('num_codes', 0)}"
+                + f"\n\n- {'Clusters met codes' if nl else 'Clusters with codes'}: {stats.get('unique_clusters', 0)}"
+            )
+
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_info}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ==================== BLOCK 4: DATA LOADING ====================
+    # Load initial_cluster_results if not already in pipeline_results
+    if is_step_completed(5) and not is_step_completed(6):
+        progress_container = st.empty()
+        try:
+            if 'initial_cluster_results' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
                 sample_size = st.session_state.get('sample_size_config')
                 merge_config = st.session_state.get('merge_config')
                 variable_key = generate_enhanced_variable_key(
@@ -2321,6 +2382,109 @@ def show_codebook_generation_page():
                     merge_config=merge_config
                 )
 
+                cache_manager = _get_cache_manager()
+
+                # Try to load from cache first (works for both upload and cache routes)
+                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
+                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading cluster results from cache..."))
+                    initial_cluster_results = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "initial_clusters",
+                        variable_key,
+                        models.ClusterModel
+                    )
+                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+
+                    # Populate clustering_stats if not already present (for cache route)
+                    if 'clustering_stats' not in st.session_state:
+                        cluster_ids = set(
+                            segment.initial_cluster
+                            for result in initial_cluster_results
+                            for segment in result.response_ideas
+                            if segment.initial_cluster != -1
+                        )
+                        outliers = sum(
+                            1 for result in initial_cluster_results
+                            for segment in result.response_ideas
+                            if segment.initial_cluster == -1
+                        )
+                        total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
+
+                        st.session_state['clustering_stats'] = {
+                            'num_clusters': len(cluster_ids),
+                            'total_segments': total_segments,
+                            'outliers': outliers,
+                            'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
+                        }
+
+                    # Also populate var_lab if not already in pipeline_results
+                    if 'var_lab' not in st.session_state.pipeline_results:
+                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                else:
+                    progress_container.error("❌ " + ("Geen cluster resultaten gevonden. Voer eerst stap 5 uit." if lang == "nl" else "No cluster results found. Please run step 5 first."))
+        except Exception as e:
+            st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
+
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
+    # Show processing button when ready to process
+    if is_step_completed(5) and not is_step_completed(6):
+        info_text = """
+        Deze stap zal:
+        - Codes genereren voor elk cluster
+        - Een gestructureerd codebook maken
+        - Codes optimaliseren en dedupliceren
+        """ if lang == "nl" else """
+        This step will:
+        - Generate codes for each cluster
+        - Create a structured codebook
+        - Optimize and deduplicate codes
+        """
+        st.markdown(info_text)
+
+        # Codebook generation options
+        use_speculative = st.checkbox(
+            "Gebruik speculatieve starter codes" if lang == "nl" else "Use speculative starter codes",
+            value=False
+        )
+
+        # Show button to start codebook generation
+        if st.button("🚀 " + (
+            "Start Codebook Generatie" if lang == "nl"
+            else "Start Codebook Generation"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + (
+                    "Codebook aan het genereren..." if lang == "nl"
+                    else "Generating codebook..."
+                ))
+
+                # Determine variable name for codebook generation
+                var_name_for_codebook = st.session_state.selected_variable
+                if (st.session_state.get('is_merged_variable', False) and
+                    st.session_state.get('selected_variables_config')):
+                    selected_vars = st.session_state.get('selected_variables_config', [])
+                    if len(selected_vars) > 1:
+                        var_name_for_codebook = f"merged_{'-'.join(selected_vars[:3])}"
+
+                # Generate variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or \
+                               (st.session_state.get('force_recalculate_from_step', 99) <= 6)
+
+                # Call pipeline processing function
                 codebook_main, reasoning_results = pipeline.step_6_generate_codebook(
                     initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                     filename=st.session_state.filename,
@@ -2330,111 +2494,289 @@ def show_codebook_generation_page():
                     cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
                     use_speculative_starter_codes=use_speculative,
-                    force_recalc=st.session_state.get('force_recalculate_all', False),
-                    verbose=True,
+                    force_recalc=force_recalc,
+                    verbose=False,
                     verbose_detailed=False,
                     prompt_printer_enabled=False,
                     cache_reasoning=True
                 )
 
-                progress_container.success("✅ Codebook generatie voltooid")
+                progress_container.success("✅ " + (
+                    "Codebook generatie voltooid" if lang == "nl"
+                    else "Codebook generation completed"
+                ))
 
+                # Store results
                 st.session_state.pipeline_results['codebook_main'] = codebook_main
                 st.session_state.pipeline_results['reasoning_results'] = reasoning_results
-                
-                # Set waiting state and mark step as completed so left panel shows results
-                st.session_state['completed_step'] = 6
-                st.session_state['waiting_for_continue_codebook_generation'] = True
 
-                # Mark step 7 (codebook generation) as completed in navigation tracker
-                mark_step_completed(7)
-                st.rerun()  # Rerun to show the continue button interface
+                # Calculate codebook statistics
+                st.session_state['codebook_stats'] = {
+                    'num_codes': len(codebook_main.codes) if codebook_main and hasattr(codebook_main, 'codes') else 0,
+                    'unique_clusters': len(set([entry.source_cluster for entry in codebook_main.codes if entry.source_cluster])) if codebook_main and hasattr(codebook_main, 'codes') else 0
+                }
+
+                # Mark step completed
+                mark_step_completed(6)
+                st.rerun()
+
             except Exception as e:
-                progress_container.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
+                st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
 
 def show_theme_identification_page():
-    lang = st.session_state.language
-    st.header("Stap 8: Thema Identificatie" if lang == "nl" else "Step 8: Theme Identification")
-    
-    info_text = """
-    Deze stap zal:
-    - Codes groeperen in thema's
-    - Hiërarchische thema structuur maken
-    - Thema beschrijvingen genereren
-    """ if lang == "nl" else """
-    This step will:
-    - Group codes into themes
-    - Create hierarchical theme structure
-    - Generate theme descriptions
     """
-    st.markdown(info_text)
-    
-    # Check if we're waiting for user to continue after theme identification
-    if st.session_state.get('waiting_for_continue_theme_identification', False):
-        st.success("✅ " + ("Thema's geïdentificeerd! Bekijk de resultaten links en klik dan op doorgaan." 
-                           if lang == "nl" else "Themes identified! Review the results on the left, then click continue."))
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="theme_identification_continue"):
-                # Advance to next step
-                st.session_state.step = 8
-                st.rerun()
-    elif st.button("Identificeer Thema's" if lang == "nl" else "Identify Themes", type="primary"):
+    Step 7: Theme Identification (Thema Identificatie)
+    Pipeline function: step_7_refine_codebook
+    Cache name: codebook_refinement
+    Model: models.ThemeEnrichedCodebookModel
+    """
+    lang = st.session_state.language
+
+    # ==================== HEADER ====================
+    st.header("Stap 7: Thema Identificatie" if lang == "nl" else "Step 7: Theme Identification")
+
+    # ==================== BLOCK 1: GREEN BOX ====================
+    # Show completion status
+    if is_step_completed(7):
+        st.success("✅ " + ("Thema's geïdentificeerd! Bekijk de resultaten en klik op doorgaan."
+                           if lang == "nl" else "Themes identified! Review the results and click continue."))
+
+    # ==================== BLOCK 2: BLUE BOX ====================
+    # Show input data info when previous step is complete
+    if is_step_completed(6):
+        # Get codebook stats from session state or calculate from pipeline_results
+        if 'codebook_stats' in st.session_state:
+            num_codes = st.session_state['codebook_stats'].get('num_codes', 0)
+        elif 'codebook_main' in st.session_state.pipeline_results:
+            codebook_data = st.session_state.pipeline_results['codebook_main']
+            num_codes = len(codebook_data.codes) if hasattr(codebook_data, 'codes') else 0
+        else:
+            # Last resort: load from cache to calculate stats (for cache route when step 7 already completed)
+            try:
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+                cache_manager = _get_cache_manager()
+
+                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation", variable_key):
+                    codebook_list = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "codebook_generation",
+                        variable_key,
+                        models.CodebookModel
+                    )
+                    # Store in pipeline_results for future use
+                    st.session_state.pipeline_results['codebook_main'] = codebook_list[0] if codebook_list else None
+
+                    # Calculate stats
+                    codebook_data = codebook_list[0] if codebook_list else None
+                    num_codes = len(codebook_data.codes) if codebook_data and hasattr(codebook_data, 'codes') else 0
+                else:
+                    num_codes = 0
+            except Exception:
+                num_codes = 0
+
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        codes_text = "codes om te groeperen in thema's" if lang == 'nl' else 'codes to group into themes'
+        sample_info += (f"\n\n**Data:** {num_codes} {codes_text}")
+        st.info(sample_info)
+
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    # Show results/stats when current step is complete
+    if is_step_completed(7):
+        if st.session_state.get('theme_stats', {}):
+            stats = st.session_state.get('theme_stats', {})
+            nl = (lang == "nl")
+
+            themes_label = "Aantal thema's" if nl else 'Number of themes'
+            codes_label = 'Aantal codes' if nl else 'Number of codes'
+            summary_info = (
+                f"\n\n- {themes_label}: {stats.get('num_themes', 0)}"
+                + f"\n\n- {codes_label}: {stats.get('num_codes', 0)}"
+            )
+
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_info}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ==================== BLOCK 4: DATA LOADING ====================
+    # Load reasoning_results and codebook_main if not already in pipeline_results
+    if is_step_completed(6) and not is_step_completed(7):
         progress_container = st.empty()
         try:
-            # Determine variable name for theme identification (use meaningful name for merged variables)
-            var_name_for_themes = st.session_state.selected_variable
-            if (st.session_state.get('is_merged_variable', False) and 
-                st.session_state.get('selected_variables_config')):
-                # Use first variable name or create composite name for merged variables
-                selected_vars = st.session_state.get('selected_variables_config', [])
-                if len(selected_vars) > 1:
-                    var_name_for_themes = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
-            
-            # Step 8a: Refine codebook
-            progress_container.text("🔄 Codebook aan het verfijnen...")
+            if 'reasoning_results' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
+                cache_manager = _get_cache_manager()
 
-            refinement_results, theme_enriched_codebook = pipeline.step_7_refine_codebook(
-                codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
-                filename=st.session_state.filename,
-                var_name=var_name_for_themes,
-                var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state.model_config,
-                default_language=st.session_state.get('language', 'nl'),
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True
-            )
+                # Try cache first (works for both upload and cache routes)
+                # Note: Step 6 caches two separate items:
+                # 1. "codebook_generation" - contains [codebook_main]
+                # 2. "codebook_generation_reasoning" - contains [reasoning_results]
+                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation", variable_key):
+                    progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
 
-            progress_container.success("✅ Codebook verfijning voltooid")
+                    # Load codebook_main from main cache
+                    codebook_list = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "codebook_generation",
+                        variable_key,
+                        models.CodebookModel
+                    )
 
-            st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_codebook
-            
-            # Set waiting state and mark step as completed so left panel shows results
-            st.session_state['completed_step'] = 7
-            st.session_state['waiting_for_continue_theme_identification'] = True
+                    if codebook_list and len(codebook_list) > 0:
+                        codebook_main = codebook_list[0]
+                        st.session_state.pipeline_results['codebook_main'] = codebook_main
 
-            # Mark step 8 (theme identification/refinement) as completed in navigation tracker
-            mark_step_completed(8)
-            st.rerun()  # Rerun to show the continue button interface
+                        # Populate codebook_stats if not already present (for cache route)
+                        if 'codebook_stats' not in st.session_state:
+                            st.session_state['codebook_stats'] = {
+                                'num_codes': len(codebook_main.codes) if codebook_main and hasattr(codebook_main, 'codes') else 0,
+                                'unique_clusters': len(set([entry.source_cluster for entry in codebook_main.codes if entry.source_cluster])) if codebook_main and hasattr(codebook_main, 'codes') else 0
+                            }
+
+                        # Load reasoning_results from separate reasoning cache
+                        try:
+                            from utils import codeGenerator
+                            reasoning_list = cache_manager.load_from_cache(
+                                st.session_state.filename,
+                                "codebook_generation_reasoning",
+                                variable_key,
+                                codeGenerator.CodeGeneratorReasoningResults
+                            )
+                            if reasoning_list and len(reasoning_list) > 0:
+                                st.session_state.pipeline_results['reasoning_results'] = reasoning_list[0]
+                                progress_container.success("✅ " + ("Codebook en reasoning geladen uit cache" if lang == "nl" else "Codebook and reasoning loaded from cache"))
+                            else:
+                                st.error("⚠️ " + ("Reasoning resultaten niet gevonden in cache. Voer stap 6 opnieuw uit." if lang == "nl"
+                                               else "Reasoning results not found in cache. Please re-run step 6."))
+                        except Exception as e:
+                            st.error(f"⚠️ " + ("Reasoning resultaten laden mislukt: {str(e)}. Voer stap 6 opnieuw uit." if lang == "nl"
+                                              else f"Failed to load reasoning results: {str(e)}. Please re-run step 6."))
+                    else:
+                        st.error("Ongeldige cache data voor codebook generatie. Voer stap 6 opnieuw uit." if lang == "nl"
+                               else "Invalid cache data for codebook generation. Please re-run step 6.")
+                else:
+                    st.error("Invoer data niet gevonden. Voer eerst codebook generatie (stap 6) uit." if lang == "nl"
+                           else "Input data not found. Please run codebook generation (step 6) first.")
+
+            # Populate metadata
+            if 'var_lab' not in st.session_state.pipeline_results:
+                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+
         except Exception as e:
-            progress_container.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
+            st.error(f"Data laad fout: {str(e)}" if lang == "nl" else f"Data loading error: {str(e)}")
+
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
+    # Show processing button when ready to process
+    if is_step_completed(6) and not is_step_completed(7):
+        info_text = """
+        Deze stap zal:
+        - Codes groeperen in thema's
+        - Hiërarchische thema structuur maken
+        - Thema beschrijvingen genereren
+        """ if lang == "nl" else """
+        This step will:
+        - Group codes into themes
+        - Create hierarchical theme structure
+        - Generate theme descriptions
+        """
+        st.markdown(info_text)
+
+        # Show button to start theme identification
+        if st.button("🚀 " + (
+            "Start Thema Identificatie" if lang == "nl"
+            else "Start Theme Identification"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                # Determine variable name for theme identification
+                var_name_for_themes = st.session_state.selected_variable
+                if (st.session_state.get('is_merged_variable', False) and
+                    st.session_state.get('selected_variables_config')):
+                    selected_vars = st.session_state.get('selected_variables_config', [])
+                    if len(selected_vars) > 1:
+                        var_name_for_themes = f"merged_{'-'.join(selected_vars[:3])}"
+
+                progress_container.text("🔄 Codebook aan het verfijnen..." if lang == "nl"
+                                       else "🔄 Refining codebook...")
+
+                # Get variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                # Calculate force_recalc with step-specific logic
+                force_recalc = st.session_state.get('force_recalculate_all', False) or \
+                              (st.session_state.get('force_recalculate_from_step', 99) <= 7)
+
+                refinement_results, theme_enriched_codebook = pipeline.step_7_refine_codebook(
+                    codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
+                    filename=st.session_state.filename,
+                    var_name=var_name_for_themes,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    default_language=st.session_state.get('language', 'nl'),
+                    force_recalc=force_recalc,
+                    verbose=False  # Prevent stdout conflicts in Streamlit
+                )
+
+                progress_container.success("✅ " + (
+                    "Thema identificatie voltooid" if lang == "nl"
+                    else "Theme identification completed"
+                ))
+
+                # Store results
+                st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_codebook
+                st.session_state.pipeline_results['refinement_results'] = refinement_results
+
+                # Calculate and store theme statistics
+                num_themes = len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
+                num_codes = len(theme_enriched_codebook.codes) if hasattr(theme_enriched_codebook, 'codes') else 0
+
+                st.session_state['theme_stats'] = {
+                    'num_themes': num_themes,
+                    'num_codes': num_codes
+                }
+
+                # Mark step 7 completed
+                mark_step_completed(7)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
 
 def show_code_assignment_page():
     lang = st.session_state.language
