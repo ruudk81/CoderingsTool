@@ -995,6 +995,32 @@ def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
 
     return preview_data
 
+
+def convert_response_models_to_preview_df(response_models: list, id_column: str, text_column: str) -> pd.DataFrame:
+    """Convert list of ResponseModel objects to a DataFrame suitable for preview display
+
+    Args:
+        response_models: List of ResponseModel objects from step_0_load_data
+        id_column: Name for the ID column in the DataFrame
+        text_column: Name for the text/response column in the DataFrame
+
+    Returns:
+        pd.DataFrame with columns [id_column, text_column]
+    """
+    import pandas as pd
+
+    # Extract data from ResponseModel objects
+    ids = [model.respondent_id for model in response_models]
+    responses = [model.response for model in response_models]
+
+    # Create DataFrame with the specified column names
+    preview_df = pd.DataFrame({
+        id_column: ids,
+        text_column: responses
+    })
+
+    return preview_df
+
 # STEP0 UPLOAD PAGE  ################################################################################################################################
 
 def show_upload_page():
@@ -1179,9 +1205,75 @@ def show_upload_page():
                             selected_vars=selected_variables,
                             encoding=encoding)
 
-                        preview_data = preview_dataset(config)
+                        # Load data using pipeline step_0 (loads once for both preview and processing)
+                        from utils.cacheManager import generate_enhanced_variable_key
+
+                        # Determine parameters for step_0_load_data
+                        is_multiple_mode = config.variable_mode == 'multiple' and len(config.selected_variables) > 1
+                        sample_size = config.sample_size
+                        merge_config = config.merge_config
+
+                        # Generate variable key
+                        variable_key = generate_enhanced_variable_key(
+                            config.selected_variables,
+                            is_merged=is_multiple_mode,
+                            sample_size=sample_size,
+                            merge_config=merge_config
+                        )
+
+                        # Call step_0_load_data to load data as ResponseModel list
+                        if is_multiple_mode:
+                            raw_text_list = pipeline.step_0_load_data(
+                                filename=config.filename,
+                                id_column=config.id_column,
+                                var_names=config.selected_variables,
+                                variable_key=variable_key,
+                                cache_manager=_get_cache_manager(),
+                                sample_size=sample_size,
+                                merge_config=merge_config,
+                                encoding=encoding if encoding != 'auto' else None,
+                                force_recalc=st.session_state.get('force_recalculate_all', False),
+                                verbose=True
+                            )
+                            text_column = 'merged_text'
+                        else:
+                            raw_text_list = pipeline.step_0_load_data(
+                                filename=config.filename,
+                                id_column=config.id_column,
+                                var_name=config.selected_variables[0],
+                                variable_key=variable_key,
+                                cache_manager=_get_cache_manager(),
+                                sample_size=sample_size,
+                                encoding=encoding if encoding != 'auto' else None,
+                                force_recalc=st.session_state.get('force_recalculate_all', False),
+                                verbose=True
+                            )
+                            text_column = config.selected_variables[0]
+
+                        # Convert ResponseModel list to DataFrame for preview display
+                        preview_data = convert_response_models_to_preview_df(
+                            raw_text_list,
+                            id_column=config.id_column,
+                            text_column=text_column
+                        )
+
+                        # Store config, preview DataFrame, and pipeline data
                         config.to_session_state()
                         st.session_state.variable_preview = preview_data
+
+                        # Store data for pipeline processing (avoids duplicate load in step 1)
+                        if 'pipeline_results' not in st.session_state:
+                            st.session_state.pipeline_results = {}
+                        st.session_state.pipeline_results['raw_text_list'] = raw_text_list
+
+                        # Store variable label for pipeline
+                        var_for_label = config.selected_variables[0] if config.selected_variables else None
+                        if var_for_label:
+                            var_lab = _get_data_loader().get_varlab(config.filename, var_for_label, encoding=encoding if encoding != 'auto' else None)
+                            last_bracket = var_lab.rfind("]")
+                            st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                        else:
+                            st.session_state.pipeline_results['var_lab'] = "Unknown Variable"
 
                     except Exception as e:
                         st.error(f"Fout bij preview: {str(e)}" if lang == "nl" else f"Preview error: {str(e)}")
@@ -1639,44 +1731,51 @@ def show_filtering_page():
                 st.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
 
 def show_idea_extraction_page():
-    lang = st.session_state.get("language", "nl")
-    st.header("Stap 4: Extractie beschrijvende codes" if lang == "nl" else "Step 4: Descriptive Code Extraction")
+    """
+    Step 3: Idea Extraction (Idee-extractie)
 
-    # ------------------------
-    # AFTER processing
-    # ------------------------
-    if st.session_state.get('waiting_for_continue_idea_extraction', False):
+    Processes quality_filtered_text from step 2 and extracts discrete ideas.
+
+    Pipeline function: step_3_extract_ideas
+    Cache name: extracted_ideas
+    Model: models.IdeasExtractedModel
+    """
+    lang = st.session_state.language
+
+    # ==================== HEADER ====================
+    st.header("Stap 3: Idee-extractie" if lang == "nl" else "Step 3: Idea Extraction")
+
+    # ==================== BLOCK 1: GREEN BOX ====================
+    # Show completion status
+    if is_step_completed(3):
         st.success("✅ " + (
-            "Extractie voltooid! Bekijk de resultaten en klik dan op doorgaan."
+            "Idee-extractie voltooid! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Extraction completed! Review the results, then click continue."
+            "Idea extraction completed! Review the results on the right, then click continue."
         ))
 
-        if st.session_state.get('selected_variables_config') and st.session_state.get('selected_id_column'):
+    # ==================== BLOCK 2: BLUE BOX ====================
+    # Show input data info when previous step is complete
+    if is_step_completed(2):
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += (f"\n\n**Data:** {st.session_state.get('step3_sample_size', st.session_state.sample_size_config)} {'antwoorden' if lang == 'nl' else 'responses'}")
+        st.info(sample_info)
+
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    # Show results/stats when current step is complete
+    if is_step_completed(3):
+        if st.session_state.get('idea_extraction_stats', {}):
             stats = st.session_state.get('idea_extraction_stats', {})
-            var_lab = st.session_state.var_lab
-            total_responses = stats.get('total_responses', 0)
+            summary_info = ""
 
-            sample_info = (
-                f"**{'Vraag' if lang == 'nl' else 'Question'}:** {var_lab}\n\n"
-                f"{'**Gefilterde steekproef**' if lang == 'nl' else '**Filtered sample**'}: "
-                f"{total_responses} {'gevallen' if lang == 'nl' else 'cases'}"
+            # Build stats display
+            summary_info += (
+                f"\n\n- {'Aantal (deel-) antwoorden' if lang == 'nl' else 'Total ideas'}: {stats.get('total_ideas', 0)}"
+                + f"\n\n- {'Unieke (deel-) antwoorden' if lang == 'nl' else 'Unique ideas'}: {stats.get('unique_ideas', 0)}"
+                + f"\n\n- {'Enkelvoudige reacties' if lang == 'nl' else 'Single-idea responses'}: {stats.get('single_idea_responses', 0)} ({stats.get('single_idea_percentage', 0):.1f}%)"
+                + f"\n\n- {'Meervoudige reacties' if lang == 'nl' else 'Multi-idea responses'}: {stats.get('multi_idea_responses', 0)} ({stats.get('multi_idea_percentage', 0):.1f}%)"
             )
-            st.info(sample_info)
 
-        # Summary box (fetch stats safely here too)
-        stats = st.session_state.get('idea_extraction_stats', {})
-        summary_info = ""
-        if 'idea_extraction_stats' in st.session_state:
-            summary_info =(
-            #("Samenvatting:" if lang == 'nl' else "Summary:")
-            #+ f"\n- {'Responses verwerkt' if lang == 'nl' else 'Responses processed'} : {stats['total_responses']}" 
-            f"\n\n- {'Aantal (deel-) antwoorden' if lang == 'nl' else 'Total answers'} : {stats['total_ideas']}" 
-            + f"\n\n- {'Unieke (deel-) antwoorden' if lang == 'nl' else 'Unique answers'} : {stats['unique_ideas']}" 
-            + f"\n\n- {'Enkelvoudige reacties' if lang == 'nl' else 'Single-answer responses'} : {stats['single_idea_responses']} ({stats['single_idea_percentage']:.1f}%)" 
-            + f"\n\n- {'Meervoudige reacties' if lang == 'nl' else 'Multi-answers responses '} : {stats['multi_idea_responses']} ({stats['multi_idea_percentage']:.1f}%)" 
-            )
-            
             st.markdown(f"""
             <div style="
             border-radius: 10px;
@@ -1688,67 +1787,148 @@ def show_idea_extraction_page():
             </div>
             """, unsafe_allow_html=True)
 
-    # ------------------------
-    # BEFORE processing (start action)
-    # ------------------------
-    elif st.button("Start Idee-extractie" if lang == "nl" else "Start Idea Extraction", type="primary"):
+    # ==================== BLOCK 4: DATA LOADING ====================
+    # Load quality_filtered_text if not already in pipeline_results
+    if is_step_completed(2) and not is_step_completed(3):
         progress_container = st.empty()
+        try:
+            if 'quality_filtered_text' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-        # Show current sample info (safe access)
-        stats = st.session_state.get('idea_extraction_stats', {})
-        var_lab = st.session_state.var_lab
-        total_responses = stats.get('total_responses', 0)
-        sample_info = (
-            f"**{'Vraag' if lang == 'nl' else 'Question'}:** {var_lab}\n\n"
-            f"{'**Gefilterde steekproef**' if lang == 'nl' else '**Filtered sample**'}: "
-            f"{total_responses} {'gevallen' if lang == 'nl' else 'cases'}"
-        )
-        st.info(sample_info)
+                cache_manager = _get_cache_manager()
 
+                # Try to load from cache first (works for both upload and cache routes)
+                if cache_manager.is_cache_valid(st.session_state.filename, "quality_filter", variable_key):
+                    progress_container.text("🔄 " + ("Gefilterde data laden uit cache..." if lang == "nl" else "Loading filtered data from cache..."))
+                    quality_filtered_text = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "quality_filter",
+                        variable_key,
+                        models.QualityFilteredModel
+                    )
+                    st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
+                    # Also populate var_lab if not already in pipeline_results
+                    if 'var_lab' not in st.session_state.pipeline_results:
+                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                else:
+                    # Upload route: process from preprocessed_text
+                    progress_container.text("🔄 " + ("Gefilterde data verwerken..." if lang == "nl" else "Processing filtered data..."))
+                    quality_filtered_text = pipeline.step_2_quality_filter(
+                        preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
+                        filename=st.session_state.filename,
+                        var_lab=st.session_state.pipeline_results['var_lab'],
+                        variable_key=variable_key,
+                        cache_manager=cache_manager,
+                        model_config=st.session_state.model_config,
+                        force_recalc=False,
+                        verbose=True,
+                        prompt_printer_enabled=False
+                    )
+                    st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
+                    progress_container.success("✅ " + ("Data verwerkt" if lang == "nl" else "Data processed"))
+        except Exception as e:
+            st.error(f"Idee-extractie fout: {str(e)}" if lang == "nl" else f"Idea extraction error: {str(e)}")
+
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
+    # Show processing button when ready to process
+    if is_step_completed(2) and not is_step_completed(3):
         st.markdown(ui.get_text("EXTRACTION_INFO", lang))
 
-        try:
-            progress_container.text("🔄 Ideeën aan het extraheren...")
+        # Show button to start idea extraction
+        if st.button("🚀 " + (
+            "Start Idee-extractie" if lang == "nl"
+            else "Start Idea Extraction"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + (
+                    "Ideeën aan het extraheren..." if lang == "nl"
+                    else "Extracting ideas..."
+                ))
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
+                # Generate variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-            encoded_text = pipeline.step_3_extract_ideas(
-                quality_filtered_text=st.session_state['pipeline_results']['quality_filtered_text'],
-                filename=st.session_state['filename'],
-                var_lab=var_lab,
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state['model_config'],
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
-            )
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 3)
 
-            progress_container.success("✅ Idee-extractie voltooid")
+                # Call pipeline processing function
+                extracted_ideas = pipeline.step_3_extract_ideas(
+                    quality_filtered_text=st.session_state.pipeline_results['quality_filtered_text'],
+                    filename=st.session_state.filename,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    force_recalc=force_recalc,
+                    verbose=True,
+                    prompt_printer_enabled=False
+                )
 
-            st.session_state['pipeline_results']['encoded_text'] = encoded_text
+                progress_container.success("✅ " + (
+                    "Idee-extractie voltooid" if lang == "nl"
+                    else "Idea extraction completed"
+                ))
 
-            # Normal flow: mark step complete and show continue UI
-            st.session_state['completed_step'] = 3
-            st.session_state['waiting_for_continue_idea_extraction'] = True
-            mark_step_completed(4)
-            st.rerun()
+                # Calculate statistics from results for display
+                total_responses = len(extracted_ideas)
+                total_ideas = sum(item.idea_count for item in extracted_ideas)
 
-        except Exception as e:
-            progress_container.error(
-                f"Extractie fout: {e}" if lang == "nl" else f"Extraction error: {e}"
-            )
+                # Count unique ideas
+                unique_ideas_set = set()
+                for item in extracted_ideas:
+                    if hasattr(item, 'response_ideas') and item.response_ideas:
+                        for idea_obj in item.response_ideas:
+                            if hasattr(idea_obj, 'idea'):
+                                unique_ideas_set.add(idea_obj.idea)
+                unique_ideas = len(unique_ideas_set)
+
+                # Count single vs multi-idea responses
+                single_idea_responses = sum(1 for item in extracted_ideas if item.idea_count == 1)
+                multi_idea_responses = sum(1 for item in extracted_ideas if item.idea_count > 1)
+
+                single_idea_percentage = (single_idea_responses / total_responses * 100) if total_responses > 0 else 0
+                multi_idea_percentage = (multi_idea_responses / total_responses * 100) if total_responses > 0 else 0
+
+                # Store results (Note: for backward compatibility, also store as 'encoded_text')
+                st.session_state.pipeline_results['extracted_ideas'] = extracted_ideas
+                st.session_state.pipeline_results['encoded_text'] = extracted_ideas  # Backward compatibility
+                st.session_state['idea_extraction_stats'] = {
+                    'total_responses': total_responses,
+                    'total_ideas': total_ideas,
+                    'unique_ideas': unique_ideas,
+                    'single_idea_responses': single_idea_responses,
+                    'multi_idea_responses': multi_idea_responses,
+                    'single_idea_percentage': single_idea_percentage,
+                    'multi_idea_percentage': multi_idea_percentage
+                }
+
+                # Mark step completed
+                mark_step_completed(3)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Idee-extractie fout: {str(e)}" if lang == "nl" else f"Idea extraction error: {str(e)}")
 
 def show_embedding_page():
     lang = st.session_state.get("language", "nl")
