@@ -1469,124 +1469,174 @@ def show_preprocessing_page():
 
 def show_filtering_page():
     lang = st.session_state.language
-    
-    st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 3: Quality Filtering")
+
+    st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 2: Quality Filtering")
 
     # 1. green box/completion
-    if is_step_completed(2): 
+    if is_step_completed(2):
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
-    
+
     # 2. blue box/sample info
     if is_step_completed(1):
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Steekproef:** {st.session_state.sample_size_config} gevallen" if lang == "nl" else f"\n\n**Sample:** { st.session_state.sample_size_config} cases")
-        st.info(sample_info)    
-    
-    # 3. yelow box/results
+        sample_info += (f"\n\n**Data:** {st.session_state.sample_size_config} antwoorden" if lang == "nl" else f"\n\n**Data:** {st.session_state.sample_size_config} responses")
+        st.info(sample_info)
+
+    # 3. yellow box/results
     if is_step_completed(2):
-        
-        stats = st.session_state['quality_filter_stats']
+        if st.session_state.get('quality_filter_stats', {}):
+            stats = st.session_state.get('quality_filter_stats', {})
 
-        lines = []  # collect all code lines
-        code_counts = stats.get('code_counts', {})
-        code_meanings = stats.get('code_meanings', {})
-        
-        # sort safely even if keys are strings/ints
-        for code in sorted(code_counts.keys(), key=str):
-            count = code_counts.get(code, 0)
-            meaning = (code_meanings.get(code) or code_meanings.get(str(code)) or 'Unknown')
-            lines.append(f"- **Code {code}**:  {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
-    
-        total = stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)
-        perc_with = (stats.get('total_with_codes', 0) / total * 100) if total else 0
-    
-        filtered_label = "**Excluded from further analysis**" if lang == "en" else "**Uitgesloten van verdere analyse**"
-        
-        summary_text = f"\n\n- {filtered_label}:  {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n\n" + "\n\n".join(lines)
-        
-        #F8F9FB = gray
-        st.markdown(f"""
-        <div style="
-        border-radius: 10px;
-        padding: 12px 16px;
-        background-color: #FFF8E6;
-        margin-top: 8px;
-        color: #5C4102;">
-        {summary_text}
-        </div>
-        """, unsafe_allow_html=True)    
+            lines = []  # collect all code lines
+            code_counts = stats.get('code_counts', {})
+            code_meanings = stats.get('code_meanings', {})
 
-    # 4. Show processing button, if not in cache
-    if is_step_completed(2) and not is_step_completed(3): 
-        st.markdown(ui.get_text("FILTERING_INFO", lang))
+            # sort safely even if keys are strings/ints
+            for code in sorted(code_counts.keys(), key=str):
+                count = code_counts.get(code, 0)
+                meaning = (code_meanings.get(code) or code_meanings.get(str(code)) or 'Unknown')
+                lines.append(f"- **Code {code}**:  {count} " + ("item(s)" if lang == "en" else "item(s)") + f" - {meaning}")
+
+            total = stats.get('total_with_codes', 0) + stats.get('total_without_codes', 0)
+            perc_with = (stats.get('total_with_codes', 0) / total * 100) if total else 0
+
+            filtered_label = "**Uitgesloten van verdere analyse**" if lang == "nl" else "**Excluded from further analysis**"
+
+            summary_text = f"\n\n- {filtered_label}:  {stats.get('total_with_codes', 0)} item(s) ({perc_with:.0f}%)\n\n" + "\n\n".join(lines)
+
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_text}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # 4. Data loading block - load preprocessed_text if not already in pipeline_results
+    if is_step_completed(1) and not is_step_completed(2):
         progress_container = st.empty()
-
         try:
-            progress_container.text("🔄 Kwaliteit aan het filteren...")
+            if 'preprocessed_text' not in st.session_state.pipeline_results:
+                # Generate variable_key
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
 
-            # Get variable_key for caching
-            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-            is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
-            sample_size = st.session_state.get('sample_size_config')
-            merge_config = st.session_state.get('merge_config')
-            variable_key = generate_enhanced_variable_key(
-                selected_variables,
-                is_merged=is_merged,
-                sample_size=sample_size,
-                merge_config=merge_config
-            )
+                cache_manager = _get_cache_manager()
 
-            quality_filtered_text = pipeline.step_2_quality_filter(
-                preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
-                filename=st.session_state.filename,
-                var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state.model_config,
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
-            )
-
-            progress_container.success("✅ Kwaliteitsfiltering voltooid")
-            st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
-
-            # Calculate statistics from results for display
-            code_counts = {}
-            code_meanings = {
-                99999997: "User missing: Don't know/only expressing uncertainty",
-                99999998: "System missing: NA",
-                99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"
-            }
-
-            for item in quality_filtered_text:
-                if item.quality_filter and item.quality_filter_code is not None:
-                    code = item.quality_filter_code
-                    code_counts[code] = code_counts.get(code, 0) + 1
-
-            total_with_codes = sum(code_counts.values())
-            total_without_codes = len(quality_filtered_text) - total_with_codes
-
-            # Store statistics in session_state for display in waiting state
-            st.session_state['quality_filter_stats'] = {
-                'code_counts': code_counts,
-                'code_meanings': code_meanings,
-                'total_with_codes': total_with_codes,
-                'total_without_codes': total_without_codes
-            }
-
-            # Set waiting state and mark step as completed so left panel shows results
-            st.session_state['completed_step'] = 2
-            st.session_state['waiting_for_continue_filtering'] = True
-
-            # Mark step 3 (quality filtering) as completed in navigation tracker
-            mark_step_completed(3)
-
-
-            st.rerun()  # Rerun to show the continue button interface
+                # Try to load from cache first (works for both upload and cache routes)
+                if cache_manager.is_cache_valid(st.session_state.filename, "preprocessed", variable_key):
+                    progress_container.text("🔄 Voorbewerkte data laden uit cache..." if lang == "nl" else "🔄 Loading preprocessed data from cache...")
+                    preprocessed_text = cache_manager.load_from_cache(
+                        st.session_state.filename,
+                        "preprocessed",
+                        variable_key,
+                        models.PreprocessedModel
+                    )
+                    st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+                    # Also populate var_lab if not already in pipeline_results
+                    if 'var_lab' not in st.session_state.pipeline_results:
+                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                    progress_container.success("✅ Data geladen uit cache" if lang == "nl" else "✅ Data loaded from cache")
+                else:
+                    # Upload route: process from raw_text_list
+                    progress_container.text("🔄 Voorbewerkte data verwerken..." if lang == "nl" else "🔄 Processing preprocessed data...")
+                    preprocessed_text, _ = pipeline.step_1_preprocess(
+                        raw_text_list=st.session_state.pipeline_results['raw_text_list'],
+                        filename=st.session_state.filename,
+                        var_lab=st.session_state.pipeline_results['var_lab'],
+                        variable_key=variable_key,
+                        cache_manager=cache_manager,
+                        model_config=st.session_state.model_config,
+                        force_recalc=False,
+                        verbose=True,
+                        prompt_printer_enabled=False
+                    )
+                    st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+                    progress_container.success("✅ Data verwerkt" if lang == "nl" else "✅ Data processed")
         except Exception as e:
-            progress_container.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
+            st.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
+
+    # 5. Processing button block
+    if is_step_completed(1) and not is_step_completed(2):
+        st.markdown(ui.get_text("FILTERING_INFO", lang))
+
+        # Show button to start quality filtering
+        if st.button("🚀 " + ("Start Kwaliteitsfiltering" if lang == "nl" else "Start Quality Filtering"), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + ("Kwaliteit aan het filteren..." if lang == "nl" else "Filtering quality..."))
+
+                # Get variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 2)
+
+                quality_filtered_text = pipeline.step_2_quality_filter(
+                    preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
+                    filename=st.session_state.filename,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    force_recalc=force_recalc,
+                    verbose=True,
+                    prompt_printer_enabled=False
+                )
+
+                progress_container.success("✅ " + ("Kwaliteitsfiltering voltooid" if lang == "nl" else "Quality filtering completed"))
+
+                # Calculate statistics from results for display
+                code_counts = {}
+                code_meanings = {
+                    99999997: "User missing: Don't know/only expressing uncertainty",
+                    99999998: "System missing: NA",
+                    99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"
+                }
+
+                for item in quality_filtered_text:
+                    if item.quality_filter and item.quality_filter_code is not None:
+                        code = item.quality_filter_code
+                        code_counts[code] = code_counts.get(code, 0) + 1
+
+                total_with_codes = sum(code_counts.values())
+                total_without_codes = len(quality_filtered_text) - total_with_codes
+
+                # Store results
+                st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
+                st.session_state['quality_filter_stats'] = {
+                    'code_counts': code_counts,
+                    'code_meanings': code_meanings,
+                    'total_with_codes': total_with_codes,
+                    'total_without_codes': total_without_codes
+                }
+
+                # Mark step completed
+                mark_step_completed(2)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
 
 def show_idea_extraction_page():
     lang = st.session_state.get("language", "nl")

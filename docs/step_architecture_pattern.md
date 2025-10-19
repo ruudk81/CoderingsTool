@@ -242,6 +242,87 @@ if is_step_completed(0) and not is_step_completed(1):
 - **Cache route**: Data was pre-loaded during cache button click, but metadata might need population
 - **Purpose**: Ensure `pipeline_results` has required input data before processing button is shown
 
+---
+
+### ⚠️ CRITICAL: Data Loading Block Common Pitfalls
+
+**These bugs were discovered in Step 2 refactoring (2025-01-19) and must be avoided in all steps:**
+
+#### Bug #1: Cache Route Not Loading Input Data
+
+**❌ WRONG PATTERN** (causes KeyError in cache route):
+```python
+if '{input_data_key}' not in st.session_state.pipeline_results:
+    if not st.session_state.get('loaded_from_cache', False):
+        # Only loads in upload route
+        {input_data} = pipeline.step_{N-1}_{operation}(...)
+        st.session_state.pipeline_results['{input_data_key}'] = {input_data}
+    else:
+        # Cache route: DOES NOTHING - data never loaded!
+        pass  # ← BUG: Input data missing, processing button will fail
+```
+
+**✅ CORRECT PATTERN** (works for both routes):
+```python
+if '{input_data_key}' not in st.session_state.pipeline_results:
+    cache_manager = _get_cache_manager()
+
+    # Try cache first (works for both upload and cache routes)
+    if cache_manager.is_cache_valid(filename, "{step_name}", variable_key):
+        # Load directly from cache
+        {input_data} = cache_manager.load_from_cache(
+            filename, "{step_name}", variable_key, models.{ModelClass}
+        )
+        st.session_state.pipeline_results['{input_data_key}'] = {input_data}
+    else:
+        # Fallback: process from previous step's data (upload route)
+        {input_data} = pipeline.step_{N-1}_{operation}(...)
+        st.session_state.pipeline_results['{input_data_key}'] = {input_data}
+```
+
+**Key Insight:** Don't check `loaded_from_cache` flag. Instead, check if cache is valid and load directly. This works for BOTH routes.
+
+#### Bug #2: Missing Metadata Population
+
+**❌ WRONG PATTERN** (causes KeyError for `var_lab` or other metadata):
+```python
+# Only loads input data, forgets metadata
+preprocessed_text = cache_manager.load_from_cache(...)
+st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+# ← BUG: var_lab not populated, processing button will fail
+```
+
+**✅ CORRECT PATTERN** (populates all required metadata):
+```python
+preprocessed_text = cache_manager.load_from_cache(...)
+st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+
+# Also populate metadata if not already present
+if 'var_lab' not in st.session_state.pipeline_results:
+    st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+```
+
+**Key Insight:** Always populate metadata (like `var_lab`) from session state into `pipeline_results` when loading from cache.
+
+#### Verification Checklist for Data Loading Block
+
+When implementing or reviewing a data loading block, verify:
+
+- [ ] **Cache-first approach**: Checks `cache_manager.is_cache_valid()` first
+- [ ] **No `loaded_from_cache` checks**: Don't branch on this flag
+- [ ] **Loads from cache**: Calls `cache_manager.load_from_cache()` if valid
+- [ ] **Fallback to processing**: Calls previous step's pipeline function if cache invalid
+- [ ] **Populates input data**: Stores result in `pipeline_results['{input_data_key}']`
+- [ ] **Populates metadata**: Also stores `var_lab` and other required metadata
+- [ ] **Error handling**: Wrapped in try-except with bilingual error messages
+
+**Impact if bugs present:**
+- User loads from cache → navigates to step → clicks processing button → **KeyError crash**
+- Upload route may work, but cache route completely broken
+- Error messages like `"Filtering fout: 'preprocessed_text'"` or `"'var_lab'"`
+
+---
+
 ### Block 6: Processing Button Block
 
 **Purpose:** Execute the current step's processing when user clicks the button
