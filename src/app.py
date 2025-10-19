@@ -1173,7 +1173,7 @@ def show_preprocessing_page():
 
     #1. green box/completion
     if is_step_completed(1): 
-        st.success("✅ " + ("Preprocessing voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Preprocessing completed! Review the results on the right, then click continue."))
+        st.success("✅ " + ("Tekstverwerking voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Preprocessing completed! Review the results on the right, then click continue."))
     
     #2. blue box/sample info
     if is_step_completed(0):  
@@ -1183,54 +1183,55 @@ def show_preprocessing_page():
 
     #3. yelow box/results
     if is_step_completed(1):  
+        if st.session_state.get('preprocessing_stats', {}):
 
-       summary_info  = ""
-       stats = st.session_state.get('preprocessing_stats', {})
-        
-       # a) Normalizer stats
-       norm_stats = stats.get('normalizer_stats') or {}
-       if norm_stats:
-           nl = (st.session_state.language == "nl")
-           summary_info += (
-                    "\n\n" + ("**Normalisatie:**" if nl else "**Normalization:**")
-                    + f"\n- { 'Hoofdletterwijzigingen' if nl else 'Case changes' }: {norm_stats.get('case_changes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }"
-                    + f"\n- { 'Witruimte opgeschoond' if nl else 'Whitespace cleanup' }: {norm_stats.get('whitespace_changes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }"
-                    + f"\n- { 'Schuine strepen vervangen' if nl else 'Slash replacements' }: {norm_stats.get('slash_changes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }")
-        
-       # b) Spell checker stats
-       spell_stats = stats.get('spellchecker_stats') or {}
-       if spell_stats:
-            nl = (st.session_state.language == "nl")
-            summary_info += (
-                    "\n\n" + ("**Spellingcontrole:**" if nl else "**Spell checking:**")
-                    + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}")
-        
-       # c) Finalizer stats
-       final_stats = stats.get('finalizer_stats') or {}
-       if final_stats:
-           nl = (st.session_state.language == "nl")
-           summary_info += (
-                    "\n\n" + ("**Finaliseren:**" if nl else "**Finalization:**")
-                    + f"\n- { 'Leestekens toegevoegd' if nl else 'Punctuation additions' }: {final_stats.get('punctuation_additions', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }"
-                    + f"\n- { 'Opmaak opgeschoond' if nl else 'Format cleanup' }: {final_stats.get('format_cleanup', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }"
-                    + f"\n- { 'Spatieaanpassingen' if nl else 'Spacing fixes' }: {final_stats.get('spacing_fixes', 0)} "
-                      f"{ 'reacties' if nl else 'responses' }")
-
-       st.markdown(f"""
-            <div style="
-            border-radius: 10px;
-            padding: 12px 16px;
-            background-color: #FFF8E6;
-            margin-top: 8px;
-            color: #5C4102;">
-            {summary_info}
-            </div>
-            """, unsafe_allow_html=True)
+           summary_info  = ""
+           stats = st.session_state.get('preprocessing_stats', {})
+            
+           # a) Normalizer stats
+           norm_stats = stats.get('normalizer_stats') or {}
+           if norm_stats:
+               nl = (st.session_state.language == "nl")
+               summary_info += (
+                        "\n\n" + ("**Normalisatie:**" if nl else "**Normalization:**")
+                        + f"\n- { 'Hoofdletterwijzigingen' if nl else 'Case changes' }: {norm_stats.get('case_changes', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }"
+                        + f"\n- { 'Witruimte opgeschoond' if nl else 'Whitespace cleanup' }: {norm_stats.get('whitespace_changes', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }"
+                        + f"\n- { 'Schuine strepen vervangen' if nl else 'Slash replacements' }: {norm_stats.get('slash_changes', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }")
+            
+           # b) Spell checker stats
+           spell_stats = stats.get('spellchecker_stats') or {}
+           if spell_stats:
+                nl = (st.session_state.language == "nl")
+                summary_info += (
+                        "\n\n" + ("**Spellingcontrole:**" if nl else "**Spell checking:**")
+                        + f"\n- { 'Correcties' if nl else 'Corrections' }: {spell_stats.get('corrections_applied', 0)}")
+            
+           # c) Finalizer stats
+           final_stats = stats.get('finalizer_stats') or {}
+           if final_stats:
+               nl = (st.session_state.language == "nl")
+               summary_info += (
+                        "\n\n" + ("**Finaliseren:**" if nl else "**Finalization:**")
+                        + f"\n- { 'Leestekens toegevoegd' if nl else 'Punctuation additions' }: {final_stats.get('punctuation_additions', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }"
+                        + f"\n- { 'Opmaak opgeschoond' if nl else 'Format cleanup' }: {final_stats.get('format_cleanup', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }"
+                        + f"\n- { 'Spatieaanpassingen' if nl else 'Spacing fixes' }: {final_stats.get('spacing_fixes', 0)} "
+                          f"{ 'reacties' if nl else 'responses' }")
+    
+           st.markdown(f"""
+                <div style="
+                border-radius: 10px;
+                padding: 12px 16px;
+                background-color: #FFF8E6;
+                margin-top: 8px;
+                color: #5C4102;">
+                {summary_info}
+                </div>
+                """, unsafe_allow_html=True)
  
     # Getting data from step0 selections
     if is_step_completed(0) and not is_step_completed(1): 
@@ -2936,14 +2937,14 @@ def show_step_samples(step_number):
         st.write("❌ No filename or variable selected - cannot load data")
         return
 
-    # Session-based filtering: Only show results from current session when in force_recalculate mode
-    if st.session_state.get('force_recalculate_all', False):
-        # Upload from file route - only show if step was completed in current session
-        # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
-        if not is_step_completed(step_number):
-            lang = st.session_state.language
-            st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
-            return
+    # # Session-based filtering: Only show results from current session when in force_recalculate mode
+    # if st.session_state.get('force_recalculate_all', False):
+    #     # Upload from file route - only show if step was completed in current session
+    #     # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
+    #     if not is_step_completed(step_number):
+    #         lang = st.session_state.language
+    #         st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
+    #         return
 
     # Get cache manager
     cache_manager = _get_cache_manager()
@@ -2961,22 +2962,16 @@ def show_step_samples(step_number):
         merge_config=merge_config
     )
 
-    if False:  # Additional debug for column 2 display
-        st.write("🔍 **Column 2 Debug:**")
-        st.write(f"- step_number: {step_number}")
-        st.write(f"- variable_key: {variable_key}")
-        st.write(f"- filename: {filename}")
-
     # Load data from cache based on step
     try:
         if step_number == 1:
             # Step 1: Preprocessed data (after preprocessing completion)
             data = cache_manager.load_from_cache(filename, "preprocessed", variable_key, models.PreprocessedModel)
-            if False:  # Debug cache lookup result
-                st.write(f"- Cache lookup result: {' Found data!' if data else 'No data'}")
-                if data:
-                    st.write(f"- Number of items: {len(data)}")
+
             if data:
+                # Count valid responses (not quality filtered)
+                valid_responses = sum(1 for item in data if not getattr(item, 'quality_filter', False))
+                st.session_state.step2_sample_size = valid_responses
                 show_preprocessed_samples(data)
    
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -2992,7 +2987,9 @@ def show_step_samples(step_number):
             # Step 2: Quality filtered data
             data = cache_manager.load_from_cache(filename, "quality_filter", variable_key, models.QualityFilteredModel)
             if data:
-                #st.write(f"✅ Loaded {len(data)} quality filtered responses from cache")
+                # Count valid responses (not quality filtered)
+                valid_responses = sum(1 for item in data if not getattr(item, 'quality_filter', False))
+                st.session_state.step3_sample_size = valid_responses
                 show_filtered_samples(data)
                 
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -3009,8 +3006,9 @@ def show_step_samples(step_number):
             # Step 3: Extracted ideas
             data = cache_manager.load_from_cache(filename, "extracted_ideas", variable_key, models.IdeasExtractedModel)
             if data:
-                #total_ideas = sum(item.idea_count for item in data)
-                #st.write(f"✅ Loaded {len(data)} responses with {total_ideas} ideas from cache")
+                # Count total ideas across all responses and lock in as sample size for remaining steps
+                total_ideas = sum(item.idea_count for item in data)
+                st.session_state.sample_size = total_ideas  # Update global sample size to idea count
                 show_idea_samples(data)
          
                 col1, col2, col3 = st.columns([1, 2, 1])
