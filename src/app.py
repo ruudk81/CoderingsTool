@@ -2310,7 +2310,7 @@ def show_codebook_generation_page():
     """
     Step 6: Codebook Generation (Codebook Generatie)
 
-    Generates codes for each cluster from step 5 using inductive coding.
+    Generates codes from step 5's "reduced" data. 
 
     Pipeline function: step_6_generate_codebook
     Cache name: codebook_generation
@@ -2319,75 +2319,21 @@ def show_codebook_generation_page():
     lang = st.session_state.language
 
     # ==================== HEADER ====================
-    st.header("Stap 6: Codebook Generatie" if lang == "nl" else "Step 6: Codebook Generation")
+    st.header("Stap 6: Generatie ruwe codes" if lang == "nl" else "Step 6: Unpolised code generation")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
     if is_step_completed(6):
         st.success("✅ " + (
-            "Codebook gegenereerd! Bekijk de resultaten rechts en klik dan op doorgaan."
+            "Codes gegenereerd! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Codebook generated! Review the results on the right, then click continue."
-        ))
+            "Codes generated! Review the results, then click continue."))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(5):
         # Get or calculate clustering stats
-        if 'clustering_stats' in st.session_state:
-            stats = st.session_state['clustering_stats']
-            num_clusters = stats.get('num_clusters', 0)
-        elif 'initial_cluster_results' in st.session_state.pipeline_results:
-            # Calculate stats from initial_cluster_results (cache route fallback)
-            initial_cluster_results = st.session_state.pipeline_results['initial_cluster_results']
-            if initial_cluster_results:
-                cluster_ids = set(
-                    segment.initial_cluster
-                    for result in initial_cluster_results
-                    for segment in result.response_ideas
-                    if segment.initial_cluster != -1
-                )
-                num_clusters = len(cluster_ids)
-            else:
-                num_clusters = 0
-        else:
-            # Last resort: load from cache to calculate stats (for cache route when step 6 already completed)
-            try:
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-                cache_manager = _get_cache_manager()
-
-                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
-                    initial_cluster_results = _load_or_recover(
-                        st.session_state.filename,
-                        "initial_clusters",
-                        variable_key,
-                        models.ClusterModel
-                    )
-                    # Store in pipeline_results for future use
-                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
-
-                    # Calculate stats
-                    cluster_ids = set(
-                        segment.initial_cluster
-                        for result in initial_cluster_results
-                        for segment in result.response_ideas
-                        if segment.initial_cluster != -1
-                    )
-                    num_clusters = len(cluster_ids)
-                else:
-                    num_clusters = 0
-            except Exception:
-                num_clusters = 0
-
+        num_clusters = st.session_state.num_clusters
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
         st.info(sample_info)
@@ -3617,33 +3563,325 @@ def show_cluster_samples(initial_cluster_results):
       </div>
     </div>
     """, unsafe_allow_html=True)
-
+    
+    #save number of clusters
+    st.session_state.num_clusters = len(cluster_ids)
 
 def show_codebook_samples(codebook_reasoning):
-    """Show codebook samples using display_cluster_analysis"""
+    import re
+
+    NL = st.session_state.get("language", "en") == "nl"
+    t_no_data = "Geen codebook-data beschikbaar" if NL else "No codebook data available"
+    t_header = "Codebook-analyse" if NL else "Codebook analysis"
+    t_caption = "Willekeurige clusterselectie" if NL else "Random cluster selection"
+    t_draw = "🎲 Toon andere" if NL else "🎲 Show another"
+    t_error = "Fout bij weergeven van codebook-analyse" if NL else "Error displaying codebook analysis"
+
+    # Translations for sections
+    t_ideas = "Cluster Ideeën" if NL else "Cluster Ideas"
+    t_code_in_codebook = "Code in Codebook" if NL else "Code in Codebook"
+    t_analysis = "Cluster Analyse" if NL else "Cluster Analysis"
+    t_theme = "Cluster Thema & Beschrijving" if NL else "Cluster Theme & Description"
+    t_candidates = "Kandidaat Codes" if NL else "Candidate Codes"
+    t_recommendations = "Aanbeveling" if NL else "Recommendation"
+    t_decision = "Beslissing" if NL else "Decision"
+    t_motivation = "Motivering" if NL else "Motivation"
+    t_verdict = "Verdict" if NL else "Verdict"
+    t_validated_decision = "Gevalideerde Beslissing" if NL else "Validated Decision"
+    t_code = "Code" if NL else "Code"
+    t_definition = "Definitie" if NL else "Definition"
+    t_theme_label = "Thema Label" if NL else "Theme Label"
+    t_theme_desc = "Thema Beschrijving" if NL else "Theme Description"
+    t_decision_type = "Beslissingstype" if NL else "Decision Type"
+    t_source_code = "Broncode" if NL else "Source Code"
+    t_justification = "Rechtvaardiging" if NL else "Justification"
+    t_final_code = "Finale Code" if NL else "Final Code"
+    t_found = "gevonden" if NL else "found"
+    t_responses = "reacties" if NL else "responses"
+    t_existing = "(Bestaand)" if NL else "(Existing)"
+
     if not codebook_reasoning:
-        st.write("No codebook data available")
+        st.markdown(f"""
+        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
+          <span style="display:block;">{t_no_data}</span>
+        </div>
+        """, unsafe_allow_html=True)
         return
-    
-    from utils.codegenResults import display_cluster_analysis
-    import io
-    import sys
-    
-    # Capture the output from display_cluster_analysis
-    old_stdout = sys.stdout
-    sys.stdout = captured_output = io.StringIO()
-    
+
+    # Get available cluster ids
+    step3_recs = getattr(codebook_reasoning, "step3_recommendations", {}) or {}
+    if not step3_recs:
+        st.markdown(f"""
+        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
+          <span style="display:block;">{t_no_data}</span>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    available_ids = list(step3_recs.keys())
+    cluster_id = random.choice(available_ids)
+
+    # Get structured cluster data using new function
     try:
-        display_cluster_analysis(codebook_reasoning)
-        output = captured_output.getvalue()
-        
-        # Display the captured output in gray container
-        if output.strip():
-            st.code(output, language=None)
+        from utils.codegenResults import get_cluster_analysis
+        cluster_data = get_cluster_analysis(codebook_reasoning, cluster_id=cluster_id)
+
+        if 'error' in cluster_data:
+            st.markdown(f"""
+            <div style="border:1px solid #ffd2d2;border-radius:10px;padding:16px 20px;background:#fff5f5;margin-top:8px;">
+              <span style="display:block;">{t_error}: {html.escape(cluster_data['error'])}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            return
     except Exception as e:
-        st.error(f"Error displaying codebook analysis: {e}")
-    finally:
-        sys.stdout = old_stdout
+        st.markdown(f"""
+        <div style="border:1px solid #ffd2d2;border-radius:10px;padding:16px 20px;background:#fff5f5;margin-top:8px;">
+          <span style="display:block;">{t_error}: {html.escape(str(e))}</span>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # Header
+    st.markdown(f"""
+    <div style="margin-bottom:16px;">
+      <b style="display:block; font-size:1.1em; margin-bottom:4px;">{t_header}</b>
+      <span style="display:block; font-style:italic; color:#666;">{t_caption}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Section 1: Code in Codebook (expanded by default, yellow content background)
+    validation = cluster_data['validation']
+    if validation['verdict']:
+        validated_code = validation.get('validated_code', {}) or {}
+        code_val = validated_code.get('code', '')
+        def_val = validated_code.get('definition', '')
+
+        if code_val or def_val:
+            st.markdown(f"""
+            <details open style="margin-bottom:12px;">
+              <summary style="
+                cursor: pointer;
+                padding: 12px 16px;
+                background: #f0f2f6;
+                border-radius: 8px;
+                font-weight: 600;
+                margin-bottom: 8px;
+                user-select: none;">
+                📋 {t_code_in_codebook}
+              </summary>
+              <div style="
+                padding: 16px;
+                background: #fffbe6;
+                border: 1px solid #ffe58f;
+                border-radius: 8px;
+                margin-top: 8px;
+                line-height: 1.6;">
+                {f'<div style="margin-bottom:8px;"><b>{t_code}:</b> {html.escape(str(code_val))}</div>' if code_val else ''}
+                {f'<div><b>{t_definition}:</b> {html.escape(str(def_val))}</div>' if def_val else ''}
+              </div>
+            </details>
+            """, unsafe_allow_html=True)
+
+    # Section 2: Cluster Ideas (expanded by default)
+    ideas = cluster_data['ideas']
+    if ideas['count'] > 0:
+        ideas_html = ''.join([f'<li style="margin-bottom:8px;">{html.escape(idea)}</li>'
+                              for idea in ideas['ideas_list']])
+        st.markdown(f"""
+        <details open style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            💡 {t_ideas} ({ideas['count']} {t_responses})
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;">
+            <ol style="line-height: 1.6; margin: 0; padding-left: 20px;">
+              {ideas_html}
+            </ol>
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 3: Cluster Analysis (collapsed by default)
+    analysis = cluster_data['analysis']
+    if analysis['text']:
+        # Format analysis text with line breaks before sentences containing colons
+        analysis_text = html.escape(str(analysis['text']))
+        analysis_formatted = re.sub(r'\. ([A-Z0-9][^.]*:)', r'.<br>\1', analysis_text)
+
+        st.markdown(f"""
+        <details style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            🧠 {t_analysis}
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            {analysis_formatted}
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 3: Cluster Theme & Description (collapsed by default)
+    theme = cluster_data['theme']
+    if theme['theme_label'] or theme['theme_description']:
+        st.markdown(f"""
+        <details style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            🏷️ {t_theme}
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            {f'<div style="margin-bottom:8px;"><b>{t_theme_label}:</b> {html.escape(str(theme["theme_label"]))}</div>' if theme['theme_label'] else ''}
+            {f'<div><b>{t_theme_desc}:</b> {html.escape(str(theme["theme_description"]))}</div>' if theme['theme_description'] else ''}
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 4: Candidate Codes (collapsed by default)
+    candidates = cluster_data['candidate_codes']
+    if candidates:
+        candidates_html = ''.join([
+            f'''<div style="margin-bottom:12px;">
+              <b>{html.escape(str(c.get('code', 'N/A')))}</b><br>
+              <span style="color:#666;">{html.escape(str(c.get('definition', 'N/A')))}</span>
+            </div>'''
+            for c in candidates
+        ])
+        st.markdown(f"""
+        <details style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            🔍 {t_candidates} {t_existing} ({len(candidates)} {t_found})
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            {candidates_html}
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 5: Recommendation (collapsed by default)
+    recommendations = cluster_data['recommendations']
+    if recommendations['decision_type']:
+        st.markdown(f"""
+        <details style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            🎯 {t_recommendations}
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            <div style="margin-bottom:12px;">
+              <b>{t_decision_type}:</b> {html.escape(str(recommendations['decision_type']))}
+            </div>
+            <div style="margin-bottom:12px;">
+              <b>{t_source_code}:</b> {html.escape(str(recommendations.get('source_code', 'N/A')))}
+            </div>
+            <div style="margin-bottom:12px;">
+              <b>{t_justification}:</b> {html.escape(str(recommendations['justification'] or 'N/A'))}
+            </div>
+            <div>
+              <b>{t_final_code}:</b> {html.escape(str(recommendations.get('final_code_label', 'N/A')))}
+            </div>
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 7: Decision (collapsed by default, includes motivation)
+    validation = cluster_data['validation']
+    if validation['verdict']:
+        rationale = validation.get('rationale')
+        st.markdown(f"""
+        <details style="margin-bottom:12px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            ✅ {t_decision}
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            <div style="margin-bottom:12px;">
+              <b>{t_verdict}:</b> {html.escape(str(validation['verdict']))}
+            </div>
+            <div style="margin-bottom:12px;">
+              <b>{t_validated_decision}:</b> {html.escape(str(validation['validated_decision']))}
+            </div>
+            {f'<div><b>{t_motivation}:</b> {html.escape(str(rationale))}</div>' if rationale else ''}
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+
+    # Reroll button
+    if st.button(t_draw, key="codebook_reroll"):
+        st.rerun()
+
 
 def show_theme_samples(theme_enriched_codebook):
     """Show theme samples using EXACT pattern from user's original code"""
@@ -4007,9 +4245,15 @@ def show_step_samples(step_number):
             try:
                 from utils.codeGenerator import CodeGeneratorReasoningResults
                 data = cache_manager.load_from_cache(filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults)
+                
                 if data and len(data) > 0:
-                    #st.write("✅ Loaded codebook reasoning from cache")
                     show_codebook_samples(data[0])
+                    
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col2:
+                        if st.button("🔄 " + ("Ga door naar volgende stap" if lang == "nl" else "Continue to Next Step"), type="primary", use_container_width=True, key="codeGen_continue"):
+                            st.session_state.step = 6
+                            st.rerun()
                 else:
                     st.write("⏳ No codebook reasoning in cache - run codebook generation first")
             except Exception as e:

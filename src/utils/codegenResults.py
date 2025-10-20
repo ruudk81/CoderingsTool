@@ -1,5 +1,107 @@
 import random
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
+
+
+def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str]] = None) -> Dict[str, Any]:
+    """Extract cluster analysis data and return as structured dictionary.
+
+    Args:
+        codebook_reasoning: CodeGeneratorReasoningResults object containing analysis data
+        cluster_id: Specific cluster ID to analyze (e.g., '43-1'). If None, selects random cluster.
+
+    Returns:
+        Dictionary containing structured cluster analysis data with keys:
+        - cluster_id: Full cluster identifier
+        - main_cluster_id: Main cluster number
+        - ideas: Dict with 'count' and 'ideas_list'
+        - analysis: Dict with cluster analysis and theme info
+        - candidate_codes: List of candidate code dicts
+        - recommendations: Dict with decision type, justification, and final code
+        - validation: Dict with verdict, validated decision, and rationale
+    """
+    step1_inputs = getattr(codebook_reasoning, 'step1_inputs', {})
+    step1_summaries = getattr(codebook_reasoning, 'step1_summaries', {})
+    step2_analysis = getattr(codebook_reasoning, 'step2_analysis', {})
+    step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
+    step4_validations = getattr(codebook_reasoning, 'step4_validations', {})
+
+    # Select cluster_id if not provided
+    if cluster_id is None:
+        if step3_recommendations:
+            available_ids = list(step3_recommendations.keys())
+            cluster_id = random.choice(available_ids)
+        else:
+            return {'error': 'No clusters with recommendations found'}
+
+    cluster_id = str(cluster_id)
+    main_cluster_id = cluster_id.split('-')[0]
+
+    # Initialize result structure
+    result = {
+        'cluster_id': cluster_id,
+        'main_cluster_id': main_cluster_id,
+        'ideas': {'count': 0, 'ideas_list': []},
+        'analysis': {'text': None},
+        'theme': {'theme_id': None, 'theme_label': None, 'theme_description': None},
+        'candidate_codes': [],
+        'recommendations': {'decision_type': None, 'source_code': None, 'justification': None, 'final_code_label': None},
+        'validation': {'verdict': None, 'validated_decision': None, 'validated_code': None, 'rationale': None}
+    }
+
+    # 1. Extract cluster ideas
+    if step1_inputs and cluster_id in step1_inputs:
+        cluster_text = step1_inputs[cluster_id].get('cluster_text', '')
+        if cluster_text:
+            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
+            clean_ideas = [idea[2:].strip() if idea.startswith('- ') else idea for idea in ideas]
+            result['ideas']['count'] = len(clean_ideas)
+            result['ideas']['ideas_list'] = clean_ideas
+
+    # 2. Extract cluster analysis and theme (separated)
+    if step1_summaries and cluster_id in step1_summaries:
+        step1_data = step1_summaries[cluster_id]
+        result['analysis']['text'] = step1_data.get("analysis", None)
+        result['theme']['theme_id'] = step1_data.get("theme_id", None)
+        result['theme']['theme_label'] = step1_data.get("theme_label", None)
+        result['theme']['theme_description'] = step1_data.get("theme_description", None)
+
+    # 3. Extract candidate codes
+    if step2_analysis and cluster_id in step2_analysis:
+        step2_data = step2_analysis[cluster_id]
+        decision = step2_data.get('coding_decision', {})
+        if 'matched_candidates' in decision:
+            result['candidate_codes'] = decision['matched_candidates']
+
+    # 4. Extract recommendations
+    decision_data = None
+    if step2_analysis and cluster_id in step2_analysis:
+        step2_data = step2_analysis[cluster_id]
+        if isinstance(step2_data, dict) and 'coding_decision' in step2_data:
+            decision_data = step2_data['coding_decision']
+
+    generated_code_data = None
+    if step3_recommendations and cluster_id in step3_recommendations:
+        generated_code_data = step3_recommendations[cluster_id]
+
+    if decision_data:
+        result['recommendations']['decision_type'] = decision_data.get('decision', None)
+        result['recommendations']['source_code'] = decision_data.get('source_code', None)
+        result['recommendations']['justification'] = decision_data.get('justification', None)
+
+    if generated_code_data:
+        result['recommendations']['final_code_label'] = generated_code_data.get('code_label_proposal', None)
+
+    # 5. Extract validation with rationale included
+    if step4_validations and cluster_id in step4_validations:
+        val_result = step4_validations[cluster_id]
+        if 'code_validation' in val_result:
+            validation = val_result['code_validation']
+            result['validation']['verdict'] = validation.get('verdict', None)
+            result['validation']['validated_decision'] = validation.get('validated_decision', None)
+            result['validation']['validated_code'] = validation.get('validated_code', None)
+            result['validation']['rationale'] = validation.get('decision_rationale', None)
+
+    return result
 
 
 def display_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str]] = None, show_detailed_reasoning: bool = False, debug_mode: bool = False) -> None:
