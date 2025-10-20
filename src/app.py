@@ -1027,7 +1027,7 @@ def show_upload_page():
     lang = st.session_state.language
     st.header(f"{ui.get_text('BTN_UPLOAD', lang)}" if lang == "nl" else "Upload Data")
     
-    # Option 1: retreive from cache
+    # ==================== OPTION 1: RETRIEVE FROM CACHE ====================
     st.subheader("📂 " + ("Laad uit Cache" if lang == "nl" else "Load from Cache"))
     cached_datasets = get_available_cached_datasets()
     if cached_datasets:
@@ -1088,7 +1088,7 @@ def show_upload_page():
         st.markdown("---")
     
     
-    # Option 2: load from file
+    # ==================== OPTION 2: UPLOAD FROM FILE ====================
     st.subheader("📤 " + ("Upload Nieuw Bestand" if lang == "nl" else "Upload New File"))
     uploaded_file = st.file_uploader("Kies een SPSS bestand (.sav)" if lang == "nl" else "Choose a SPSS file (.sav)", type=['sav'], help=ui.get_text("UPLOAD_HELP", lang))
     if uploaded_file is not None:
@@ -1358,7 +1358,6 @@ def show_upload_page():
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
 
 def show_preprocessing_page():
-
     lang = st.session_state.language
     
     if False: #debug    
@@ -1379,17 +1378,17 @@ def show_preprocessing_page():
       
     st.header("Stap 1: Tekstverwerking" if lang == "nl" else "Step 1: Text preprocessing")
 
-    #1. green box/completion
+    # ==================== BLOCK 1: GREEN BOX ====================
     if is_step_completed(1): 
         st.success("✅ " + ("Tekstverwerking voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Preprocessing completed! Review the results on the right, then click continue."))
     
-    #2. blue box/sample info
+    # ==================== BLOCK 2: BLUE BOX ====================
     if is_step_completed(0):
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         sample_info += (f"\n\n**Data:** {st.session_state.sample_size_config} antwoorden" if lang == "nl" else f"\n\n**Data:** { st.session_state.sample_size_config} responses")
         st.info(sample_info)    
 
-    #3. yelow box/results
+    # ==================== BLOCK 3: YELLOW BOX ====================
     if is_step_completed(1):  
         if st.session_state.get('preprocessing_stats', {}):
 
@@ -1441,7 +1440,7 @@ def show_preprocessing_page():
                 </div>
                 """, unsafe_allow_html=True)
  
-    # Getting data from step0 selections
+    # ==================== BLOCK 4: DATA LOADING ====================
     if is_step_completed(0) and not is_step_completed(1): 
         progress_container = st.empty()
         try: 
@@ -1518,7 +1517,7 @@ def show_preprocessing_page():
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
-    # Preprocessing data - button-triggered
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
     if is_step_completed(0) and not is_step_completed(1):
         st.markdown(ui.get_text("PREPROCESSING_INFO", lang))
 
@@ -1575,17 +1574,17 @@ def show_filtering_page():
 
     st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 2: Quality Filtering")
 
-    # 1. green box/completion
+    # ==================== BLOCK 1: GREEN BOX ====================
     if is_step_completed(2):
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
 
-    # 2. blue box/sample info
+    # ==================== BLOCK 2: BLUE BOX ====================
     if is_step_completed(1):
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         sample_info += (f"\n\n**Data:** {st.session_state.sample_size_config} antwoorden" if lang == "nl" else f"\n\n**Data:** {st.session_state.sample_size_config} responses")
         st.info(sample_info)
 
-    # 3. yellow box/results
+    # ==================== BLOCK 3: YELLOW BOX ====================
     if is_step_completed(2):
         if st.session_state.get('quality_filter_stats', {}):
             stats = st.session_state.get('quality_filter_stats', {})
@@ -1618,7 +1617,7 @@ def show_filtering_page():
             </div>
             """, unsafe_allow_html=True)
 
-    # 4. Data loading block - load preprocessed_text if not already in pipeline_results
+    # ==================== BLOCK 4: DATA LOADING ====================
     if is_step_completed(1) and not is_step_completed(2):
         progress_container = st.empty()
         try:
@@ -1670,7 +1669,7 @@ def show_filtering_page():
         except Exception as e:
             st.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
 
-    # 5. Processing button block
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
     if is_step_completed(1) and not is_step_completed(2):
         st.markdown(ui.get_text("FILTERING_INFO", lang))
 
@@ -1754,22 +1753,24 @@ def show_idea_extraction_page():
     lang = st.session_state.language
 
     # ==================== HEADER ====================
-    st.header("Stap 3: Idee-extractie" if lang == "nl" else "Step 3: Idea Extraction")
+    st.header("Stap 3: Opdelen antwoorden" if lang == "nl" else "Step 3: Splitting responses")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
     if is_step_completed(3):
         st.success("✅ " + (
-            "Idee-extractie voltooid! Bekijk de resultaten en klik dan op doorgaan."
+            "Opdeling voltooid! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Idea extraction completed! Review the results on the right, then click continue."
+            "Unitization completed! Review the results, then click continue."
         ))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(2):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {st.session_state.get('step3_sample_size', st.session_state.sample_size_config)} {'antwoorden' if lang == 'nl' else 'responses'}")
+        sample_info += (f"\n\n**Data:** {st.session_state.get('step3_sample_size', st.session_state.sample_size_config)} {'antwoorden' if lang == 'nl' else 'responses'}")    
+        if is_step_completed(3):
+            sample_info += (f" / {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'deelantwoorden' if lang == 'nl' else 'answer parts'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -1959,19 +1960,16 @@ def show_embedding_page():
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
     if is_step_completed(4):
-        st.success("✅ " + (
-            "Embeddings gegenereerd! Klik op doorgaan."
-            if lang == "nl" else
-            "Embeddings generated! Click continue."
-        ))
+        st.success("✅ " + ("Embeddings gegenereerd! Klik op doorgaan." if lang == "nl" else "Embeddings generated! Click continue."))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(3):
-        stats = st.session_state.get('idea_extraction_stats', {})
-        total_ideas = stats.get('total_ideas', 0)
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {total_ideas} {'ideeën te embedden' if lang == 'nl' else 'ideas to embed'}")
+        if is_step_completed(4):
+            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings' if lang == 'nl' else 'embeddings'}")
+        else:
+            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'deelantwoorden te embedden' if lang == 'nl' else 'answer parts to embed'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: DATA LOADING ====================
@@ -2100,12 +2098,12 @@ def show_clustering_page():
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(4):
-        # Get embedding count from idea extraction stats
-        stats = st.session_state.get('idea_extraction_stats', {})
-        total_embeddings = stats.get('total_ideas', 0)
-
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {total_embeddings} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
+        if is_step_completed(5):
+            num_clusters = len(set([segment.initial_cluster for result in  st.session_state.pipeline_results['initial_cluster_results'] for segment in result.response_ideas if segment.initial_cluster is not None]))
+            sample_info += (f"**Data**: {num_clusters} {'clusters' if lang == 'nl' else 'clusters'}")
+        else:
+            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -2523,6 +2521,16 @@ def show_codebook_generation_page():
             except Exception as e:
                 st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
 
+    # ==================== CONTINUE BUTTON ====================
+    # Show continue button when step is completed
+    if is_step_completed(6):
+        if st.button("➡️ " + (
+            "Ga door naar Stap 7" if lang == "nl"
+            else "Continue to Step 7"
+        ), type="primary"):
+            st.session_state.current_step = 7
+            st.rerun()
+
 def show_theme_identification_page():
     """
     Step 7: Theme Identification (Thema Identificatie)
@@ -2777,6 +2785,16 @@ def show_theme_identification_page():
                 st.rerun()
             except Exception as e:
                 st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
+
+    # ==================== CONTINUE BUTTON ====================
+    # Show continue button when step is completed
+    if is_step_completed(7):
+        if st.button("➡️ " + (
+            "Ga door naar Stap 9" if lang == "nl"
+            else "Continue to Step 9"
+        ), type="primary"):
+            st.session_state.current_step = 9
+            st.rerun()
 
 def show_code_assignment_page():
     lang = st.session_state.language
@@ -3407,9 +3425,9 @@ def show_idea_samples(encoded_text, n_samples=5):
         )
         
         caption = (
-            "Reactie → descriptieve code(s)"
+            "Antwoord → descriptieve code van deelantwoord"
             if st.session_state.language == "nl"
-            else "Response → descriptive code(s)"
+            else "Response → descriptive code of answer part"
         )
     
         st.markdown(f"""
@@ -3434,68 +3452,122 @@ def show_idea_samples(encoded_text, n_samples=5):
 
 
 def show_cluster_samples(initial_cluster_results):
-    """Show cluster samples using EXACT pattern from user's original code"""
+    """Show cluster samples with HTML rendering and back/forward navigation."""
+
+    # i18n helpers
+    NL = st.session_state.get("language", "en") == "nl"
+    t_no_data = "Geen data beschikbaar" if NL else "No data available"
+    t_no_clusters = "Geen clusters gevonden" if NL else "No clusters found"
+    t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
+    t_next = "➡️ Volgende" if NL else "➡️ Next"
+    t_of = "van" if NL else "of"
+    t_header = "Cluster voorbeelden" if NL else "Cluster samples"
+    t_caption = ("Navigeer door genummerde clusters"
+                 if NL else "Navigate through numbered clusters")
+    t_cluster_label = "Cluster" if NL else "Cluster"
+    t_items = "items" if NL else "items"
+
     if not initial_cluster_results:
-        st.write("No cluster data available")
+        st.markdown(f"""
+        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
+          <span style="display:block;">{t_no_data}</span>
+        </div>
+        """, unsafe_allow_html=True)
         return
-    
-    # Original pattern: Get cluster IDs
-    cluster_ids = list(set([
-        response_idea.initial_cluster 
-        for result in initial_cluster_results 
-        for response_idea in result.response_ideas  
-        if response_idea.initial_cluster is not None
-    ]))
-    
-    if not cluster_ids:
-        st.write("No clusters found")
+
+    # Build {cluster_id: [idea, idea, ...]}
+    cluster_dict = {}
+    for result in initial_cluster_results:
+        for ri in getattr(result, "response_ideas", []) or []:
+            cid = getattr(ri, "initial_cluster", None)
+            idea = getattr(ri, "idea", None)
+            if cid is None or idea is None:
+                continue
+            cluster_dict.setdefault(cid, []).append(idea)
+
+    if not cluster_dict:
+        st.markdown(f"""
+        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
+          <span style="display:block;">{t_no_clusters}</span>
+        </div>
+        """, unsafe_allow_html=True)
         return
-    
-    cluster_ids.sort()
-    
-    # Initialize session state for navigation (simulating the input() pattern)
-    if 'cluster_batch' not in st.session_state:
-        st.session_state.cluster_batch = 0
-    
-    # Original pattern: for x in range(1, round(len(cluster_ids) / 1) + 1)
-    batch_size = 1  # Show 1 cluster at a time
-    total_batches = round(len(cluster_ids) / batch_size)
-    current_batch = st.session_state.cluster_batch
-    
-    # Navigation
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("⬅️ Previous") and current_batch > 0:
-            st.session_state.cluster_batch -= 1
+
+    cluster_ids = sorted(cluster_dict.keys())
+
+    # Session state for current position
+    if "cluster_idx" not in st.session_state:
+        st.session_state.cluster_idx = 0
+
+    total = len(cluster_ids)
+    idx = st.session_state.cluster_idx
+
+    # Navigation header (buttons + indicator + optional jump)
+    nav1, nav2, nav3, nav4 = st.columns([1, 2, 2, 2])
+    with nav1:
+        if st.button(t_prev, use_container_width=True, disabled=(idx <= 0)):
+            st.session_state.cluster_idx = max(0, idx - 1)
             st.rerun()
-    
-    with col2:
-        st.write(f"Batch {current_batch + 1} of {total_batches}")
-    
-    with col3:
-        if st.button("➡️ Next") and current_batch < total_batches - 1:
-            st.session_state.cluster_batch += 1
+    with nav2:
+        st.markdown(
+            f"<div style='margin-top:6px;text-align:center;'>"
+            f"{idx + 1} {t_of} {total}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with nav3:
+        # Quick jump by index (keeps UI snappy for many clusters)
+        new_idx = st.number_input(
+            label="",
+            min_value=1, max_value=total, value=idx + 1,
+            step=1, key="cluster_jump_number", label_visibility="collapsed"
+        )
+        if new_idx - 1 != idx:
+            st.session_state.cluster_idx = new_idx - 1
             st.rerun()
-    
-    # Original pattern logic
-    x = current_batch + 1
-    y = x * batch_size
-    st.write(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
-    
-    for z in range(y - 1, y):
-        if z < len(cluster_ids):
-            cluster_id = cluster_ids[z]  # Use actual cluster ID, not index
-            st.write(f"\n**Cluster {cluster_id}**")
-            
-            cluster_text = ""
-            for item in initial_cluster_results:
-                for subitem in item.response_ideas:
-                    if subitem.initial_cluster == cluster_id:
-                        cluster_text += f"{subitem.idea}\n"
-            
-            # Display in gray container
-            if cluster_text.strip():
-                st.code(cluster_text.strip(), language=None)
+    with nav4:
+        if st.button(t_next, use_container_width=True, disabled=(idx >= total - 1)):
+            st.session_state.cluster_idx = min(total - 1, idx + 1)
+            st.rerun()
+
+    # Active cluster
+    active_cid = cluster_ids[st.session_state.cluster_idx]
+    ideas = cluster_dict[active_cid]
+
+    # Build HTML list of ideas
+    li_items = []
+    for idea in ideas:
+        li_items.append(f"<li style='margin:4px 0;'>{html.escape(idea)}</li>")
+    ideas_html = "".join(li_items)
+
+    # Render nicely styled card (HTML only)
+    st.markdown(f"""
+    <div style="
+        border: 1px solid #dce1eb;
+        border-radius: 10px;
+        padding: 16px 20px;
+        background-color: #F8F9FB;
+        margin-top: 8px;
+        line-height: 1.6;">
+      <b style="display:block; margin-bottom:12px;">{t_header}</b>
+      <span style="display:block; margin-bottom:12px; font-style:italic;">{t_caption}.</span>
+
+      <div style="
+          border: 1px solid #e6eaf2;
+          border-radius: 8px;
+          padding: 12px 14px;
+          background-color: #ffffff;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div><b>{t_cluster_label} {html.escape(str(active_cid))}</b></div>
+          <div style="font-size:12px;opacity:0.8;">{len(ideas)} {t_items}</div>
+        </div>
+        <ul style="margin:8px 0 0 1.2em; padding:0;">
+          {ideas_html}
+        </ul>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 def show_codebook_samples(codebook_reasoning):
     """Show codebook samples using display_cluster_analysis"""
@@ -3856,9 +3928,6 @@ def show_step_samples(step_number):
             # Step 4: Embeddings
             data = cache_manager.load_from_cache(filename, "embeddings", variable_key, models.EmbeddingsModel)
             if data:
-                #total_embeddings = sum(len(resp.response_ideas) for resp in data if resp.response_ideas)
-                #st.write(f"✅ Embeddings generated for {total_embeddings} items (from cache)")
-
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
                     if st.button("🔄 " + ("Ga door naar volgende stap" if lang == "nl" else "Continue to Next Step"), type="primary", use_container_width=True, key="embedding_continue"):
@@ -3868,13 +3937,18 @@ def show_step_samples(step_number):
             else:
                 st.write("⏳ No embeddings in cache - run embedding generation first")
                 
+        
         elif step_number == 5:
             # Step 5: Clusters
             data = cache_manager.load_from_cache(filename, "initial_clusters", variable_key, models.ClusterModel)
             if data:
-                #cluster_ids = set([segment.initial_cluster for result in data for segment in result.response_ideas if segment.initial_cluster is not None])
-                #st.write(f"✅ Loaded {len(cluster_ids)} clusters from cache")
                 show_cluster_samples(data)
+                
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🔄 " + ("Ga door naar volgende stap" if lang == "nl" else "Continue to Next Step"), type="primary", use_container_width=True, key="cluster_continue"):
+                        st.session_state.step = 6
+                        st.rerun()
             else:
                 st.write("⏳ No clusters in cache - run clustering first")
                 
