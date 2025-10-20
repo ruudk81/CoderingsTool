@@ -343,32 +343,80 @@ class CacheManager:
                 cache_path.unlink()
             return False
     
+    def _safe_pickle_load(self, path: Path):
+        """
+        Safely load pickle file with retry logic to handle file handle issues on Windows.
+
+        This addresses the "I/O operation on closed file" error that can occur when
+        pickle.load() is called on a file that hasn't been fully released by the OS.
+
+        Args:
+            path: Path to the pickle file
+
+        Returns:
+            Unpickled data
+
+        Raises:
+            Exception: If loading fails after retry
+        """
+        import gc
+        import time
+
+        for attempt in range(2):
+            try:
+                with open(path, "rb") as f:
+                    return pickle.load(f)
+            except ValueError as e:
+                # Typical message: "I/O operation on closed file"
+                if "closed file" in str(e) and attempt == 0:
+                    logger.warning(f"File handle issue on attempt {attempt + 1}, retrying after gc and sleep...")
+                    gc.collect()
+                    time.sleep(0.05)
+                    continue
+                raise
+            except Exception as e:
+                # Handle other exceptions on first attempt
+                if attempt == 0 and "closed file" in str(e).lower():
+                    logger.warning(f"File handle issue on attempt {attempt + 1}, retrying after gc and sleep...")
+                    gc.collect()
+                    time.sleep(0.05)
+                    continue
+                raise
+
     def load_from_cache(self,  filename: str,  step: str,  variable_key: str, model_cls: Type[T]) -> Optional[List[T]]:
         """Load data from cache and reconstruct Pydantic models"""
         cache_info = self.db.get_cache_info(filename, step, variable_key)
-        
+
         if not cache_info:
             logger.info(f"No cache found for {filename} at step {step} with variable {variable_key}")
             return None
-        
+
         cache_path = Path(cache_info['cache_path'])
-        
+
         if not cache_path.exists():
             logger.warning(f"Cache file missing: {cache_path}")
             self.db.invalidate_cache(filename, step, variable_key)
             return None
-        
+
         try:
-            # Load pickled data
-            with open(cache_path, 'rb') as f:
-                serializable_data = pickle.load(f)
-            
+            # Load pickled data using safe loader with retry logic
+            serializable_data = self._safe_pickle_load(cache_path)
+
             # Reconstruct Pydantic models
             result = [model_cls.model_validate(item_data) for item_data in serializable_data]
-            
+
             logger.info(f"Loaded {len(result)} items from cache for {filename} at step {step} with variable {variable_key}")
             return result
-            
+
+        except ValueError as e:
+            # Specific handling for "I/O operation on closed file" errors
+            if "closed file" in str(e).lower():
+                logger.error(f"File handle error loading cache for {filename} at step {step}: {e}")
+                logger.error(f"Cache file path: {cache_path}")
+                self.db.invalidate_cache(filename, step, variable_key)
+                return None
+            else:
+                raise
         except Exception as e:
             logger.error(f"Error loading cache for {filename} at step {step} with variable {variable_key}: {e}")
             self.db.invalidate_cache(filename, step, variable_key)

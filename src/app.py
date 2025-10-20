@@ -189,6 +189,53 @@ def _get_cache_manager():
         st.session_state.cache_manager = CacheManager(CacheConfig())
     return st.session_state.cache_manager
 
+def _load_or_recover(filename: str, step_name: str, variable_key: str, model_cls):
+    """
+    Safely load from cache with automatic recovery from file handle errors.
+
+    This wrapper handles the "I/O operation on closed file" error that can occur
+    when loading cached pickle files on Windows. If this error occurs, it:
+    1. Warns the user that the cache file appears corrupted
+    2. Invalidates the cache entry
+    3. Returns None to trigger reprocessing
+
+    Args:
+        filename: SPSS filename
+        step_name: Pipeline step name (e.g., "preprocessed", "embeddings")
+        variable_key: Cache key for the variable
+        model_cls: Pydantic model class for reconstruction
+
+    Returns:
+        List of models or None if cache is invalid/corrupted
+    """
+    cm = _get_cache_manager()
+    lang = st.session_state.get('language', 'en')
+
+    try:
+        return cm.load_from_cache(filename, step_name, variable_key, model_cls)
+    except Exception as e:
+        msg = str(e)
+        if "I/O operation on closed file" in msg or "closed file" in msg.lower():
+            # User-friendly warning in current language
+            warning_msg = (
+                "⚠️ Cache-bestand lijkt beschadigd. Ik herstel dit en probeer opnieuw."
+                if lang == "nl" else
+                "⚠️ Cache file appears corrupted. Recovering and retrying."
+            )
+            st.warning(warning_msg)
+
+            # Invalidate this cache entry to trigger reprocessing
+            try:
+                cm.db.invalidate_cache(filename, step_name, variable_key)
+            except Exception:
+                pass  # Silently fail if invalidation fails
+
+            # Return None to trigger reprocessing from previous step
+            return None
+        else:
+            # Re-raise other exceptions
+            raise
+
 # Session state ################################################################################################################################
 
 st.set_page_config(page_title="CoderingsTool - Survey Response Analysis", page_icon="📊", layout="wide",initial_sidebar_state="collapsed")
@@ -1032,8 +1079,13 @@ def show_upload_page():
     cached_datasets = get_available_cached_datasets()
     if cached_datasets:
         st.markdown("**" + ("Beschikbare datasets in cache:" if lang == "nl" else "Available datasets in cache:") + "**")
-        dataset_options = [""] + [dataset['display_name'] for dataset in cached_datasets]
-        selected_dataset_name = st.selectbox( "Selecteer dataset" if lang == "nl" else "Select dataset", options=dataset_options, help="Selecteer een eerder verwerkte dataset om verder te gaan" if lang == "nl"  else "Select a previously processed dataset to continue")
+        dataset_options = [None] + [dataset['display_name'] for dataset in cached_datasets]
+        selected_dataset_name = st.selectbox(
+            "Selecteer dataset" if lang == "nl" else "Select dataset",
+            options=dataset_options,
+            format_func=lambda x: ("-- Kies een dataset --" if lang == "nl" else "-- Choose a dataset --") if x is None else x,
+            help="Selecteer een eerder verwerkte dataset om verder te gaan" if lang == "nl" else "Select a previously processed dataset to continue"
+        )
         if selected_dataset_name:
             selected_dataset = next((d for d in cached_datasets if d['display_name'] == selected_dataset_name), None)
             if selected_dataset:
@@ -1639,7 +1691,7 @@ def show_filtering_page():
                 # Try to load from cache first (works for both upload and cache routes)
                 if cache_manager.is_cache_valid(st.session_state.filename, "preprocessed", variable_key):
                     progress_container.text("🔄 Voorbewerkte data laden uit cache..." if lang == "nl" else "🔄 Loading preprocessed data from cache...")
-                    preprocessed_text = cache_manager.load_from_cache(
+                    preprocessed_text = _load_or_recover(
                         st.session_state.filename,
                         "preprocessed",
                         variable_key,
@@ -1822,7 +1874,7 @@ def show_idea_extraction_page():
                 # Try to load from cache first (works for both upload and cache routes)
                 if cache_manager.is_cache_valid(st.session_state.filename, "quality_filter", variable_key):
                     progress_container.text("🔄 " + ("Gefilterde data laden uit cache..." if lang == "nl" else "Loading filtered data from cache..."))
-                    quality_filtered_text = cache_manager.load_from_cache(
+                    quality_filtered_text = _load_or_recover(
                         st.session_state.filename,
                         "quality_filter",
                         variable_key,
@@ -1995,7 +2047,7 @@ def show_embedding_page():
                 # Try to load from cache first (works for both upload and cache routes)
                 if cache_manager.is_cache_valid(st.session_state.filename, "extracted_ideas", variable_key):
                     progress_container.text("🔄 " + ("Geëxtraheerde ideeën laden uit cache..." if lang == "nl" else "Loading extracted ideas from cache..."))
-                    encoded_text = cache_manager.load_from_cache(
+                    encoded_text = _load_or_recover(
                         st.session_state.filename,
                         "extracted_ideas",
                         variable_key,
@@ -2052,7 +2104,7 @@ def show_embedding_page():
                     cache_manager=_get_cache_manager(),
                     model_config=st.session_state.model_config,
                     force_recalc=force_recalc,
-                    verbose=False
+                    verbose=True
                 )
 
                 progress_container.success("✅ " + (
@@ -2100,8 +2152,13 @@ def show_clustering_page():
     if is_step_completed(4):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         if is_step_completed(5):
-            num_clusters = len(set([segment.initial_cluster for result in  st.session_state.pipeline_results['initial_cluster_results'] for segment in result.response_ideas if segment.initial_cluster is not None]))
-            sample_info += (f"**Data**: {num_clusters} {'clusters' if lang == 'nl' else 'clusters'}")
+            # Safely get cluster results (may be None if cache was corrupted and invalidated)
+            cluster_results = st.session_state.pipeline_results.get('initial_cluster_results')
+            if cluster_results:
+                num_clusters = len(set([segment.initial_cluster for result in cluster_results for segment in result.response_ideas if segment.initial_cluster is not None and segment.initial_cluster >= 0]))
+                sample_info += (f"**Data**: {num_clusters} {'clusters' if lang == 'nl' else 'clusters'}")
+            else:
+                sample_info += (f"**Data**: {'Cluster resultaten worden geladen...' if lang == 'nl' else 'Cluster results loading...'}")
         else:
             sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
         st.info(sample_info)
@@ -2114,9 +2171,8 @@ def show_clustering_page():
             nl = (lang == "nl")
 
             summary_info = (
-                f"\n\n- {'Aantal clusters' if nl else 'Number of clusters'}: {stats.get('num_clusters', 0)}"
-                + f"\n\n- {'Totaal gesegmenteerd' if nl else 'Total segments'}: {stats.get('total_segments', 0)}"
-                + f"\n\n- {'Uitschieters' if nl else 'Outliers'}: {stats.get('outliers', 0)} "
+                f"\n\n- {'Aantal embeddings geclustered' if nl else 'Embeddings clustered'}: {stats.get('total_segments', 0)}"
+                + f"\n\n- {'Ruis' if nl else 'Noise'}: {stats.get('outliers', 0)} "
                 + f"({stats.get('outlier_percentage', 0):.1f}%)"
             )
 
@@ -2154,7 +2210,7 @@ def show_clustering_page():
                 # Try to load from cache first (works for both upload and cache routes)
                 if cache_manager.is_cache_valid(st.session_state.filename, "embeddings", variable_key):
                     progress_container.text("🔄 " + ("Embeddings laden uit cache..." if lang == "nl" else "Loading embeddings from cache..."))
-                    embedded_text = cache_manager.load_from_cache(
+                    embedded_text = _load_or_recover(
                         st.session_state.filename,
                         "embeddings",
                         variable_key,
@@ -2174,11 +2230,6 @@ def show_clustering_page():
     # Show processing button when ready to process
     if is_step_completed(4) and not is_step_completed(5):
         st.markdown(ui.get_text("CLUSTERING_INFO", lang))
-
-        # Automatic clustering info
-        st.info("🎯 " + ("Automatische clustering bepaalt de optimale parameters op basis van de data"
-                 if lang == "nl" else
-                 "Automatic clustering determines optimal parameters based on the data"))
 
         # Show button to start clustering
         if st.button("🚀 " + (
@@ -2215,7 +2266,7 @@ def show_clustering_page():
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
                     force_recalc=force_recalc,
-                    verbose=False
+                    verbose=True
                 )
 
                 progress_container.success("✅ " + (
@@ -2290,13 +2341,16 @@ def show_codebook_generation_page():
         elif 'initial_cluster_results' in st.session_state.pipeline_results:
             # Calculate stats from initial_cluster_results (cache route fallback)
             initial_cluster_results = st.session_state.pipeline_results['initial_cluster_results']
-            cluster_ids = set(
-                segment.initial_cluster
-                for result in initial_cluster_results
-                for segment in result.response_ideas
-                if segment.initial_cluster != -1
-            )
-            num_clusters = len(cluster_ids)
+            if initial_cluster_results:
+                cluster_ids = set(
+                    segment.initial_cluster
+                    for result in initial_cluster_results
+                    for segment in result.response_ideas
+                    if segment.initial_cluster != -1
+                )
+                num_clusters = len(cluster_ids)
+            else:
+                num_clusters = 0
         else:
             # Last resort: load from cache to calculate stats (for cache route when step 6 already completed)
             try:
@@ -2313,7 +2367,7 @@ def show_codebook_generation_page():
                 cache_manager = _get_cache_manager()
 
                 if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
-                    initial_cluster_results = cache_manager.load_from_cache(
+                    initial_cluster_results = _load_or_recover(
                         st.session_state.filename,
                         "initial_clusters",
                         variable_key,
@@ -2385,7 +2439,7 @@ def show_codebook_generation_page():
                 # Try to load from cache first (works for both upload and cache routes)
                 if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
                     progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading cluster results from cache..."))
-                    initial_cluster_results = cache_manager.load_from_cache(
+                    initial_cluster_results = _load_or_recover(
                         st.session_state.filename,
                         "initial_clusters",
                         variable_key,
@@ -2493,8 +2547,8 @@ def show_codebook_generation_page():
                     model_config=st.session_state.model_config,
                     use_speculative_starter_codes=use_speculative,
                     force_recalc=force_recalc,
-                    verbose=False,
-                    verbose_detailed=False,
+                    verbose=True,
+                    verbose_detailed=True,
                     prompt_printer_enabled=False,
                     cache_reasoning=True
                 )
@@ -2557,7 +2611,7 @@ def show_theme_identification_page():
             num_codes = st.session_state['codebook_stats'].get('num_codes', 0)
         elif 'codebook_main' in st.session_state.pipeline_results:
             codebook_data = st.session_state.pipeline_results['codebook_main']
-            num_codes = len(codebook_data.codes) if hasattr(codebook_data, 'codes') else 0
+            num_codes = len(codebook_data.codes) if (codebook_data and hasattr(codebook_data, 'codes')) else 0
         else:
             # Last resort: load from cache to calculate stats (for cache route when step 7 already completed)
             try:
@@ -2574,7 +2628,7 @@ def show_theme_identification_page():
                 cache_manager = _get_cache_manager()
 
                 if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation", variable_key):
-                    codebook_list = cache_manager.load_from_cache(
+                    codebook_list = _load_or_recover(
                         st.session_state.filename,
                         "codebook_generation",
                         variable_key,
@@ -2649,7 +2703,7 @@ def show_theme_identification_page():
                     progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
 
                     # Load codebook_main from main cache
-                    codebook_list = cache_manager.load_from_cache(
+                    codebook_list = _load_or_recover(
                         st.session_state.filename,
                         "codebook_generation",
                         variable_key,
@@ -2670,7 +2724,7 @@ def show_theme_identification_page():
                         # Load reasoning_results from separate reasoning cache
                         try:
                             from utils import codeGenerator
-                            reasoning_list = cache_manager.load_from_cache(
+                            reasoning_list = _load_or_recover(
                                 st.session_state.filename,
                                 "codebook_generation_reasoning",
                                 variable_key,
@@ -2683,7 +2737,7 @@ def show_theme_identification_page():
                                 st.error("⚠️ " + ("Reasoning resultaten niet gevonden in cache. Voer stap 6 opnieuw uit." if lang == "nl"
                                                else "Reasoning results not found in cache. Please re-run step 6."))
                         except Exception as e:
-                            st.error(f"⚠️ " + ("Reasoning resultaten laden mislukt: {str(e)}. Voer stap 6 opnieuw uit." if lang == "nl"
+                            st.error("⚠️ " + ("Reasoning resultaten laden mislukt: {str(e)}. Voer stap 6 opnieuw uit." if lang == "nl"
                                               else f"Failed to load reasoning results: {str(e)}. Please re-run step 6."))
                     else:
                         st.error("Ongeldige cache data voor codebook generatie. Voer stap 6 opnieuw uit." if lang == "nl"
@@ -2759,7 +2813,7 @@ def show_theme_identification_page():
                     model_config=st.session_state.model_config,
                     default_language=st.session_state.get('language', 'nl'),
                     force_recalc=force_recalc,
-                    verbose=False  # Prevent stdout conflicts in Streamlit
+                    verbose=True   
                 )
 
                 progress_container.success("✅ " + (

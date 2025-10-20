@@ -52,10 +52,10 @@ UI_TEXTS = {
         """,
         
         "CLUSTERING_INFO": """
-        Hierarchische clustering zal:
-        - Vergelijkbare antwoorden groeperen
-        - Meta, meso en micro clusters creeren
-        - Thema's in de data identificeren
+        Clustering zal:
+        - Natuurlijke groeperingen van antwoorden herkennen op basis van semantische gelijkenis
+        - Descriptieve codes van antwoorden groeperen die dicht bij elkaar liggen in de embedding-ruimte
+        - Ruis of afwijkende antwoorden buiten de clusters laten
         """,
         
         "LABELING_INFO": """
@@ -157,10 +157,10 @@ UI_TEXTS = {
         """,
         
         "CLUSTERING_INFO": """
-        Hierarchical clustering will:
-        - Group similar responses together
-        - Create meta, meso, and micro clusters
-        - Identify themes in the data
+        Clustering will:
+        - Detect natural groupings of responses based on semantic similarity
+        - Group together descriptive codes that occur close to each other in embedding space
+        - Leave out noise or outliers that don’t fit into any dense group    
         """,
         
         "LABELING_INFO": """
