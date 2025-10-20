@@ -67,7 +67,9 @@ class VerboseReporter:
     def _output(self, text: str):
         """Centralized output method that handles both terminal and capture"""
         try:
-            print(text)  # Always print to terminal (existing behavior)
+            # Use sys.__stdout__ to bypass Streamlit's stdout capture
+            # This ensures output appears in the terminal even when running in Streamlit
+            print(text, file=sys.__stdout__, flush=True)
         except UnicodeEncodeError:
             # Replace problematic Unicode characters for Windows console
             # Note: Some emojis may have variation selectors (U+FE0F), replace base chars first
@@ -101,7 +103,7 @@ class VerboseReporter:
                             .replace('🎉', '[CELEBRATE]')
                             .replace('⭐', '[STAR]')
                             .replace('🌟', '[SPARKLE]'))
-            print(safe_text)
+            print(safe_text, file=sys.__stdout__, flush=True)
         if self.capture_callback:
             self.capture_callback(text)  # Also capture for Streamlit if callback provided
     

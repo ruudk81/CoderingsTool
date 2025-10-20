@@ -35,9 +35,9 @@ model_config = ModelConfig()
 filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
 id_column = "DLNMID"
 var_name = "Q10"
-sample_size = 100
+sample_size = 50
 
-RUN_UNTIL_STEP = 6 # None = run all steps
+RUN_UNTIL_STEP = 5 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1605,7 +1605,7 @@ if __name__ == '__main__':
     # === STEP 1 ====
     """preprocess data"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "preprocessed"
-    preprocessed_text = step_1_preprocess(
+    preprocessed_text, stats = step_1_preprocess(
         raw_text_list, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
