@@ -346,7 +346,29 @@ def invalidate_from_step(start_step: int):
     # 3. Set force_recalculate flag for pipeline functions
     st.session_state.force_recalculate_from_step = start_step
 
-    # 4. Invalidate cache entries in database
+    # 4. Clear pipeline_results for affected steps to force reprocessing
+    step_result_keys = {
+        0: ['cached_data', 'raw_text_list'],
+        1: ['preprocessed_text'],
+        2: ['quality_filtered_text'],
+        3: ['extracted_ideas', 'encoded_text'],
+        4: ['embedded_text'],
+        5: ['initial_cluster_results'],
+        6: ['codebook_main', 'reasoning_results'],
+        7: ['theme_enriched_codebook', 'refinement_results'],
+        8: ['code_assigned_results'],
+        9: ['excel_path']
+    }
+
+    all_cleared_keys = []
+    for step_num in range(start_step, 10):
+        keys_to_remove = step_result_keys.get(step_num, [])
+        for key in keys_to_remove:
+            if key in st.session_state.pipeline_results:
+                del st.session_state.pipeline_results[key]
+                all_cleared_keys.append(f"{key}(step{step_num})")
+
+    # 5. Invalidate cache entries in database
     cache_manager = _get_cache_manager()
     step_mapping = {
         0: "data", 1: "preprocessed", 2: "quality_filter",
@@ -2142,24 +2164,15 @@ def show_clustering_page():
     # Show completion status
     if is_step_completed(5):
         st.success("✅ " + (
-            "Clustering voltooid! Bekijk de resultaten rechts en klik dan op doorgaan."
+            "Clustering voltooid! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Clustering completed! Review the results on the right, then click continue."
-        ))
+            "Clustering completed! Review the results, then click continue."))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(4):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        if is_step_completed(5):
-            # Safely get cluster results (may be None if cache was corrupted and invalidated)
-            cluster_results = st.session_state.pipeline_results.get('initial_cluster_results')
-            if cluster_results:
-                num_clusters = len(set([segment.initial_cluster for result in cluster_results for segment in result.response_ideas if segment.initial_cluster is not None and segment.initial_cluster >= 0]))
-                sample_info += (f"**Data**: {num_clusters} {'clusters' if lang == 'nl' else 'clusters'}")
-            else:
-                sample_info += (f"**Data**: {'Cluster resultaten worden geladen...' if lang == 'nl' else 'Cluster results loading...'}")
-        else:
+        if not is_step_completed(5):
             sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
         st.info(sample_info)
 
@@ -2171,7 +2184,8 @@ def show_clustering_page():
             nl = (lang == "nl")
 
             summary_info = (
-                f"\n\n- {'Aantal embeddings geclustered' if nl else 'Embeddings clustered'}: {stats.get('total_segments', 0)}"
+                f"\n\n- {'Aantal clusters' if nl else 'Total clusters'}: {stats.get('num_clusters', 0)}"
+                +f"\n\n- {'Aantal embeddings geclustered' if nl else 'Embeddings clustered'}: {stats.get('total_segments', 0)}"
                 + f"\n\n- {'Ruis' if nl else 'Noise'}: {stats.get('outliers', 0)} "
                 + f"({stats.get('outlier_percentage', 0):.1f}%)"
             )
@@ -2232,16 +2246,10 @@ def show_clustering_page():
         st.markdown(ui.get_text("CLUSTERING_INFO", lang))
 
         # Show button to start clustering
-        if st.button("🚀 " + (
-            "Start Clustering" if lang == "nl"
-            else "Start Clustering"
-        ), type="primary"):
+        if st.button("🚀 " + ("Start Clustering" if lang == "nl"else "Start Clustering"), type="primary"):
             progress_container = st.empty()
             try:
-                progress_container.text("🔄 " + (
-                    "Clustering aan het uitvoeren..." if lang == "nl"
-                    else "Running clustering..."
-                ))
+                progress_container.text("🔄 " + ("Clustering aan het uitvoeren..." if lang == "nl" else "Running clustering..."))
 
                 # Generate variable_key for caching
                 selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
@@ -2252,12 +2260,10 @@ def show_clustering_page():
                     selected_variables,
                     is_merged=is_merged,
                     sample_size=sample_size,
-                    merge_config=merge_config
-                )
+                    merge_config=merge_config)
 
                 # Set force_recalc flag (respects both global and step-specific invalidation)
-                force_recalc = st.session_state.get('force_recalculate_all', False) or \
-                               (st.session_state.get('force_recalculate_from_step', 99) <= 5)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 5)
 
                 # Call pipeline processing function
                 initial_cluster_results = pipeline.step_5_cluster(
@@ -2266,13 +2272,9 @@ def show_clustering_page():
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
                     force_recalc=force_recalc,
-                    verbose=True
-                )
+                    verbose=True)
 
-                progress_container.success("✅ " + (
-                    "Clustering voltooid" if lang == "nl"
-                    else "Clustering completed"
-                ))
+                progress_container.success("✅ " + ("Clustering voltooid" if lang == "nl" else "Clustering completed"))
 
                 # Store results
                 st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
@@ -2282,14 +2284,12 @@ def show_clustering_page():
                     segment.initial_cluster
                     for result in initial_cluster_results
                     for segment in result.response_ideas
-                    if segment.initial_cluster is not None and segment.initial_cluster >= 0
-                ])
+                    if segment.initial_cluster is not None and segment.initial_cluster >= 0])
 
                 outliers = sum(
                     1 for result in initial_cluster_results
                     for segment in result.response_ideas
-                    if segment.initial_cluster == -1
-                )
+                    if segment.initial_cluster == -1)
 
                 total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
 
@@ -2297,8 +2297,7 @@ def show_clustering_page():
                     'num_clusters': len(cluster_ids),
                     'total_segments': total_segments,
                     'outliers': outliers,
-                    'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
-                }
+                    'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0}
 
                 # Mark step completed
                 mark_step_completed(5)
@@ -3515,9 +3514,6 @@ def show_cluster_samples(initial_cluster_results):
     t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
     t_next = "➡️ Volgende" if NL else "➡️ Next"
     t_of = "van" if NL else "of"
-    t_header = "Cluster voorbeelden" if NL else "Cluster samples"
-    t_caption = ("Navigeer door genummerde clusters"
-                 if NL else "Navigate through numbered clusters")
     t_cluster_label = "Cluster" if NL else "Cluster"
     t_items = "items" if NL else "items"
 
@@ -3537,6 +3533,8 @@ def show_cluster_samples(initial_cluster_results):
             idea = getattr(ri, "idea", None)
             if cid is None or idea is None:
                 continue
+            if cid == -1:
+                continue  # skip noise cluster
             cluster_dict.setdefault(cid, []).append(idea)
 
     if not cluster_dict:
@@ -3572,7 +3570,7 @@ def show_cluster_samples(initial_cluster_results):
     with nav3:
         # Quick jump by index (keeps UI snappy for many clusters)
         new_idx = st.number_input(
-            label="",
+            label="X",
             min_value=1, max_value=total, value=idx + 1,
             step=1, key="cluster_jump_number", label_visibility="collapsed"
         )
@@ -3603,9 +3601,7 @@ def show_cluster_samples(initial_cluster_results):
         background-color: #F8F9FB;
         margin-top: 8px;
         line-height: 1.6;">
-      <b style="display:block; margin-bottom:12px;">{t_header}</b>
-      <span style="display:block; margin-bottom:12px; font-style:italic;">{t_caption}.</span>
-
+      
       <div style="
           border: 1px solid #e6eaf2;
           border-radius: 8px;
