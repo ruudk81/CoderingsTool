@@ -323,6 +323,36 @@ class ModelConfig:
         return config
     
 # =============================================================================
+# PROCESSING CONFIGURATION
+# =============================================================================
+
+@dataclass
+class ProcessingConfig:
+    """Global processing parameters affecting cache validity and performance"""
+
+    # Rate limiting
+    rate_limit_headroom: float = 0.9  # Use 90% of API limits for safety
+
+    # Concurrency bounds
+    concurrency_cap_default: int = 300
+    concurrency_cap_permissive: int = 10000
+    concurrency_min_default: int = 100
+    concurrency_min_permissive: int = 0
+    concurrency_min_conservative: int = 10
+
+    # Adaptive timeout bounds
+    adaptive_timeout_min_seconds: float = 15.0
+    adaptive_timeout_max_seconds: float = 60.0
+    adaptive_timeout_margin: float = 1.5
+
+    # Latency tracking
+    latency_tracker_ema_alpha: float = 0.1
+    latency_tracker_samples_window: int = 100  # Keep last N samples for percentiles
+
+    # Bootstrap measurement
+    bootstrap_probe_count: int = 3
+
+# =============================================================================
 # CACHE CONFIGURATION
 # =============================================================================
 
@@ -760,6 +790,9 @@ class ExportConfig:
 
 # Central model configuration - configure all models here
 DEFAULT_MODEL_CONFIG = ModelConfig()
+
+# Processing configuration
+DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 
 # Step-specific configurations
 DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
