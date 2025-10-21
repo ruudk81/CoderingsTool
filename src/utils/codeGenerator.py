@@ -4051,10 +4051,10 @@ class InductiveCodeGenerator:
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step3", **params)
             
-            if self.verbose_detailed: 
+            if self.verbose_detailed:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
-                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection) if candidate_selection else 0}")
+                self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Candidate codes: {len(candidate_selection.coding_decision.matched_candidates) if candidate_selection and hasattr(candidate_selection, 'coding_decision') else 0}")
             
             # Use async wrapper with JSON retry logic and adaptive timeout
             adaptive_timeout = self._get_adaptive_timeout()
