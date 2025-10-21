@@ -2520,16 +2520,11 @@ def show_codebook_generation_page():
                 st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
 
 def show_theme_identification_page():
-    """
-    Step 7: Theme Identification (Thema Identificatie)
-    Pipeline function: step_7_refine_codebook
-    Cache name: theme_identification
-    Model: models.ThemeEnrichedCodebookModel
-    """
+    """ Step 7: Thematic codebook (Thematisch codeboek)"""
     lang = st.session_state.language
 
     # ==================== HEADER ====================
-    st.header("Stap 7: Thema Identificatie" if lang == "nl" else "Step 7: Theme Identification")
+    st.header("Stap 7: Thematisch codeboek" if lang == "nl" else "Step 7: Thematic codebook")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
@@ -2548,30 +2543,30 @@ def show_theme_identification_page():
         sample_info += (f"\n\n**Data:** {num_codes} {codes_text}")
         st.info(sample_info)
 
-    # ==================== BLOCK 3: YELLOW BOX ====================
-    # Show results/stats when current step is complete
-    if is_step_completed(7):
-        if st.session_state.get('theme_stats', {}):
-            stats = st.session_state.get('theme_stats', {})
-            nl = (lang == "nl")
+    # # ==================== BLOCK 3: YELLOW BOX ====================
+    # # Show results/stats when current step is complete
+    # if is_step_completed(7):
+    #     if st.session_state.get('theme_stats', {}):
+    #         stats = st.session_state.get('theme_stats', {})
+    #         nl = (lang == "nl")
 
-            themes_label = "Aantal thema's" if nl else 'Number of themes'
-            codes_label = 'Aantal codes' if nl else 'Number of codes'
-            summary_info = (
-                f"\n\n- {themes_label}: {stats.get('num_themes', 0)}"
-                + f"\n\n- {codes_label}: {stats.get('num_codes', 0)}"
-            )
+    #         themes_label = "Aantal thema's" if nl else 'Number of themes'
+    #         codes_label = 'Aantal codes' if nl else 'Number of codes'
+    #         summary_info = (
+    #             f"\n\n- {themes_label}: {stats.get('num_themes', 0)}"
+    #             + f"\n\n- {codes_label}: {stats.get('num_codes', 0)}"
+    #         )
 
-            st.markdown(f"""
-            <div style="
-            border-radius: 10px;
-            padding: 12px 16px;
-            background-color: #FFF8E6;
-            margin-top: 8px;
-            color: #5C4102;">
-            {summary_info}
-            </div>
-            """, unsafe_allow_html=True)
+    #         st.markdown(f"""
+    #         <div style="
+    #         border-radius: 10px;
+    #         padding: 12px 16px;
+    #         background-color: #FFF8E6;
+    #         margin-top: 8px;
+    #         color: #5C4102;">
+    #         {summary_info}
+    #         </div>
+    #         """, unsafe_allow_html=True)
 
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load reasoning_results and codebook_main if not already in pipeline_results
@@ -3815,93 +3810,155 @@ def show_codebook_samples(codebook_reasoning):
     if st.button(t_draw, key="codebook_reroll"):
         st.rerun()
 
-
 def show_theme_samples(refinement_report):
-    """Display refinement report with HTML formatting in collapsible sections"""
     import html
+    import streamlit as st
 
     if not refinement_report:
         st.write("No refinement data available")
         return
 
     lang = st.session_state.get('language', 'nl')
-
-    # Translations
     t_analysis = "LLM Analyse" if lang == "nl" else "LLM Analysis"
-    t_categories = "Verfijnde Categorieën" if lang == "nl" else "Refined Categories"
+    t_categories = "Codeboek" if lang == "nl" else "Codebook"
     t_subcodes = "subcodes" if lang == "nl" else "subcodes"
 
-    # Section 1: LLM Analysis (collapsed by default)
-    analysis_text = refinement_report.get('analysis', {}).get('text')
-    if analysis_text:
-        st.markdown(f"""
-        <details style="margin-bottom: 16px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            📝 {t_analysis}
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            {html.escape(str(analysis_text))}
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
-
-    # Section 2: Refined Categories (each category in its own collapsible section, expanded by default)
+    # --- Codebook first (expanded) ---
     categories = refinement_report.get('categories', [])
     if categories:
         st.markdown(f"### {t_categories}")
-
         for category in categories:
             category_name = category.get('category_name', 'Unknown')
             subcode_count = category.get('subcode_count', 0)
-            subcodes = category.get('subcodes', [])
+            subcodes = category.get('subcodes', []) or []
 
-            # Build subcodes HTML list
-            subcodes_html = ''.join([
-                f'''<div style="margin-bottom: 12px; padding-left: 8px;">
-                  <b style="color: #1f77b4;">{html.escape(str(sc.get('code', 'N/A')))}</b><br>
-                  <span style="color: #666; font-size: 14px;">{html.escape(str(sc.get('description', 'N/A')))}</span>
-                </div>'''
+            # IMPORTANT: no indentation in the generated HTML
+            subcodes_html = "".join([
+                (
+                    '<div style="margin-bottom:12px;padding-left:8px;">'
+                    f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
+                    f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
+                    '</div>'
+                )
                 for sc in subcodes
             ])
 
+            # Also ensure {subcodes_html} is flush-left in the f-string (no leading spaces)
             st.markdown(f"""
-            <details open style="margin-bottom: 16px;">
-              <summary style="
-                cursor: pointer;
-                padding: 12px 16px;
-                background: #f0f2f6;
-                border-radius: 8px;
-                font-weight: 600;
-                margin-bottom: 8px;
-                user-select: none;">
-                📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
-              </summary>
-              <div style="
-                padding: 16px;
-                background: white;
-                border: 1px solid #e6e6e6;
-                border-radius: 8px;
-                margin-top: 8px;
-                line-height: 1.6;">
-                {subcodes_html}
-              </div>
-            </details>
-            """, unsafe_allow_html=True)
+<details open style="margin-bottom:16px;">
+  <summary style="cursor:pointer;padding:12px 16px;background:#f0f2f6;border-radius:8px;font-weight:600;margin-bottom:8px;user-select:none;">
+    📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
+  </summary>
+  <div style="padding:16px;background:white;border:1px solid #e6e6e6;border-radius:8px;margin-top:8px;line-height:1.6;">
+{subcodes_html}
+  </div>
+</details>
+""", unsafe_allow_html=True)
     else:
         st.write("No categories available")
+
+    # --- Analysis second (collapsed) ---
+    analysis_text = (refinement_report.get('analysis') or {}).get('text')
+    if analysis_text:
+        st.markdown(f"""
+<details style="margin:16px 0;">
+  <summary style="cursor:pointer;padding:12px 16px;background:#f0f2f6;border-radius:8px;font-weight:600;margin-bottom:8px;user-select:none;">
+    📝 {t_analysis}
+  </summary>
+  <div style="padding:16px;background:white;border:1px solid #e6e6e6;border-radius:8px;margin-top:8px;line-height:1.6;">
+    {html.escape(str(analysis_text))}
+  </div>
+</details>
+""", unsafe_allow_html=True)
+
+
+
+# def show_theme_samples(refinement_report):
+#     """Display refinement report with HTML formatting in collapsible sections"""
+#     import html
+
+#     if not refinement_report:
+#         st.write("No refinement data available")
+#         return
+
+#     lang = st.session_state.get('language', 'nl')
+
+#     # Translations
+#     t_analysis = "LLM Analyse" if lang == "nl" else "LLM Analysis"
+#     t_categories = "Codeboek" if lang == "nl" else "Codebook"
+#     t_subcodes = "subcodes" if lang == "nl" else "subcodes"
+
+#     # Section 1: LLM Analysis (collapsed by default)
+#     analysis_text = refinement_report.get('analysis', {}).get('text')
+#     if analysis_text:
+#         st.markdown(f"""
+#         <details style="margin-bottom: 16px;">
+#           <summary style="
+#             cursor: pointer;
+#             padding: 12px 16px;
+#             background: #f0f2f6;
+#             border-radius: 8px;
+#             font-weight: 600;
+#             margin-bottom: 8px;
+#             user-select: none;">
+#             📝 {t_analysis}
+#           </summary>
+#           <div style="
+#             padding: 16px;
+#             background: white;
+#             border: 1px solid #e6e6e6;
+#             border-radius: 8px;
+#             margin-top: 8px;
+#             line-height: 1.6;">
+#             {html.escape(str(analysis_text))}
+#           </div>
+#         </details>
+#         """, unsafe_allow_html=True)
+
+#     # Section 2: Refined Categories (each category in its own collapsible section, expanded by default)
+#     categories = refinement_report.get('categories', [])
+#     if categories:
+#         st.markdown(f"### {t_categories}")
+
+#         for category in categories:
+#             category_name = category.get('category_name', 'Unknown')
+#             subcode_count = category.get('subcode_count', 0)
+#             subcodes = category.get('subcodes', [])
+
+#             # Build subcodes HTML list
+#             subcodes_html = ''.join([
+#                 f'''<div style="margin-bottom: 12px; padding-left: 8px;">
+#                   <b style="color: #1f77b4;">{html.escape(str(sc.get('code', 'N/A')))}</b><br>
+#                   <span style="color: #666; font-size: 14px;">{html.escape(str(sc.get('description', 'N/A')))}</span>
+#                 </div>'''
+#                 for sc in subcodes
+#             ])
+
+#             st.markdown(f"""
+#             <details open style="margin-bottom: 16px;">
+#               <summary style="
+#                 cursor: pointer;
+#                 padding: 12px 16px;
+#                 background: #f0f2f6;
+#                 border-radius: 8px;
+#                 font-weight: 600;
+#                 margin-bottom: 8px;
+#                 user-select: none;">
+#                 📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
+#               </summary>
+#               <div style="
+#                 padding: 16px;
+#                 background: white;
+#                 border: 1px solid #e6e6e6;
+#                 border-radius: 8px;
+#                 margin-top: 8px;
+#                 line-height: 1.6;">
+#                 {subcodes_html}
+#               </div>
+#             </details>
+#             """, unsafe_allow_html=True)
+#     else:
+#         st.write("No categories available")
 
 def show_assignment_samples(code_assigned_results):
     """Show assignment samples using EXACT pattern from user's original code"""
