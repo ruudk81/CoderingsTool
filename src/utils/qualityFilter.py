@@ -19,7 +19,7 @@ from aiolimiter import AsyncLimiter
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
 from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -91,10 +91,11 @@ class TokenBucket:
 
 class LatencyTracker:
     """Simple EMA tracker for latencies"""
-    def __init__(self, alpha=0.1):
+    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
+        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.ema = None
-        self.alpha = alpha
-        self.values = deque(maxlen=100)  # Keep last 100 for percentiles
+        self.alpha = self.processing_config.latency_tracker_ema_alpha
+        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
     
     def add(self, value):
         """Add a latency measurement"""
@@ -104,11 +105,12 @@ class LatencyTracker:
         else:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
     
-    def get_timeout(self, est_tokens, margin=1.5, min_timeout=15.0, max_timeout=60.0):
+    def get_timeout(self, est_tokens):
         """Calculate timeout based on EMA and token count with configurable bounds"""
+        config = self.processing_config
         if not self.values:
-            return max(min_timeout, 30.0)  # Default 30s or configured minimum, whichever is higher
-        
+            return max(config.adaptive_timeout_min_seconds, 30.0)  # Default 30s or configured minimum, whichever is higher
+
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
         # Simple linear scaling with token count
@@ -116,7 +118,7 @@ class LatencyTracker:
         token_factor = est_tokens / 1000
         timeout = p95 + (token_factor * 0.1)
         # Apply margin and configurable bounds
-        return max(min_timeout, min(max_timeout, timeout * margin))
+        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
     
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
@@ -134,13 +136,18 @@ class ApiLimits:
     requests_per_minute: int
 
 
-def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, cap: int = 300, min_conc: int = 100, HEADROOM: float = 0.9) -> int:
+def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, processing_config: Optional[ProcessingConfig] = None, cap: Optional[int] = None, min_conc: Optional[int] = None, headroom: Optional[float] = None) -> int:
     """Compute optimal concurrency using Little's Law"""
+    config = processing_config or DEFAULT_PROCESSING_CONFIG
+    cap = cap if cap is not None else config.concurrency_cap_default
+    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
+    headroom = headroom if headroom is not None else config.rate_limit_headroom
+
     latency_seconds = max(float(latency_seconds or 0.5), 0.05)
     avg_tokens = max(float(avg_tokens or 1.0), 1.0)
 
-    rpm_throughput = limits.requests_per_minute * HEADROOM / 60
-    tpm_throughput = limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+    rpm_throughput = limits.requests_per_minute * headroom / 60
+    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
     candidates = [rpm_throughput, tpm_throughput]
     allowed_rps = max(min(candidates), 0.0)
     target = allowed_rps * latency_seconds   # Little's Law
@@ -166,37 +173,38 @@ async def bootstrap_measure_async(call_fn, n_probes: int = 3):
 
 class Grader:
     def __init__(
-        self, 
-        responses: List[models.PreprocessedModel], 
+        self,
+        responses: List[models.PreprocessedModel],
         var_lab: str,
         config: Optional[QualityFilterConfig] = None,
         model_config: Optional[ModelConfig] = None,
+        processing_config: Optional[ProcessingConfig] = None,
         verbose: bool = False,
         prompt_printer = None):
-        
+
         self.responses = responses
         self.question = var_lab
         self.config = config or DEFAULT_QUALITY_FILTER_CONFIG
         self.model_config = model_config or ModelConfig()
+        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.model = self.model_config.get_model_for_stage('quality_filter')
-        self.grader_instructions = GRADER_INSTRUCTIONS 
+        self.grader_instructions = GRADER_INSTRUCTIONS
         self._results: List[models.QualityFilteredModel] = []
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self._stats = ProcessingStats()
         self.prompt_printer = prompt_printer
-        
+
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
-        
+
         # Instructor-patched async OpenAI client for structured output (cached)
         self.client = get_openai_client(OPENAI_API_KEY)
-        
-        # Rate limiting setup (following spellChecker pattern)
+
+        # Rate limiting setup
         limits = get_openai_rate_limits(self.model)
-        HEADROOM = 0.9  # Increased from 0.8 to 0.9 for higher throughput
-        
+
         # Token bucket for TPM limiting
-        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * HEADROOM)
+        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Adaptive token estimation (following user's strategy)
         self.input_token_history = deque(maxlen=3)  # First 3 input token counts
@@ -208,7 +216,7 @@ class Grader:
         self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
         
         # Latency tracking
-        self.latency_tracker = LatencyTracker()
+        self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
         
         # Calculate initial average tokens estimate for bootstrapping
         self.avg_tokens = self._calculate_avg_tokens()
@@ -517,10 +525,9 @@ class Grader:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""
         if not tasks:
             return []
-        
+
         # Setup
         limits = get_openai_rate_limits(self.model)
-        HEADROOM = 0.9  # Increased from 0.8 to 0.9 for higher throughput
         
         # Bootstrap measurement with probe calls (following spellChecker pattern)
         sample_tasks = tasks[:min(3, len(tasks))]
@@ -554,13 +561,13 @@ class Grader:
         
         # Calculate optimal concurrency using Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, cap=10000, min_conc=0)
+        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
         optimal = min(300, max(Little, 100)) #constrained or range 100-300
-        
+
         # Initialize rate limiting components
         arrival_rate = min(
-            limits.requests_per_minute * HEADROOM / 60,
-            limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
+            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
         )
         
         if arrival_rate < 1:
@@ -573,13 +580,13 @@ class Grader:
         
         print("[RATE LIMITING SETUP]")
         print(f"- Model: {self.model}")
-        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * HEADROOM:,.0f} with headroom)")
-        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * HEADROOM:,.0f} with headroom)")
+        print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
+        print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
         print(f"- Bootstrap measured avg_tokens: {self.avg_tokens}")
-        
+
         # Show expected throughput breakdown
-        rpm_throughput = limits.requests_per_minute * HEADROOM / 60
-        tpm_throughput = limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+        rpm_throughput = limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+        tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
         print(f"- Optimal by Little's law: {Little}")
@@ -655,9 +662,8 @@ class Grader:
                         
                         # Calculate theoretical throughput with learned average
                         limits = get_openai_rate_limits(self.model)
-                        HEADROOM = 0.9
-                        learned_throughput = limits.tokens_per_minute * HEADROOM / actual_avg / 60
-                        initial_throughput = limits.tokens_per_minute * HEADROOM / initial_avg / 60
+                        learned_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
+                        initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / initial_avg / 60
                         
                         self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
                                                       f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
@@ -703,9 +709,8 @@ class Grader:
                     
                     # Calculate what throughput would have been with perfect estimation
                     limits = get_openai_rate_limits(self.model)
-                    HEADROOM = 0.9
-                    optimal_throughput = limits.tokens_per_minute * HEADROOM / actual_avg / 60
-                    initial_throughput = limits.tokens_per_minute * HEADROOM / initial_avg / 60
+                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
+                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / initial_avg / 60
                     
                     self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
                                                   f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")

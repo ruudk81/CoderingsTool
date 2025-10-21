@@ -23,7 +23,7 @@ from sklearn.cluster import AgglomerativeClustering
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel  
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
 from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 from .verboseReporter import VerboseReporter
 
@@ -212,11 +212,12 @@ class TokenBucket:
 
 class LatencyTracker:
     """Simple EMA tracker for latencies"""
-    def __init__(self, alpha=0.1):
+    def __init__(self, processing_config: Optional[ProcessingConfig] = None):
+        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.ema = None
-        self.alpha = alpha
-        self.values = deque(maxlen=100)  # Keep last 100 for percentiles
-    
+        self.alpha = self.processing_config.latency_tracker_ema_alpha
+        self.values = deque(maxlen=self.processing_config.latency_tracker_samples_window)
+
     def add(self, value):
         """Add a latency measurement"""
         self.values.append(value)
@@ -224,12 +225,13 @@ class LatencyTracker:
             self.ema = value
         else:
             self.ema = self.alpha * value + (1 - self.alpha) * self.ema
-    
-    def get_timeout(self, est_tokens, margin=1.5, min_timeout=15.0, max_timeout=60.0):
+
+    def get_timeout(self, est_tokens):
         """Calculate timeout based on EMA and token count with configurable bounds"""
+        config = self.processing_config
         if not self.values:
-            return max(min_timeout, 30.0)  # Default 30s or configured minimum, whichever is higher
-        
+            return max(config.adaptive_timeout_min_seconds, 30.0)
+
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
         # Simple linear scaling with token count
@@ -237,7 +239,7 @@ class LatencyTracker:
         token_factor = est_tokens / 1000
         timeout = p95 + (token_factor * 0.1)
         # Apply margin and configurable bounds
-        return max(min_timeout, min(max_timeout, timeout * margin))
+        return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
     
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
