@@ -372,14 +372,13 @@ class CacheConfig:
     # Step prefixes for file naming
     step_prefixes: Dict[str, str] = field(default_factory=lambda: {
         "data": "001",
-        "preprocessed": "002", 
+        "preprocessed": "002",
         "quality_filter": "003",
-        "extracted_ideas": "004",         
-        "embeddings": "005",     
+        "extracted_ideas": "004",
+        "embeddings": "005",
         "initial_clusters": "006",
         "codebook_generation": "007",
-        "codebook_refinement": "007b",
-        "theme_identification": "008",
+        "codebook_refinement": "008",
         "code_assignment": "009",
         "export": "010"
         })

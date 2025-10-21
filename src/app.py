@@ -860,7 +860,7 @@ def determine_max_step_from_cache(filename: str, variable_key: str, cache_manage
         "embeddings": 4,
         "initial_clusters": 5,
         "codebook_generation": 6,
-        "theme_identification": 7,
+        "codebook_refinement": 7,
         "code_assignment": 8,
         "export": 9
     }
