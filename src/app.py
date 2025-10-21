@@ -983,8 +983,7 @@ def load_from_file(uploaded_file) -> tuple[str, dict, dict]:
         raise Exception(f"Error loading file: {str(e)}")
         
 
-def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
-                          encoding: Optional[str] = None) -> DatasetConfig:
+def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str], encoding: Optional[str] = None) -> DatasetConfig:
     """ Build DatasetConfig from UI selections. Reads widget-controlled settings directly from session_state widget keys. """
     # Read widget-controlled settings from widget session_state keys
     variable_mode = st.session_state.get('variable_mode', 'single')
@@ -1026,56 +1025,8 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
 
     return config
 
-
-# def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
-#     """ Load and preview dataset based on configuration """
-#     data_loader = _get_data_loader()
-
-#     # Determine encoding
-#     encoding = config.encoding
-#     if encoding == 'auto':
-#         encoding = None
-
-#     # Load data based on mode
-#     if config.variable_mode == "single" or len(config.selected_variables) == 1:
-#         # Single variable
-#         preview_data = data_loader.get_variable_with_IDs(
-#             config.filename,
-#             config.id_column,
-#             config.selected_variables[0],
-#             encoding=encoding
-#         )
-#     else:
-#         # Multiple variables - merge
-#         merge_config = config.merge_config or {}
-#         preview_data = data_loader.get_multiple_variables_with_IDs(
-#             filename=config.filename,
-#             id_column=config.id_column,
-#             var_names=config.selected_variables,
-#             merge_strategy=merge_config.get('strategy', 'concatenate'),
-#             separator=merge_config.get('separator', ' '),
-#             skip_empty=merge_config.get('skip_empty', True),
-#             encoding=encoding
-#         )
-
-#     # Apply sampling if specified
-#     if config.sample_size and len(preview_data) > config.sample_size:
-#         preview_data = preview_data.head(config.sample_size)
-
-#     return preview_data
-
-
 def convert_response_models_to_preview_df(response_models: list, id_column: str, text_column: str) -> pd.DataFrame:
-    """Convert list of ResponseModel objects to a DataFrame suitable for preview display
-
-    Args:
-        response_models: List of ResponseModel objects from step_0_load_data
-        id_column: Name for the ID column in the DataFrame
-        text_column: Name for the text/response column in the DataFrame
-
-    Returns:
-        pd.DataFrame with columns [id_column, text_column]
-    """
+    """Convert list of ResponseModel objects to a DataFrame suitable for preview display"""
     import pandas as pd
 
     # Extract data from ResponseModel objects
@@ -1430,7 +1381,6 @@ def show_upload_page():
                 st.rerun()
 
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
-
 def show_preprocessing_page():
     lang = st.session_state.language
     
@@ -1635,15 +1585,6 @@ def show_preprocessing_page():
                 st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
 def show_filtering_page():
-    """
-    Step 2: Quality filtering (kwaliteitsfilter)
-
-    Processes preprocessed_text from step 1 and exclude noise from further analysis.
-
-    Pipeline function: step_2_extract_ideas
-    Cache name: quality_filter
-    Model: models.QualityFilteredModel
-    """
     lang = st.session_state.language
 
     st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 2: Quality Filtering")
@@ -1815,15 +1756,6 @@ def show_filtering_page():
                 st.error(f"Filtering fout: {str(e)}" if lang == "nl" else f"Filtering error: {str(e)}")
 
 def show_idea_extraction_page():
-    """
-    Step 3: Idea Extraction (Idee-extractie)
-
-    Processes quality_filtered_text from step 2 and extracts discrete ideas.
-
-    Pipeline function: step_3_extract_ideas
-    Cache name: extracted_ideas
-    Model: models.IdeasExtractedModel
-    """
     lang = st.session_state.language
 
     # ==================== HEADER ====================
@@ -1835,8 +1767,7 @@ def show_idea_extraction_page():
         st.success("✅ " + (
             "Opdeling voltooid! Bekijk de resultaten en klik dan op doorgaan."
             if lang == "nl" else
-            "Unitization completed! Review the results, then click continue."
-        ))
+            "Unitization completed! Review the results, then click continue."))
 
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
@@ -2016,19 +1947,8 @@ def show_idea_extraction_page():
             except Exception as e:
                 st.error(f"Idee-extractie fout: {str(e)}" if lang == "nl" else f"Idea extraction error: {str(e)}")
 
-def show_embedding_page():
-    """
-    Step 4: Embedding Generation (Genereer Embeddings)
-
-    Generates vector embeddings for extracted ideas from step 3.
-
-    Pipeline function: step_4_generate_embeddings
-    Cache name: embeddings
-    Model: models.EmbeddingsModel
-    """
+def show_embedding_page(): 
     lang = st.session_state.language
-
-    # ==================== HEADER ====================
     st.header("Stap 4: Genereer Embeddings" if lang == "nl" else "Step 4: Generate Embeddings")
 
     # ==================== BLOCK 1: GREEN BOX ====================
@@ -2146,18 +2066,7 @@ def show_embedding_page():
 
 
 def show_clustering_page():
-    """
-    Step 5: Clustering
-
-    Performs UMAP dimensionality reduction and HDBSCAN clustering on embeddings from step 4.
-
-    Pipeline function: step_5_cluster
-    Cache name: initial_clusters
-    Model: models.ClusterModel
-    """
     lang = st.session_state.language
-
-    # ==================== HEADER ====================
     st.header("Stap 5: Clustering" if lang == "nl" else "Step 5: Clustering")
 
     # ==================== BLOCK 1: GREEN BOX ====================
@@ -2307,18 +2216,7 @@ def show_clustering_page():
                 st.error(f"Clustering fout: {str(e)}" if lang == "nl" else f"Clustering error: {str(e)}")
 
 def show_codebook_generation_page():
-    """
-    Step 6: Codebook Generation (Codebook Generatie)
-
-    Generates codes from step 5's "reduced" data. 
-
-    Pipeline function: step_6_generate_codebook
-    Cache name: codebook_generation
-    Model: models.CodebookModel
-    """
     lang = st.session_state.language
-
-    # ==================== HEADER ====================
     st.header("Stap 6: Generatie ruwe codes" if lang == "nl" else "Step 6: Unpolised code generation")
 
     # ==================== BLOCK 1: GREEN BOX ====================
@@ -2520,16 +2418,8 @@ def show_codebook_generation_page():
                 st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
 
 def show_theme_identification_page():
-    """
-    Step 7: Theme Identification (Thema Identificatie)
-    Pipeline function: step_7_refine_codebook
-    Cache name: theme_identification
-    Model: models.ThemeEnrichedCodebookModel
-    """
     lang = st.session_state.language
-
-    # ==================== HEADER ====================
-    st.header("Stap 7: Thema Identificatie" if lang == "nl" else "Step 7: Theme Identification")
+    st.header("Stap 7: Themathisch codeboek" if lang == "nl" else "Step 7: Thematic Codebook")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     # Show completion status
@@ -2547,31 +2437,6 @@ def show_theme_identification_page():
         codes_text = "codes om te groeperen in thema's" if lang == 'nl' else 'codes to group into themes'
         sample_info += (f"\n\n**Data:** {num_codes} {codes_text}")
         st.info(sample_info)
-
-    # ==================== BLOCK 3: YELLOW BOX ====================
-    # Show results/stats when current step is complete
-    if is_step_completed(7):
-        if st.session_state.get('theme_stats', {}):
-            stats = st.session_state.get('theme_stats', {})
-            nl = (lang == "nl")
-
-            themes_label = "Aantal thema's" if nl else 'Number of themes'
-            codes_label = 'Aantal codes' if nl else 'Number of codes'
-            summary_info = (
-                f"\n\n- {themes_label}: {stats.get('num_themes', 0)}"
-                + f"\n\n- {codes_label}: {stats.get('num_codes', 0)}"
-            )
-
-            st.markdown(f"""
-            <div style="
-            border-radius: 10px;
-            padding: 12px 16px;
-            background-color: #FFF8E6;
-            margin-top: 8px;
-            color: #5C4102;">
-            {summary_info}
-            </div>
-            """, unsafe_allow_html=True)
 
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load reasoning_results and codebook_main if not already in pipeline_results
@@ -3817,7 +3682,7 @@ def show_codebook_samples(codebook_reasoning):
 
 
 def show_theme_samples(theme_enriched_codebook):
-    """Show theme samples using EXACT pattern from user's original code"""
+
     if not theme_enriched_codebook:
         st.write("No theme data available")
         return
