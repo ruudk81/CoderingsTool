@@ -4146,8 +4146,10 @@ def show_step_samples(step_number):
             st.write("⏳ " + ("Stap geïnvalideerd - verwerk opnieuw" if lang == "nl" else "Step invalidated - reprocess required"))
             return
 
-    # CRITICAL: For cache route, also check if step is simply not completed (beyond max_step)
-    # This prevents showing samples for steps that were never processed in the cache
+    # CRITICAL: For cache route, also check if step has stale data (beyond max_step)
+    # Old cache data may exist in cache files but is invalidated because max_step indicates only steps 0-N are valid.
+    # When a user re-processes a particular step, all following steps are invalidated and their cached data
+    # becomes stale - it should not be used for further analysis or display.
     loaded_from_cache = st.session_state.get('loaded_from_cache', False)
     if loaded_from_cache and not is_step_completed(step_number):
         lang = st.session_state.language
