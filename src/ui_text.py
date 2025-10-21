@@ -64,6 +64,13 @@ UI_TEXTS = {
         - Samenvattingen voor elk thema genereren
         - Interpreteerbare resultaten leveren
         """,
+
+        "THEME_IDENTIFICATION_INFO": """
+        Deze stap zal:
+        - Codes groeperen in thema's
+        - Hiërarchische thema structuur maken
+        - Thema beschrijvingen genereren
+        """,
         
         "RESULTS_INFO": """
         Uw analyse is compleet! U kunt:
@@ -168,6 +175,13 @@ UI_TEXTS = {
         - Assign descriptive labels to clusters
         - Generate summaries for each theme
         - Provide interpretable results
+        """,
+
+        "THEME_IDENTIFICATION_INFO": """
+        This step will:
+        - Group codes into themes
+        - Create hierarchical theme structure
+        - Generate theme descriptions
         """,
         
         "RESULTS_INFO": """
