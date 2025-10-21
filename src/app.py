@@ -3816,37 +3816,92 @@ def show_codebook_samples(codebook_reasoning):
         st.rerun()
 
 
-def show_theme_samples(theme_enriched_codebook):
-    """Show theme samples using EXACT pattern from user's original code"""
-    if not theme_enriched_codebook:
-        st.write("No theme data available")
+def show_theme_samples(refinement_report):
+    """Display refinement report with HTML formatting in collapsible sections"""
+    import html
+
+    if not refinement_report:
+        st.write("No refinement data available")
         return
-    
-    # Original pattern: for theme in themes
-    if hasattr(theme_enriched_codebook, 'themes_summary') and theme_enriched_codebook.themes_summary:
-        themes = theme_enriched_codebook.themes_summary
-        
-        theme_text = ""
-        for theme in themes:
-            # Original pattern: print(f"\n📂 {theme['theme_name'].upper()}")
-            if isinstance(theme, dict) and 'theme_name' in theme:
-                theme_text += f"\n📂 **{theme['theme_name'].upper()}**\n"
-                theme_text += '-' * len(theme['theme_name']) + "\n"
-                
-                # Original pattern: for code in theme['codes']
-                if 'codes' in theme and theme['codes']:
-                    for code in theme['codes']:
-                        if isinstance(code, dict) and 'code_name' in code:
-                            theme_text += f"  • {code['code_name']}\n"
-                        elif isinstance(code, str):
-                            theme_text += f"  • {code}\n"
-                theme_text += "\n"
-        
-        # Display in gray container
-        if theme_text.strip():
-            st.code(theme_text.strip(), language=None)
+
+    lang = st.session_state.get('language', 'nl')
+
+    # Translations
+    t_analysis = "LLM Analyse" if lang == "nl" else "LLM Analysis"
+    t_categories = "Verfijnde Categorieën" if lang == "nl" else "Refined Categories"
+    t_subcodes = "subcodes" if lang == "nl" else "subcodes"
+
+    # Section 1: LLM Analysis (collapsed by default)
+    analysis_text = refinement_report.get('analysis', {}).get('text')
+    if analysis_text:
+        st.markdown(f"""
+        <details style="margin-bottom: 16px;">
+          <summary style="
+            cursor: pointer;
+            padding: 12px 16px;
+            background: #f0f2f6;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            user-select: none;">
+            📝 {t_analysis}
+          </summary>
+          <div style="
+            padding: 16px;
+            background: white;
+            border: 1px solid #e6e6e6;
+            border-radius: 8px;
+            margin-top: 8px;
+            line-height: 1.6;">
+            {html.escape(str(analysis_text))}
+          </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+    # Section 2: Refined Categories (each category in its own collapsible section, expanded by default)
+    categories = refinement_report.get('categories', [])
+    if categories:
+        st.markdown(f"### {t_categories}")
+
+        for category in categories:
+            category_name = category.get('category_name', 'Unknown')
+            subcode_count = category.get('subcode_count', 0)
+            subcodes = category.get('subcodes', [])
+
+            # Build subcodes HTML list
+            subcodes_html = ''.join([
+                f'''<div style="margin-bottom: 12px; padding-left: 8px;">
+                  <b style="color: #1f77b4;">{html.escape(str(sc.get('code', 'N/A')))}</b><br>
+                  <span style="color: #666; font-size: 14px;">{html.escape(str(sc.get('description', 'N/A')))}</span>
+                </div>'''
+                for sc in subcodes
+            ])
+
+            st.markdown(f"""
+            <details open style="margin-bottom: 16px;">
+              <summary style="
+                cursor: pointer;
+                padding: 12px 16px;
+                background: #f0f2f6;
+                border-radius: 8px;
+                font-weight: 600;
+                margin-bottom: 8px;
+                user-select: none;">
+                📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
+              </summary>
+              <div style="
+                padding: 16px;
+                background: white;
+                border: 1px solid #e6e6e6;
+                border-radius: 8px;
+                margin-top: 8px;
+                line-height: 1.6;">
+                {subcodes_html}
+              </div>
+            </details>
+            """, unsafe_allow_html=True)
     else:
-        st.write("No themes summary available")
+        st.write("No categories available")
 
 def show_assignment_samples(code_assigned_results):
     """Show assignment samples using EXACT pattern from user's original code"""
@@ -4212,11 +4267,14 @@ def show_step_samples(step_number):
                 st.write(f"⚠️ Error loading codebook reasoning: {e}")
                 
         elif step_number == 7:
-            # Step 7: Themes
-            data = cache_manager.load_from_cache(filename, "theme_identification", variable_key, models.ThemeEnrichedCodebookModel)
+            # Step 7: Codebook Refinement
+            from utils.codebookRefinement import get_refinement_report
+
+            data = cache_manager.load_from_cache(filename, "codebook_refinement", variable_key, models.CodeRefinementResults)
             if data and len(data) > 0:
-                #st.write(f"✅ Loaded {len(data[0].codes)} codes with themes from cache")
-                show_theme_samples(data[0])
+                # Convert CodeRefinementResults to structured dict for display
+                refinement_report = get_refinement_report(data[0])
+                show_theme_samples(refinement_report)
 
                 # Continue button (pattern from other steps)
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -4226,7 +4284,7 @@ def show_step_samples(step_number):
                         st.session_state.step = 8
                         st.rerun()
             else:
-                st.write("⏳ No themes in cache - run theme identification first")
+                st.write("⏳ No refinement results in cache - run codebook refinement first")
                 
         elif step_number == 8:
             # Step 8: Refined Codebook Structure
