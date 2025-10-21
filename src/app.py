@@ -2360,29 +2360,6 @@ def show_codebook_generation_page():
         sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
         st.info(sample_info)
 
-    # ==================== BLOCK 3: YELLOW BOX ====================
-    # Show results/stats when current step is complete
-    if is_step_completed(6):
-        if st.session_state.get('codebook_stats', {}):
-            stats = st.session_state.get('codebook_stats', {})
-            nl = (lang == "nl")
-
-            summary_info = (
-                f"\n\n- {'Aantal codes' if nl else 'Number of codes'}: {stats.get('num_codes', 0)}"
-                + f"\n\n- {'Clusters met codes' if nl else 'Clusters with codes'}: {stats.get('unique_clusters', 0)}"
-            )
-
-            st.markdown(f"""
-            <div style="
-            border-radius: 10px;
-            padding: 12px 16px;
-            background-color: #FFF8E6;
-            margin-top: 8px;
-            color: #5C4102;">
-            {summary_info}
-            </div>
-            """, unsafe_allow_html=True)
-
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load initial_cluster_results if not already in pipeline_results
     if is_step_completed(5) and not is_step_completed(6):
@@ -2541,16 +2518,6 @@ def show_codebook_generation_page():
 
             except Exception as e:
                 st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
-
-    # ==================== CONTINUE BUTTON ====================
-    # Show continue button when step is completed
-    if is_step_completed(6):
-        if st.button("➡️ " + (
-            "Ga door naar Stap 7" if lang == "nl"
-            else "Continue to Step 7"
-        ), type="primary"):
-            st.session_state.current_step = 7
-            st.rerun()
 
 def show_theme_identification_page():
     """
@@ -4289,11 +4256,11 @@ def show_step_samples(step_number):
                 
                 if data and len(data) > 0:
                     show_codebook_samples(data[0])
-                    
+
                     col1, col2, col3 = st.columns([1, 2, 1])
                     with col2:
                         if st.button("🔄 " + ("Ga door naar volgende stap" if lang == "nl" else "Continue to Next Step"), type="primary", use_container_width=True, key="codeGen_continue"):
-                            st.session_state.step = 6
+                            st.session_state.step = 7
                             st.rerun()
                 else:
                     st.write("⏳ No codebook reasoning in cache - run codebook generation first")
