@@ -1027,42 +1027,42 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
     return config
 
 
-def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
-    """ Load and preview dataset based on configuration """
-    data_loader = _get_data_loader()
+# def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
+#     """ Load and preview dataset based on configuration """
+#     data_loader = _get_data_loader()
 
-    # Determine encoding
-    encoding = config.encoding
-    if encoding == 'auto':
-        encoding = None
+#     # Determine encoding
+#     encoding = config.encoding
+#     if encoding == 'auto':
+#         encoding = None
 
-    # Load data based on mode
-    if config.variable_mode == "single" or len(config.selected_variables) == 1:
-        # Single variable
-        preview_data = data_loader.get_variable_with_IDs(
-            config.filename,
-            config.id_column,
-            config.selected_variables[0],
-            encoding=encoding
-        )
-    else:
-        # Multiple variables - merge
-        merge_config = config.merge_config or {}
-        preview_data = data_loader.get_multiple_variables_with_IDs(
-            filename=config.filename,
-            id_column=config.id_column,
-            var_names=config.selected_variables,
-            merge_strategy=merge_config.get('strategy', 'concatenate'),
-            separator=merge_config.get('separator', ' '),
-            skip_empty=merge_config.get('skip_empty', True),
-            encoding=encoding
-        )
+#     # Load data based on mode
+#     if config.variable_mode == "single" or len(config.selected_variables) == 1:
+#         # Single variable
+#         preview_data = data_loader.get_variable_with_IDs(
+#             config.filename,
+#             config.id_column,
+#             config.selected_variables[0],
+#             encoding=encoding
+#         )
+#     else:
+#         # Multiple variables - merge
+#         merge_config = config.merge_config or {}
+#         preview_data = data_loader.get_multiple_variables_with_IDs(
+#             filename=config.filename,
+#             id_column=config.id_column,
+#             var_names=config.selected_variables,
+#             merge_strategy=merge_config.get('strategy', 'concatenate'),
+#             separator=merge_config.get('separator', ' '),
+#             skip_empty=merge_config.get('skip_empty', True),
+#             encoding=encoding
+#         )
 
-    # Apply sampling if specified
-    if config.sample_size and len(preview_data) > config.sample_size:
-        preview_data = preview_data.head(config.sample_size)
+#     # Apply sampling if specified
+#     if config.sample_size and len(preview_data) > config.sample_size:
+#         preview_data = preview_data.head(config.sample_size)
 
-    return preview_data
+#     return preview_data
 
 
 def convert_response_models_to_preview_df(response_models: list, id_column: str, text_column: str) -> pd.DataFrame:
@@ -4128,13 +4128,22 @@ def show_step_samples(step_number):
         st.write("❌ No filename or variable selected - cannot load data")
         return
 
-    # Session-based filtering: Only show results from current session when in force_recalculate mode
+    # Session-based filtering: Check both force_recalculate_all and force_recalculate_from_step
     if st.session_state.get('force_recalculate_all', False):
         # Upload from file route - only show if step was completed in current session
         # step_number maps directly to completion tracking (preprocessing=1, quality_filter=2, etc.)
         if not is_step_completed(step_number):
             lang = st.session_state.language
             st.write("⏳ " + ("Data nog niet verwerkt in huidige sessie - voer eerst verwerking uit" if lang == "nl" else "Data not yet processed in current session - run processing first"))
+            return
+
+    # Also check if this step was invalidated by force_recalculate_from_step (cache route)
+    force_recalc_from = st.session_state.get('force_recalculate_from_step', 99)
+    if force_recalc_from <= step_number:
+        # Step has been invalidated - only show if reprocessed in current session
+        if not is_step_completed(step_number):
+            lang = st.session_state.language
+            st.write("⏳ " + ("Stap geïnvalideerd - verwerk opnieuw" if lang == "nl" else "Step invalidated - reprocess required"))
             return
 
     # Get cache manager
