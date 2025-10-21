@@ -2332,8 +2332,30 @@ def show_codebook_generation_page():
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(5):
-        # Get or calculate clustering stats
-        num_clusters = st.session_state.num_clusters
+        # Get clustering stats from single source of truth
+        # If not in session state yet, calculate from cached cluster data
+        if 'clustering_stats' not in st.session_state:
+            cache_manager = _get_cache_manager()
+            variable_key = _get_variable_key_for_cache()
+            if variable_key:
+                cluster_data = cache_manager.load_from_cache(
+                    st.session_state.filename,
+                    "initial_clusters",
+                    variable_key,
+                    models.ClusterModel
+                )
+                if cluster_data:
+                    cluster_ids = set(
+                        segment.initial_cluster
+                        for result in cluster_data
+                        for segment in result.response_ideas
+                        if segment.initial_cluster != -1
+                    )
+                    st.session_state['clustering_stats'] = {
+                        'num_clusters': len(cluster_ids)
+                    }
+
+        num_clusters = st.session_state.get('clustering_stats', {}).get('num_clusters', 0)
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
         st.info(sample_info)
