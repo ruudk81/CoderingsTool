@@ -279,10 +279,14 @@ class CacheManager:
     def __init__(self, config: CacheConfig = None):
         self.config = config or CacheConfig()
         self.db = CacheDatabase(self.config)
-        
+
         # Ensure cache directory exists
         self.config.cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
+        # Automatically cleanup old cache if enabled
+        if self.config.auto_cleanup:
+            self.cleanup_old_cache()
+
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate MD5 hash of a file"""
         hash_md5 = hashlib.md5()
