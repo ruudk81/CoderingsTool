@@ -281,6 +281,68 @@ def refine_codebook(
     processor = CodebookRefinementProcessor(config)
     return processor.refine_codebook(survey_question, reasoning_results)
 
+def get_refinement_report(results: CodeRefinementResults) -> dict:
+    """Get refinement results as a structured dict for display in Streamlit
+
+    Args:
+        results: CodeRefinementResults object from refine_codebook()
+
+    Returns:
+        dict: Structured report with metadata, stats, analysis, and refined categories
+    """
+    stats = results.processing_stats
+
+    # Build categories list with subcodes
+    categories = []
+    if results.refined_codebook.refined_codebook:
+        for i, category in enumerate(results.refined_codebook.refined_codebook, 1):
+            categories.append({
+                'number': i,
+                'category_name': category.category,
+                'subcode_count': len(category.subcodes),
+                'subcodes': [
+                    {
+                        'id': subcode.id,
+                        'code': subcode.code,
+                        'description': subcode.description
+                    }
+                    for subcode in category.subcodes
+                ]
+            })
+
+    # Structure the report
+    report = {
+        'metadata': {
+            'timestamp': results.timestamp,
+            'model_used': stats.get('model_used', 'unknown'),
+            'language': stats.get('language', 'unknown'),
+            'reasoning_effort': stats.get('reasoning_effort', 'unknown'),
+            'text_verbosity': stats.get('text_verbosity', 'unknown')
+        },
+        'stats': {
+            'original_code_count': stats.get('original_code_count', 0),
+            'refined_category_count': stats.get('refined_category_count', 0),
+            'total_refined_subcodes': stats.get('total_refined_subcodes', 0),
+            'processing_time_seconds': stats.get('processing_time_seconds', 0)
+        },
+        'analysis': {
+            'text': results.refined_codebook.analysis if results.refined_codebook.analysis else None
+        },
+        'categories': categories,
+        'error': stats.get('error', None),
+        'original_codebook': [
+            {
+                'code': code.get('code', ''),
+                'definition': code.get('definition', ''),
+                'cluster_id': code.get('cluster_id', '')
+            }
+            for code in results.original_codebook
+        ] if results.original_codebook else []
+    }
+
+    return report
+
+
 def print_refinement_report(results: CodeRefinementResults):
     """Print a formatted report of refinement results"""
     stats = results.processing_stats

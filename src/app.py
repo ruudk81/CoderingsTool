@@ -2523,7 +2523,7 @@ def show_theme_identification_page():
     """
     Step 7: Theme Identification (Thema Identificatie)
     Pipeline function: step_7_refine_codebook
-    Cache name: codebook_refinement
+    Cache name: theme_identification
     Model: models.ThemeEnrichedCodebookModel
     """
     lang = st.session_state.language
@@ -2540,44 +2540,8 @@ def show_theme_identification_page():
     # ==================== BLOCK 2: BLUE BOX ====================
     # Show input data info when previous step is complete
     if is_step_completed(6):
-        # Get codebook stats from session state or calculate from pipeline_results
-        if 'codebook_stats' in st.session_state:
-            num_codes = st.session_state['codebook_stats'].get('num_codes', 0)
-        elif 'codebook_main' in st.session_state.pipeline_results:
-            codebook_data = st.session_state.pipeline_results['codebook_main']
-            num_codes = len(codebook_data.codes) if (codebook_data and hasattr(codebook_data, 'codes')) else 0
-        else:
-            # Last resort: load from cache to calculate stats (for cache route when step 7 already completed)
-            try:
-                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
-                is_merged = st.session_state.get('is_merged_variable', False)
-                sample_size = st.session_state.get('sample_size_config')
-                merge_config = st.session_state.get('merge_config')
-                variable_key = generate_enhanced_variable_key(
-                    selected_variables,
-                    is_merged=is_merged,
-                    sample_size=sample_size,
-                    merge_config=merge_config
-                )
-                cache_manager = _get_cache_manager()
-
-                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation", variable_key):
-                    codebook_list = _load_or_recover(
-                        st.session_state.filename,
-                        "codebook_generation",
-                        variable_key,
-                        models.CodebookModel
-                    )
-                    # Store in pipeline_results for future use
-                    st.session_state.pipeline_results['codebook_main'] = codebook_list[0] if codebook_list else None
-
-                    # Calculate stats
-                    codebook_data = codebook_list[0] if codebook_list else None
-                    num_codes = len(codebook_data.codes) if codebook_data and hasattr(codebook_data, 'codes') else 0
-                else:
-                    num_codes = 0
-            except Exception:
-                num_codes = 0
+        # Get num_codes from session state (set by step 6 or data loading block)
+        num_codes = st.session_state.get('codebook_stats', {}).get('num_codes', 0)
 
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         codes_text = "codes om te groeperen in thema's" if lang == 'nl' else 'codes to group into themes'
@@ -2690,18 +2654,7 @@ def show_theme_identification_page():
     # ==================== BLOCK 5: PROCESSING BUTTON ====================
     # Show processing button when ready to process
     if is_step_completed(6) and not is_step_completed(7):
-        info_text = """
-        Deze stap zal:
-        - Codes groeperen in thema's
-        - Hiërarchische thema structuur maken
-        - Thema beschrijvingen genereren
-        """ if lang == "nl" else """
-        This step will:
-        - Group codes into themes
-        - Create hierarchical theme structure
-        - Generate theme descriptions
-        """
-        st.markdown(info_text)
+        st.markdown(ui.get_text("THEME_IDENTIFICATION_INFO", lang))
 
         # Show button to start theme identification
         if st.button("🚀 " + (
@@ -2737,7 +2690,7 @@ def show_theme_identification_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or \
                               (st.session_state.get('force_recalculate_from_step', 99) <= 7)
 
-                refinement_results, theme_enriched_codebook = pipeline.step_7_refine_codebook(
+                refinement_results, theme_enriched_codebook, refinement_report = pipeline.step_7_refine_codebook(
                     codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_themes,
@@ -2747,7 +2700,7 @@ def show_theme_identification_page():
                     model_config=st.session_state.model_config,
                     default_language=st.session_state.get('language', 'nl'),
                     force_recalc=force_recalc,
-                    verbose=True   
+                    verbose=True
                 )
 
                 progress_container.success("✅ " + (
@@ -2758,6 +2711,7 @@ def show_theme_identification_page():
                 # Store results
                 st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_codebook
                 st.session_state.pipeline_results['refinement_results'] = refinement_results
+                st.session_state.pipeline_results['refinement_report'] = refinement_report
 
                 # Calculate and store theme statistics
                 num_themes = len(theme_enriched_codebook.themes_summary) if theme_enriched_codebook.themes_summary else 0
@@ -2773,16 +2727,6 @@ def show_theme_identification_page():
                 st.rerun()
             except Exception as e:
                 st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
-
-    # ==================== CONTINUE BUTTON ====================
-    # Show continue button when step is completed
-    if is_step_completed(7):
-        if st.button("➡️ " + (
-            "Ga door naar Stap 9" if lang == "nl"
-            else "Continue to Step 9"
-        ), type="primary"):
-            st.session_state.current_step = 9
-            st.rerun()
 
 def show_code_assignment_page():
     lang = st.session_state.language
@@ -4273,6 +4217,14 @@ def show_step_samples(step_number):
             if data and len(data) > 0:
                 #st.write(f"✅ Loaded {len(data[0].codes)} codes with themes from cache")
                 show_theme_samples(data[0])
+
+                # Continue button (pattern from other steps)
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🔄 " + ("Ga door naar volgende stap" if st.session_state.language == 'nl' else "Continue to Next Step"),
+                                type="primary", use_container_width=True, key="theme_continue"):
+                        st.session_state.step = 8
+                        st.rerun()
             else:
                 st.write("⏳ No themes in cache - run theme identification first")
                 

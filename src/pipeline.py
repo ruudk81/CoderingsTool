@@ -37,7 +37,7 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 50
 
-RUN_UNTIL_STEP = 5 # None = run all steps
+RUN_UNTIL_STEP = 7 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1176,9 +1176,9 @@ def step_7_refine_codebook(
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel)
+        tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel, refinement_report: dict)
     """
-    from utils.codebookRefinement import refine_codebook, print_refinement_report
+    from utils.codebookRefinement import refine_codebook, print_refinement_report, get_refinement_report
     from utils.verboseReporter import VerboseReporter
 
     step_name = "codebook_refinement"
@@ -1339,7 +1339,12 @@ def step_7_refine_codebook(
             source_variable=var_name
         )
 
-    return refinement_results, theme_enriched_codebook
+    # Generate structured report for Streamlit display
+    refinement_report = None
+    if refinement_results:
+        refinement_report = get_refinement_report(refinement_results)
+
+    return refinement_results, theme_enriched_codebook, refinement_report
 
 
 def step_8_assign_codes(
@@ -1784,7 +1789,7 @@ if __name__ == '__main__':
     # === STEP 7 ====
     """Codebook Refinement"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
-    refinement_results, theme_enriched_codebook = step_7_refine_codebook(
+    refinement_results, theme_enriched_codebook, refinement_report = step_7_refine_codebook(
         codebook_reasoning, filename, var_name, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
