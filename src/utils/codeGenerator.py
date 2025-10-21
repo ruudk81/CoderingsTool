@@ -1275,12 +1275,13 @@ class InductiveCodeGenerator:
     def __init__(
         self,
         cluster_results: List[ClusterModel],
-        starter_codes: List[Dict[str, str]], 
+        starter_codes: List[Dict[str, str]],
         var_lab: str,
         verbose: bool = False,
         verbose_detailed: bool = False,
         prompt_printer = None,
         config = None,
+        processing_config: Optional[ProcessingConfig] = None,
         verbose_reporter: Optional['VerboseReporter'] = None,
         stages_to_run: str = 'all',  # 'all' or 'theme_extraction_only'
         **kwargs  # For backward compatibility
@@ -1292,6 +1293,7 @@ class InductiveCodeGenerator:
         self.verbose_detailed = verbose_detailed
         self.prompt_printer = prompt_printer
         self.config = config or DEFAULT_CODEDESIGNER_CONFIG
+        self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.stages_to_run = stages_to_run
         
         # Sampling statistics tracking
@@ -1337,32 +1339,31 @@ class InductiveCodeGenerator:
         
         # Initialize unified rate limiting system (following qualityFilter.py patterns)
         rate_limits = get_openai_rate_limits(self.config.model)
-        HEADROOM = 0.9  # Use 90% of limits for safety
-        
+
         # Initialize bootstrap attributes (will be populated by async_initialize)
         self.bootstrap_latency = None
         self.bootstrap_tokens = None
         self._bootstrap_completed = False
-        
+
         # Calculate average tokens for rate limiting (fallback until bootstrap completes)
         self.avg_tokens = self._calculate_avg_tokens()
-        
+
         # Create unified rate limiting system
-        self.tpm_bucket = TokenBucket(rate_limits.tokens_per_minute * HEADROOM)
+        self.tpm_bucket = TokenBucket(rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Add AsyncLimiter for unified rate limiting (following qualityFilter pattern)
         arrival_rate = min(
-            rate_limits.requests_per_minute * HEADROOM / 60,
-            rate_limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+            rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
+            rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
         if arrival_rate < 1:
             self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
         else:
             self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-        
+
         # Calculate optimal concurrency based on API limits and latency
-        rpm_concurrency = rate_limits.requests_per_minute * HEADROOM / 60 * 2.0  # Assume 2s avg latency
-        tpm_concurrency = (rate_limits.tokens_per_minute * HEADROOM / self.avg_tokens) * 2.0
+        rpm_concurrency = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 * 2.0  # Assume 2s avg latency
+        tpm_concurrency = (rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens) * 2.0
         optimal_concurrency = min(rpm_concurrency, tpm_concurrency, self.config.async_concurrency_limit)
 
         self.concurrency_semaphore = asyncio.Semaphore(int(optimal_concurrency))
@@ -1487,14 +1488,13 @@ class InductiveCodeGenerator:
         """Update rate limiting components using bootstrap measurement data"""
         if not self._bootstrap_completed:
             return
-            
+
         rate_limits = get_openai_rate_limits(self.config.model)
-        HEADROOM = 0.9
-        
+
         # Recalculate arrival_rate using bootstrap-measured tokens
         arrival_rate = min(
-            rate_limits.requests_per_minute * HEADROOM / 60,
-            rate_limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+            rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
+            rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
         
         # Update AsyncLimiter with new arrival rate
@@ -1508,7 +1508,8 @@ class InductiveCodeGenerator:
             ApiLimits(rate_limits.tokens_per_minute, rate_limits.requests_per_minute),
             self.bootstrap_latency,
             self.avg_tokens,
-            cap=self.config.async_concurrency_limit
+            cap=self.config.async_concurrency_limit,
+            HEADROOM=self.processing_config.rate_limit_headroom
         )
         
         # Update concurrency semaphore
@@ -1883,11 +1884,10 @@ class InductiveCodeGenerator:
         
         # Get rate limits
         rate_limits = get_openai_rate_limits(self.config.model)
-        HEADROOM = 0.9
-        
+
         # Calculate number of workers based on rate limits and latency
-        rpm_throughput = rate_limits.requests_per_minute * HEADROOM / 60
-        tpm_throughput = rate_limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+        rpm_throughput = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+        tpm_throughput = rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         expected_throughput = min(rpm_throughput, tpm_throughput)
         
         # Get average latency for worker calculation
@@ -3002,23 +3002,22 @@ class InductiveCodeGenerator:
         
         # Use shared bootstrap data for cluster processing chain (Prompts 2-4)
         limits = get_openai_rate_limits(self.config.model)
-        HEADROOM = 0.9
-        
+
         # Ensure bootstrap measurement has been completed
         if not self._bootstrap_completed:
             self.verbose_reporter.warning("Bootstrap measurement not completed for cluster processing - using fallback")
-        
+
         # Calculate stage-specific optimal concurrency for the 3-prompt chain
         # Use bootstrap data but adjust for the complexity of the 3-prompt chain
         chain_latency = self.bootstrap_latency * 3  # Approximate latency for 3-prompt sequence
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, chain_latency, self.avg_tokens, cap=300, min_conc=10)
+        Little = compute_optimal_concurrency(api_limits, chain_latency, self.avg_tokens, cap=300, min_conc=10, HEADROOM=self.processing_config.rate_limit_headroom)
         optimal = min(100, max(Little, 20))  # Constrained for complex chain processing
-        
+
         # Create stage-specific rate limiting (adjusted for 3-prompt chain)
         arrival_rate = min(
-            limits.requests_per_minute * HEADROOM / 60 / 3,  # Divided by 3 for 3-prompt chain
-            limits.tokens_per_minute * HEADROOM / self.avg_tokens / 60
+            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 / 3,  # Divided by 3 for 3-prompt chain
+            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
         
         limiter = AsyncLimiter(arrival_rate, 1)
