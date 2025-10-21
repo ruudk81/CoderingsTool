@@ -1144,14 +1144,14 @@ def show_upload_page():
                             # Mark all completed steps based on cached data
                             for step in range(max_step + 1):
                                 mark_step_completed(step)
-              
+
                             # Set max step reached
                             st.session_state.max_step_reached = max_step
-              
+
                             # Jump to next step (minimum step 1 to avoid infinite loop on step 0)
                             target_step = max(1, max_step)
                             st.session_state.step = target_step
-              
+
                             st.success("✅ " + (f"Dataset geladen uit cache! ({record_count} records, voltooid t/m stap {max_step})" if lang == "nl" else f"Dataset loaded from cache! ({record_count} records, completed through step {max_step})"))
                             st.rerun()
                         else:
@@ -4145,6 +4145,14 @@ def show_step_samples(step_number):
             lang = st.session_state.language
             st.write("⏳ " + ("Stap geïnvalideerd - verwerk opnieuw" if lang == "nl" else "Step invalidated - reprocess required"))
             return
+
+    # CRITICAL: For cache route, also check if step is simply not completed (beyond max_step)
+    # This prevents showing samples for steps that were never processed in the cache
+    loaded_from_cache = st.session_state.get('loaded_from_cache', False)
+    if loaded_from_cache and not is_step_completed(step_number):
+        lang = st.session_state.language
+        st.write("⏳ " + ("Stap nog niet uitgevoerd - verwerk eerst" if lang == "nl" else "Step not yet processed - run processing first"))
+        return
 
     # Get cache manager
     cache_manager = _get_cache_manager()
