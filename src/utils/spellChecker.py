@@ -1255,11 +1255,7 @@ Suggested corrections: {task_dict['suggestions']}
         
         # Calculate intelligent timeout BEFORE rate limiting to enable progressive learning
         tokens_needed = self._count_task_tokens(task_dict)
-        timeout_seconds = self.latency_tracker.get_timeout(
-            tokens_needed,
-            min_timeout=self.config.minimum_timeout_seconds,
-            max_timeout=self.config.maximum_timeout_seconds
-        )
+        timeout_seconds = self.latency_tracker.get_timeout(tokens_needed)
         #logger.info(f"[TIME OUT SECONDS] Task {task_dict['respondent_id']}: {len(self.latency_tracker.values)} samples → {timeout_seconds:.1f}s timeout")
         
         
