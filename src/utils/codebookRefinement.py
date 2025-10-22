@@ -216,9 +216,10 @@ class CodebookRefinementProcessor:
                     continue
             
             # Convert to our model with properly structured data
+            # Use .model_dump() to convert Pydantic objects to dicts for proper validation
             refined_model = RefinedCodebookModel(
                 analysis=response_data.get('analysis', 'No analysis provided'),
-                refined_codebook=categories,
+                refined_codebook=[cat.model_dump() for cat in categories],
                 generation_metadata={
                     'model': "gpt-5",
                     'reasoning_effort': "minimal",
