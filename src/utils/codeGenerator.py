@@ -1868,14 +1868,18 @@ class InductiveCodeGenerator:
         candidate_codes: List[Dict[str, str]]
     ) -> Dict[str, Dict[str, float]]:
         """
-        Calculate Jaccard and subset overlap between theme name and code labels.
+        Calculate Jaccard and bidirectional subset overlap between theme name and code labels.
 
         Args:
             theme_name: The theme label (e.g., "Delivery speed concerns")
             candidate_codes: List of candidate codes with 'code' field
 
         Returns:
-            Dict mapping code_label -> {'jaccard': float, 'subset': float}
+            Dict mapping code_label -> {
+                'jaccard': float,
+                'subset_theme_to_code': float,
+                'subset_code_to_theme': float
+            }
         """
         # Tokenize theme (lowercase, split on whitespace)
         theme_tokens = set(theme_name.lower().split())
@@ -1893,13 +1897,16 @@ class InductiveCodeGenerator:
             # Jaccard similarity: |intersection| / |union|
             jaccard = len(intersection) / len(union) if union else 0.0
 
-            # Subset overlap: |intersection| / |theme_tokens|
-            # (what % of theme tokens appear in code?)
-            subset = len(intersection) / len(theme_tokens) if theme_tokens else 0.0
+            # Subset theme→code: what % of theme tokens appear in code?
+            subset_theme_to_code = len(intersection) / len(theme_tokens) if theme_tokens else 0.0
+
+            # Subset code→theme: what % of code tokens appear in theme?
+            subset_code_to_theme = len(intersection) / len(code_tokens) if code_tokens else 0.0
 
             overlaps[code_label] = {
                 'jaccard': round(jaccard, 3),
-                'subset': round(subset, 3)
+                'subset_theme_to_code': round(subset_theme_to_code, 3),
+                'subset_code_to_theme': round(subset_code_to_theme, 3)
             }
 
         return overlaps
@@ -1916,11 +1923,11 @@ class InductiveCodeGenerator:
         Args:
             candidate_codes: List of codes to format
             cosine_scores: Cosine similarity scores per code
-            token_overlaps: Jaccard and subset scores per code
+            token_overlaps: Jaccard and bidirectional subset scores per code
 
         Returns:
             Formatted string with metrics, e.g.:
-            "- Code Name (cosine: 0.85, jaccard: 0.60, subset: 0.70)"
+            "- Code Name (cosine: 0.85, jaccard: 0.60, subset_t2c: 0.75, subset_c2t: 0.50)"
         """
         formatted_lines = []
 
@@ -1930,10 +1937,11 @@ class InductiveCodeGenerator:
             # Get metrics (with defaults if missing)
             cosine = cosine_scores.get(code_label, 0.0)
             jaccard = token_overlaps.get(code_label, {}).get('jaccard', 0.0)
-            subset = token_overlaps.get(code_label, {}).get('subset', 0.0)
+            subset_t2c = token_overlaps.get(code_label, {}).get('subset_theme_to_code', 0.0)
+            subset_c2t = token_overlaps.get(code_label, {}).get('subset_code_to_theme', 0.0)
 
-            # Format: "- Code Name (cosine: 0.85, jaccard: 0.60, subset: 0.70)"
-            line = f"- {code_label} (cosine: {cosine:.2f}, jaccard: {jaccard:.2f}, subset: {subset:.2f})"
+            # Format: "- Code Name (cosine: 0.85, jaccard: 0.60, subset_t2c: 0.75, subset_c2t: 0.50)"
+            line = f"- {code_label} (cosine: {cosine:.2f}, jaccard: {jaccard:.2f}, subset_t2c: {subset_t2c:.2f}, subset_c2t: {subset_c2t:.2f})"
             formatted_lines.append(line)
 
         return "\n".join(formatted_lines)

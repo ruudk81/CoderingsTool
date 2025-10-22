@@ -37,7 +37,7 @@ id_column = "DLNMID"
 var_name = "Q10"
 sample_size = 50
 
-RUN_UNTIL_STEP = 7 # None = run all steps
+RUN_UNTIL_STEP = 9 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1339,6 +1339,15 @@ def step_7_refine_codebook(
             source_variable=var_name
         )
 
+    # Cache theme_enriched_codebook separately (following step 6 pattern)
+    if theme_enriched_codebook:
+        try:
+            cache_manager.save_to_cache([theme_enriched_codebook], filename, f"{step_name}_enriched", variable_key, elapsed_time)
+            if verbose:
+                print("Cached theme enriched codebook for step 8 access")
+        except Exception as e:
+            print(f"Warning: Failed to cache theme enriched codebook: {str(e)}")
+
     # Generate structured report for Streamlit display
     refinement_report = None
     if refinement_results:
@@ -1376,7 +1385,11 @@ def step_8_assign_codes(
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        List[models.CodeAssignedModel]: List of models with code assignments
+        Tuple[List[models.CodeAssignedModel], Dict]:
+            - List of models with code assignments
+            - Dictionary with stats (total_responses, total_ideas, unique_codes_assigned,
+              unique_themes_assigned, total_code_assignments, total_theme_assignments,
+              avg_codes_per_idea, avg_themes_per_idea, processing_time)
     """
     from utils import codeAssigner, verboseReporter, promptPrinter
 
@@ -1486,7 +1499,41 @@ def step_8_assign_codes(
             total_assignments = sum(len([idea for idea in resp.response_ideas if idea and idea.assigned_codes]) for resp in code_assigned_results if resp.response_ideas)
             streamlit_container.success(f"✅ Code assignment completed in {elapsed_time:.2f}s: {total_assignments} assignments")
 
-    return code_assigned_results
+    # Calculate stats for UI display (matching PipelineSummarizer output)
+    total_responses = len(code_assigned_results)
+    total_ideas = sum(len(resp.response_ideas) for resp in code_assigned_results if resp.response_ideas)
+
+    # Count unique codes and themes
+    code_frequency = {}
+    theme_frequency = {}
+    for resp in code_assigned_results:
+        if resp.response_ideas:
+            for idea in resp.response_ideas:
+                if idea and idea.assigned_codes:
+                    for code in idea.assigned_codes:
+                        code_frequency[code] = code_frequency.get(code, 0) + 1
+                if idea and idea.assigned_themes:
+                    for theme in idea.assigned_themes:
+                        theme_frequency[theme] = theme_frequency.get(theme, 0) + 1
+
+    total_code_assignments = sum(code_frequency.values())
+    total_theme_assignments = sum(theme_frequency.values())
+    unique_codes = len(code_frequency)
+    unique_themes = len(theme_frequency)
+
+    stats = {
+        'total_responses': total_responses,
+        'total_ideas': total_ideas,
+        'unique_codes_assigned': unique_codes,
+        'unique_themes_assigned': unique_themes,
+        'total_code_assignments': total_code_assignments,
+        'total_theme_assignments': total_theme_assignments,
+        'avg_codes_per_idea': total_code_assignments / total_ideas if total_ideas > 0 else 0.0,
+        'avg_themes_per_idea': total_theme_assignments / total_ideas if total_ideas > 0 else 0.0,
+        'processing_time': elapsed_time if 'elapsed_time' in locals() else 0.0
+    }
+
+    return code_assigned_results, stats
 
 
 def step_9_export_results(
@@ -1771,7 +1818,7 @@ if __name__ == '__main__':
         step3_recommendations = codebook_reasoning.step3_recommendations
         available_ids = list(step3_recommendations.keys())
         cluster_id = random.choice(available_ids)
-        cluster_id = '117-2'
+
     
         from utils import codegenPromptTester
         tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
@@ -1811,7 +1858,7 @@ if __name__ == '__main__':
     # === STEP 8 ====
     """Assign codes (and themes)"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
-    code_assigned_results = step_8_assign_codes(
+    code_assigned_results, stats = step_8_assign_codes(
         initial_cluster_results, theme_enriched_codebook, filename, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
@@ -1827,12 +1874,13 @@ if __name__ == '__main__':
         print(f"{idx}) {entry.code}")
     
     # assignment stats 
-    from utils.pipelineSummarizer import PipelineSummarizer
-    summarizer = PipelineSummarizer(verbose=True)
-    summarizer.generate_summary(
-        code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-        theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
-    
+    if False:
+        from utils.pipelineSummarizer import PipelineSummarizer
+        summarizer = PipelineSummarizer(verbose=True)
+        summarizer.generate_summary(
+            code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
+            theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
+        
     # random assignments
     if False: #debug
         import random
