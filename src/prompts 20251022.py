@@ -418,7 +418,7 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
 Provide your response as a valid JSON dictionary using this exact structure:
 {{
   "{cluster_id}": {{
-    "analysis": "Provide your analysis here in {language}. Use the following format:\n\n1. [First analytical point]\n2. [Second analytical point]\n3. [Continue numbering each point sequentially].\n\nEach new point must start on a new line and be clearly numbered.",
+    "analysis": "provide your analysis here in {language}",
     "extracted_themes": [
       {{
         "theme_id": 1,
@@ -458,64 +458,42 @@ You have three possible decisions:
 - **MODIFY**: An existing code is close but needs refinement for clarity, scope, or better alignment  
 - **CREATE**: No existing code sufficiently captures the new theme
 
----
+Follow these decision criteria:
 
 A. **Coverage Assessment**
-<coverage_assessment>
-Estimate how much the meaning of the new theme overlaps with the meaning of each existing code.
-Use the similarity metrics as quantitative clues:
-- **Cosine similarity** reflects semantic equivalence (meaning).
-- **Jaccard** reflects lexical similarity (shared wording).
-- **subset_t2c" reflect what % of theme words appear in the code (0.0–1.0)
-- **subset_c2t** reflect What % of code words appear in the theme (0.0–1.0)
+<coverage_assesment>
+Ask yourself: “To what extent does one of the existing codes already express what this new theme is about—including its meaning, nuance, and boundaries?”
 
-Use these metrics to approximate a coverage percentage for each candidate code.
-</coverage_assessment>
+You’re estimating percentage overlap between:
+- The new theme’s intended meaning, and
+- The best-fitting existing code.
 
----
+This is a judgment call—but must be justified.
+</coverage_assesment>
 
 B. **Decision Thresholds**
 <decision_thresholds>
-Make your final decision using both the quantitative metrics and your qualitative judgment of meaning coverage.
+You base your final decision on how much coverage the existing code provides:
 
-1. **USE** — when ALL of the following are true:
-    - cosine ≥ 0.88 (was 0.92 - lowered for more reuse)
-    - jaccard ≥ 0.50
-    - subset_t2c ≥ 0.70 AND subset_c2t ≥ 0.70
-    - The existing code captures the theme's meaning with no major gaps
+1. **USE** — if coverage ≥ 85%  
+The existing code already captures the full meaning or is missing only minor phrasing differences that don’t change the conceptual scope.
 
-    (≈ ≥85% conceptual coverage)
+2. **MODIFY** — if coverage is 70% to <85% AND mismatch can be resolved with a minor refinement:  
+A small change to clarity, wording, or level of abstraction would make it fit perfectly, without introducing new meanings.
 
-2. **MODIFY** — when:
-    - 0.80 ≤ cosine < 0.88 (widened range)
-    - jaccard ≥ 0.40 (some lexical overlap)
-    - At least ONE of:
-       a) subset_c2t ≥ 0.70 AND subset_t2c < 0.70 (code too narrow - extend it)
-       b) Both subsets 0.60–0.70 (close but not quite)
-    - Minor scope or phrasing adjustment would make it fit
-
-     (≈ 70–85% conceptual coverage)
-
-3. **CREATE** — when ANY of the following are true:
-    - cosine < 0.80 (was 0.85 - stricter)
-    - jaccard < 0.40
-    - Both subset_t2c < 0.60 AND subset_c2t < 0.60 (lowered to catch more)
-    - The theme introduces distinct new concepts not in existing codes
-
-    (≈ <70% conceptual coverage)
+3. **CREATE** — if:  
+- Coverage is <70%, OR  
+- Coverage is 70–85% but mismatch cannot be fixed with simple refinement:  
+The theme contains new concepts, facets, or intentions that don’t exist in the existing code, even if the topic looks related.
 </decision_thresholds>
-
----
 
 C. **Edge cases**
 <edge_cases>
-- For borderline cases (84–86% coverage): Choose **MODIFY** if a minor adjustment would achieve full coverage; otherwise **USE**.
-- If the theme combines multiple ideas (e.g., “X and Y”), choose **CREATE** (not atomic).
-- Do not modify existing codes in ways that would broaden them beyond their intended scope.
-- Always mention which metrics or thresholds informed your decision (e.g., cosine 0.88 + subset 0.75 ⇒ MODIFY).
+- For borderline cases (84–86% coverage): Choose **MODIFY** if a single wording/level adjustment achieves full coverage; otherwise **USE** if no material meaning is missing
+- If the theme requires a composite name like "X and Y" or "X including Y, Z", then **CREATE** (the theme is not atomic)
+- Do not modify existing codes in ways that would dilute their meaning for other uses
+- When justifying your decision, you must explicitly reference the coverage percentage and which decision rule applies
 </edge_cases>
-
----
 
 Your response must be valid JSON only, following this exact format:
 
@@ -530,7 +508,7 @@ Output schema:
     ],
     "decision": "USE | MODIFY | CREATE",
     "source_code": "Exact candidate code name if use/modify, or null if create",
-    "justification": "State the estimated overlap (e.g., 82%) and which rule applied. Reference cosine/Jaccard/subset scores when available."
+    "justification": "If abstraction level rules apply, justification must reference this explicitly in {language}. (e.g., ‘Theme is more general than code X but overlaps 95%, so USE.’)"
   }}
 }}
 

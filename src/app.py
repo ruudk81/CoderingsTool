@@ -861,7 +861,7 @@ def determine_max_step_from_cache(filename: str, variable_key: str, cache_manage
         "initial_clusters": 5,
         "codebook_generation": 6,
         "codebook_refinement": 7,
-        "code_assignment": 8,
+        "code_assignment_direct": 8,
         "export": 9
     }
 
@@ -2360,6 +2360,9 @@ def show_codebook_generation_page():
         sample_info += (f"\n\n**Data:** {num_clusters} {'clusters om te coderen' if lang == 'nl' else 'clusters to code'}")
         st.info(sample_info)
 
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    # skipped / not necesarry
+     
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load initial_cluster_results if not already in pipeline_results
     if is_step_completed(5) and not is_step_completed(6):
@@ -2544,30 +2547,8 @@ def show_theme_identification_page():
         st.info(sample_info)
 
     # # ==================== BLOCK 3: YELLOW BOX ====================
-    # # Show results/stats when current step is complete
-    # if is_step_completed(7):
-    #     if st.session_state.get('theme_stats', {}):
-    #         stats = st.session_state.get('theme_stats', {})
-    #         nl = (lang == "nl")
-
-    #         themes_label = "Aantal thema's" if nl else 'Number of themes'
-    #         codes_label = 'Aantal codes' if nl else 'Number of codes'
-    #         summary_info = (
-    #             f"\n\n- {themes_label}: {stats.get('num_themes', 0)}"
-    #             + f"\n\n- {codes_label}: {stats.get('num_codes', 0)}"
-    #         )
-
-    #         st.markdown(f"""
-    #         <div style="
-    #         border-radius: 10px;
-    #         padding: 12px 16px;
-    #         background-color: #FFF8E6;
-    #         margin-top: 8px;
-    #         color: #5C4102;">
-    #         {summary_info}
-    #         </div>
-    #         """, unsafe_allow_html=True)
-
+    # skipped/not necesarry
+  
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load reasoning_results and codebook_main if not already in pipeline_results
     if is_step_completed(6) and not is_step_completed(7):
@@ -2724,73 +2705,84 @@ def show_theme_identification_page():
                 st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
 
 def show_code_assignment_page():
-    lang = st.session_state.language
-    st.header("Stap 9: Code Toewijzing" if lang == "nl" else "Step 9: Code Assignment")
-    
-    info_text = """
-    Deze stap zal:
-    - Codes toewijzen aan individuele ideeën
-    - Thema's koppelen aan toegewezen codes
-    - Vertrouwensscores berekenen
-    """ if lang == "nl" else """
-    This step will:
-    - Assign codes to individual ideas
-    - Link themes to assigned codes
-    - Calculate confidence scores
     """
-    st.markdown(info_text)
-    
-    # Assignment method selection
-    # method = st.radio(
-    #     "Toewijzing Methode" if lang == "nl" else "Assignment Method",
-    #     options=["direct_llm", "embedding_similarity"],
-    #     format_func=lambda x: "Directe LLM Verwerking" if x == "direct_llm" else "Embedding Similariteit"
-    #     if lang == "nl" else "Direct LLM Processing" if x == "direct_llm" else "Embedding Similarity"
-    # )
-    
-    # Check if we're waiting for user to continue after code assignment
-    if st.session_state.get('waiting_for_continue_code_assignment', False):
-        st.success("✅ " + ("Code toewijzing voltooid! Bekijk de resultaten rechts en klik dan op doorgaan." 
-                           if lang == "nl" else "Code assignment completed! Review the results on the right, then click continue."))
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="code_assignment_continue_normal"):
-                # Advance to next step
-                st.session_state.step = 9
-                st.rerun()
-    # Check if we're waiting for debug continue
-    elif st.session_state.get('waiting_for_debug_continue_code_assignment'):
-        # Display the stored debug information - commented out as requested
-        # debug_capture = st.session_state.get('debug_capture_code_assignment')
-        # if debug_capture:
-        #     display_all_debug_info(debug_capture)
-        
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔄 Continue to Next Step", type="primary", use_container_width=True, key="code_assignment_continue_debug"):
-                # Clear the waiting state and advance
-                del st.session_state['waiting_for_debug_continue_code_assignment']
-                if 'debug_capture_code_assignment' in st.session_state:
-                    del st.session_state['debug_capture_code_assignment']
-                st.session_state.step = 9
-                st.rerun()
-    elif st.button("Wijs Codes Toe" if lang == "nl" else "Assign Codes", type="primary"):
-        progress_container = st.empty()
-        
-        # Create debug capture from session state
-        # debug_capture = create_debug_capture_from_session()
-        debug_capture = None  # Disabled debug functionality
-        
-        try:
-            progress_container.text("🔄 Codes aan het toewijzen...")
+    Step 8: Code Assignment
 
-            # Get variable_key for caching
+    Assigns codes from the theme-enriched codebook to individual ideas.
+
+    Pipeline function: step_8_assign_codes
+    Cache name: code_assignment_direct
+    Model: models.CodeAssignedModel
+    """
+    lang = st.session_state.language
+
+    # ==================== HEADER ====================
+    st.header("Stap 8: Code Toewijzing" if lang == "nl" else "Step 8: Code Assignment")
+
+    # ==================== BLOCK 1: GREEN BOX ====================
+    if is_step_completed(8):
+        st.success("✅ " + (
+            "Code toewijzing voltooid! Bekijk de resultaten en klik dan op doorgaan."
+            if lang == "nl"
+            else "Code assignment completed! Review the results, then click continue."
+        ))
+
+    # ==================== BLOCK 2: BLUE BOX ====================
+    if is_step_completed(7):
+        sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        sample_info += (f"\n\n**Data:** {st.session_state.get('step4_sample_size', 0)} {'ideeën' if lang == 'nl' else 'ideas'}")
+        st.info(sample_info)
+
+    # ==================== BLOCK 3: YELLOW BOX ====================
+    if is_step_completed(8):
+        if st.session_state.get('code_assignment_stats', {}):
+            stats = st.session_state.get('code_assignment_stats', {})
+            nl = (lang == "nl")
+
+            # Translations for stats labels
+            t_responses = "Antwoorden verwerkt" if nl else "Responses processed"
+            t_ideas = "Ideeën verwerkt" if nl else "Ideas processed"
+            t_unique_codes = "Unieke codes toegewezen" if nl else "Unique codes assigned"
+            t_unique_themes = "Unieke themas toegewezen" if nl else "Unique themes assigned"
+            t_total_codes = "Totaal code toewijzingen" if nl else "Total code assignments"
+            t_total_themes = "Totaal thema toewijzingen" if nl else "Total theme assignments"
+            t_avg_codes = "Gemiddeld codes per idee" if nl else "Average codes per idea"
+            t_avg_themes = "Gemiddeld themas per idee" if nl else "Average themes per idea"
+            t_time = "Verwerkingstijd" if nl else "Processing time"
+
+            summary_info = (
+                "\n\n" + ("**Toewijzing:**" if nl else "**Assignment:**")
+                + f"\n- {t_responses}: {stats.get('total_responses', 0)}"
+                + f"\n- {t_ideas}: {stats.get('total_ideas', 0)}"
+                + f"\n- {t_unique_codes}: {stats.get('unique_codes_assigned', 0)}"
+                + f"\n- {t_unique_themes}: {stats.get('unique_themes_assigned', 0)}"
+                + f"\n- {t_total_codes}: {stats.get('total_code_assignments', 0)}"
+                + f"\n- {t_total_themes}: {stats.get('total_theme_assignments', 0)}"
+                + f"\n- {t_avg_codes}: {stats.get('avg_codes_per_idea', 0):.2f}"
+                + f"\n- {t_avg_themes}: {stats.get('avg_themes_per_idea', 0):.2f}"
+                + f"\n- {t_time}: {stats.get('processing_time', 0):.1f}s"
+            )
+
+            st.markdown(f"""
+            <div style="
+            border-radius: 10px;
+            padding: 12px 16px;
+            background-color: #FFF8E6;
+            margin-top: 8px;
+            color: #5C4102;">
+            {summary_info}
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ==================== BLOCK 4: DATA LOADING ====================
+    if is_step_completed(7) and not is_step_completed(8):
+        progress_container = st.empty()
+        try:
+            cache_manager = _get_cache_manager()
+
+            # Generate variable_key for cache lookup
             selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
             is_merged = st.session_state.get('is_merged_variable', False)
-            # Generate enhanced variable key with sample size
             sample_size = st.session_state.get('sample_size_config')
             merge_config = st.session_state.get('merge_config')
             variable_key = generate_enhanced_variable_key(
@@ -2800,44 +2792,110 @@ def show_code_assignment_page():
                 merge_config=merge_config
             )
 
-            code_assigned_results = pipeline.step_8_assign_codes(
-                initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
-                theme_enriched_codebook=st.session_state.pipeline_results['theme_enriched_codebook'],
-                filename=st.session_state.filename,
-                var_lab=st.session_state.pipeline_results['var_lab'],
-                variable_key=variable_key,
-                cache_manager=_get_cache_manager(),
-                model_config=st.session_state.model_config,
-                force_recalc=st.session_state.get('force_recalculate_all', False),
-                verbose=True,
-                prompt_printer_enabled=False
-            )
+            # Load initial_cluster_results if not present (from step 5)
+            if 'initial_cluster_results' not in st.session_state.pipeline_results:
+                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
+                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading cluster results from cache..."))
+                    initial_cluster_results = cache_manager.load_from_cache(
+                        st.session_state.filename, "initial_clusters", variable_key, models.ClusterModel
+                    )
+                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
+                    progress_container.success("✅ " + ("Cluster data geladen" if lang == "nl" else "Cluster data loaded"))
 
-            progress_container.success("✅ Code toewijzing voltooid")
+            # Load theme_enriched_codebook if not present (from step 7)
+            if 'theme_enriched_codebook' not in st.session_state.pipeline_results:
+                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_refinement_enriched", variable_key):
+                    progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
+                    # Load theme_enriched_codebook from its dedicated cache (returns list, extract first element)
+                    theme_enriched_data = cache_manager.load_from_cache(
+                        st.session_state.filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel
+                    )
+                    if theme_enriched_data and len(theme_enriched_data) > 0:
+                        st.session_state.pipeline_results['theme_enriched_codebook'] = theme_enriched_data[0]
+                        progress_container.success("✅ " + ("Codebook geladen" if lang == "nl" else "Codebook loaded"))
 
-            st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
-            
-            # Check if debug features are enabled and have captured data
-            debug_has_data = (debug_capture and 
-                            (debug_capture.verbose_outputs or 
-                             debug_capture.first_prompts or 
-                             debug_capture.sample_results))
-            
-            if debug_has_data:
-                # Store debug capture and set waiting state
-                st.session_state['debug_capture_code_assignment'] = debug_capture
-                st.session_state['waiting_for_debug_continue_code_assignment'] = True
-                st.rerun()  # Rerun to show the continue button interface
-            else:
-                # Set waiting state so user can see results before continuing
-                st.session_state['completed_step'] = 8  # Mark code assignment as completed
-                st.session_state['waiting_for_continue_code_assignment'] = True
+            # Populate var_lab if not present
+            if 'var_lab' not in st.session_state.pipeline_results:
+                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
 
-                # Mark step 9 (code assignment) as completed in navigation tracker
-                mark_step_completed(9)
-                st.rerun()  # Rerun to show the continue button interface
+            # Clear progress container after successful loading
+            progress_container.empty()
+
         except Exception as e:
-            progress_container.error(f"Toewijzing fout: {str(e)}" if lang == "nl" else f"Assignment error: {str(e)}")
+            st.error(f"Data laad fout: {str(e)}" if lang == "nl" else f"Data loading error: {str(e)}")
+
+    # ==================== BLOCK 5: PROCESSING BUTTON ====================
+    if is_step_completed(7) and not is_step_completed(8):
+        info_text = """
+        Deze stap zal:
+        - Codes toewijzen aan individuele ideeën
+        - Thema's koppelen aan toegewezen codes
+        - Statistieken berekenen
+        """ if lang == "nl" else """
+        This step will:
+        - Assign codes to individual ideas
+        - Link themes to assigned codes
+        - Calculate statistics
+        """
+        st.markdown(info_text)
+
+        # Show button to start code assignment
+        if st.button("🚀 " + (
+            "Wijs Codes Toe" if lang == "nl"
+            else "Assign Codes"
+        ), type="primary"):
+            progress_container = st.empty()
+            try:
+                progress_container.text("🔄 " + (
+                    "Codes aan het toewijzen..." if lang == "nl"
+                    else "Assigning codes..."
+                ))
+
+                # Generate variable_key for caching
+                selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                is_merged = st.session_state.get('is_merged_variable', False)
+                sample_size = st.session_state.get('sample_size_config')
+                merge_config = st.session_state.get('merge_config')
+                variable_key = generate_enhanced_variable_key(
+                    selected_variables,
+                    is_merged=is_merged,
+                    sample_size=sample_size,
+                    merge_config=merge_config
+                )
+
+                # Set force_recalc flag (respects both global and step-specific invalidation)
+                force_recalc = st.session_state.get('force_recalculate_all', False) or \
+                               (st.session_state.get('force_recalculate_from_step', 99) <= 8)
+
+                # Call pipeline processing function
+                code_assigned_results, code_assignment_stats = pipeline.step_8_assign_codes(
+                    initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
+                    theme_enriched_codebook=st.session_state.pipeline_results['theme_enriched_codebook'],
+                    filename=st.session_state.filename,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
+                    variable_key=variable_key,
+                    cache_manager=_get_cache_manager(),
+                    model_config=st.session_state.model_config,
+                    force_recalc=force_recalc,
+                    verbose=True,
+                    prompt_printer_enabled=False
+                )
+
+                progress_container.success("✅ " + (
+                    "Code toewijzing voltooid" if lang == "nl"
+                    else "Code assignment completed"
+                ))
+
+                # Store results
+                st.session_state.pipeline_results['code_assigned_results'] = code_assigned_results
+                st.session_state['code_assignment_stats'] = code_assignment_stats
+
+                # Mark step completed
+                mark_step_completed(8)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Toewijzing fout: {str(e)}" if lang == "nl" else f"Assignment error: {str(e)}")
 
 def show_export_page():
     lang = st.session_state.language
@@ -3501,8 +3559,6 @@ def show_codebook_samples(codebook_reasoning):
     NL = st.session_state.get("language", "en") == "nl"
     t_no_data = "Geen codebook-data beschikbaar" if NL else "No codebook data available"
     t_header = "Codebook-analyse" if NL else "Codebook analysis"
-    t_caption = "Willekeurige clusterselectie" if NL else "Random cluster selection"
-    t_draw = "🎲 Toon andere" if NL else "🎲 Show another"
     t_error = "Fout bij weergeven van codebook-analyse" if NL else "Error displaying codebook analysis"
 
     # Translations for sections
@@ -3528,6 +3584,15 @@ def show_codebook_samples(codebook_reasoning):
     t_responses = "reacties" if NL else "responses"
     t_existing = "(Bestaand)" if NL else "(Existing)"
 
+    # Navigation translations
+    t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
+    t_next = "➡️ Volgende" if NL else "➡️ Next"
+    t_of = "van" if NL else "of"
+    # t_cluster = "Cluster" if NL else "Cluster"
+    # t_ideas_count = "ideeën" if NL else "ideas"
+    # t_coded = "✅ Gecodeerd" if NL else "✅ Coded"
+    # t_not_coded = "⚠️ Niet gecodeerd" if NL else "⚠️ Not coded"
+
     if not codebook_reasoning:
         st.markdown(f"""
         <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
@@ -3545,9 +3610,35 @@ def show_codebook_samples(codebook_reasoning):
         </div>
         """, unsafe_allow_html=True)
         return
+    
+    
+    # Calculate cluster sizes and sort by size (largest first)
+    step1_inputs = getattr(codebook_reasoning, "step1_inputs", {}) or {}
+    cluster_sizes = {}
+    for cid in step3_recs.keys():
+        if cid in step1_inputs:
+            cluster_text = step1_inputs[cid].get('cluster_text', '')
+            # Count ideas (newline-separated items)
+            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
+            cluster_sizes[cid] = len(ideas)
+        else:
+            cluster_sizes[cid] = 0
 
-    available_ids = list(step3_recs.keys())
-    cluster_id = random.choice(available_ids)
+    # Sort clusters by size (largest first)
+    available_ids = sorted(step3_recs.keys(), key=lambda cid: cluster_sizes.get(cid, 0), reverse=True)
+    total_clusters = len(available_ids)
+
+    # Initialize session state for cluster navigation
+    if "codebook_cluster_idx" not in st.session_state:
+        st.session_state.codebook_cluster_idx = 0
+
+    # Boundary check (handles cache invalidation changing cluster count)
+    if st.session_state.codebook_cluster_idx >= total_clusters:
+        st.session_state.codebook_cluster_idx = 0
+
+    # Select cluster based on current index
+    idx = st.session_state.codebook_cluster_idx
+    cluster_id = available_ids[idx]
 
     # Get structured cluster data using new function
     try:
@@ -3569,13 +3660,58 @@ def show_codebook_samples(codebook_reasoning):
         """, unsafe_allow_html=True)
         return
 
-    # Header
-    st.markdown(f"""
-    <div style="margin-bottom:16px;">
-      <b style="display:block; font-size:1.1em; margin-bottom:4px;">{t_header}</b>
-      <span style="display:block; font-style:italic; color:#666;">{t_caption}</span>
-    </div>
-    """, unsafe_allow_html=True)
+    # # Header with cluster ID
+    # cluster_size = cluster_sizes.get(cluster_id, 0)
+    # has_code = cluster_data['validation']['verdict']
+    # code_status = t_coded if has_code else t_not_coded
+
+    # st.markdown(f"""
+    # <div style="margin-bottom:16px;">
+    #   <b style="display:block; font-size:1.1em; margin-bottom:4px;">{t_header} - {t_cluster} {cluster_id}</b>
+    #   <span style="display:block; font-style:italic; color:#666;">{idx + 1} {t_of} {total_clusters}</span>
+    # </div>
+    # """, unsafe_allow_html=True)
+
+    # Cluster metadata info panel
+    #st.info(f"{t_cluster} {cluster_id} • {cluster_size} {t_ideas_count} • {code_status}")
+
+    # Navigation controls (4-column layout)
+    nav1, nav2, nav3, nav4 = st.columns([1, 2, 2, 2])
+
+    # Previous button
+    with nav1:
+        if st.button(t_prev, use_container_width=True, disabled=(idx <= 0), key="codebook_prev"):
+            st.session_state.codebook_cluster_idx = max(0, idx - 1)
+            st.rerun()
+
+    # Position indicator
+    with nav2:
+        st.markdown(
+            f"<div style='margin-top:6px;text-align:center;'>"
+            f"{idx + 1} {t_of} {total_clusters}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # Jump to cluster
+    with nav3:
+        new_idx = st.number_input(
+            label="X",
+            min_value=1, max_value=total_clusters, value=idx + 1,
+            step=1, key="codebook_jump_number", label_visibility="collapsed"
+        )
+        if new_idx - 1 != idx:
+            st.session_state.codebook_cluster_idx = new_idx - 1
+            st.rerun()
+
+    # Next button
+    with nav4:
+        if st.button(t_next, use_container_width=True, disabled=(idx >= total_clusters - 1), key="codebook_next"):
+            st.session_state.codebook_cluster_idx = min(total_clusters - 1, idx + 1)
+            st.rerun()
+
+    # Visual separator
+    st.markdown("<div style='margin:12px 0;'></div>", unsafe_allow_html=True)
 
     # Section 1: Code in Codebook (expanded by default, yellow content background)
     validation = cluster_data['validation']
@@ -3804,11 +3940,6 @@ def show_codebook_samples(codebook_reasoning):
           </div>
         </details>
         """, unsafe_allow_html=True)
-
-
-    # Reroll button
-    if st.button(t_draw, key="codebook_reroll"):
-        st.rerun()
 
 def show_theme_samples(refinement_report):
     import html
@@ -4081,34 +4212,46 @@ def show_step9_assignment_stats():
     
     try:
         # Load code assignment results
-        code_assigned_results = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, None)
-        
+        code_assigned_results = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, models.CodeAssignedModel)
+
         # Load theme enriched codebook
-        theme_enriched_codebook_results = cache_manager.load_from_cache(filename, "theme_enriched_codebook", variable_key, None)
+        theme_enriched_codebook_results = cache_manager.load_from_cache(filename, "codebook_refinement_enriched", variable_key, models.ThemeEnrichedCodebookModel)
         theme_enriched_codebook = theme_enriched_codebook_results[0] if theme_enriched_codebook_results else None
         
         if code_assigned_results:
             st.write("📊 **Assignment Statistics:**")
-            
-            # Use PipelineSummarizer exactly like pipeline
-            summarizer = PipelineSummarizer(verbose=True)
-            
-            # Capture output
-            old_stdout = sys.stdout
-            sys.stdout = captured_output = io.StringIO()
-            
-            try:
-                summarizer.generate_summary(
-                    code_assigned_results=code_assigned_results,
-                    theme_enriched_codebook=theme_enriched_codebook
-                )
-                output = captured_output.getvalue()
-                
-                if output.strip():
-                    st.code(output, language=None)
-                    
-            finally:
-                sys.stdout = old_stdout
+
+            # Calculate frequencies directly (matching PipelineSummarizer logic)
+            code_frequency = {}
+            theme_frequency = {}
+            total_ideas = 0
+
+            for resp in code_assigned_results:
+                if resp.response_ideas:
+                    for idea in resp.response_ideas:
+                        total_ideas += 1
+                        if idea and idea.assigned_codes:
+                            for code in idea.assigned_codes:
+                                code_frequency[code] = code_frequency.get(code, 0) + 1
+                        if idea and idea.assigned_themes:
+                            for theme in idea.assigned_themes:
+                                theme_frequency[theme] = theme_frequency.get(theme, 0) + 1
+
+            # Display theme counts
+            st.write("")
+            st.write(f"**📋 THEME COUNTS** (Total: {len(theme_frequency)} themes assigned to {sum(theme_frequency.values())} ideas)")
+            sorted_themes = sorted(theme_frequency.items(), key=lambda x: x[1], reverse=True)
+            for i, (theme, count) in enumerate(sorted_themes, 1):
+                pct = (count / total_ideas * 100) if total_ideas > 0 else 0
+                st.write(f"{i}. {theme}: **{count}** ideas ({pct:.1f}%)")
+
+            # Display code counts
+            st.write("")
+            st.write(f"**🏷️ CODE COUNTS** (Total: {len(code_frequency)} codes assigned to {sum(code_frequency.values())} ideas)")
+            sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
+            for i, (code, count) in enumerate(sorted_codes, 1):
+                pct = (count / total_ideas * 100) if total_ideas > 0 else 0
+                st.write(f"{i}. {code}: **{count}** ideas ({pct:.1f}%)")
         else:
             st.write("❌ No code assignment results available")
             
@@ -4344,8 +4487,8 @@ def show_step_samples(step_number):
                 st.write("⏳ No refinement results in cache - run codebook refinement first")
                 
         elif step_number == 8:
-            # Step 8: Refined Codebook Structure
-            show_step8_refined_codebook()
+            # Step 8: Code Assignment Results
+            show_step9_assignment_stats()  # Reuse step 9's assignment display
                 
         elif step_number == 9:
             # Step 9: Code Assignment Results (with both fixed stats and random sample)
