@@ -399,10 +399,7 @@ class Grader:
             await self.tpm_bucket.wait_and_acquire(est_tokens)
             
             # Calculate dynamic timeout BEFORE rate limiting for progressive learning
-            timeout = self.latency_tracker.get_timeout(
-                est_tokens,
-                min_timeout=self.config.minimum_timeout_seconds,
-                max_timeout=self.config.maximum_timeout_seconds)
+            timeout = self.latency_tracker.get_timeout(est_tokens)
             
             # Unified rate limiting and semaphore
             async with self.semaphore:

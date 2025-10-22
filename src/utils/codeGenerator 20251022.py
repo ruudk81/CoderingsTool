@@ -542,7 +542,11 @@ async def async_responses_create_with_unified_limits(
         tokens_needed = 400  # Fallback estimate
     
     # Calculate adaptive timeout before rate limiting
-    timeout_seconds = latency_tracker.get_timeout(tokens_needed)
+    timeout_seconds = latency_tracker.get_timeout(
+        tokens_needed,
+        min_timeout=getattr(config, 'minimum_timeout_seconds', 15.0),
+        max_timeout=getattr(config, 'maximum_timeout_seconds', 60.0)
+    )
     
     # STANDARDIZED RATE LIMITING PATTERN
     await tpm_bucket.wait_and_acquire(tokens_needed)
@@ -1818,127 +1822,9 @@ class InductiveCodeGenerator:
             theme = theme_data.root[0]
             return f"{theme.theme_clarification}"
         return "No theme desciption"
-
-    def _calculate_cosine_similarities(
-        self,
-        theme_embedding: np.ndarray,
-        candidate_codes: List[Dict[str, str]],
-        all_codes: List[Dict[str, str]],
-        code_embeddings: List[np.ndarray]
-    ) -> Dict[str, float]:
-        """
-        Calculate cosine similarity between theme and each candidate code.
-
-        Args:
-            theme_embedding: Theme embedding vector
-            candidate_codes: List of candidate codes to calculate similarity for
-            all_codes: Complete list of codes in current codebook
-            code_embeddings: Embeddings for all codes (same order as all_codes)
-
-        Returns:
-            Dict mapping code_label -> cosine_similarity (0.0 to 1.0)
-        """
-        similarities = {}
-
-        for candidate in candidate_codes:
-            # Find index of this code in the full codebook
-            try:
-                code_idx = next(
-                    i for i, c in enumerate(all_codes)
-                    if c['code'] == candidate['code']
-                )
-            except StopIteration:
-                # Code not found (shouldn't happen, but handle gracefully)
-                similarities[candidate['code']] = 0.0
-                continue
-
-            # Calculate cosine similarity
-            similarity = cosine_similarity(
-                theme_embedding.reshape(1, -1),
-                code_embeddings[code_idx].reshape(1, -1)
-            )[0][0]
-
-            similarities[candidate['code']] = round(float(similarity), 3)
-
-        return similarities
-
-    def _calculate_token_overlap(
-        self,
-        theme_name: str,
-        candidate_codes: List[Dict[str, str]]
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Calculate Jaccard and subset overlap between theme name and code labels.
-
-        Args:
-            theme_name: The theme label (e.g., "Delivery speed concerns")
-            candidate_codes: List of candidate codes with 'code' field
-
-        Returns:
-            Dict mapping code_label -> {'jaccard': float, 'subset': float}
-        """
-        # Tokenize theme (lowercase, split on whitespace)
-        theme_tokens = set(theme_name.lower().split())
-
-        overlaps = {}
-
-        for candidate in candidate_codes:
-            code_label = candidate['code']
-            code_tokens = set(code_label.lower().split())
-
-            # Calculate intersection and union
-            intersection = theme_tokens & code_tokens
-            union = theme_tokens | code_tokens
-
-            # Jaccard similarity: |intersection| / |union|
-            jaccard = len(intersection) / len(union) if union else 0.0
-
-            # Subset overlap: |intersection| / |theme_tokens|
-            # (what % of theme tokens appear in code?)
-            subset = len(intersection) / len(theme_tokens) if theme_tokens else 0.0
-
-            overlaps[code_label] = {
-                'jaccard': round(jaccard, 3),
-                'subset': round(subset, 3)
-            }
-
-        return overlaps
-
-    def _format_codes_with_metrics(
-        self,
-        candidate_codes: List[Dict[str, str]],
-        cosine_scores: Dict[str, float],
-        token_overlaps: Dict[str, Dict[str, float]]
-    ) -> str:
-        """
-        Format codes with similarity metrics for prompt.
-
-        Args:
-            candidate_codes: List of codes to format
-            cosine_scores: Cosine similarity scores per code
-            token_overlaps: Jaccard and subset scores per code
-
-        Returns:
-            Formatted string with metrics, e.g.:
-            "- Code Name (cosine: 0.85, jaccard: 0.60, subset: 0.70)"
-        """
-        formatted_lines = []
-
-        for code in candidate_codes:
-            code_label = code['code']
-
-            # Get metrics (with defaults if missing)
-            cosine = cosine_scores.get(code_label, 0.0)
-            jaccard = token_overlaps.get(code_label, {}).get('jaccard', 0.0)
-            subset = token_overlaps.get(code_label, {}).get('subset', 0.0)
-
-            # Format: "- Code Name (cosine: 0.85, jaccard: 0.60, subset: 0.70)"
-            line = f"- {code_label} (cosine: {cosine:.2f}, jaccard: {jaccard:.2f}, subset: {subset:.2f})"
-            formatted_lines.append(line)
-
-        return "\n".join(formatted_lines)
-
-
+    
+        
+    
     def extract_cluster_data(self) -> Dict[Union[int, str], Dict[str, Any]]:
         """Extract cluster data from ClusterModel objects using expanded_cluster when available"""
         clusters = {}
@@ -4032,43 +3918,11 @@ class InductiveCodeGenerator:
         """Select candidate codes with unlimited concurrency - pure API call"""
         try:
             # Build prompt directly
-            theme_id = self._get_theme_id(theme_data)
+            theme_id = self._get_theme_id(theme_data) 
             theme_name = self._get_theme_name(theme_data)
             theme_description = self._get_theme_description(theme_data)
-
-            # Get embeddings for similarity calculation
-            theme_embedding = self._theme_embeddings_cache.get(cluster_id)
-            current_codes, version = await self.shared_codebook.get_current_snapshot()
-            code_embeddings = await self.shared_codebook.get_embeddings_for_version(version)
-
-            # Calculate similarity metrics if embeddings are available
-            if theme_embedding is not None and code_embeddings is not None:
-                # Calculate cosine similarities for nearest_codes
-                cosine_scores = self._calculate_cosine_similarities(
-                    theme_embedding=theme_embedding,
-                    candidate_codes=nearest_codes[:20],
-                    all_codes=current_codes,
-                    code_embeddings=code_embeddings
-                )
-
-                # Calculate token overlaps (Jaccard, subset)
-                token_overlaps = self._calculate_token_overlap(
-                    theme_name=theme_name,
-                    candidate_codes=nearest_codes[:20]
-                )
-
-                # Format codes with metrics
-                codes_text = self._format_codes_with_metrics(
-                    candidate_codes=nearest_codes[:20],
-                    cosine_scores=cosine_scores,
-                    token_overlaps=token_overlaps
-                )
-            else:
-                # Fallback: use simple format without metrics
-                codes_text = "\n".join([f"-{code['code']}" for code in nearest_codes[:20]])
-                if self.verbose_detailed:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - No embeddings available, using simple code format")
-
+            codes_text = "\n".join([f"-{code['code']}" for code in nearest_codes[:20]])
+          
             # Prepare exact parameters for prompt
             params = {
                 "survey_question": self.var_lab,
@@ -4078,7 +3932,7 @@ class InductiveCodeGenerator:
                 "code_text": codes_text,
                 "theme_id": theme_id
             }
-
+            
             prompt = CODING_DECISION_PROMPT.format(**params)
             
             # Capture exact parameters used in prompt construction
