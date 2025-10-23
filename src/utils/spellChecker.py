@@ -1061,10 +1061,10 @@ Suggested corrections: {task_dict['suggestions']}
                 self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
                 self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
                   
-            for i in range(3):  # Add 3 samples to get started         
-                self.latency_tracker.add(avg_latency_s)                                           
-                
-            Little = compute_optimal_concurrency(ApiLimits(limits.tokens_per_minute, limits.requests_per_minute), avg_latency_s, avg_tokens, self.processing_config, cap=300)
+            for i in range(3):  # Add 3 samples to get started
+                self.latency_tracker.add(avg_latency_s)
+
+            Little = compute_optimal_concurrency(ApiLimits(limits.tokens_per_minute, limits.requests_per_minute), avg_latency_s, avg_tokens, self.processing_config)
             optimal = max(Little,100)
             semaphore = asyncio.Semaphore(min(nr_tasks,optimal))
 

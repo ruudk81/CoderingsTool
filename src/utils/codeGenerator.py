@@ -259,13 +259,18 @@ class ApiLimits:
     requests_per_minute: int
 
 
-def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, cap: int = 300, min_conc: int = 100, HEADROOM: float = 0.9) -> int:
+def compute_optimal_concurrency(limits: ApiLimits, latency_seconds: float, avg_tokens: float, processing_config: Optional[ProcessingConfig] = None, cap: Optional[int] = None, min_conc: Optional[int] = None, headroom: Optional[float] = None) -> int:
     """Compute optimal concurrency using Little's Law"""
+    config = processing_config or DEFAULT_PROCESSING_CONFIG
+    cap = cap if cap is not None else config.concurrency_cap_default
+    min_conc = min_conc if min_conc is not None else config.concurrency_min_default
+    headroom = headroom if headroom is not None else config.rate_limit_headroom
+
     latency_seconds = max(float(latency_seconds or 0.5), 0.05)
     avg_tokens = max(float(avg_tokens or 1.0), 1.0)
 
-    rpm_throughput = limits.requests_per_minute * HEADROOM / 60
-    tpm_throughput = limits.tokens_per_minute * HEADROOM / avg_tokens / 60
+    rpm_throughput = limits.requests_per_minute * headroom / 60
+    tpm_throughput = limits.tokens_per_minute * headroom / avg_tokens / 60
     candidates = [rpm_throughput, tpm_throughput]
     allowed_rps = max(min(candidates), 0.0)
     target = allowed_rps * latency_seconds   # Little's Law
@@ -1504,8 +1509,9 @@ class InductiveCodeGenerator:
             ApiLimits(rate_limits.tokens_per_minute, rate_limits.requests_per_minute),
             self.bootstrap_latency,
             self.avg_tokens,
+            self.processing_config,
             cap=self.config.async_concurrency_limit,
-            HEADROOM=self.processing_config.rate_limit_headroom
+            headroom=self.processing_config.rate_limit_headroom
         )
         
         # Update concurrency semaphore
@@ -3133,7 +3139,7 @@ class InductiveCodeGenerator:
         # Use bootstrap data but adjust for the complexity of the 3-prompt chain
         chain_latency = self.bootstrap_latency * 3  # Approximate latency for 3-prompt sequence
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, chain_latency, self.avg_tokens, cap=300, min_conc=10, HEADROOM=self.processing_config.rate_limit_headroom)
+        Little = compute_optimal_concurrency(api_limits, chain_latency, self.avg_tokens, self.processing_config, cap=self.processing_config.concurrency_cap_default, min_conc=self.processing_config.concurrency_min_conservative)
         optimal = min(100, max(Little, 20))  # Constrained for complex chain processing
 
         # Create stage-specific rate limiting (adjusted for 3-prompt chain)
