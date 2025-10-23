@@ -1403,13 +1403,17 @@ def show_upload_page():
                             st.session_state.sample_size_config = len(raw_text_list)
 
                         # Store variable label for pipeline
-                        var_for_label = config.selected_variables[0] if config.selected_variables else None
-                        if var_for_label:
-                            var_lab = _get_data_loader().get_varlab(config.filename, var_for_label, encoding=encoding if encoding != 'auto' else None)
-                            last_bracket = var_lab.rfind("]")
-                            st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                        # Only fetch from SPSS if user hasn't edited var_lab
+                        if st.session_state.get('var_lab'):
+                            st.session_state.pipeline_results['var_lab'] = st.session_state.var_lab
                         else:
-                            st.session_state.pipeline_results['var_lab'] = "Unknown Variable"
+                            var_for_label = config.selected_variables[0] if config.selected_variables else None
+                            if var_for_label:
+                                var_lab = _get_data_loader().get_varlab(config.filename, var_for_label, encoding=encoding if encoding != 'auto' else None)
+                                last_bracket = var_lab.rfind("]")
+                                st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                            else:
+                                st.session_state.pipeline_results['var_lab'] = "Unknown Variable"
 
                     except Exception as e:
                         st.error(f"Fout bij preview: {str(e)}" if lang == "nl" else f"Preview error: {str(e)}")
@@ -1467,12 +1471,29 @@ def show_upload_page():
             var_for_label = selected_vars_config[0] if selected_vars_config else None
 
             if var_for_label:
-                var_lab = _get_data_loader().get_varlab(st.session_state.filename, var_for_label)
-                last_bracket = var_lab.rfind("]")
-                st.session_state.var_lab = var_lab[last_bracket + 1:].strip()
+                # Only fetch from SPSS if var_lab not already set by user
+                if not st.session_state.get('var_lab'):
+                    var_lab = _get_data_loader().get_varlab(st.session_state.filename, var_for_label)
+                    last_bracket = var_lab.rfind("]")
+                    st.session_state.var_lab = var_lab[last_bracket + 1:].strip()
             else:
-                st.session_state.var_lab = "Unknown Variable"
-           
+                if not st.session_state.get('var_lab'):
+                    st.session_state.var_lab = "Unknown Variable"
+
+            # Allow user to edit survey question text
+            st.markdown("---")
+            edited_var_lab = st.text_area(
+                "📝 " + ("Vraag tekst (bewerk indien nodig):" if lang == "nl" else "Question text (edit if needed):"),
+                value=st.session_state.get('var_lab', ''),
+                height=100,
+                help="Deze vraag wordt gebruikt als context in de analyse" if lang == "nl" else "This question is used as context throughout the analysis",
+                key="var_lab_editor"
+            )
+
+            # Update session state if modified
+            if edited_var_lab != st.session_state.get('var_lab', ''):
+                st.session_state.var_lab = edited_var_lab
+
             # Proceed
             if st.button("Doorgaan naar Preprocessing" if lang == "nl" else "Continue to Preprocessing", type="primary"):
                 st.session_state.selected_id_column = st.session_state.get('id_column_config')
@@ -1594,13 +1615,21 @@ def show_preprocessing_page():
     
                     #multiple vars
                     if is_multiple_mode and len(selected_vars) > 1:
-                        merge_config = st.session_state.get('merge_config', {})
-                        var_labels = []
-                        for var in selected_vars:
-                                label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
-                                var_labels.append(label or var)
+                        # Check if user edited var_lab exists, otherwise build from SPSS
+                        if st.session_state.get('var_lab'):
+                            var_lab = st.session_state.var_lab
+                        else:
+                            merge_config = st.session_state.get('merge_config', {})
+                            var_labels = []
+                            for var in selected_vars:
+                                    label = _get_data_loader().get_varlab(st.session_state.filename, var, encoding=encoding)
+                                    var_labels.append(label or var)
+                            var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
+                            var_lab = var_labs
+                            st.session_state.var_lab = var_lab
 
                         progress_container.text("🔄 Data laden...")
+                        merge_config = st.session_state.get('merge_config', {})
                         # Generate enhanced variable key with sample size
                         sample_size = st.session_state.get('sample_size_config')
                         variable_key = generate_enhanced_variable_key(
@@ -1620,11 +1649,17 @@ def show_preprocessing_page():
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
                                 verbose=True)
                         progress_container.success("✅ Data laden voltooid")
-                        var_labs = f"Combined ({merge_config.get('strategy', 'concatenate')}): {' + '.join(var_labels)}"
-                        var_lab = var_labs[0]
                             
                     else: #single vars
-                        var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
+                        # Check if user edited var_lab exists, otherwise fetch from SPSS
+                        if st.session_state.get('var_lab'):
+                            var_lab = st.session_state.var_lab
+                        else:
+                            var_lab = _get_data_loader().get_varlab(st.session_state.filename, st.session_state.selected_variable, encoding=encoding)
+                            last_bracket = var_lab.rfind("]")
+                            var_lab = var_lab[last_bracket + 1:].strip()
+                            st.session_state.var_lab = var_lab
+
                         progress_container.text("🔄 Data laden...")
                         # Generate enhanced variable key with sample size
                         sample_size = st.session_state.get('sample_size_config')
@@ -1646,10 +1681,9 @@ def show_preprocessing_page():
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
                                 verbose=True)
                         progress_container.success("✅ Data laden voltooid")
-           
-                    last_bracket = var_lab.rfind("]")
+
                     st.session_state.pipeline_results['raw_text_list'] = raw_text_list
-                    st.session_state.pipeline_results['var_lab'] = var_lab[last_bracket + 1:].strip()
+                    st.session_state.pipeline_results['var_lab'] = var_lab
             else:
                  # Data already loaded from preview - var_lab should already be in pipeline_results
                  if 'var_lab' not in st.session_state.pipeline_results:
