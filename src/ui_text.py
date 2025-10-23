@@ -116,7 +116,21 @@ UI_TEXTS = {
         
         # Language Selector
         "LANGUAGE_LABEL": "Taal:",
-        "CURRENT_STEP": "Huidige Stap:"
+        "CURRENT_STEP": "Huidige Stap:",
+
+        # Step Names (for navigation and progress display)
+        "STEP_NAMES": {
+            0: "Upload Data",
+            1: "Preprocessing",
+            2: "Kwaliteitsfilter",
+            3: "Idee Extractie",
+            4: "Embeddings",
+            5: "Clustering",
+            6: "Codebook Generatie",
+            7: "Thema Identificatie",
+            8: "Code Toewijzing",
+            9: "Export"
+        }
     },
     
     "en": {
@@ -228,7 +242,21 @@ UI_TEXTS = {
         
         # Language Selector
         "LANGUAGE_LABEL": "Language:",
-        "CURRENT_STEP": "Current Step:"
+        "CURRENT_STEP": "Current Step:",
+
+        # Step Names (for navigation and progress display)
+        "STEP_NAMES": {
+            0: "Upload Data",
+            1: "Preprocessing",
+            2: "Quality Filter",
+            3: "Idea Extraction",
+            4: "Embeddings",
+            5: "Clustering",
+            6: "Codebook Generation",
+            7: "Theme Identification",
+            8: "Code Assignment",
+            9: "Export"
+        }
     }
 }
 

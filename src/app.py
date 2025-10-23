@@ -296,6 +296,11 @@ if 'code_assignment_config' not in st.session_state:
     st.session_state.code_assignment_config = CodeAssignmentConfig()
 
 # helpers
+def get_step_name(step_num: int, lang: str = "en") -> str:
+    """Get localized step name"""
+    step_names = ui.get_text("STEP_NAMES", lang)
+    return step_names.get(step_num, f"Step {step_num}")
+
 def is_step_completed(step_num: int) -> bool:
     """Check if a step has been completed in the current session"""
     return step_num in st.session_state.completed_steps
@@ -702,9 +707,13 @@ def main():
         
         st.header(ui.get_text("SIDEBAR_HEADER", st.session_state.language))
         st.markdown(ui.get_text("SIDEBAR_DESCRIPTION", st.session_state.language))
-        
-        # Progress indicator - Updated to 10 steps
-        st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step + 1}/10")
+
+        # Progress indicator with step name
+        if st.session_state.step == 0:
+            st.markdown(f"**{get_step_name(0, st.session_state.language)}**")
+        else:
+            step_name = get_step_name(st.session_state.step, st.session_state.language)
+            st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step}/9 - {step_name}")
 
         # Navigation buttons
         if st.session_state.step > 0:  # Only show navigation when not on upload page
@@ -729,6 +738,55 @@ def main():
                     clear_all_wait_states()  # Clear wait states before navigation
                     st.session_state.step += 1
                     st.rerun()
+
+            # Step jump navigation
+            st.markdown("---")
+            lang = st.session_state.language
+            loaded_from_cache = st.session_state.get('loaded_from_cache', False)
+
+            # Build list of available steps
+            available_steps = [0]  # Upload always available
+            for step in range(1, 10):
+                if loaded_from_cache or step in st.session_state.completed_steps or step <= st.session_state.max_step_reached:
+                    available_steps.append(step)
+
+            # Only show dropdown if there are steps to jump to (more than just current)
+            if len(available_steps) > 1:
+                current_index = available_steps.index(st.session_state.step) if st.session_state.step in available_steps else 0
+
+                selected_step = st.selectbox(
+                    "⏩ " + ("Spring naar stap:" if lang == "nl" else "Jump to step:"),
+                    options=available_steps,
+                    index=current_index,
+                    format_func=lambda x: f"{get_step_name(x, lang)}" if x == 0 else f"Stap {x}: {get_step_name(x, lang)}" if lang == "nl" else f"Step {x}: {get_step_name(x, lang)}",
+                    key="step_jump_selector"
+                )
+
+                if selected_step != st.session_state.step:
+                    clear_all_wait_states()
+                    st.session_state.step = selected_step
+                    st.rerun()
+
+            # Visual step progress indicator
+            st.markdown("---")
+            with st.expander("📋 " + ("Alle stappen" if lang == "nl" else "All steps"), expanded=False):
+                for step in range(10):
+                    step_name = get_step_name(step, lang)
+
+                    if step == 0:
+                        # Upload step
+                        if st.session_state.step == 0:
+                            st.markdown(f"🔵 **{step_name}**")
+                        else:
+                            st.markdown(f"✅ {step_name}")
+                    else:
+                        # Processing steps 1-9
+                        if step == st.session_state.step:
+                            st.markdown(f"🔵 **Stap {step}: {step_name}**" if lang == "nl" else f"🔵 **Step {step}: {step_name}**")
+                        elif step in st.session_state.completed_steps or (loaded_from_cache and step <= st.session_state.max_step_reached):
+                            st.markdown(f"✅ Stap {step}: {step_name}" if lang == "nl" else f"✅ Step {step}: {step_name}")
+                        else:
+                            st.markdown(f"⚪ Stap {step}: {step_name}" if lang == "nl" else f"⚪ Step {step}: {step_name}")
 
         st.markdown("---")
 
@@ -1340,6 +1398,10 @@ def show_upload_page():
                             st.session_state.pipeline_results = {}
                         st.session_state.pipeline_results['raw_text_list'] = raw_text_list
 
+                        # Convert None (full sample) to actual count for display purposes
+                        if st.session_state.sample_size_config is None:
+                            st.session_state.sample_size_config = len(raw_text_list)
+
                         # Store variable label for pipeline
                         var_for_label = config.selected_variables[0] if config.selected_variables else None
                         if var_for_label:
@@ -1423,6 +1485,10 @@ def show_upload_page():
                     st.session_state.selected_variable = selected_vars[0] if selected_vars else None
                     st.session_state.selected_variables = selected_vars
                     st.session_state['is_merged_variable'] = False
+
+                # Ensure sample_size_config reflects actual count (not user's None choice)
+                if st.session_state.sample_size_config is None and 'raw_text_list' in st.session_state.pipeline_results:
+                    st.session_state.sample_size_config = len(st.session_state.pipeline_results['raw_text_list'])
 
                 mark_step_completed(0) 
                 st.session_state.step = 1
