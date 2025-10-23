@@ -34,6 +34,39 @@ conda env create -f environment.yml
 conda activate coderingtool
 ```
 
+## Quick Testing Configuration
+
+For rapid validation after code changes, use this standard "cheap test" configuration:
+
+### Standard Test Parameters
+```python
+QUICK_TEST_CONFIG = {
+    "filename": "M250480 Associatiemonitor ASN Bank net databestand.sav",
+    "id_column": "DLNMID",
+    "var_name": "Qd1_combined",
+    "sample_size": 20,  # Small sample for fast testing
+}
+```
+
+**When to use:**
+- After refactoring or code changes
+- Before committing changes
+- Testing new features
+- Verifying bug fixes
+
+**Benefits:**
+- **Time**: Minutes instead of hours
+- **Cost**: ~$0.10-0.50 instead of $5-20 for full dataset
+- **Speed**: Quick validation without burning excessive resources
+
+**Usage:**
+```bash
+export SAMPLE_SIZE=20
+cd src && python pipeline.py
+```
+
+**Note:** This is NOT for final validation - always test with full dataset before production use.
+
 ## High-Level Architecture
 
 ### Pipeline Steps (1-10)
