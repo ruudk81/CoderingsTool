@@ -151,6 +151,7 @@ class ModelConfig:
         "gpt-4.1": "chat",
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
+        "gpt-5-chat": "chat",
         
         # GPT-5 family (reasoning models)
         "gpt-5": "reasoning",
@@ -179,12 +180,6 @@ class ModelConfig:
     speculative_codes_model: str = DEFAULT_MODEL  
 
     # Step 7: Codebook generation
-    # token_codebook_generation_model: str = "gpt-4o-mini"
-    # thematic_summary_model: str = "gpt-5-mini"              
-    # candidate_selection_model: str = "gpt-5-mini"           
-    # code_generation_model: str ="gpt-5-mini"               
-    # validation_model: str = "gpt-5-mini"   
-    
     token_codebook_generation_model: str = "gpt-4o-mini"
     thematic_summary_model: str = "gpt-5-mini"      
     candidate_selection_model: str = "gpt-4o-mini"           
@@ -314,7 +309,6 @@ class ModelConfig:
         else:
             # GPT-5 models: temperature = 1.0 + reasoning/text params
             config["temperature"] = 1.0
-            # TODO hopefully soon available in chatCompletion of langChain:
             # config["model_kwargs"] = {
             #     "reasoning": {"effort": self.gpt5_reasoning_effort},
             #     "text": {"verbosity": self.gpt5_text_verbosity}
