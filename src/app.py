@@ -4252,9 +4252,35 @@ def show_step9_assignment_stats():
             for i, (code, count) in enumerate(sorted_codes, 1):
                 pct = (count / total_ideas * 100) if total_ideas > 0 else 0
                 st.write(f"{i}. {code}: **{count}** ideas ({pct:.1f}%)")
+
+            # Export button at the end
+            st.markdown("---")
+            if st.button("🎉 " + (
+                "Exporteer naar Excel" if st.session_state.language == "nl"
+                else "Export to Excel"
+            ), type="primary", use_container_width=True, key="export_button"):
+                try:
+                    import pipeline
+
+                    # Run pipeline step 9 export
+                    excel_path = pipeline.step_9_export_results(
+                        code_assigned_results=code_assigned_results,
+                        theme_enriched_codebook=theme_enriched_codebook,
+                        filename=st.session_state.filename,
+                        var_name=st.session_state.get('var_name', st.session_state.get('selected_variable', 'unknown')),
+                        verbose=True
+                    )
+
+                    st.balloons()  # Celebration!
+                    st.success(f"✅ " + (f"Geëxporteerd naar: {excel_path}" if st.session_state.language == "nl" else f"Exported to: {excel_path}"))
+                    mark_step_completed(9)
+
+                except Exception as e:
+                    st.error(f"❌ " + (f"Export fout: {str(e)}" if st.session_state.language == "nl" else f"Export error: {str(e)}"))
+
         else:
             st.write("❌ No code assignment results available")
-            
+
     except Exception as e:
         st.write(f"❌ Error loading assignment statistics: {str(e)}")
 

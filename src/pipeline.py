@@ -24,18 +24,19 @@ model_config = ModelConfig()
 # id_column = "DLNMID"
 # var_name = "Q20"
 
-# filename = "M000000 Associatiemonitor Merk X net databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Qd1_combined"
+filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+sample_size = 2000
 
 # filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 # id_column = "DLNMID"
 # var_name = "Q15"
 
-filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
-id_column = "DLNMID"
-var_name = "Q10"
-sample_size = 50
+# filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
+# id_column = "DLNMID"
+# var_name = "Q10"
+# sample_size = 50
 
 RUN_UNTIL_STEP = 9 # None = run all steps
 FORCE_RECALCULATE_ALL = False
@@ -1988,7 +1989,6 @@ if __name__ == '__main__':
     # === STEP 9  =====
     """Export Results"""
     excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=VERBOSE)
-    check_execution_stop(9)
     
     # Pipeline completed successfully
     print(f"\n{'='*80}")
