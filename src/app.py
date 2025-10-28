@@ -3391,7 +3391,7 @@ def show_preprocessed_samples(preprocessed_text, n_samples=10):
         return
 
     # Filter out empty/filtered items before sampling
-    valid_items = [item for item in preprocessed_text if not getattr(item, 'quality_filter', False)]
+    valid_items = [item for item in preprocessed_text if not getattr(item, 'quality_filter', False) and item.response and item.response.strip()]
 
     if not valid_items:
         st.write(f"{'Geen geldige data om weer te geven' if st.session_state.language == 'nl' else 'No valid data to display'}")
@@ -3469,12 +3469,12 @@ def show_filtered_samples(quality_filtered_text, n_samples=10):
         </ul>
         </div>
         """, unsafe_allow_html=True)
-    
+
         st.write("\n")
-        
-        if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw new sample'}", key="preprocessed_samples"):
+
+        if st.button(f"{'🎲 Toon nieuwe selectie' if st.session_state.language == 'nl' else '🎲 Draw new sample'}", key="filtered_samples"):
             st.rerun()
-    
+
 
 def show_idea_samples(encoded_text, n_samples=5):
     """Show random samples from Step 4 - Ideas"""
