@@ -747,7 +747,8 @@ def main():
             # Build list of available steps
             available_steps = [0]  # Upload always available
             for step in range(1, 10):
-                if loaded_from_cache or step in st.session_state.completed_steps or step <= st.session_state.max_step_reached:
+                # Include current step, completed steps, and steps up to max reached
+                if step == st.session_state.step or loaded_from_cache or step in st.session_state.completed_steps or step <= st.session_state.max_step_reached:
                     available_steps.append(step)
 
             # Only show dropdown if there are steps to jump to (more than just current)
@@ -811,9 +812,10 @@ def main():
                     st.success("✅ " + ("Cache gewist vanaf stap" if st.session_state.language == "nl" else "Cache cleared from step") + f" {current_step}")
                     st.rerun()
 
-    # Main body  
+    # Main body
     sampling_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9,10]
-    if not st.session_state.step in sampling_steps: 
+
+    if not st.session_state.step in sampling_steps:
         show_upload_page()
     else:
         # TOP SECTION: Processing step controls
@@ -1511,9 +1513,9 @@ def show_upload_page():
                 if st.session_state.sample_size_config is None and 'raw_text_list' in st.session_state.pipeline_results:
                     st.session_state.sample_size_config = len(st.session_state.pipeline_results['raw_text_list'])
 
-                mark_step_completed(0) 
+                mark_step_completed(0)
                 st.session_state.step = 1
-                
+
                 st.rerun()
 
 # STEP 1. PREPROCESSING DATA ################################################################################################################################
