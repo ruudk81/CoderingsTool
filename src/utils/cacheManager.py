@@ -160,33 +160,46 @@ class CacheDatabase:
                     file_size INTEGER,
                     processing_time FLOAT,
                     status TEXT DEFAULT 'valid',
+                    var_lab TEXT,
                     UNIQUE(filename, step_name, variable_key)
                 );
-                
-                CREATE INDEX IF NOT EXISTS idx_cache_filename_step_var 
+
+                CREATE INDEX IF NOT EXISTS idx_cache_filename_step_var
                 ON cache_metadata(filename, step_name, variable_key);
-                
-                CREATE INDEX IF NOT EXISTS idx_cache_status 
+
+                CREATE INDEX IF NOT EXISTS idx_cache_status
                 ON cache_metadata(status);
             ''')
+
+            # Migration: Add var_lab column to existing databases
+            try:
+                conn.execute('ALTER TABLE cache_metadata ADD COLUMN var_lab TEXT;')
+                logger.info("Added var_lab column to existing cache_metadata table")
+            except sqlite3.OperationalError as e:
+                # Column already exists - this is fine
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise
     
-    def record_cache_entry(self, 
-                          filename: str, 
+    def record_cache_entry(self,
+                          filename: str,
                           step_name: str,
                           variable_key: str,
                           cache_path: str,
                           file_hash: str,
                           file_size: int,
-                          processing_time: float = None) -> int:
+                          processing_time: float = None,
+                          var_lab: str = None) -> int:
         """Record a new cache entry or update existing one"""
         with self._get_connection() as conn:
             cursor = conn.execute('''
-                INSERT OR REPLACE INTO cache_metadata 
-                (filename, step_name, variable_key, cache_path, file_hash, file_size, 
-                 processing_time, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (filename, step_name, variable_key, cache_path, file_hash, file_size, processing_time))
-            
+                INSERT OR REPLACE INTO cache_metadata
+                (filename, step_name, variable_key, cache_path, file_hash, file_size,
+                 processing_time, var_lab, last_accessed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (filename, step_name, variable_key, cache_path, file_hash, file_size, processing_time, var_lab))
+
             return cursor.lastrowid
     
     def get_cache_info(self, filename: str, step_name: str, variable_key: str) -> Optional[Dict]:
@@ -306,26 +319,26 @@ class CacheManager:
         """Check if cached data exists and is valid"""
         return self.db.is_cache_valid(filename, step, variable_key)
     
-    def save_to_cache(self, data: List[T], filename: str, step: str, variable_key: str, processing_time: float = None) -> bool:
+    def save_to_cache(self, data: List[T], filename: str, step: str, variable_key: str, processing_time: float = None, var_lab: str = None) -> bool:
         """Save list of Pydantic models to cache using pickle"""
         if not data:
             logger.warning(f"No data to save for {filename} at step {step} with variable {variable_key}")
             return False
-        
+
         cache_path = self.get_cache_path(filename, step, variable_key)
-        
+
         try:
             # Convert Pydantic models to dictionaries for serialization
             serializable_data = [item.model_dump() for item in data]
-            
+
             # Save using pickle
             with open(cache_path, 'wb') as f:
                 pickle.dump(serializable_data, f)
-            
+
             # Calculate file hash and size
             file_hash = self._calculate_file_hash(cache_path)
             file_size = cache_path.stat().st_size
-            
+
             # Record in database
             self.db.record_cache_entry(
                 filename=filename,
@@ -334,12 +347,13 @@ class CacheManager:
                 cache_path=str(cache_path),
                 file_hash=file_hash,
                 file_size=file_size,
-                processing_time=processing_time
+                processing_time=processing_time,
+                var_lab=var_lab
             )
-            
+
             logger.info(f"Saved {len(data)} items to cache for {filename} at step {step} with variable {variable_key}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error saving cache for {filename} at step {step} with variable {variable_key}: {e}")
             # Clean up partial file if it exists

@@ -16,8 +16,8 @@ UI_TEXTS = {
         """,
         
         # Sidebar
-        "SIDEBAR_HEADER": "Analyse Pipeline",
-        "SIDEBAR_DESCRIPTION": "Volg de stappen om uw enquetedata te analyseren",
+        "SIDEBAR_HEADER": "Navigatie",
+        "SIDEBAR_DESCRIPTION": "",
         
         # Upload Page
         "UPLOAD_HELP": "Upload een SPSS-bestand (.sav) met enquete antwoorden. Het bestand moet respondent-ID's en tekst antwoorden bevatten.",
@@ -121,14 +121,14 @@ UI_TEXTS = {
         # Step Names (for navigation and progress display)
         "STEP_NAMES": {
             0: "Upload Data",
-            1: "Preprocessing",
+            1: "Tekstbewerking",
             2: "Kwaliteitsfilter",
-            3: "Idee Extractie",
+            3: "Descriptieve labels",
             4: "Embeddings",
-            5: "Clustering",
-            6: "Codebook Generatie",
-            7: "Thema Identificatie",
-            8: "Code Toewijzing",
+            5: "Clusters",
+            6: "Coderen",
+            7: "Thematische indeling",
+            8: "Codes toewijzen",
             9: "Export"
         }
     },
@@ -142,8 +142,8 @@ UI_TEXTS = {
         """,
         
         # Sidebar
-        "SIDEBAR_HEADER": "Analysis Pipeline",
-        "SIDEBAR_DESCRIPTION": "Follow the steps to analyze your survey data",
+        "SIDEBAR_HEADER": "Navigation",
+        "SIDEBAR_DESCRIPTION": "",
         
         # Upload Page
         "UPLOAD_HELP": "Upload an SPSS file (.sav) containing survey responses. The file should include respondent IDs and text responses.",
@@ -249,10 +249,10 @@ UI_TEXTS = {
             0: "Upload Data",
             1: "Preprocessing",
             2: "Quality Filter",
-            3: "Idea Extraction",
+            3: "Descriptive Labels",
             4: "Embeddings",
-            5: "Clustering",
-            6: "Codebook Generation",
+            5: "Clusters",
+            6: "Coding",
             7: "Theme Identification",
             8: "Code Assignment",
             9: "Export"

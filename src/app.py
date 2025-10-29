@@ -316,6 +316,22 @@ def can_navigate_to_step(target_step: int) -> bool:
     # Can navigate to any completed step or the next sequential step
     return target_step <= st.session_state.max_step_reached or target_step == st.session_state.step + 1
 
+def get_display_sample_size(lang: str = "en") -> str:
+    """Get sample size for display - preserves 'full' semantic while showing actual count
+
+    Returns display string like '579 (Full)' when sample_size_config is None,
+    or just the number when user chose a specific sample size.
+    """
+    size = st.session_state.get('sample_size_config')
+    if size is None:
+        # User chose 'full sample' - show actual count with 'Full' label
+        if 'raw_text_list' in st.session_state.pipeline_results:
+            count = len(st.session_state.pipeline_results['raw_text_list'])
+            full_label = "Volledig" if lang == "nl" else "Full"
+            return f"{count} ({full_label})"
+        return "Volledig" if lang == "nl" else "Full"
+    return str(size)
+
 def reset_navigation_tracking():
     """Reset navigation tracking (e.g., when uploading new file)"""
     st.session_state.completed_steps = set()
@@ -702,18 +718,9 @@ def main():
             if language_options[selected_language] != st.session_state.language:
                 st.session_state.language = language_options[selected_language]
                 st.rerun()
-        
-        st.markdown("---")
-        
+
         st.header(ui.get_text("SIDEBAR_HEADER", st.session_state.language))
         st.markdown(ui.get_text("SIDEBAR_DESCRIPTION", st.session_state.language))
-
-        # Progress indicator with step name
-        if st.session_state.step == 0:
-            st.markdown(f"**{get_step_name(0, st.session_state.language)}**")
-        else:
-            step_name = get_step_name(st.session_state.step, st.session_state.language)
-            st.markdown(f"**{ui.get_text('CURRENT_STEP', st.session_state.language)}** {st.session_state.step}/9 - {step_name}")
 
         # Navigation buttons
         if st.session_state.step > 0:  # Only show navigation when not on upload page
@@ -739,57 +746,42 @@ def main():
                     st.session_state.step += 1
                     st.rerun()
 
-            # Step jump navigation
-            st.markdown("---")
+            # Interactive step navigator
             lang = st.session_state.language
             loaded_from_cache = st.session_state.get('loaded_from_cache', False)
+            with st.expander("📋 " + ("Alle stappen" if lang == "nl" else "All steps"), expanded=True):
 
-            # Build list of available steps
-            available_steps = [0]  # Upload always available
-            for step in range(1, 10):
-                # Include current step, completed steps, and steps up to max reached
-                if step == st.session_state.step or loaded_from_cache or step in st.session_state.completed_steps or step <= st.session_state.max_step_reached:
-                    available_steps.append(step)
-
-            # Only show dropdown if there are steps to jump to (more than just current)
-            if len(available_steps) > 1:
-                current_index = available_steps.index(st.session_state.step) if st.session_state.step in available_steps else 0
-
-                selected_step = st.selectbox(
-                    "⏩ " + ("Spring naar stap:" if lang == "nl" else "Jump to step:"),
-                    options=available_steps,
-                    index=current_index,
-                    format_func=lambda x: f"{get_step_name(x, lang)}" if x == 0 else f"Stap {x}: {get_step_name(x, lang)}" if lang == "nl" else f"Step {x}: {get_step_name(x, lang)}",
-                    key="step_jump_selector"
-                )
-
-                if selected_step != st.session_state.step:
-                    clear_all_wait_states()
-                    st.session_state.step = selected_step
-                    st.rerun()
-
-            # Visual step progress indicator
-            st.markdown("---")
-            with st.expander("📋 " + ("Alle stappen" if lang == "nl" else "All steps"), expanded=False):
-                for step in range(10):
+                for step in range(1, 10):  # Start from 1, skip step 0 (Upload Data)
                     step_name = get_step_name(step, lang)
 
-                    if step == 0:
-                        # Upload step
-                        if st.session_state.step == 0:
-                            st.markdown(f"🔵 **{step_name}**")
-                        else:
-                            st.markdown(f"✅ {step_name}")
-                    else:
-                        # Processing steps 1-9
-                        if step == st.session_state.step:
-                            st.markdown(f"🔵 **Stap {step}: {step_name}**" if lang == "nl" else f"🔵 **Step {step}: {step_name}**")
-                        elif step in st.session_state.completed_steps or (loaded_from_cache and step <= st.session_state.max_step_reached):
-                            st.markdown(f"✅ Stap {step}: {step_name}" if lang == "nl" else f"✅ Step {step}: {step_name}")
-                        else:
-                            st.markdown(f"⚪ Stap {step}: {step_name}" if lang == "nl" else f"⚪ Step {step}: {step_name}")
+                    # Determine if step is accessible (using OLD correct logic from All steps display)
+                    is_current = (step == st.session_state.step)
+                    is_accessible = (step in st.session_state.completed_steps or
+                                    (loaded_from_cache and step <= st.session_state.max_step_reached))
 
-        st.markdown("---")
+                    # Format step label with status icon
+                    # Only show checkmark for accessible steps, no icon otherwise
+                    if is_accessible:
+                        icon = "✅"  # Accessible steps (completed or cached) get checkmark
+                    else:
+                        icon = ""   # All other steps get no icon
+
+                    prefix = "Stap" if lang == "nl" else "Step"
+                    label = f"{icon} {prefix} {step}: {step_name}".strip()
+
+                    # Enable button if accessible OR if it's the current step (aesthetic)
+                    is_enabled = is_accessible or is_current
+
+                    if st.button(
+                        label,
+                        key=f"nav_step_{step}",
+                        use_container_width=True,
+                        disabled=not is_enabled,
+                        type="secondary"
+                    ):
+                        clear_all_wait_states()
+                        st.session_state.step = step
+                        st.rerun()
 
         # Advanced Settings
         show_advanced_settings(st.session_state.step)
@@ -977,25 +969,29 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int, int]:
             size_str = sample_suffix.replace("_", "")
             if size_str.isdigit():
                 sample_size = int(size_str)
-                
-        if sample_size is None and data:
-            sample_size = len(data)  
+        # Keep sample_size as None when suffix is "_full" - preserves "full sample" semantic
 
         id_column = 'id'
         if data and hasattr(data[0], 'id_column') and data[0].id_column:
             id_column = data[0].id_column
 
-        # Get var_lab
-        var_lab = variables
-        try:
-            data_loader = _get_data_loader()
-            first_var = variables.split('+')[0] if '+' in variables else variables
-            var_lab = data_loader.get_varlab(filename, first_var)
-            
-        except Exception:
-            pass
+        # Get var_lab - prioritize cached var_lab (preserves user edits)
+        var_lab = variables  # Default
+        cache_info = cache_manager.db.get_cache_info(filename, "preprocessed", variable_key)
 
-        last_bracket = var_lab.rfind("]")
+        if cache_info and cache_info.get('var_lab'):
+            # Use cached var_lab (preserves user edits)
+            var_lab = cache_info['var_lab']
+        else:
+            # Fallback: Fetch from SPSS (for old cache entries without var_lab)
+            try:
+                data_loader = _get_data_loader()
+                first_var = variables.split('+')[0] if '+' in variables else variables
+                var_lab = data_loader.get_varlab(filename, first_var)
+                last_bracket = var_lab.rfind("]")
+                var_lab = var_lab[last_bracket + 1:].strip()
+            except Exception as e:
+                pass
         
         # Build config
         config = DatasetConfig(
@@ -1006,7 +1002,7 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int, int]:
             sample_size=sample_size,
             merge_config=None,  # Merge config not stored in cache metadata
             encoding=None,
-            var_lab=var_lab[last_bracket + 1:].strip(),
+            var_lab=var_lab,
             is_merged_variable=is_merged,
             loaded_from_cache=True,
             force_recalculate_all = False
@@ -1068,6 +1064,9 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
         data_loader = _get_data_loader()
         first_var = selected_vars[0]
         var_lab = data_loader.get_varlab(filename, first_var, encoding)
+        # Clean up var_lab by removing SPSS metadata before last bracket
+        last_bracket = var_lab.rfind("]")
+        var_lab = var_lab[last_bracket + 1:].strip()
     except Exception:
         pass
 
@@ -1400,10 +1399,6 @@ def show_upload_page():
                             st.session_state.pipeline_results = {}
                         st.session_state.pipeline_results['raw_text_list'] = raw_text_list
 
-                        # Convert None (full sample) to actual count for display purposes
-                        if st.session_state.sample_size_config is None:
-                            st.session_state.sample_size_config = len(raw_text_list)
-
                         # Store variable label for pipeline
                         # Only fetch from SPSS if user hasn't edited var_lab
                         if st.session_state.get('var_lab'):
@@ -1509,10 +1504,6 @@ def show_upload_page():
                     st.session_state.selected_variables = selected_vars
                     st.session_state['is_merged_variable'] = False
 
-                # Ensure sample_size_config reflects actual count (not user's None choice)
-                if st.session_state.sample_size_config is None and 'raw_text_list' in st.session_state.pipeline_results:
-                    st.session_state.sample_size_config = len(st.session_state.pipeline_results['raw_text_list'])
-
                 mark_step_completed(0)
                 st.session_state.step = 1
 
@@ -1548,7 +1539,7 @@ def show_preprocessing_page():
     # ==================== BLOCK 2: BLUE BOX ====================
     if is_step_completed(0):
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {st.session_state.sample_size_config} antwoorden" if lang == "nl" else f"\n\n**Data:** { st.session_state.sample_size_config} responses")
+        sample_info += (f"\n\n**Data:** {get_display_sample_size(lang)} antwoorden" if lang == "nl" else f"\n\n**Data:** {get_display_sample_size(lang)} responses")
         st.info(sample_info)    
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -1687,9 +1678,8 @@ def show_preprocessing_page():
                     st.session_state.pipeline_results['raw_text_list'] = raw_text_list
                     st.session_state.pipeline_results['var_lab'] = var_lab
             else:
-                 # Data already loaded from preview - var_lab should already be in pipeline_results
-                 if 'var_lab' not in st.session_state.pipeline_results:
-                     st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', 'Unknown Variable')
+                 # Data already loaded from preview - update var_lab in case user edited it
+                 st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', 'Unknown Variable')
         except Exception as e:
              st.error(f"Preprocessing fout: {str(e)}" if lang == "nl" else f"Preprocessing error: {str(e)}")
 
@@ -1748,16 +1738,95 @@ def show_filtering_page():
     """
     lang = st.session_state.language
 
+    # Helper function to calculate filter statistics
+    def calculate_quality_filter_stats(quality_filtered_text):
+        """Calculate statistics from quality filtered data"""
+        code_meanings = {
+            99999997: "Don't know (expresses uncertainty)",
+            99999998: "No response (empty/NA)",
+            99999999: "Meaningless answer (gibberish/irrelevant text)"
+        }
+
+        code_counts = {}
+        for item in quality_filtered_text:
+            if item.quality_filter and item.quality_filter_code is not None:
+                code = item.quality_filter_code
+                code_counts[code] = code_counts.get(code, 0) + 1
+
+        total_filtered = sum(code_counts.values())
+        total_validated = len(quality_filtered_text) - total_filtered
+
+        return {
+            'code_counts': code_counts,
+            'code_meanings': code_meanings,
+            'total_filtered': total_filtered,
+            'total_validated': total_validated
+        }
+
     st.header("Stap 2: Kwaliteitsfiltering" if lang == "nl" else "Step 2: Quality Filtering")
 
     # ==================== BLOCK 1: GREEN BOX ====================
     if is_step_completed(2):
         st.success("✅ " + ("Kwaliteitsfiltering voltooid! Bekijk de resultaten en klik dan op doorgaan." if lang == "nl" else "Quality filtering completed! Review the results on the right, then click continue."))
 
+    # ==================== BLOCK 1.5: LOAD DATA IF FROM CACHE ====================
+    # Only load and calculate stats when step 2 is completed BUT quality_filter_stats doesn't exist
+    # This means we're in cache route, not fresh processing route
+    if is_step_completed(2) and not st.session_state.get('quality_filter_stats'):
+        if 'quality_filtered_text' not in st.session_state.pipeline_results:
+            # Load quality filtered data from cache
+            cache_manager = _get_cache_manager()
+            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+            is_merged = st.session_state.get('is_merged_variable', False)
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
+
+            quality_filtered_text = cache_manager.load_from_cache(
+                st.session_state.filename,
+                "quality_filter",
+                variable_key,
+                models.QualityFilteredModel
+            )
+
+            if quality_filtered_text:
+                st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
+
+        # Calculate stats from cached data (for blue box display)
+        if 'quality_filtered_text' in st.session_state.pipeline_results:
+            # Create temporary stats object (NOT stored in quality_filter_stats to avoid yellow box)
+            quality_filtered_text = st.session_state.pipeline_results['quality_filtered_text']
+            st.session_state['_cache_filter_stats'] = calculate_quality_filter_stats(quality_filtered_text)
+
     # ==================== BLOCK 2: BLUE BOX ====================
     if is_step_completed(1):
         sample_info =  (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {st.session_state.sample_size_config} antwoorden" if lang == "nl" else f"\n\n**Data:** {st.session_state.sample_size_config} responses")
+        sample_info += (f"\n\n**Data:** {get_display_sample_size(lang)} " +
+                       ("antwoorden" if lang == "nl" else "responses"))
+
+        # If step 2 is completed AND we're in cache route (not fresh processing), add filter breakdown
+        if is_step_completed(2) and not st.session_state.get('quality_filter_stats'):
+            stats = st.session_state.get('_cache_filter_stats', {})
+            if stats:
+                valid_count = stats.get('total_validated', 0)
+                sample_info += (f"\n\n**{'Gevalideerde antwoorden' if lang == 'nl' else 'Validated responses'}:** {valid_count}")
+
+                # Add breakdown of filtered items (same format as yellow box)
+                code_counts = stats.get('code_counts', {})
+                code_meanings = stats.get('code_meanings', {})
+                if code_counts:
+                    total_filtered = stats.get('total_filtered', 0)
+                    sample_info += (f"\n\n**{'Uitgesloten van verdere analyse' if lang == 'nl' else 'Excluded from further analysis'}:** {total_filtered}")
+                    for code in sorted(code_counts.keys()):
+                        count = code_counts[code]
+                        meaning = code_meanings.get(code, 'Unknown')
+                        sample_info += f"\n- Code {code}: {count} item(s) - {meaning}"
+
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -1887,9 +1956,9 @@ def show_filtering_page():
                 # Calculate statistics from results for display
                 code_counts = {}
                 code_meanings = {
-                    99999997: "User missing: Don't know/only expressing uncertainty",
-                    99999998: "System missing: NA",
-                    99999999: "No answer: Empty strings/Single Characters/Only numbers/Nonsensical/gibberish/meaningless content"
+                    99999997: "Don't know (expresses uncertainty)",
+                    99999998: "No response (empty/NA)",
+                    99999999: "Meaningless answer (gibberish/irrelevant text)"
                 }
 
                 for item in quality_filtered_text:
@@ -1944,9 +2013,12 @@ def show_idea_extraction_page():
     # Show input data info when previous step is complete
     if is_step_completed(2):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
-        sample_info += (f"\n\n**Data:** {st.session_state.get('step3_sample_size', st.session_state.sample_size_config)} {'antwoorden' if lang == 'nl' else 'responses'}")    
+        # Use step3_sample_size if available, otherwise use display helper
+        step3_size = st.session_state.get('step3_sample_size')
+        sample_info += (f"\n\n**Data:** {step3_size if step3_size else get_display_sample_size(lang)} {'antwoorden' if lang == 'nl' else 'responses'}")
         if is_step_completed(3):
-            sample_info += (f" / {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'deelantwoorden' if lang == 'nl' else 'answer parts'}")
+            step4_size = st.session_state.get('step4_sample_size')
+            sample_info += (f" / {step4_size if step4_size else get_display_sample_size(lang)} {'deelantwoorden' if lang == 'nl' else 'answer parts'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -2142,10 +2214,12 @@ def show_embedding_page():
     # Show input data info when previous step is complete
     if is_step_completed(3):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
+        step4_size = st.session_state.get('step4_sample_size')
+        display_size = step4_size if step4_size else get_display_sample_size(lang)
         if is_step_completed(4):
-            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings' if lang == 'nl' else 'embeddings'}")
+            sample_info += (f"**Data**: {display_size} {'embeddings' if lang == 'nl' else 'embeddings'}")
         else:
-            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'deelantwoorden te embedden' if lang == 'nl' else 'answer parts to embed'}")
+            sample_info += (f"**Data**: {display_size} {'deelantwoorden te embedden' if lang == 'nl' else 'answer parts to embed'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: DATA LOADING ====================
@@ -2275,7 +2349,9 @@ def show_clustering_page():
     if is_step_completed(4):
         sample_info = (f"**{'Vraag' if lang == 'nl' else 'Question'}:** {st.session_state.var_lab}\n\n")
         if not is_step_completed(5):
-            sample_info += (f"**Data**: {st.session_state.get('step4_sample_size', st.session_state.sample_size_config)} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
+            step4_size = st.session_state.get('step4_sample_size')
+            display_size = step4_size if step4_size else get_display_sample_size(lang)
+            sample_info += (f"**Data**: {display_size} {'embeddings te clusteren' if lang == 'nl' else 'embeddings to cluster'}")
         st.info(sample_info)
 
     # ==================== BLOCK 3: YELLOW BOX ====================
@@ -2371,6 +2447,7 @@ def show_clustering_page():
                 initial_cluster_results = pipeline.step_5_cluster(
                     embedded_text=st.session_state.pipeline_results['embedded_text'],
                     filename=st.session_state.filename,
+                    var_lab=st.session_state.pipeline_results['var_lab'],
                     variable_key=variable_key,
                     cache_manager=_get_cache_manager(),
                     force_recalc=force_recalc,
@@ -3433,8 +3510,8 @@ def show_filtered_samples(quality_filtered_text, n_samples=10):
         st.write("{'Geen gefilterde data beschikbaar' if st.session_state.language == 'nl' else 'No filtered data available'}")
         return
 
-    # Filter out empty strings (code 99999999) from display while keeping them in statistics
-    filtered_text = [item for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999999]
+    # Filter out empty strings (code 99999998) from display while keeping them in statistics
+    filtered_text = [item for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999998]
 
     if not filtered_text:
         st.write(f"{'Geen gefilterde data om weer te geven' if st.session_state.language == 'nl' else 'No filtered data to display'}")
@@ -3660,7 +3737,7 @@ def show_codebook_samples(codebook_reasoning):
 
     NL = st.session_state.get("language", "en") == "nl"
     t_no_data = "Geen codebook-data beschikbaar" if NL else "No codebook data available"
-    t_header = "Codebook-analyse" if NL else "Codebook analysis"
+    #t_header = "Codebook-analyse" if NL else "Codebook analysis"
     t_error = "Fout bij weergeven van codebook-analyse" if NL else "Error displaying codebook analysis"
 
     # Translations for sections
@@ -4299,9 +4376,9 @@ def show_step8_refined_codebook():
 
 def show_step9_assignment_stats():
     """Display assignment statistics - fixed summary"""
-    from utils.pipelineSummarizer import PipelineSummarizer
-    import io
-    import sys
+    # from utils.pipelineSummarizer import PipelineSummarizer
+    # import io
+    # import sys
     
     # Get cache manager and load results
     cache_manager = _get_cache_manager()
@@ -4374,11 +4451,11 @@ def show_step9_assignment_stats():
                     )
 
                     st.balloons()  # Celebration!
-                    st.success(f"✅ " + (f"Geëxporteerd naar: {excel_path}" if st.session_state.language == "nl" else f"Exported to: {excel_path}"))
+                    st.success("✅ " + (f"Geëxporteerd naar: {excel_path}" if st.session_state.language == "nl" else f"Exported to: {excel_path}"))
                     mark_step_completed(9)
 
                 except Exception as e:
-                    st.error(f"❌ " + (f"Export fout: {str(e)}" if st.session_state.language == "nl" else f"Export error: {str(e)}"))
+                    st.error("❌ " + (f"Export fout: {str(e)}" if st.session_state.language == "nl" else f"Export error: {str(e)}"))
 
         else:
             st.write("❌ No code assignment results available")
