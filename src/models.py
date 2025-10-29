@@ -17,7 +17,7 @@ class ResponseModel(BaseModel):
 
 class PreprocessedModel(ResponseModel):
     quality_filter: Optional[bool] = None
-    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=user_missing, 99999998=system_missing, 99999999=no_answer
+    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=don't know, 99999998=no response/empty, 99999999=gibberish
 
 class QualityFilteredModel(PreprocessedModel):
     pass

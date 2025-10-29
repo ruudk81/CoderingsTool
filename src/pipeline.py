@@ -27,7 +27,7 @@ model_config = ModelConfig()
 filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 id_column = "DLNMID"
 var_name = "Qd1_combined"
-sample_size = 2000
+sample_size = 500
 
 # filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 # id_column = "DLNMID"
@@ -38,7 +38,7 @@ sample_size = 2000
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 9 # None = run all steps
+RUN_UNTIL_STEP = 5 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -211,7 +211,7 @@ def step_0_load_data(
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(raw_text_list, filename, step_name, variable_key, elapsed_time, var_lab=None)
 
         print("\n=== RAW DATA TYPE ANALYSIS ===")
         type_counts = {'nan': 0, 'numeric': 0, 'string': 0, 'unknown': 0}
@@ -304,9 +304,9 @@ def step_1_preprocess(
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
 
     code_meanings = {
-        99999997: "User missing: Don't know/only expressing uncertainty",
-        99999998: "System missing: NA",
-        99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+        99999997: "Don't know (expresses uncertainty)",
+        99999998: "No response (empty/NA)",
+        99999999: "Meaningless answer (gibberish/irrelevant text)"}
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
         preprocessed_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.PreprocessedModel)
@@ -368,25 +368,22 @@ def step_1_preprocess(
                         desc_item.quality_filter_code = None
                         desc_item.quality_filter = None
                 elif isinstance(item.response, str):
-                    if item.response.strip() == '':
-                        desc_item.quality_filter_code = 99999999
-                        desc_item.quality_filter = True
-                    else:
-                        # Text response - will be evaluated by qualityFilter
-                        desc_item.quality_filter_code = None
-                        desc_item.quality_filter = None
+                    # Text response - will be evaluated by qualityFilter
+                    # Note: Empty strings are converted to '<NA>' by textNormalizer and handled in the else clause below
+                    desc_item.quality_filter_code = None
+                    desc_item.quality_filter = None
                 preprocessed_text.append(desc_item)
             else:
                 preprocessed_text.append(models.PreprocessedModel(
                     respondent_id=original.respondent_id,
                     response='<NA>',
                     response_type='nan',
-                    quality_filter_code=99999998,  # no answer, etc. only numbers, 1 character or empty
+                    quality_filter_code=99999998,  # No response (empty/NA)
                     quality_filter=True))
         end_time = time.time()
         elapsed_time = end_time - start_time
 
-        cache_manager.save_to_cache(preprocessed_text, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(preprocessed_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
         # Quality filter summary
         if verbose:
@@ -527,9 +524,9 @@ def step_2_quality_filter(
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
 
     code_meanings = {
-        99999997: "User missing: Don't know/only expressing uncertainty",
-        99999998: "System missing: NA",
-        99999999: "No answer: Empty strings/Single Characters/Only Numbers"}
+        99999997: "Don't know (expresses uncertainty)",
+        99999998: "No response (empty/NA)",
+        99999999: "Meaningless answer (gibberish/irrelevant text)"}
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
         quality_filtered_text = cache_manager.load_from_cache(filename, step_name, variable_key, models.QualityFilteredModel)
@@ -557,7 +554,7 @@ def step_2_quality_filter(
         #grading_summary = grader.summary()
         end_time = time.time()
         elapsed_time = end_time - start_time
-        cache_manager.save_to_cache(quality_filtered_text, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(quality_filtered_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
         print("\n=== MISSING CODE SUMMARY ===")
         code_counts = {}
@@ -676,7 +673,7 @@ def step_3_extract_ideas(
         encoded_text = encoder.extract()
         end_time = time.time()
         elapsed_time = end_time - start_time
-        cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
         # Optional Streamlit success message
@@ -780,7 +777,7 @@ def step_4_generate_embeddings(
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
         print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
 
         # Optional Streamlit success message
@@ -793,6 +790,7 @@ def step_4_generate_embeddings(
 def step_5_cluster(
     embedded_text,
     filename,
+    var_lab,
     variable_key=None,              # Auto-generate if None
     cache_manager=None,             # Use global if None
     force_recalc=False,
@@ -804,6 +802,7 @@ def step_5_cluster(
     Args:
         embedded_text: List of EmbeddingsModel instances from step 4
         filename: SPSS filename for caching
+        var_lab: Survey question text (for context)
         variable_key: Cache key (auto-generated if None)
         cache_manager: CacheManager instance (uses global if None)
         force_recalc: Force recalculation bypassing cache
@@ -897,7 +896,7 @@ def step_5_cluster(
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
         print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
 
         # Optional Streamlit success message
@@ -1116,7 +1115,7 @@ def step_6_generate_codebook(
                 source_variable=var_name
             )
 
-        cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
         # Pass reasoning results if available (either from cache or newly generated)
         reasoning_for_display = None
@@ -1129,7 +1128,7 @@ def step_6_generate_codebook(
         if 'results' in locals() and results:
             try:
                 codebook_reasoning = results
-                cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time)
+                cache_manager.save_to_cache([codebook_reasoning], filename, f"{step_name}_reasoning", variable_key, elapsed_time, var_lab=var_lab)
                 print("Cached codebook reasoning for export consistency")
             except Exception as e:
                 print(f"WARNING: Failed to cache reasoning results: {e}")
@@ -1260,7 +1259,7 @@ def step_7_refine_codebook(
 
             # Cache results
             elapsed_time = time.time() - start_time
-            cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time)
+            cache_manager.save_to_cache([refinement_results], filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
             if verbose:
                 print_refinement_report(refinement_results)
@@ -1343,7 +1342,7 @@ def step_7_refine_codebook(
     # Cache theme_enriched_codebook separately (following step 6 pattern)
     if theme_enriched_codebook:
         try:
-            cache_manager.save_to_cache([theme_enriched_codebook], filename, f"{step_name}_enriched", variable_key, elapsed_time)
+            cache_manager.save_to_cache([theme_enriched_codebook], filename, f"{step_name}_enriched", variable_key, elapsed_time, var_lab=var_lab)
             if verbose:
                 print("Cached theme enriched codebook for step 8 access")
         except Exception as e:
@@ -1492,7 +1491,7 @@ def step_8_assign_codes(
         end_time = time.time()
         elapsed_time = end_time - start_time
 
-        cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time)
+        cache_manager.save_to_cache(code_assigned_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
         print(f"\n'Direct code assignment' completed in {elapsed_time:.2f} seconds.\n")
 
         # Optional Streamlit success message
@@ -1754,7 +1753,8 @@ if __name__ == '__main__':
         variable_key=variable_key,
         cache_manager=cache_manager,
         force_recalc=force_recalc,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        var_lab = var_lab
     )
     check_execution_stop(5)
     
