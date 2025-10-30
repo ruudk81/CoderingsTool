@@ -160,7 +160,7 @@ class ModelConfig:
         "gpt-4.1": "chat",
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
-        "gpt-5-chat": "chat",
+        #"gpt-5-chat": "chat",
         "gpt-5-chat-latest": "chat",
         
         # GPT-5 family (reasoning models)
@@ -191,10 +191,10 @@ class ModelConfig:
 
     # Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-5-chat"      
-    candidate_selection_model: str = "gpt-5-chat"           
-    code_generation_model: str ="gpt-5-chat"               
-    validation_model: str = "gpt-5-chat"
+    thematic_summary_model: str = "gpt-5-chat-latest"      
+    candidate_selection_model: str = "gpt-5-chat-latest"           
+    code_generation_model: str ="gpt-5-chat-latest"               
+    validation_model: str = "gpt-5-chat-latest"
     
     # Codebook refinement
     codebook_refinement_model: str = "gpt-5" 

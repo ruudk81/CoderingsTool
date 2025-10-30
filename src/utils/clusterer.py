@@ -10,7 +10,6 @@ from hdbscan.validity import validity_index
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize #StandardScaler
 from sklearn.metrics import silhouette_score, silhouette_samples
-#from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score
 
@@ -42,6 +41,13 @@ class ClusterSummary:
     n_clusters: int
     noise_rate: float
     median_cluster_size: int
+
+@dataclass
+class HParams:
+    min_samples: int
+    min_cluster_size: int
+    factor: float
+    notes: str
 
 class ResultMapper(BaseModel):
     respondent_id: Any
@@ -88,11 +94,14 @@ class Clusterer:
         self._original_input_list = input_list
         self.output_list: List[ResultMapper] = []
         self._populate_from_input_list(input_list)
+        self.random_state = 42
+        self.rs = np.random.default_rng(42)
         self.DBCV_D = ClusteringConfig.DBCV_D  # safe for DBCV (avoid overflow)
         self.enable_dbcv = self.clustering_config.enable_dbcv
         self.enable_meanp  = self.clustering_config.enable_meanp
         self.centroid_distance = self.clustering_config.centroid_distance
         self.CLUSTER_METRIC = ClusteringConfig.CLUSTER_METRIC
+        
       
     def _populate_from_input_list(self, input_list: List[EmbeddingsModel]) -> None:
         self.output_list = []
@@ -124,28 +133,50 @@ class Clusterer:
         return embeddings
     
     def _umap_embed(self, X: np.ndarray) -> np.ndarray:
-        with warnings.catch_warnings(): # Suppress UMAP n_jobs warning when using random_state
-            warnings.filterwarnings("ignore", message="n_jobs value .* overridden to 1 by setting random_state", category=UserWarning, module="umap")
-            
+        with warnings.catch_warnings():  # Suppress UMAP n_jobs warning when using random_state
+            warnings.filterwarnings("ignore", message="n_jobs value .* overridden to 1 by setting random_state", category=UserWarning, module="umap",)
+    
             if self.umap_config.parallel_jobs:
                 random_state = None
                 transform_seed = None
+                n_jobs = -1  # use all cores; UMAP may cap/override
             else:
                 random_state = 42
                 transform_seed = 42
-            
+                n_jobs = 1
+    
+            n = X.shape[0]
+            if n <= 100:
+                n_components = 8
+                n_neighbors  = 8
+                min_dist     = 0.00
+            elif n < 2000:
+                n_components = 10
+                n_neighbors  = 15
+                min_dist     = 0.05
+            else:
+                n_components = 12
+                n_neighbors  = 30
+                min_dist     = 0.10
+    
+            n_neighbors = int(min(max(2, n_neighbors), max(2, n - 1)))
+    
+            X = np.asarray(X, dtype=np.float32)
+         
             umap_params = {
-                    'n_neighbors': self.umap_config.n_neighbors,
-                    'n_components': self.umap_config.n_components,
-                    'min_dist': self.umap_config.min_dist,
-                    'metric': self.umap_config.metric,
-                    'n_epochs': self.umap_config.n_epochs,
-                    'n_jobs': self.umap_config.parallel_jobs,  # Use multiple cores if true, but default is false, because of random state
-                    'low_memory': self.umap_config.low_memory,
-                    'verbose': False,
-                    'random_state': random_state, #only if parallel is false
-                    'transform_seed': transform_seed
-                    }
+                "n_neighbors": n_neighbors,
+                "n_components": n_components,
+                "min_dist": float(min_dist),
+                "metric": self.umap_config.metric, 
+                "n_epochs": self.umap_config.n_epochs,
+                "n_jobs": n_jobs,              
+                "low_memory": self.umap_config.low_memory,
+                "verbose": False,
+                "random_state": random_state,   
+                "transform_seed": transform_seed,
+                "init": "random",
+            }
+    
             umap = UMAP(**umap_params)
             U = umap.fit_transform(X).astype(np.float32, copy=False)
             return U
@@ -481,110 +512,253 @@ class Clusterer:
     
         return np.nan_to_num(y, nan=0.5, posinf=1.0, neginf=0.0)
 
+    def _structure_factor_from_space(self, U: np.ndarray, subsample: int = 3000, knn_k: int = 15) -> tuple[float, str]:
+        """
+        Data-driven scaling factor from the actual embedding space U.
+        factor < 1 -> go smaller/finer; factor > 1 -> go larger/coarser.
+        Uses q90 of pairwise cosine similarity and CV of kNN distances.
+        """
+        rs = self.rs 
+        X = U
+        n = X.shape[0]
     
-    def _auto_hdbscan_grid(self, U: np.ndarray) -> Tuple[HDBSCAN, np.ndarray, ClusterSummary]:
-        
-        n = U.shape[0]
+        # L2-normalize so dot product ≈ cosine on U
+        Xn = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+        Xn = Xn.astype(np.float32, copy=False)
+    
+        # Subsample for diagnostics speed
+        if n > subsample:
+            idx = rs.choice(n, subsample, replace=False)
+            Xsub = Xn[idx]
+        else:
+            Xsub = Xn
+    
+        m = min(Xsub.shape[0], 2000)
+        idy = rs.choice(Xsub.shape[0], m, replace=False)
+        Y = Xsub[idy]
+    
+        # q90 cosine similarity
+        S = Y @ Y.T
+        tri = S[np.triu_indices_from(S, k=1)]
+        q90 = float(np.quantile(tri, 0.90))
+    
+        # kNN distances (1 - cosine)
+        D = 1.0 - (Xsub @ Xsub.T)
+        np.fill_diagonal(D, np.inf)
+        knn_k = int(max(5, min(knn_k, max(5, Xsub.shape[0] - 1))))
+        knn_d = np.partition(D, knn_k, axis=1)[:, :knn_k]
+        kd_mean = float(np.mean(knn_d))
+        kd_std  = float(np.std(knn_d))
+        kd_cv   = float(kd_std / (kd_mean + 1e-12))
+    
+        # Map diagnostics -> factor
+        f = 1.0
+        notes = [f"Cosine similarity: q90={q90:.2f}", f"Coefficient of variation ={kd_cv:.2f}"]
+    
+        # Dense space → smaller params; Sparse → larger
+        if q90 >= 0.65:   f *= 0.80; notes.append("dense ×0.80")
+        elif q90 < 0.50:  f *= 1.20; notes.append("sparse ×1.20")
+        else:             notes.append("moderate ×1.00")
+    
+        # Heterogeneous densities → preserve tight islands
+        if kd_cv >= 0.60: f *= 0.85; notes.append("var.density ×0.85")
+        elif kd_cv <= 0.30: f *= 1.10; notes.append("uniform ×1.10")
+    
+        f = float(np.clip(f, 0.50, 1.50))
+        notes.append(f"factor={f:.2f}")
+        return f, "; ".join(notes)
+    
+    
+    def _baseline_by_n(self, n: int) -> tuple[int, int, str]:
+        # min_samples (piecewise)
+        if n <= 100:
+            ms = int(np.ceil(0.05 * n))
+        elif n < 500:
+            ms = int(np.ceil(max(np.log(n), 0.02 * n, 0.40 * np.sqrt(n))))
+        else:
+            ms = int(np.ceil(max(np.log(n), 0.01 * n, 0.50 * np.sqrt(n))))
+    
+        # min_cluster_size ladder (your preference)
+        if n <= 500:
+            mcs = int(np.ceil(0.01 * n))       # 1%
+            ladder = "1%"
+        elif n < 2000:
+            mcs = int(np.ceil(0.015 * n))      # 1.5%
+            ladder = "1.5%"
+        else:
+            mcs = int(np.ceil(0.02 * n))       # 2%
+            ladder = "2%"
 
-        mcs = int(np.clip(np.ceil(np.max([np.log(n), 0.02*n, 0.5*np.sqrt(n)])), 2, n))
-        ms  = int(np.clip(np.ceil(np.max([np.log(n), 0.5*mcs])), 1, mcs))
-        
-        ms_grid  = sorted({int(np.clip(f * ms,  1, mcs)) for f in [0.8, 1.0, 1.2]})
-        
+        ms = min(ms, mcs)          
+    
+        return ms, mcs, f"baseline(ms={ms}, mcs={mcs}, ladder={ladder})"
+    
+    
+    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = 5, max_mcs: int = 250) -> tuple[int, int, str]:
+        """
+        A → B: structure sets direction (factor), size sets scale (baseline).
+        """
+        f, notes_a = self._structure_factor_from_space(U)
+        ms0, mcs0, notes_b = self._baseline_by_n(U.shape[0])
+    
+        ms  = max(min_ms, int(np.clip(int(round(ms0 * f)), min_ms, U.shape[0])))
+        mcs = int(np.clip(int(round(mcs0 * f)), min_mcs, max_mcs))
+    
+        notes = f"[A] {notes_a}; [B] {notes_b}; → scaled(ms={ms}, mcs={mcs})"
+        return ms, mcs, notes
+    
+    
+    @staticmethod
+    def _apply_threshold_rule(ms: int, mcs: int, dbcv: Optional[float], noise: float,
+                              min_ms: int = 2, min_mcs: int = 5,
+                              dbcv_cut: float = 0.50, noise_cut: float = 0.20) -> tuple[int, int, str, bool]:
+        """
+        If noise > 20% OR (DBCV available and < 0.50): halve ms and mcs. Floors applied.
+        Returns (new_ms, new_mcs, note, changed_flag).
+        """
+        trigger = False
+        note_parts = []
+        if noise is not None and noise > noise_cut:
+            trigger = True
+            note_parts.append(f"noise {noise:.2f}>{noise_cut:.2f}")
+        if (dbcv is not None) and (dbcv < dbcv_cut):
+            trigger = True
+            note_parts.append(f"dbcv {dbcv:.2f}<{dbcv_cut:.2f}")
+    
+        if trigger:
+            ms_new  = max(min_ms, int(np.ceil(0.5 * ms)))
+            mcs_new = max(min_mcs, int(np.ceil(0.5 * mcs)))
+            note_parts.append(f"halve→ ms={ms_new}, mcs={mcs_new}")
+            return ms_new, mcs_new, "; ".join(note_parts), True
+    
+        return ms, mcs, "no change", False
+    
+
+    def _auto_hdbscan_grid(self, U: np.ndarray):
+
+        # Get structure-scaled baseline
+        ms, mcs, notes = self._suggest_params(U)
+        self.verbose_reporter.stat_line(f"Param suggestion: {notes}")
+    
+        # Small micro-grid around ms (keep mcs fixed for now)
+        ms_grid = sorted({int(np.clip(f * ms, 1, mcs)) for f in [0.8, 1.0, 1.2]})
+    
+        # Round 0: evaluate starters
         results = self._grid_search(U, ms_grid, mcs)
-               
-        # 1) scores
-        sil  = [r["metrics"].get("sil", np.nan) for r in results]
-        db   = [r["metrics"].get("DB",  np.nan) for r in results]
-        stab = [r["metrics"].get("stab", np.nan) for r in results]    
-        
-        sil = np.clip(sil, 0, 1) 
-        db =  1.0 - np.clip(db, 0, 1)    
-        stab = np.asarray(stab, float)
-        
-        geometry     = 0.5*sil + 0.5 *db
-        stability    = stab 
-        base_score   = (geometry + stability) /2
-
-        # 2) penalties
-        noise      = np.array([r["metrics"].get("noise_rate", np.nan) for r in results], dtype=float)
-        k          = np.array([r["metrics"].get("n_clusters", np.nan) for r in results], dtype=float)
-        k_n        = self._scale_metric01(np.sqrt(k))         
-        penalties   = (noise + .5*k_n)/2
-        
-        final_score = 1 + base_score - penalties
-   
-        for i, r in enumerate(results):
-            r["score"]           = float(final_score[i])
-            r["score_base"]      = float(base_score[i])
-            r["geometry"]        = float(geometry[i])
-            r["stability"]       = float(stability[i])
-            r["penalties"]       = float(penalties[i]) 
-            r["noise"]           = float(noise[i]) 
-            r["k"]               = float(k_n[i]) 
-      
-      
         if not results:
             raise RuntimeError("All clustering configurations failed. No valid results to evaluate.")
-        
+    
+        # Score & rank (reuse your logic)
+        sil  = np.clip([r["metrics"].get("sil", np.nan) for r in results], 0, 1)
+        db   = [r["metrics"].get("DB",  np.nan) for r in results]; db = 1.0 - np.clip(db, 0, 1)
+        stab = np.asarray([r["metrics"].get("stab", np.nan) for r in results], float)
+    
+        geometry   = 0.5 * sil + 0.5 * db
+        stability  = stab
+        base_score = (geometry + stability) / 2
+    
+        noise = np.array([r["metrics"].get("noise_rate", np.nan) for r in results], dtype=float)
+        k     = np.array([r["metrics"].get("n_clusters", np.nan) for r in results], dtype=float)
+        k_n   = self._scale_metric01(np.sqrt(k))
+        penalties = (noise + 0.5 * k_n) / 2
+    
+        final_score = 1 + base_score - penalties
+        for i, r in enumerate(results):
+            r["score"] = float(final_score[i])
+            r["score_base"] = float(base_score[i])
+            r["geometry"] = float(geometry[i])
+            r["stability"] = float(stability[i])
+            r["penalties"] = float(penalties[i])
+            r["noise"] = float(noise[i])
+            r["k"] = float(k_n[i])
+    
         results.sort(key=lambda r: r["score"], reverse=True)
-        best_result = results[0]
-        
-        # Report all results
+        best = results[0]
+    
+        # Verbose reporting (kept from your original)
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Complete evaluation results (sorted by score):")
-        
-        for i, result in enumerate(results):
-            metrics = result["metrics"]
+        for r in results:
             self.verbose_reporter.stat_line(
-                f"mcs={result['mcs']:>3} | " 
-                f"ms={result['ms']:>3} | "
-                f"clusters={metrics.get('n_clusters', -1):>3} | "
-                f"score={result['score']:.3f} | "
-                f"score_base={result['score_base']:.3f} | "
-                f"penalties={result['penalties']:.3f}")
-            
-        self.verbose_reporter.empty_line()    
-        for i, result in enumerate(results):
-            metrics = result["metrics"]
-            self.verbose_reporter.stat_line(
-              f"mcs={result['mcs']:>3} | "  
-              f"ms={result['ms']:>3} | "  
-              f"geom={result['geometry']:.3f} | "
-              f"stab={result['stability']:.3f}")
-            
-        self.verbose_reporter.empty_line()    
-        for i, result in enumerate(results):
-            metrics = result["metrics"]
-            self.verbose_reporter.stat_line(
-              f"mcs={result['mcs']:>3} | "  
-              f"ms={result['ms']:>3} | "  
-              f"k={result['k']:.3f} | "
-              f"noise={result.get('noise', float('nan')):.3f}")
-       
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | clusters={r['metrics'].get('n_clusters', -1):>3} | "
+                f"score={r['score']:.3f} | score_base={r['score_base']:.3f} | penalties={r['penalties']:.3f}"
+            )
         self.verbose_reporter.empty_line()
-        for i, result in enumerate(results):
-            metrics = result["metrics"]
-            dbcv_str = '' if metrics['dbcv'] is None else f"DBCV={metrics['dbcv']:>6.3f} | "
-            meanp_str = '' if metrics['meanp'] is None else f"meanp={metrics.get('meanp', float('nan')):.3f} | "
-            cdist = '' if metrics['cdist'] is None else  f"cdist={metrics.get('cdist', float('nan')):.3f} | "
-            cdist5 = '' if metrics['cdist5'] is None else   f"cdist5={metrics.get('cdist5', float('nan')):.3f} | "
+        for r in results:
+            self.verbose_reporter.stat_line(
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | geom={r['geometry']:.3f} | stab={r['stability']:.3f}"
+            )
+        self.verbose_reporter.empty_line()
+        for r in results:
+            self.verbose_reporter.stat_line(
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k={r['k']:.3f} | noise={r['noise']:.3f}"
+            )
+        self.verbose_reporter.empty_line()
+        for r in results:
+            m = r["metrics"]
+            dbcv_str = '' if m['dbcv'] is None else f"DBCV={m['dbcv']:>6.3f} | "
+            meanp_str = '' if m['meanp'] is None else f"meanp={m.get('meanp', float('nan')):.3f} | "
+            cdist = '' if m['cdist'] is None else  f"cdist={m.get('cdist', float('nan')):.3f} | "
+            cdist5 = '' if m['cdist5'] is None else f"cdist5={m.get('cdist5', float('nan')):.3f} | "
+            self.verbose_reporter.stat_line(
+                f"mcs={r['mcs']:>3}: | ms={r['ms']:>3} | {meanp_str}{dbcv_str}"
+                f"Sil={m.get('sil', float('nan')):.3f} | DB={m.get('DB', float('nan')):.3f} | {cdist}{cdist5}"
+            )
+    
+        # --- Polish loop: halve if noise/DBCV trigger; re-eval up to 3 rounds
+        ms_best, mcs_best = best["ms"], best["mcs"]
+        dbcv0 = best["metrics"].get("dbcv", None)
+        noise0 = best["metrics"].get("noise_rate", np.nan)
+    
+        rounds = 3
+        changed = True
+        note_all = []
+        while rounds > 0 and changed:
+            rounds -= 1
+            ms_new, mcs_new, note, changed = self._apply_threshold_rule(
+                ms_best, mcs_best,
+                dbcv=dbcv0, noise=noise0,
+                min_ms=2, min_mcs=5, dbcv_cut=0.50, noise_cut=0.20
+            )
+            note_all.append(note)
+            if not changed:
+                break
+    
+            # re-eval a micro-grid around the new ms
+            ms_grid = sorted({int(np.clip(f * ms_new, 1, mcs_new)) for f in [0.8, 1.0, 1.2]})
+            results2 = self._grid_search(U, ms_grid, mcs_new)
+            if not results2:
+                break
+            # re-score same as above
+            sil  = np.clip([r["metrics"].get("sil", np.nan) for r in results2], 0, 1)
+            db   = [r["metrics"].get("DB",  np.nan) for r in results2]; db = 1.0 - np.clip(db, 0, 1)
+            stab = np.asarray([r["metrics"].get("stab", np.nan) for r in results2], float)
+            geometry   = 0.5 * sil + 0.5 * db
+            stability  = stab
+            base_score = (geometry + stability) / 2
+            noise = np.array([r["metrics"].get("noise_rate", np.nan) for r in results2], dtype=float)
+            k     = np.array([r["metrics"].get("n_clusters", np.nan) for r in results2], dtype=float)
+            k_n   = self._scale_metric01(np.sqrt(k))
+            penalties = (noise + 0.5 * k_n) / 2
+            final_score = 1 + base_score - penalties
+            for i, r in enumerate(results2):
+                r["score"] = float(final_score[i])
+            results2.sort(key=lambda r: r["score"], reverse=True)
+            best2 = results2[0]
+    
+            # update best
+            best = best2
+            ms_best, mcs_best = best2["ms"], best2["mcs"]
+            dbcv0 = best2["metrics"].get("dbcv", None)
+            noise0 = best2["metrics"].get("noise_rate", np.nan)
+    
+        if note_all:
+            self.verbose_reporter.stat_line("Polish loop decisions: " + " | ".join(note_all))
+    
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line(f"🏆 Best configuration: min_samples={best['ms']}, min_cluster_size={best['mcs']}")
+        return best["hdbscan_model"], best["labels"], best["summary"]
 
-            self.verbose_reporter.stat_line(
-                f"mcs={result['mcs']:>3}: |" 
-                f"ms={result['ms']:>3} | "  
-                f"{meanp_str}"
-                f"{dbcv_str}"
-                f"Sil={metrics.get('sil', float('nan')):.3f} | "
-                f"DB={metrics.get('DB', float('nan')):.3f} | "
-                f"{cdist}"
-                f"{cdist5}")
-        
-        self.verbose_reporter.empty_line()
-        self.verbose_reporter.stat_line(f"🏆 Best configuration: min sample size ={best_result['summary'].min_samples}")
-        
-        return best_result["hdbscan_model"], best_result["labels"], best_result["summary"]
-  
     def run(self):
         """Enhanced clustering pipeline with automatic optimization"""
         # Display input statistics
@@ -592,7 +766,7 @@ class Clusterer:
         embeddings = np.array([item.idea_embedding for item in self.output_list])
         self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
         
-        # === Step 1: PCA preprocessing ===
+        # PCA Reduction, if applicable
         self.verbose_reporter.empty_line()
        
         if embeddings.shape[0] > 10_000:
@@ -606,14 +780,14 @@ class Clusterer:
             self.verbose_reporter.stat_line("Step 1 Skipped: NO PCA dimensionality reduction")
             pca_embeddings = embeddings
             
-        # L2-normalize rows so cosine UMAP works properly
+        # L2-normalization 
         L2_embeddings = normalize(pca_embeddings, norm="l2", copy=False)
 
-        # Store PCA embeddings
+        # Store normalized embeddings
         for item, pca_embed in zip(self.output_list, L2_embeddings):
             item.pca_embedding = pca_embed
         
-        # === Step 2: UMAP embedding ===
+        # UMAP reduction 
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Step 2: UMAP embedding...")
         self.verbose_reporter.stat_line(f"Configuration: {self.umap_config.n_neighbors} neighbors, {self.umap_config.n_components} components")
@@ -626,11 +800,10 @@ class Clusterer:
         # Store UMAP embeddings 
         for item, umap_embed in zip(self.output_list, umap_embeddings):
             item.umap_embedding = umap_embed
-        
-        # Use UMAP embeddings directly (no normalization needed for euclidean clustering)
+
         U = umap_embeddings
         
-        # === Step 3: Automatic HDBSCAN parameter optimization ===
+        # HDBSCAN 
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Step 3: Finding optimal clustering parameters...")
         
@@ -643,31 +816,16 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"  Clusters: {summary.n_clusters}")
         self.verbose_reporter.stat_line(f"  Noise rate: {summary.noise_rate:.1%}")
         self.verbose_reporter.stat_line(f"  Median cluster size: {summary.median_cluster_size}")
-       
-        # === Step 4: Cluster similarity analysis ===
-        # self.verbose_reporter.empty_line()
-        # self._analyze_cluster_similarity(embeddings, labels)
-        
-        # === Step 5: Optional cluster merging ===
-        # if self.hdbscan_config.merge_similar_clusters:
-        #     self.verbose_reporter.empty_line()
-        #     self.verbose_reporter.stat_line("Step 5: Merging similar clusters...")
-        #     labels = self._merge_clusters_by_similarity(
-        #         umap_embeddings,
-        #         labels,
-        #         sim_threshold=self.hdbscan_config.merge_similarity_threshold
-        #     )
-        
-        # === Step 6: Assign final labels to items ===
+
+        # Assign labels to items 
         for item, label in zip(self.output_list, labels):
             item.initial_idea_cluster = int(label)
         
-        # === Step 7: Calculate final statistics ===
+        # Processing stats
         unique_labels = set(labels)
         num_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
         noise_points = list(labels).count(-1)
         
-        # Calculate cluster size statistics
         cluster_sizes = {}
         for label in labels:
             if label != -1:
@@ -681,7 +839,7 @@ class Clusterer:
             median = sizes_sorted[len(sizes_sorted)//2]
             q3 = sizes_sorted[3*len(sizes_sorted)//4]
             
-            # Report final statistics
+            # Report statistics
             self.verbose_reporter.empty_line()
             self.verbose_reporter.section_header("FINAL CLUSTERING RESULTS")
             self.verbose_reporter.stat_line(f"Total clusters: {num_clusters}")
@@ -695,10 +853,10 @@ class Clusterer:
             for cluster_id, size in top_clusters:
                 self.verbose_reporter.stat_line(f"  Cluster {cluster_id}: {size} ideas")
         
-        # === Step 8: Display sample clusters ===
+        # Display sample clusters 
         self._display_sample_clusters(labels, cluster_sizes)
         
-        # Complete the step
+        # Complete 
         self.verbose_reporter.step_complete("Enhanced clustering completed", emoji="✅")
 
     def _display_sample_clusters(self, labels: np.ndarray, cluster_sizes: Dict[int, int]) -> None:

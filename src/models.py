@@ -77,6 +77,7 @@ class RefinedSubcode(BaseModel):
     id: str  # Original code ID(s) - multiple if merged (e.g., "1,2,3")
     code: str
     description: str
+    category: str = ""  # Empty string when code is directly under theme; category name for 3-level hierarchy
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookCategory(BaseModel):
@@ -116,6 +117,8 @@ class ThemeEnrichedCodebookEntry(CodebookEntry):
     definition: Optional[str] = None
     theme: Optional[str] = None
     theme_description: Optional[str] = None
+    category: str = ""  # Empty string for 2-level hierarchy; category name for 3-level hierarchy
+    category_description: str = ""  # Category description (empty for 2-level)
     source_cluster: Optional[Union[int, str]] = None  
     
 

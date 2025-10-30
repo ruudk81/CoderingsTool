@@ -1,6 +1,6 @@
 
 # =============================================================================
-# STEP 2: SPELL CHECKING
+# STEP 1: SPELL CHECKING
 # =============================================================================
 
 SPELLCHECK_INSTRUCTIONS = """
@@ -54,7 +54,7 @@ Begin processing the correction tasks now, and provide your output in the specif
 """
 
 # =============================================================================
-# STEP 3: QUALITY FILTERING 
+# STEP 2: QUALITY FILTERING 
 # =============================================================================
 
 GRADER_INSTRUCTIONS = """
@@ -128,7 +128,7 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 """
 
 # =============================================================================
-# STEP 4: IDEA EXTRACTION  
+# STEP 3: IDEA EXTRACTION  
 # =============================================================================
 
 EXTRACT_SUBJECT = """
@@ -334,7 +334,7 @@ Return ONLY the JSON array. Keep field names in English; write values in {langua
 
 
 # =============================================================================
-# STEP 7:  CODEBOOK GENERATION : speculative codes
+# Speculative codes
 # =============================================================================
 
 INITIAL_CODEBOOK_CREATION_PROMPT = """
@@ -387,7 +387,7 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 """
 
 # =============================================================================
-# STEP 7:  CODEBOOK GENERATION : 4 promt chain
+# STEP 6:  CODEBOOK GENERATION : 4 promt chain
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
@@ -521,35 +521,19 @@ Cosine captures what matters in qualitative coding: whether two descriptions ref
 </cosine_similarity>
 
 ---
+B. **Decision Guidelines (STRICT)**
+<decision_guidelines>
+Make your decision strictly based on cosine similarity — no exceptions:
 
-B. **Decision Thresholds**
-<decision_thresholds>
-Make your decision based on cosine similarity and qualitative judgment:
-
-1. **USE** — Cosine ≥ 0.88
-    - Theme and code are semantically equivalent
-    - Meaning is fully captured; minor wording differences are acceptable
-    - No significant conceptual gaps exist
-
-    (Approximately ≥85% semantic overlap)
-
-2. **MODIFY** — 0.75 ≤ Cosine < 0.88
-    - Theme and code are semantically similar but not identical
-    - Code needs refinement for better alignment:
-       • Broaden scope if code is too narrow for the theme
-       • Narrow scope if code is too broad for the theme
-       • Rephrase for clarity or terminology consistency
-    - Minor adjustments would achieve full coverage
-
-    (Approximately 70–85% semantic overlap)
-
-3. **CREATE** — Cosine < 0.75
-    - Theme introduces distinct concepts not captured by existing codes
-    - Insufficient semantic overlap for reuse or modification
-    - A new code is needed to capture the theme's unique meaning
-
-    (Approximately <70% semantic overlap)
-</decision_thresholds>
+   1. Pick the single best match = candidate with the highest cosine.
+   2. Apply guidelines:
+       - USE if cosine ≥ 0.88
+       - MODIFY if 0.75 ≤ cosine < 0.88
+       - CREATE if cosine < 0.75
+   3. Final consistency check before output:
+       - If decision=MODIFY and cosine<0.75 ⇒ set to CREATE
+       - If decision=USE and cosine<0.88 ⇒ set to MODIFY
+</decision_guidelines>
 
 ---
 
@@ -602,9 +586,10 @@ Output schema:
     ],
     "decision": "USE | MODIFY | CREATE",
     "source_code": "Exact candidate code name if use/modify, or null if create",
-    "justification": "State the estimated overlap (e.g., 82%) and which rule applied. Reference the cosine score."
+    "justification": "Justify decision by referencing "best_cosine": <number> and "rule_applied": "USE(≥0.88)" | "MODIFY(0.75–0.88)" | "CREATE(<0.75)".
   }}
 }}
+
 
 Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation.
@@ -834,7 +819,7 @@ Critical remarks:
 """
 
 # =============================================================================
-# STEP 8 THEME ORGANIZATION WITH REASONING MODELS
+# STEP 7 THEME ORGANIZATION WITH REASONING MODELS
 # =============================================================================
 
 CODEBOOK_REFINEMENT_PROMPT = """
@@ -852,80 +837,66 @@ Raw descriptive codes to refine:
 </inputs>
 
 <critical_requirement>
-**PRESERVE ALL CODES**: You MUST preserve ALL codes from the input. Do not merge or collapse codes that represent distinct concepts. Every code in the input list must appear in your output.
+Preserve the *conceptual content* of all codes.
+- Do NOT remove or lose any unique ideas.
+- You MAY merge true duplicates or near-duplicates (semantically identical codes).
+- You MUST preserve contrasts or nuanced distinctions between different ideas.
 </critical_requirement>
 
 <guidance>
 A high-quality codebook must be:
-- **Code preservation**: ALL input codes appear in output (no merging or collapsing)
-- Non-redundant: No duplicate codes that restate the same idea in different words
-- Inherently distinct: codes within the same category differ in content, not just phrasing
-- Semantically differentiated: Wording for each code should be clearly different
-- Parsimonious: Use the fewest levels needed to organize codes clearly
-- Well-structured: Organize in a clear hierarchy (2-level or 3-level)
-- Each code has exactly one parent (no multi-parenting)
-- Consistently labeled: Short, uniform, action-oriented labels meaningful for: "{survey_question}"
+- Non-redundant: No duplicate codes that restate the same idea in different words.
+- Inherently distinct: Codes within the same category differ in content, not just phrasing.
+- Semantically differentiated: Wording for each code should be clearly different; minor overlap is acceptable.
+- Parsimonious: Use the fewest codes needed to cover the data comprehensively.
+- Well-structured: Organize in a clear hierarchy (2- or 3-level).
+- Each code has exactly one parent (no multi-parenting).
+- Consistently labeled: Use short, uniform, action-oriented labels meaningful for: "{survey_question}"
+
+When codes overlap semantically:
+- Merge near-duplicates into a single inclusive code that captures the shared idea.
+- Combine equivalent expressions (e.g., "Ziet Merk X als betrouwbaar" + "Ervaart betrouwbare dienstverlening" → "Betrouwbaarheid van Merk X").
+- **Preserve contrasts**: Keep separate codes that express different aspects, polarities, or evaluative tones.
+- Refine vague or overlapping codes so their scope and boundaries are clear.
 
 Structure options:
-1. **2-Level Hierarchy** (Theme → Codes):
-   Use when codes under a theme are distinct and don't naturally cluster further.
+1. **2-Level Hierarchy** (Theme → Codes)
    Example:
    - Theme: "Pricing"
      - Code: "Price transparency"
      - Code: "Value for money perception"
 
-2. **3-Level Hierarchy** (Theme → Category → Codes):
-   Use when multiple codes share a semantic superordinate concept.
+2. **3-Level Hierarchy** (Theme → Category → Codes)
    Example:
    - Theme: "Taste"
-     - Code: "Fresh taste" (directly under theme)
-     - Category: "Additives" (intermediate grouping)
+     - Code: "Fresh taste"
+     - Category: "Additives"
        - Code: "Salt concerns"
        - Code: "Sweetness preferences"
        - Code: "Herb usage"
 
 When to use 3 levels:
-- Multiple codes share a clear superordinate concept (e.g., "additives", "delivery methods", "payment types")
-- Codes would otherwise be merged/collapsed in 2-level structure
-- The category is semantically meaningful (not arbitrary)
-- Within a theme, you can MIX: some codes directly under theme, others under categories
-
-When codes overlap semantically:
-- Only merge true duplicates (identical meaning, different wording)
-- **Preserve contrasts**: Keep separate codes that reflect distinctive aspects
-- Use categories to group related codes WITHOUT collapsing them
+- Multiple codes share a clear superordinate concept (e.g., "additives", "delivery methods")
+- Codes would otherwise be merged but can instead be grouped
+- Categories must be semantically meaningful, not arbitrary
+- Mix allowed: some codes directly under theme, others in categories
 
 Labeling:
-- Prefer active, specific labels (e.g., "Seeks clearer instructions" over "Clarity")
-- Include brief definition/decision rule for each code
+- Prefer active, specific labels (e.g., “Seeks clearer instructions” over “Clarity”)
+- Include a short definition/decision rule (≤ 20 words)
 </guidance>
 
 <analysis_steps>
-1. Review all raw codes - count them and plan to preserve ALL.
-
-2. Identify true duplicates (identical meaning) - these can be merged.
-
-3. Construct main themes that represent broad domains.
-
-4. For each theme, decide structure:
-   - Do codes naturally group into semantic categories? → Use 3 levels
-   - Are codes distinct without further grouping? → Use 2 levels
-   - Mix allowed: some codes direct, others categorized
-
-5. Assign codes:
-   - Each code must represent ONE distinct concept
-   - Preserve ALL non-duplicate codes from input
-   - Use categories when semantic groupings exist
-
-6. Ensure consistent naming (≤ 8 words, active phrasing)
-
-7. Document in "analysis":
-   - How many codes preserved vs merged
-   - Why 2-level or 3-level structure was chosen per theme
-   - Which categories were created and why
+1. Review all raw codes and identify duplicates or near-duplicates.
+2. Merge only semantically equivalent items.
+3. Construct main themes (2–4 per dataset).
+4. Decide structure per theme (2- or 3-level).
+5. Assign codes: each unique idea → one code.
+6. Use concise, active phrasing.
+7. Provide rationale in analysis: what was merged, why, and how structure was chosen.
 </analysis_steps>
 
-Provide your response as a valid JSON dictionary using this exact structure:
+Output strictly as JSON:
 {{
   "analysis": "Provide your analysis in {language}: describe decisions, what was merged (if anything), how hierarchy was structured, why categories were or were not used.",
    "refined_codebook": [
@@ -947,11 +918,10 @@ Provide your response as a valid JSON dictionary using this exact structure:
         ]
       }}
     ]
-}}
-
+}}    
+    
 Critical requirements:
 - Output must be valid JSON only — no commentary before or after
-- PRESERVE ALL codes from input (unless true duplicates)
 - Use "category": "" for codes directly under theme (2-level)
 - Use "category": "Name" to group related codes (3-level)
 - Conduct analysis in {language}
@@ -1041,7 +1011,7 @@ Before submitting, verify that:
 """
 
 # =============================================================================
-# STEP 9: CODE ASSIGNMENT
+# STEP 8: CODE ASSIGNMENT
 # =============================================================================
 
 CODE_ASSIGNMENT_PROMPT = """
@@ -1061,40 +1031,26 @@ Idea Text: {idea_text}
 Now, review the 6 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
-
-Note:
-- Prioritize the CODE LABEL; Use the CODE DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </candidate_codes>
 
-IMPORTANT - Special Code Available:
-One of the codes above is "{misc_code_label}" - a catch-all code for responses that do not fit well with any specific code.
-Use "{misc_code_label}" when:
-- The confidence for the best-fitting specific code would be less than {misc_threshold} (below "Good" fit)
-- The response is too vague, ambiguous, or unrelated to be classified specifically
-- None of the specific codes adequately capture the core meaning of the response
-
-Prefer specific codes when there is a "Good" fit or better (confidence ≥ {misc_threshold}). Only use "{misc_code_label}" for weaker conceptual fits.
-
 Your goal is to select the single best fitting code for the response segment. Follow these steps:
-
 1. Carefully read and understand each candidate code's definition.
 2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
 3. Identify which code best captures the core concept expressed in the response.
-4. Evaluate if the best specific code has a "Good" fit (≥ {misc_threshold}) or if "{misc_code_label}" is more appropriate.
-5. Assign exactly one code based on semantic meaning and fit quality.
+4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
 
 When selecting the best fitting code:
 - Prioritize exact conceptual matches based on meaning.
 - Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
-- Use "{misc_code_label}" when the best specific code's fit quality is below {misc_threshold}.
+
 
 After selecting the code, rate the strength of the fit using this scale:
 - Excellent (0.90–1.00): Exact match — the idea uses the same language or concepts as the code definition, with no ambiguity or need for interpretation.
-- Very Good (0.80–0.89): Very strong fit — conceptually aligns and clearly supports the code with minimal nuance.
-- Good (0.60–0.79): Strong fit — covers the code’s core meaning, but may involve some rephrasing or interpretation.
-- Moderate (0.50–0.59): Somewhat related — a plausible fit that requires noticeable interpretation or reframing to align with the code.
-- Poor (0.3–0.49): Weak conceptual fit; a stretch, but arguably the closest option available.
-- Very Poor (0.0–0.29): Barely relevant; applied only due to lack of better alternatives.
+- Very Good (0.80–0.89): Very strong fit — conceptually aligns and clearly supports the code with minimal nuance or deviation.
+- Good (0.60–0.79): Clear but partial fit — the idea relates directly to the code, though some nuance, context, or wording differs from the definition.
+- Moderate (0.50–0.59): Partial or uncertain fit — the idea touches on similar concepts but lacks clarity, depth, or consistent alignment with the code.
+- Poor (0.30–0.49): Barely relevant — the connection to the code is weak or indirect, applied mainly due to lack of a better alternative.
+- Very Poor (0.00–0.29): Not relevant — the idea does not reflect the intent, meaning, or scope of the code.
 
 Provide your response in the following JSON format:
 <output_format>
