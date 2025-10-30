@@ -2883,6 +2883,191 @@ def show_theme_identification_page():
             except Exception as e:
                 st.error(f"Thema fout: {str(e)}" if lang == "nl" else f"Theme error: {str(e)}")
 
+    # ==================== LOAD COMPLETED STEP 7 DATA ====================
+    # Load theme_enriched_codebook from cache if step 7 is completed but data not in session
+    if is_step_completed(7) and 'theme_enriched_codebook' not in st.session_state.pipeline_results:
+        try:
+            # Generate variable_key
+            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+            is_merged = st.session_state.get('is_merged_variable', False)
+            sample_size = st.session_state.get('sample_size_config')
+            merge_config = st.session_state.get('merge_config')
+            variable_key = generate_enhanced_variable_key(
+                selected_variables,
+                is_merged=is_merged,
+                sample_size=sample_size,
+                merge_config=merge_config
+            )
+
+            cache_manager = _get_cache_manager()
+
+            # Load theme_enriched_codebook from cache
+            if cache_manager.is_cache_valid(st.session_state.filename, "codebook_refinement_enriched", variable_key):
+                codebook_list = _load_or_recover(
+                    st.session_state.filename,
+                    "codebook_refinement_enriched",
+                    variable_key,
+                    models.ThemeEnrichedCodebookModel
+                )
+
+                if codebook_list and len(codebook_list) > 0:
+                    st.session_state.pipeline_results['theme_enriched_codebook'] = codebook_list[0]
+        except Exception as e:
+            # Silent fail - not critical if we can't load for editing
+            pass
+
+    # ==================== BLOCK 6: CODEBOOK EDITING ====================
+    # Allow editing of the codebook after step 7 is completed
+    if is_step_completed(7) and 'theme_enriched_codebook' in st.session_state.pipeline_results:
+        with st.expander("✏️ " + ("Codebook Bewerken" if lang == "nl" else "Edit Codebook"), expanded=False):
+
+            # Instructions
+            st.info(
+                "**Instructies:**\n"
+                "- Bewerk codes, categorieën en thema's direct in de tabel\n"
+                "- Laat 'Category' leeg voor 2-niveau hiërarchie (Thema → Code)\n"
+                "- Vul 'Category' in voor 3-niveau hiërarchie (Thema → Categorie → Code)\n"
+                "- Gebruik + en − knoppen om rijen toe te voegen/verwijderen\n"
+                "- Klik 'Wijzigingen Opslaan' om wijzigingen toe te passen"
+                if lang == "nl" else
+                "**Instructions:**\n"
+                "- Edit codes, categories, and themes directly in the table\n"
+                "- Leave 'Category' empty for 2-level hierarchy (Theme → Code)\n"
+                "- Fill 'Category' for 3-level hierarchy (Theme → Category → Code)\n"
+                "- Use + and − buttons to add/remove rows\n"
+                "- Click 'Save Changes' to apply edits"
+            )
+
+            # Get current codebook
+            current_codebook = st.session_state.pipeline_results['theme_enriched_codebook']
+
+            # Flatten to DataFrame
+            df = flatten_codebook_to_dataframe(current_codebook)
+
+            # Display editable table
+            edited_df = st.data_editor(
+                df,
+                num_rows="dynamic",  # Allow add/delete rows
+                use_container_width=True,
+                column_config={
+                    "Theme": st.column_config.TextColumn(
+                        "Theme" if lang == "en" else "Thema",
+                        help="Top-level theme name" if lang == "en" else "Hoofdthema naam",
+                        required=True,
+                        max_chars=100
+                    ),
+                    "Category": st.column_config.TextColumn(
+                        "Category" if lang == "en" else "Categorie",
+                        help="Leave empty for 2-level hierarchy" if lang == "en" else "Leeg laten voor 2-niveau hiërarchie",
+                        required=False,
+                        max_chars=100
+                    ),
+                    "Code": st.column_config.TextColumn(
+                        "Code",
+                        help="Short code label" if lang == "en" else "Korte code label",
+                        required=True,
+                        max_chars=150
+                    ),
+                    "Definition": st.column_config.TextColumn(
+                        "Definition" if lang == "en" else "Definitie",
+                        help="Code description/decision rule" if lang == "en" else "Code beschrijving/beslisregel",
+                        required=True,
+                        max_chars=500
+                    ),
+                    "Theme_Description": st.column_config.TextColumn(
+                        "Theme Description" if lang == "en" else "Thema Beschrijving",
+                        help="Description of the theme" if lang == "en" else "Beschrijving van het thema",
+                        max_chars=500
+                    ),
+                    "Category_Description": st.column_config.TextColumn(
+                        "Category Description" if lang == "en" else "Categorie Beschrijving",
+                        help="Description of the category" if lang == "en" else "Beschrijving van de categorie",
+                        max_chars=500
+                    )
+                },
+                hide_index=True,
+                key="codebook_editor"
+            )
+
+            # Show changes summary
+            if not edited_df.equals(df):
+                st.warning("⚠️ " + (
+                    "Je hebt wijzigingen aangebracht. Klik 'Wijzigingen Opslaan' om deze toe te passen."
+                    if lang == "nl" else
+                    "You have made changes. Click 'Save Changes' to apply them."
+                ))
+
+            # Save and Reset buttons
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("💾 " + ("Wijzigingen Opslaan" if lang == "nl" else "Save Changes"),
+                            type="primary",
+                            use_container_width=True):
+                    # Validate
+                    is_valid, errors = validate_codebook_dataframe(edited_df, lang)
+
+                    if not is_valid:
+                        st.error("❌ " + ("Validatie fouten:" if lang == "nl" else "Validation errors:") + "\n" + "\n".join(f"- {err}" for err in errors))
+                    else:
+                        # Reconstruct codebook
+                        try:
+                            updated_codebook = reconstruct_codebook_from_dataframe(
+                                edited_df,
+                                current_codebook
+                            )
+
+                            # Update session state
+                            st.session_state.pipeline_results['theme_enriched_codebook'] = updated_codebook
+
+                            # Invalidate downstream steps (8 and 9 need to re-run)
+                            invalidate_from_step(8)
+
+                            # Re-cache the edited codebook
+                            cache_manager = _get_cache_manager()
+                            selected_variables = st.session_state.get('selected_variables_config', [st.session_state.selected_variable])
+                            is_merged = st.session_state.get('is_merged_variable', False)
+                            sample_size = st.session_state.get('sample_size_config')
+                            merge_config = st.session_state.get('merge_config')
+                            variable_key = generate_enhanced_variable_key(
+                                selected_variables,
+                                is_merged=is_merged,
+                                sample_size=sample_size,
+                                merge_config=merge_config
+                            )
+
+                            if variable_key:
+                                cache_manager.save_to_cache(
+                                    [updated_codebook],
+                                    st.session_state.filename,
+                                    "codebook_refinement_enriched",
+                                    variable_key,
+                                    0,  # elapsed_time
+                                    var_lab=st.session_state.get('var_lab', '')
+                                )
+
+                            # Update theme stats
+                            num_themes = len(updated_codebook.themes_summary) if updated_codebook.themes_summary else 0
+                            num_codes = len(updated_codebook.codes) if hasattr(updated_codebook, 'codes') else 0
+                            st.session_state['theme_stats'] = {
+                                'num_themes': num_themes,
+                                'num_codes': num_codes
+                            }
+
+                            st.success("✅ " + (
+                                "Codebook succesvol bijgewerkt! Voer stap 8 opnieuw uit om codes toe te wijzen met het bijgewerkte codebook."
+                                if lang == "nl" else
+                                "Codebook updated successfully! Re-run step 8 to assign codes using the updated codebook."
+                            ))
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"❌ " + ("Fout bij opslaan van wijzigingen:" if lang == "nl" else "Error saving changes:") + f" {str(e)}")
+
+            with col2:
+                if st.button("🔄 " + ("Reset naar Origineel" if lang == "nl" else "Reset to Original"),
+                            use_container_width=False):
+                    st.rerun()
+
 def show_code_assignment_page():
     """
     Step 8: Code Assignment
@@ -3511,7 +3696,7 @@ def show_filtered_samples(quality_filtered_text, n_samples=10):
         return
 
     # Filter out empty strings (code 99999998) from display while keeping them in statistics
-    filtered_text = [item for item in quality_filtered_text if item.quality_filter and item.quality_filter_code != 99999998]
+    filtered_text = [item for item in quality_filtered_text if item.quality_filter and item.quality_filter_code == 99999999]
 
     if not filtered_text:
         st.write(f"{'Geen gefilterde data om weer te geven' if st.session_state.language == 'nl' else 'No filtered data to display'}")
@@ -3958,9 +4143,9 @@ def show_codebook_samples(codebook_reasoning):
     # Section 3: Cluster Analysis (collapsed by default)
     analysis = cluster_data['analysis']
     if analysis['text']:
-        # Format analysis text with line breaks before sentences containing colons
+        # Format analysis text with line breaks before numbered list items (1. 2. 3. etc.)
         analysis_text = html.escape(str(analysis['text']))
-        analysis_formatted = re.sub(r'\. ([A-Z0-9][^.]*:)', r'.<br>\1', analysis_text)
+        analysis_formatted = re.sub(r' (\d+\.)', r'<br>\1', analysis_text)
 
         st.markdown(f"""
         <details style="margin-bottom:12px;">
@@ -4219,7 +4404,175 @@ def show_theme_samples(refinement_report):
 </details>
 """, unsafe_allow_html=True)
 
+# ============================================================================
+# CODEBOOK EDITING HELPER FUNCTIONS
+# ============================================================================
 
+def flatten_codebook_to_dataframe(theme_enriched_codebook: models.ThemeEnrichedCodebookModel) -> pd.DataFrame:
+    """
+    Flatten ThemeEnrichedCodebookModel to editable DataFrame for st.data_editor
+
+    Args:
+        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
+
+    Returns:
+        pd.DataFrame with columns: Theme, Category, Code, Definition, Theme_Description, Category_Description
+
+    Note:
+        - Empty Category field = 2-level hierarchy (Theme → Code)
+        - Filled Category field = 3-level hierarchy (Theme → Category → Code)
+    """
+    rows = []
+    for entry in theme_enriched_codebook.codes:
+        rows.append({
+            'Theme': entry.theme or '',
+            'Category': entry.category or '',
+            'Code': entry.code or '',
+            'Definition': entry.definition or '',
+            'Theme_Description': entry.theme_description or '',
+            'Category_Description': entry.category_description or ''
+        })
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+def reconstruct_codebook_from_dataframe(
+    df: pd.DataFrame,
+    original_codebook: models.ThemeEnrichedCodebookModel
+) -> models.ThemeEnrichedCodebookModel:
+    """
+    Reconstruct ThemeEnrichedCodebookModel from edited DataFrame
+
+    Args:
+        df: Edited DataFrame from st.data_editor
+        original_codebook: Original ThemeEnrichedCodebookModel for metadata preservation
+
+    Returns:
+        Updated ThemeEnrichedCodebookModel with edits applied
+
+    Preserves hierarchy structure:
+        - Empty Category = 2-level (Theme → Code)
+        - Filled Category = 3-level (Theme → Category → Code)
+    """
+    from datetime import datetime
+
+    enriched_entries = []
+    themes_summary = []
+    code_to_theme_mapping = {}
+
+    # Group by theme to rebuild themes_summary
+    theme_groups = df.groupby('Theme')
+
+    for theme_name, theme_df in theme_groups:
+        # Count codes in this theme
+        code_count = len(theme_df)
+        themes_summary.append({
+            'theme_name': theme_name,
+            'theme_description': theme_df.iloc[0]['Theme_Description'] if len(theme_df) > 0 else theme_name,
+            'code_count': code_count
+        })
+
+        # Create entries for each code
+        for _, row in theme_df.iterrows():
+            entry = models.ThemeEnrichedCodebookEntry(
+                code=str(row['Code']),
+                definition=str(row['Definition']),
+                theme=str(row['Theme']),
+                theme_description=str(row['Theme_Description']) if pd.notna(row['Theme_Description']) else str(row['Theme']),
+                category=str(row['Category']) if pd.notna(row['Category']) and str(row['Category']).strip() else '',
+                category_description=str(row['Category_Description']) if pd.notna(row['Category_Description']) else '',
+                source_cluster=None  # Not preserved during editing
+            )
+            enriched_entries.append(entry)
+            code_to_theme_mapping[str(row['Code'])] = str(row['Theme'])
+
+    # Preserve original metadata and add editing info
+    original_metadata = original_codebook.generation_metadata or {}
+    updated_metadata = {
+        **original_metadata,
+        'manually_edited': True,
+        'edited_timestamp': datetime.now().isoformat(),
+        'original_code_count': len(original_codebook.codes),
+        'edited_code_count': len(enriched_entries)
+    }
+
+    # Create updated model
+    return models.ThemeEnrichedCodebookModel(
+        codes=enriched_entries,
+        themes_summary=themes_summary,
+        code_to_theme_mapping=code_to_theme_mapping,
+        theme_methodology="Manual editing applied after GPT-5 refinement",
+        generation_metadata=updated_metadata,
+        source_variable=original_codebook.source_variable or 'unknown'
+    )
+
+
+def validate_codebook_dataframe(df: pd.DataFrame, lang: str = 'en') -> tuple:
+    """
+    Validate edited codebook DataFrame for common errors
+
+    Args:
+        df: DataFrame to validate
+        lang: Language for error messages ('en' or 'nl')
+
+    Returns:
+        tuple: (is_valid: bool, error_messages: list[str])
+    """
+    errors = []
+
+    # Check for required columns
+    required_cols = ['Theme', 'Code', 'Definition']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        msg = f"Ontbrekende kolommen: {', '.join(missing_cols)}" if lang == 'nl' else f"Missing required columns: {', '.join(missing_cols)}"
+        errors.append(msg)
+        return (False, errors)  # Cannot proceed without required columns
+
+    # Check for empty required fields
+    empty_themes = df['Theme'].isna() | (df['Theme'].astype(str).str.strip() == '')
+    if empty_themes.any():
+        count = empty_themes.sum()
+        msg = f"{count} code(s) hebben geen Thema toegewezen" if lang == 'nl' else f"{count} code(s) have no Theme assigned"
+        errors.append(msg)
+
+    empty_codes = df['Code'].isna() | (df['Code'].astype(str).str.strip() == '')
+    if empty_codes.any():
+        count = empty_codes.sum()
+        msg = f"{count} rij(en) hebben geen Code label" if lang == 'nl' else f"{count} row(s) have no Code label"
+        errors.append(msg)
+
+    empty_definitions = df['Definition'].isna() | (df['Definition'].astype(str).str.strip() == '')
+    if empty_definitions.any():
+        count = empty_definitions.sum()
+        msg = f"{count} code(s) hebben geen Definitie" if lang == 'nl' else f"{count} code(s) have no Definition"
+        errors.append(msg)
+
+    # Check for duplicate codes
+    code_series = df['Code'].astype(str).str.strip()
+    duplicates = code_series[code_series.duplicated()].unique().tolist()
+    if duplicates:
+        dup_str = ', '.join(duplicates[:5])  # Show first 5
+        if len(duplicates) > 5:
+            dup_str += f" (en {len(duplicates)-5} meer)" if lang == 'nl' else f" (and {len(duplicates)-5} more)"
+        msg = f"Dubbele codes gevonden: {dup_str}" if lang == 'nl' else f"Duplicate codes found: {dup_str}"
+        errors.append(msg)
+
+    # Check for orphan categories (category without parent theme)
+    has_category = ~(df['Category'].isna() | (df['Category'].astype(str).str.strip() == ''))
+    has_no_theme = df['Theme'].isna() | (df['Theme'].astype(str).str.strip() == '')
+    orphans = has_category & has_no_theme
+    if orphans.any():
+        count = orphans.sum()
+        msg = f"{count} categorie(ën) hebben geen bovenliggend thema" if lang == 'nl' else f"{count} category/categories have no parent theme"
+        errors.append(msg)
+
+    return (len(errors) == 0, errors)
+
+
+# ============================================================================
+# END CODEBOOK EDITING HELPER FUNCTIONS
+# ============================================================================
 
 # def show_theme_samples(refinement_report):
 #     """Display refinement report with HTML formatting in collapsible sections"""
