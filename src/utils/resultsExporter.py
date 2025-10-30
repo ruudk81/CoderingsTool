@@ -41,6 +41,7 @@ class ResultsExporter:
                        theme_enriched_codebook: models.ThemeEnrichedCodebookModel,
                        filename: str,
                        var_name: str,
+                       quality_filtered_text: Optional[List] = None,
                        export_dir: Optional[str] = None) -> str:
         """
         Export code assignment results to Excel with all requested columns:
@@ -140,7 +141,41 @@ class ResultsExporter:
                             'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None
                         }
                         export_data.append(row_data)
-        
+
+        # Add filtered responses if provided
+        if quality_filtered_text:
+            # Filter code mapping
+            FILTER_CODE_LABELS = {
+                99999997: "User Missing (Don't Know)",
+                99999998: "System Missing (NA)",
+                99999999: "No Answer (Meaningless)"
+            }
+
+            # Extract only filtered responses
+            filtered_responses = [r for r in quality_filtered_text if r.quality_filter]
+
+            for response in filtered_responses:
+                filter_code = response.quality_filter_code
+                filter_label = FILTER_CODE_LABELS.get(filter_code, f"Unknown Filter ({filter_code})")
+
+                row_data = {
+                    'respondent_id': response.respondent_id,
+                    'original_response': response.response,
+                    'idea_id': '',
+                    'idea_text': '',
+                    'initial_cluster_id': '',
+                    'source_cluster_id': '',
+                    'code_label': str(filter_code),
+                    'code_description': filter_label,
+                    'assignment_rationale': 'Filtered in quality check',
+                    'assignment_confidence': 1.0,
+                    'theme_name': 'FILTERED',
+                    'theme_description': filter_label,
+                    'category': '',
+                    'category_description': ''
+                }
+                export_data.append(row_data)
+
         # Convert to DataFrame
         df = pd.DataFrame(export_data)
         
@@ -180,6 +215,7 @@ class ResultsExporter:
                                       reasoning_results: CodeGeneratorReasoningResults,
                                       filename: str,
                                       var_name: str,
+                                      quality_filtered_text: Optional[List] = None,
                                       export_dir: Optional[str] = None) -> str:
         """
         Export code assignment results with step 7 reasoning data to Excel.
@@ -287,7 +323,45 @@ class ResultsExporter:
                             'codebook_validation': reasoning_data.get('codebook_validation', '')
                         }
                         export_data.append(row_data)
-        
+
+        # Add filtered responses if provided
+        if quality_filtered_text:
+            # Filter code mapping
+            FILTER_CODE_LABELS = {
+                99999997: "User Missing (Don't Know)",
+                99999998: "System Missing (NA)",
+                99999999: "No Answer (Meaningless)"
+            }
+
+            # Extract only filtered responses
+            filtered_responses = [r for r in quality_filtered_text if r.quality_filter]
+
+            for response in filtered_responses:
+                filter_code = response.quality_filter_code
+                filter_label = FILTER_CODE_LABELS.get(filter_code, f"Unknown Filter ({filter_code})")
+
+                row_data = {
+                    'respondent_id': response.respondent_id,
+                    'original_response': response.response,
+                    'idea_id': '',
+                    'idea_text': '',
+                    'initial_cluster_id': '',
+                    'source_cluster_id': '',
+                    'code_label': str(filter_code),
+                    'code_description': filter_label,
+                    'assignment_rationale': 'Filtered in quality check',
+                    'assignment_confidence': 1.0,
+                    'theme_name': 'FILTERED',
+                    'theme_description': filter_label,
+                    'category': '',
+                    'category_description': '',
+                    # Step 7 reasoning columns (empty for filtered responses)
+                    'codegen_theme': '',
+                    'codegen_recommendation': '',
+                    'codebook_validation': ''
+                }
+                export_data.append(row_data)
+
         # Convert to DataFrame
         df = pd.DataFrame(export_data)
         

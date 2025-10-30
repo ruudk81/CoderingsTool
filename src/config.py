@@ -28,6 +28,15 @@ DUTCH_DICT_PATH = os.path.join(hunspell_dir, "dict", "nl_NL")
 ENGLISH_DICT_PATH = os.path.join(hunspell_dir, "dict", "en_GB")
 DEFAULT_LANGUAGE = "Dutch"
 
+# Language-specific labels for miscellaneous/catch-all code
+MISCELLANEOUS_CODE_LABELS = {
+    "Dutch": "Overig",
+    "English": "Other",
+    "German": "Sonstiges",
+    "French": "Autre",
+    "Spanish": "Otro",
+}
+
 # =============================================================================
 # MODEL CONFIGURATION - CENTRALIZED
 # =============================================================================
@@ -152,6 +161,7 @@ class ModelConfig:
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
         "gpt-5-chat": "chat",
+        "gpt-5-chat-latest": "chat",
         
         # GPT-5 family (reasoning models)
         "gpt-5": "reasoning",
@@ -163,38 +173,38 @@ class ModelConfig:
     # STAGE-SPECIFIC MODELS
     # =============================================================================
     
-    # Step 2: Text preprocessing models
+    # Text preprocessing models
     spell_check_model: str = DEFAULT_MODEL
     token_model: str = "gpt-4o-mini"
     tiktoken_spellChecker: str = "gpt-4o-mini"  # 
     
-    # Step 3: Quality filtering and segmentation models  
+    # Quality filtering and segmentation models  
     quality_filter_model: str = DEFAULT_MODEL      
     segmentation_model: str = DEFAULT_MODEL        
     description_model: str = DEFAULT_MODEL         
     
-    # Step 4: Embedding model
+    # Embedding model
     embedding_model: str = "text-embedding-3-large"
     #embedding_model: str = "gemini-embedding-001"
    
     speculative_codes_model: str = DEFAULT_MODEL  
 
-    # Step 7: Codebook generation
+    # Codebook generation
     token_codebook_generation_model: str = "gpt-4o-mini"
-    thematic_summary_model: str = "gpt-5-mini"      
-    candidate_selection_model: str = "gpt-4o-mini"           
-    code_generation_model: str ="gpt-4o-mini"               
-    validation_model: str = "gpt-5-mini"
+    thematic_summary_model: str = "gpt-5-chat"      
+    candidate_selection_model: str = "gpt-5-chat"           
+    code_generation_model: str ="gpt-5-chat"               
+    validation_model: str = "gpt-5-chat"
     
-    # Step 7b: Codebook refinement
+    # Codebook refinement
     codebook_refinement_model: str = "gpt-5" 
 
-    # Step 8: theme identification
+    # theme identification
     thematic_organizer_model : str = "gpt-5-mini"   
     theme_extraction_reasoning_effort: str = "low"       
     theme_extraction_text_verbosity: str = "medium"      
 
-    # Step 9: Code assignment
+    # Code assignment
     code_assignment_model: str = DEFAULT_MODEL
 
     # =============================================================================
@@ -721,6 +731,7 @@ class CodeAssignmentConfig:
     max_concurrent_requests: int = 20  # Increased from 5 (though semaphore removed)
     top_k_similar_codes: int = 10  # Number of most similar codes to present
     min_confidence_threshold: float = 0.3  # Minimum confidence for valid assignment
+    miscellaneous_confidence_threshold: float = 0.6  # Threshold below which to assign miscellaneous code
     # Model configuration - will be overridden by ModelConfig
     model: str = DEFAULT_MODEL  # Fallback model
     max_assignment_examples: int = 3  # For verbose output

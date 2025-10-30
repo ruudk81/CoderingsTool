@@ -27,7 +27,7 @@ model_config = ModelConfig()
 filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 id_column = "DLNMID"
 var_name = "Qd1_combined"
-sample_size = 500
+sample_size = 2000
 
 # filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 # id_column = "DLNMID"
@@ -1298,12 +1298,14 @@ def step_7_refine_codebook(
             })
 
             for subcode in category.subcodes:
-                # Create ThemeEnrichedCodebookEntry
+                # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
                 enriched_entry = models.ThemeEnrichedCodebookEntry(
                     code=subcode.code,
                     definition=subcode.description,
                     theme=theme_name,
                     theme_description=theme_name,
+                    category=subcode.category,  # Empty string for 2-level, category name for 3-level
+                    category_description=subcode.category if subcode.category else "",  # Use category name as description
                     source_cluster=subcode.id  # Use original code ID as source cluster
                 )
                 enriched_entries.append(enriched_entry)
@@ -1541,6 +1543,7 @@ def step_9_export_results(
     theme_enriched_codebook,
     filename,
     var_name,
+    quality_filtered_text=None,
     verbose=True,
     streamlit_container=None        # Optional progress updates
 ):
@@ -1551,6 +1554,7 @@ def step_9_export_results(
         theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
         filename: SPSS filename for export naming
         var_name: Variable name for export naming
+        quality_filtered_text: List of QualityFilteredModel instances from step 2 (includes filtered responses)
         verbose: Enable verbose output
         streamlit_container: Optional Streamlit container for progress updates
 
@@ -1570,6 +1574,7 @@ def step_9_export_results(
             theme_enriched_codebook,
             filename,
             var_name,
+            quality_filtered_text=quality_filtered_text,
             export_dir=None  # Will create default export directory
         )
         print(f"[SUCCESS] Code assignments exported to Excel: {excel_path}")
@@ -1988,7 +1993,7 @@ if __name__ == '__main__':
        
     # === STEP 9  =====
     """Export Results"""
-    excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, verbose=VERBOSE)
+    excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, quality_filtered_text=quality_filtered_text, verbose=VERBOSE)
     
     # Pipeline completed successfully
     print(f"\n{'='*80}")
