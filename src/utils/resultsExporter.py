@@ -66,6 +66,7 @@ class ResultsExporter:
             code_to_info[code_entry.code] = {
                 'theme_name': code_entry.theme or 'No Theme',
                 'theme_description': code_entry.theme_description or 'No Description',
+                'category': code_entry.category or '',  # Empty string for 2-level hierarchy
                 'code_description': code_entry.definition,
                 'source_cluster': code_entry.source_cluster  # This is the sub-cluster ID like "12-1"
             }
@@ -82,6 +83,7 @@ class ResultsExporter:
                             code_info = code_to_info.get(code, {
                                 'theme_name': 'Unknown Theme',
                                 'theme_description': 'Unknown Description',
+                                'category': '',
                                 'code_description': 'Unknown Code',
                                 'source_cluster': None
                             })
@@ -102,12 +104,13 @@ class ResultsExporter:
                                 'idea_text': idea.idea,
                                 'initial_cluster_id': parent_cluster,
                                 'source_cluster_id': source_cluster,  # This is the sub-cluster from enriched codebook
+                                'theme_name': code_info['theme_name'],
+                                'theme_description': code_info['theme_description'],
+                                'category': code_info['category'],  # Category column (empty for 2-level hierarchy)
                                 'code_label': code,
                                 'code_description': code_info['code_description'],
                                 'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
-                                'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
-                                'theme_name': code_info['theme_name'],
-                                'theme_description': code_info['theme_description']
+                                'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None
                             }
                             export_data.append(row_data)
                     else:
@@ -128,12 +131,13 @@ class ResultsExporter:
                             'idea_text': idea.idea,
                             'initial_cluster_id': parent_cluster,
                             'source_cluster_id': source_cluster,
+                            'theme_name': '',
+                            'theme_description': '',
+                            'category': '',  # Empty category for no code assigned case
                             'code_label': 'No Code Assigned',
                             'code_description': '',
                             'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
-                            'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
-                            'theme_name': '',
-                            'theme_description': ''
+                            'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None
                         }
                         export_data.append(row_data)
         
@@ -193,6 +197,7 @@ class ResultsExporter:
             code_to_info[code_entry.code] = {
                 'theme_name': code_entry.theme or 'No Theme',
                 'theme_description': code_entry.theme_description or 'No Description',
+                'category': code_entry.category or '',  # Empty string for 2-level hierarchy
                 'code_description': code_entry.definition,
                 'source_cluster': code_entry.source_cluster  # This is the sub-cluster ID like "12-1"
             }
@@ -212,6 +217,7 @@ class ResultsExporter:
                             code_info = code_to_info.get(code, {
                                 'theme_name': 'Unknown Theme',
                                 'theme_description': 'Unknown Description',
+                                'category': '',
                                 'code_description': 'Unknown Code',
                                 'source_cluster': None
                             })
@@ -235,12 +241,13 @@ class ResultsExporter:
                                 'idea_text': idea.idea,
                                 'initial_cluster_id': parent_cluster,
                                 'source_cluster_id': source_cluster,
+                                'theme_name': code_info['theme_name'],
+                                'theme_description': code_info['theme_description'],
+                                'category': code_info['category'],  # Category column (empty for 2-level hierarchy)
                                 'code_label': code,
                                 'code_description': code_info['code_description'],
                                 'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
                                 'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
-                                'theme_name': code_info['theme_name'],
-                                'theme_description': code_info['theme_description'],
                                 # Step 7 reasoning data
                                 'codegen_theme': reasoning_data.get('codegen_theme', ''),
                                 'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
@@ -267,12 +274,13 @@ class ResultsExporter:
                             'idea_text': idea.idea,
                             'initial_cluster_id': parent_cluster,
                             'source_cluster_id': source_cluster,
+                            'theme_name': '',
+                            'theme_description': '',
+                            'category': '',  # Empty category for no code assigned case
                             'code_label': 'No Code Assigned',
                             'code_description': '',
                             'assignment_rationale': idea.assignment_rationale if hasattr(idea, 'assignment_rationale') else '',
                             'assignment_confidence': idea.assignment_confidence if hasattr(idea, 'assignment_confidence') else None,
-                            'theme_name': '',
-                            'theme_description': '',
                             # Step 7 reasoning data
                             'codegen_theme': reasoning_data.get('codegen_theme', ''),
                             'codegen_recommendation': reasoning_data.get('codegen_recommendation', ''),
@@ -340,7 +348,9 @@ class ResultsExporter:
             'Assignment Rationale',
             'Assignment Confidence',
             'Theme Name',
-            'Theme Description'
+            'Theme Description',
+            'Category',
+            'Category Description'
         ]
         
         for col, header in enumerate(headers, 1):
@@ -394,7 +404,9 @@ class ResultsExporter:
             'I': 60,  # Assignment Rationale
             'J': 20,  # Assignment Confidence
             'K': 30,  # Theme Name
-            'L': 50   # Theme Description
+            'L': 50,  # Theme Description
+            'M': 30,  # Category
+            'N': 50   # Category Description
         }
         
         for col, width in column_widths.items():
@@ -555,6 +567,8 @@ class ResultsExporter:
             'Assignment Confidence',
             'Theme Name',
             'Theme Description',
+            'Category',
+            'Category Description',
             'Codegen_theme',
             'Codegen_recommendation',
             'Codebook_validation'
@@ -606,9 +620,11 @@ class ResultsExporter:
             'J': 20,  # Assignment Confidence
             'K': 30,  # Theme Name
             'L': 50,  # Theme Description
-            'M': 60,  # Codegen_theme
-            'N': 60,  # Codegen_recommendation
-            'O': 60   # Codebook_validation
+            'M': 30,  # Category
+            'N': 50,  # Category Description
+            'O': 60,  # Codegen_theme
+            'P': 60,  # Codegen_recommendation
+            'Q': 60   # Codebook_validation
         }
         
         for col, width in column_widths.items():

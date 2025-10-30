@@ -24,7 +24,7 @@ from pydantic import BaseModel
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, MISCELLANEOUS_CODE_LABELS, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -336,21 +336,55 @@ class CodeAssigner:
     
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
         """Create a sample prompt for token estimation (simplified version)"""
-        # Use first few codes for estimation
+        # Use first 5 codes for estimation + miscellaneous code (total 6)
         sample_codes = self.codebook[:min(5, len(self.codebook))]
+        misc_code = self._create_miscellaneous_code()
+        all_sample_codes = list(sample_codes) + [misc_code]
+
         candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n" 
-            for code in sample_codes
+            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            for code in all_sample_codes
         ])
-        
+
+        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
+
         return CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
-            candidate_codes=candidate_codes_text
+            candidate_codes=candidate_codes_text,
+            misc_code_label=misc_label,
+            misc_threshold=self.config.miscellaneous_confidence_threshold
         )
-    
+
+    def _create_miscellaneous_code(self) -> models.Codebook:
+        """Create language-specific miscellaneous/catch-all code"""
+        # Get language-specific label, fallback to "Other" if language not found
+        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
+
+        # Create definition based on language
+        if self.language == "Dutch":
+            definition = (
+                f"Overige reacties die niet goed binnen een specifieke code passen. "
+                f"Gebruik deze code voor vage, dubbelzinnige, of niet-gerelateerde antwoorden "
+                f"op de vraag: '{self.var_lab}'"
+            )
+        else:
+            definition = (
+                f"Other responses that do not fit well within a specific code. "
+                f"Use this code for vague, ambiguous, or unrelated answers "
+                f"to the question: '{self.var_lab}'"
+            )
+
+        return models.Codebook(
+            code=misc_label,
+            definition=definition,
+            representative_ideas=[],
+            representative_idea_ids=[],
+            cluster_id=-1  # Special marker for miscellaneous code
+        )
+
     def estimate_tokens(self, prompt: str) -> int:
         """Estimate total tokens using adaptive strategy (following qualityFilter.py)"""
         actual_input_tokens = len(self.encoding.encode(prompt))
@@ -512,25 +546,34 @@ class CodeAssigner:
         return all_ideas
 
     def _create_prompt(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray) -> str:
-        """Create prompt for a single idea with most similar codes"""
-        # Find most similar codes
-        similar_codes = self._find_similar_codes(idea_embedding, top_k=self.config.top_k_similar_codes)
-        
+        """Create prompt for a single idea with most similar codes plus miscellaneous code"""
+        # Find top 5 most similar codes (reduced from top_k to make room for miscellaneous)
+        similar_codes = self._find_similar_codes(idea_embedding, top_k=5)
+
+        # Add miscellaneous code as 6th candidate
+        misc_code = self._create_miscellaneous_code()
+        all_candidate_codes = list(similar_codes) + [misc_code]
+
         # Format candidate codes for prompt
         candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n" 
-            for code in similar_codes
+            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            for code in all_candidate_codes
         ])
-        
+
+        # Get miscellaneous code label for prompt instructions
+        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
+
         # Create prompt
         prompt = CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
-            candidate_codes=candidate_codes_text
+            candidate_codes=candidate_codes_text,
+            misc_code_label=misc_label,
+            misc_threshold=self.config.miscellaneous_confidence_threshold
         )
-        
+
         return prompt
     
     async def probe_call_no_structured(self, task_dict):

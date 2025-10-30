@@ -426,7 +426,7 @@ def show_advanced_settings(current_step=0):
 
         # Model options for dropdowns
         gpt4_models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
-        gpt5_models = ["gpt-5-mini", "gpt-5-nano", "gpt-5"]
+        gpt5_models = ["gpt-5-mini", "gpt-5-nano", "gpt-5", "gpt-5-chat", "gpt-5-chat-latest"]
         all_models = gpt4_models + gpt5_models
         embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "gemini-embedding-001"]
 
@@ -4132,6 +4132,7 @@ def show_theme_samples(refinement_report):
     t_analysis = "LLM Analyse" if lang == "nl" else "LLM Analysis"
     t_categories = "Codeboek" if lang == "nl" else "Codebook"
     t_subcodes = "subcodes" if lang == "nl" else "subcodes"
+    t_codes = "codes" if lang == "nl" else "codes"
 
     # --- Codebook first (expanded) ---
     categories = refinement_report.get('categories', [])
@@ -4142,25 +4143,62 @@ def show_theme_samples(refinement_report):
             subcode_count = category.get('subcode_count', 0)
             subcodes = category.get('subcodes', []) or []
 
-            # IMPORTANT: no indentation in the generated HTML
-            subcodes_html = "".join([
-                (
-                    '<div style="margin-bottom:12px;padding-left:8px;">'
-                    f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
-                    f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
-                    '</div>'
-                )
-                for sc in subcodes
-            ])
+            # Group subcodes by category field for 3-level hierarchy support
+            direct_codes = []           # category == "" (2-level: directly under theme)
+            categorized_codes = {}      # category != "" (3-level: grouped by category)
 
-            # Also ensure {subcodes_html} is flush-left in the f-string (no leading spaces)
+            for subcode in subcodes:
+                category_field = subcode.get('category', '')
+                if category_field:
+                    # 3-level: add to category group
+                    if category_field not in categorized_codes:
+                        categorized_codes[category_field] = []
+                    categorized_codes[category_field].append(subcode)
+                else:
+                    # 2-level: add to direct codes
+                    direct_codes.append(subcode)
+
+            # Build HTML content
+            content_html = ""
+
+            # Display direct codes first (2-level hierarchy)
+            if direct_codes:
+                for sc in direct_codes:
+                    content_html += (
+                        '<div style="margin-bottom:12px;padding-left:8px;">'
+                        f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
+                        f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
+                        '</div>'
+                    )
+
+            # Display categorized codes (3-level hierarchy)
+            if categorized_codes:
+                for cat_name, cat_codes in categorized_codes.items():
+                    # Category header with left border accent
+                    content_html += (
+                        '<div style="margin:16px 0 8px 0;padding:8px 12px;background:#f8f9fb;'
+                        'border-left:3px solid #1f77b4;border-radius:4px;">'
+                        f'<b>📁 {html.escape(str(cat_name))}</b> '
+                        f'<span style="color:#999;font-size:13px;">({len(cat_codes)} {t_codes})</span>'
+                        '</div>'
+                    )
+                    # Category codes (indented)
+                    for sc in cat_codes:
+                        content_html += (
+                            '<div style="margin-bottom:12px;padding-left:24px;">'
+                            f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
+                            f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
+                            '</div>'
+                        )
+
+            # Render theme with content
             st.markdown(f"""
 <details open style="margin-bottom:16px;">
   <summary style="cursor:pointer;padding:12px 16px;background:#f0f2f6;border-radius:8px;font-weight:600;margin-bottom:8px;user-select:none;">
     📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
   </summary>
   <div style="padding:16px;background:white;border:1px solid #e6e6e6;border-radius:8px;margin-top:8px;line-height:1.6;">
-{subcodes_html}
+{content_html}
   </div>
 </details>
 """, unsafe_allow_html=True)
