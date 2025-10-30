@@ -506,134 +506,85 @@ You have three possible decisions:
 
 ---
 
-A. **Understanding Similarity Metrics**
-<similarity_metrics>
-Each code is provided with four similarity metrics comparing it to the new theme:
+A. **Understanding Cosine Similarity**
+<cosine_similarity>
+Each code is provided with a cosine similarity score (0.0-1.0) comparing it to the new theme:
 
-1. **Cosine (0.0-1.0)**: Semantic similarity - do the theme and code MEAN the same thing?
-   - High cosine (≥0.85) = Same underlying concept, even with different words
-   - Uses AI embeddings to capture meaning beyond exact wording
+**Cosine Similarity** measures semantic similarity - do the theme and code MEAN the same thing?
+- Uses AI embeddings to capture meaning beyond exact wording
+- Handles synonyms and paraphrasing (e.g., "fast delivery" ≈ "quick shipping")
+- High cosine (≥0.88) = Semantically equivalent concepts
+- Medium cosine (0.75-0.88) = Similar concepts needing refinement
+- Low cosine (<0.75) = Different concepts
 
-2. **Jaccard (0.0-1.0)**: Word overlap - do they SHARE the exact same words?
-   - High jaccard (≥0.60) = Strong lexical/terminology overlap
-   - Measures literal word matching
-
-3. **subset_t2c (0.0-1.0)**: Theme coverage - what % of theme words appear in the code?
-   - High subset_t2c (≥0.70) = Code covers most theme concepts
-   - Low subset_t2c (<0.50) = Code misses key theme aspects
-
-4. **subset_c2t (0.0-1.0)**: Code specificity - what % of code words appear in the theme?
-   - High subset_c2t (≥0.70) = Code is specific to theme (not too broad)
-   - Low subset_c2t (<0.50) = Code includes concepts beyond the theme
-
-Use these metrics as quantitative clues, then apply qualitative judgment of meaning coverage.
-</similarity_metrics>
+Cosine captures what matters in qualitative coding: whether two descriptions refer to the same underlying concept, regardless of the specific words used.
+</cosine_similarity>
 
 ---
 
-B. **Metric Pattern Interpretation**
-<pattern_interpretation>
-Common patterns and their implications:
-
-**Pattern 1 - Exact or near-exact match:**
-- Cosine ≥0.90, Jaccard ≥0.70, both subsets ≥0.80
-- → Strong USE candidate (nearly identical concepts and wording)
-
-**Pattern 2 - Semantic match with different wording:**
-- Cosine ≥0.85, Jaccard <0.40, subset_t2c ≥0.60
-- → MODIFY candidate (same meaning, but standardize terminology)
-
-**Pattern 3 - Code too broad (includes extra concepts):**
-- subset_t2c high (≥0.70), subset_c2t low (<0.50)
-- → Code covers theme but also includes unrelated concepts
-- → Usually CREATE (theme deserves its own specific code)
-
-**Pattern 4 - Code too narrow (misses theme aspects):**
-- subset_c2t high (≥0.70), subset_t2c low (<0.50)
-- → Code is relevant but theme has additional concepts
-- → MODIFY to broaden scope, or CREATE if gap is large
-
-**Pattern 5 - Weak alignment:**
-- Cosine <0.70, Jaccard <0.30, both subsets <0.50
-- → CREATE (insufficient overlap for reuse)
-</pattern_interpretation>
-
----
-
-C. **Decision Thresholds**
+B. **Decision Thresholds**
 <decision_thresholds>
-Make your final decision using both the quantitative metrics and your qualitative judgment of meaning coverage.
+Make your decision based on cosine similarity and qualitative judgment:
 
-1. **USE** — when ALL of the following are true:
-    - Cosine ≥0.88
-    - Jaccard ≥0.50
-    - subset_t2c ≥0.70 AND subset_c2t ≥0.70
-    - The existing code captures the theme's meaning with no major gaps
+1. **USE** — Cosine ≥ 0.88
+    - Theme and code are semantically equivalent
+    - Meaning is fully captured; minor wording differences are acceptable
+    - No significant conceptual gaps exist
 
-    (Approximately ≥85% conceptual coverage)
+    (Approximately ≥85% semantic overlap)
 
-2. **MODIFY** — when there is strong alignment but specific gaps exist:
-    - 0.80 ≤ Cosine <0.88 (semantically close)
-    - Jaccard ≥0.40 (some shared terminology)
-    - At least ONE of the following:
-       a) subset_c2t ≥0.70 AND subset_t2c <0.70
-          → Code is on-topic but theme has additional concepts
-          → Modification needed: Broaden code to include missing theme aspects
+2. **MODIFY** — 0.75 ≤ Cosine < 0.88
+    - Theme and code are semantically similar but not identical
+    - Code needs refinement for better alignment:
+       • Broaden scope if code is too narrow for the theme
+       • Narrow scope if code is too broad for the theme
+       • Rephrase for clarity or terminology consistency
+    - Minor adjustments would achieve full coverage
 
-       b) subset_t2c ≥0.70 AND subset_c2t <0.70
-          → Theme is covered but code includes extra concepts
-          → Modification needed: Narrow or refine code scope
+    (Approximately 70–85% semantic overlap)
 
-       c) Both subsets 0.60–0.70
-          → Close match with minor gaps on both sides
-          → Modification needed: Fine-tune wording for better alignment
-    - Minor scope or phrasing adjustment would make the code fit perfectly
+3. **CREATE** — Cosine < 0.75
+    - Theme introduces distinct concepts not captured by existing codes
+    - Insufficient semantic overlap for reuse or modification
+    - A new code is needed to capture the theme's unique meaning
 
-    (Approximately 70–85% conceptual coverage)
-
-3. **CREATE** — when ANY of the following are true:
-    - Cosine <0.80
-    - Jaccard <0.40
-    - Both subset_t2c <0.60 AND subset_c2t <0.60
-    - The theme introduces distinct new concepts not adequately covered by existing codes
-
-    (Approximately <70% conceptual coverage)
+    (Approximately <70% semantic overlap)
 </decision_thresholds>
 
 ---
 
-D. **Decision Examples**
+C. **Decision Examples**
 <examples>
 Example 1 - Clear USE:
   Theme: "Delivery speed problems"
-  Code:  "Delivery speed issues" (cosine: 0.92, jaccard: 0.67, t2c: 1.00, c2t: 0.67)
-  → Decision: USE (nearly identical meaning, minor wording difference acceptable)
+  Code:  "Delivery speed issues" (cosine: 0.92)
+  → Decision: USE (semantically equivalent - nearly identical meaning)
 
-Example 2 - Clear MODIFY (broaden code):
+Example 2 - Clear USE (synonyms):
+  Theme: "Fast shipping concerns"
+  Code:  "Quick delivery issues" (cosine: 0.91)
+  → Decision: USE (different words, same meaning - cosine captures this)
+
+Example 3 - Clear MODIFY:
   Theme: "Fast delivery and tracking concerns"
-  Code:  "Delivery issues" (cosine: 0.82, jaccard: 0.33, t2c: 0.33, c2t: 0.50)
-  → Decision: MODIFY (code is relevant but misses "speed" and "tracking" aspects - broaden it)
-
-Example 3 - Clear MODIFY (narrow code):
-  Theme: "Late delivery"
-  Code:  "Delivery speed tracking packaging issues" (cosine: 0.81, jaccard: 0.20, t2c: 1.00, c2t: 0.25)
-  → Decision: MODIFY (code includes theme but is too broad - narrow to focus on speed)
+  Code:  "Delivery issues" (cosine: 0.82)
+  → Decision: MODIFY (related concepts, but theme includes tracking aspect - broaden code scope)
 
 Example 4 - Clear CREATE:
   Theme: "Packaging quality defects"
-  Code:  "Delivery speed" (cosine: 0.35, jaccard: 0.00, t2c: 0.00, c2t: 0.00)
-  → Decision: CREATE (completely different concepts - no meaningful overlap)
+  Code:  "Delivery speed" (cosine: 0.35)
+  → Decision: CREATE (completely different concepts - insufficient overlap)
 </examples>
 
 ---
 
-E. **Edge Cases**
+D. **Edge Cases**
 <edge_cases>
-- For borderline cases (84–86% coverage): Choose MODIFY if a minor adjustment would achieve full coverage; otherwise USE if meaning is already captured.
+- For borderline cases (cosine 0.85-0.90): Use qualitative judgment - if meaning is fully captured despite minor wording differences, choose USE; if refinement would improve clarity, choose MODIFY.
 - If the theme combines multiple distinct ideas (e.g., "X and Y"), choose CREATE (themes should be atomic).
-- Do not modify existing codes in ways that would broaden them beyond their intended scope or make them too general.
-- When metrics conflict (e.g., high cosine but low subsets), prioritize semantic meaning (cosine) but note the gap in your justification.
-- Always mention which metrics, patterns, or thresholds informed your decision (e.g., "cosine 0.88 + subset_t2c 0.75 matches Pattern 2 → MODIFY").
+- When modifying, ensure changes don't broaden codes beyond their intended scope or make them too general.
+- Always cite the cosine score in your justification (e.g., "cosine 0.83 indicates semantic similarity; MODIFY to broaden scope").
+- Trust the cosine score - it captures semantic meaning that word-matching cannot.
 </edge_cases>
 
 ---
@@ -651,7 +602,7 @@ Output schema:
     ],
     "decision": "USE | MODIFY | CREATE",
     "source_code": "Exact candidate code name if use/modify, or null if create",
-    "justification": "State the estimated overlap (e.g., 82%) and which rule applied. Reference cosine/Jaccard/subset scores when available."
+    "justification": "State the estimated overlap (e.g., 82%) and which rule applied. Reference the cosine score."
   }}
 }}
 
@@ -659,7 +610,7 @@ Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation.
 - Use theme_id provided.
 - Keep field names in English; write values in {language}.
-- Justification must clearly state the estimated overlap percentage and reference the decision rule applied (coverage thresholds and/or abstraction level).
+- Justification must clearly state the estimated overlap percentage and reference the cosine score and decision rule applied.
 """
 
 CODE_CREATION_PROMPT = """

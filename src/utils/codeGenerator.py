@@ -1,5 +1,6 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
+
 # === MODULES ========================================================================================================
 import asyncio
 import time
@@ -19,7 +20,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_i
 from pydantic import ValidationError
 from aiolimiter import AsyncLimiter
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import AgglomerativeClustering
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel  
@@ -1868,86 +1868,28 @@ class InductiveCodeGenerator:
 
         return similarities
 
-    def _calculate_token_overlap(
-        self,
-        theme_name: str,
-        candidate_codes: List[Dict[str, str]]
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Calculate Jaccard and bidirectional subset overlap between theme name and code labels.
-
-        Args:
-            theme_name: The theme label (e.g., "Delivery speed concerns")
-            candidate_codes: List of candidate codes with 'code' field
-
-        Returns:
-            Dict mapping code_label -> {
-                'jaccard': float,
-                'subset_theme_to_code': float,
-                'subset_code_to_theme': float
-            }
-        """
-        # Tokenize theme (lowercase, split on whitespace)
-        theme_tokens = set(theme_name.lower().split())
-
-        overlaps = {}
-
-        for candidate in candidate_codes:
-            code_label = candidate['code']
-            code_tokens = set(code_label.lower().split())
-
-            # Calculate intersection and union
-            intersection = theme_tokens & code_tokens
-            union = theme_tokens | code_tokens
-
-            # Jaccard similarity: |intersection| / |union|
-            jaccard = len(intersection) / len(union) if union else 0.0
-
-            # Subset theme→code: what % of theme tokens appear in code?
-            subset_theme_to_code = len(intersection) / len(theme_tokens) if theme_tokens else 0.0
-
-            # Subset code→theme: what % of code tokens appear in theme?
-            subset_code_to_theme = len(intersection) / len(code_tokens) if code_tokens else 0.0
-
-            overlaps[code_label] = {
-                'jaccard': round(jaccard, 3),
-                'subset_theme_to_code': round(subset_theme_to_code, 3),
-                'subset_code_to_theme': round(subset_code_to_theme, 3)
-            }
-
-        return overlaps
-
-    def _format_codes_with_metrics(
+    def _format_codes_with_cosine(
         self,
         candidate_codes: List[Dict[str, str]],
-        cosine_scores: Dict[str, float],
-        token_overlaps: Dict[str, Dict[str, float]]
+        cosine_scores: Dict[str, float]
     ) -> str:
         """
-        Format codes with similarity metrics for prompt.
+        Format codes with cosine similarity metric for prompt.
 
         Args:
             candidate_codes: List of codes to format
             cosine_scores: Cosine similarity scores per code
-            token_overlaps: Jaccard and bidirectional subset scores per code
 
         Returns:
-            Formatted string with metrics, e.g.:
-            "- Code Name (cosine: 0.85, jaccard: 0.60, subset_t2c: 0.75, subset_c2t: 0.50)"
+            Formatted string with cosine metric, e.g.:
+            "- Code Name (cosine: 0.85)"
         """
         formatted_lines = []
 
         for code in candidate_codes:
             code_label = code['code']
-
-            # Get metrics (with defaults if missing)
             cosine = cosine_scores.get(code_label, 0.0)
-            jaccard = token_overlaps.get(code_label, {}).get('jaccard', 0.0)
-            subset_t2c = token_overlaps.get(code_label, {}).get('subset_theme_to_code', 0.0)
-            subset_c2t = token_overlaps.get(code_label, {}).get('subset_code_to_theme', 0.0)
-
-            # Format: "- Code Name (cosine: 0.85, jaccard: 0.60, subset_t2c: 0.75, subset_c2t: 0.50)"
-            line = f"- {code_label} (cosine: {cosine:.2f}, jaccard: {jaccard:.2f}, subset_t2c: {subset_t2c:.2f}, subset_c2t: {subset_c2t:.2f})"
+            line = f"- {code_label} (cosine: {cosine:.2f})"
             formatted_lines.append(line)
 
         return "\n".join(formatted_lines)
@@ -2396,7 +2338,7 @@ class InductiveCodeGenerator:
             
             # Update ClusterModel objects
             updated_ideas_count = 0
-            sample_idea_ids = []
+            #sample_idea_ids = []
             total_ideas_checked = 0
             matching_cluster_ideas = 0
             
@@ -2430,243 +2372,193 @@ class InductiveCodeGenerator:
                             idea.expanded_cluster = str(idea.initial_cluster)
                             single_theme_updates += 1
         
-    
     #########################################################################################################
-    # IDEA SAMPLING METHODS - For handling large clusters efficiently
+    # IDEA SAMPLING METHODS — UMAP(10D) + HDBSCAN (euclidean), noise excluded
     #########################################################################################################
-    
-    def _smart_clustering(self, embeddings: np.ndarray) -> AgglomerativeClustering:
-        """Simple heuristic-based clustering for idea sampling"""
-        n_ideas = len(embeddings)
-
-        # Simple heuristic based on cluster size
-        if n_ideas <= 50:
-            target_clusters = min(5, n_ideas // 3)
-        elif n_ideas <= 200:
-            target_clusters = 8
-        else:
-            target_clusters = 12
-        
-        # Use fixed cluster count - let sklearn optimize
-        clustering = AgglomerativeClustering(
-            n_clusters=target_clusters,
-            metric='cosine',
-            linkage='average'
-        )
-        
-        return clustering
     
     def _sample_representative_ideas(self, ideas: List, max_ideas: int = None) -> List[str]:
-        """Sample representative ideas from a cluster using embedding-based sub-clustering"""
         
+        """Return up to max_ideas that are balanced across sub-clusters (HDBSCAN) or
+        the 'best' representatives by centroid similarity, depending on config.
+    
+        Behaviour:
+          - If n <= max_ideas (or n <= 30), return all (no clustering).
+          - Else:
+              UMAP (10D, metric='cosine') -> HDBSCAN (euclidean).
+              Exclude noise (-1). Allocate ∝ cluster size (stable rounding).
+              Within each sub-cluster: random sample.  (idea_sampling_mode='balanced')
+              Or pick global top-k by cosine-to-centroid. (idea_sampling_mode='best')
+        """
+        
+        from sklearn.metrics.pairwise import cosine_similarity
+        import numpy as np
+        import random
+    
         # Use config value if not specified
         if max_ideas is None:
             max_ideas = self.config.max_ideas_per_cluster
-        
+    
+        # Prepare inputs
         original_count = len(ideas)
-        
-        # Track statistics
         self.sampling_stats['clusters_processed'] += 1
         self.sampling_stats['total_original_ideas'] += original_count
-        
-        # If cluster is small enough, return all ideas
-        if original_count <= max_ideas:
-            self.sampling_stats['total_sampled_ideas'] += original_count
-            # Handle both string lists and object lists
-            if ideas and isinstance(ideas[0], str):
-                return ideas
-            else:
-                return [idea.idea for idea in ideas]
-        
-        # FAST PATH: Skip clustering for small clusters (n < 30)
-        if original_count < 30:
-            self.sampling_stats['clusters_sampled'] += 1
-            self.sampling_stats['total_sampled_ideas'] += original_count
-            
-            # Return all ideas for small clusters
-            if ideas and isinstance(ideas[0], str):
-                result = ideas
-            else:
-                result = [idea.idea for idea in ideas]
-            
-            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Idea Sampling (Fast Path - Small): {original_count}→{len(result)} ideas (skip clustering)")
-            
-            return result
-        
-        # FAST PATH: Random selection for moderate clusters (30 ≤ n < 50)
-        if 30 <= original_count < 50:
-            import random
-            
-            # Extract idea texts for random sampling
-            if ideas and isinstance(ideas[0], str):
-                idea_texts = ideas
-            else:
-                idea_texts = [idea.idea for idea in ideas]
-            
-            # Random sample of 30 ideas
-            sampled = random.sample(idea_texts, min(30, len(idea_texts)))
-            
-            self.sampling_stats['clusters_sampled'] += 1
-            self.sampling_stats['total_sampled_ideas'] += len(sampled)
-            
-            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Idea Sampling (Fast Path - Random): {original_count}→{len(sampled)} ideas (random selection)")
-            
-            return sampled
-        
-        # Extract embeddings and idea texts
-        embeddings = []
-        idea_texts = []
-        
-        # Check if we have strings or objects
+    
+        # Helper: normalize to texts + embeddings
+        idea_texts: List[str] = []
+        embeddings: List[np.ndarray] = []
+    
         if ideas and isinstance(ideas[0], str):
-            # Direct string input - no embeddings available
-            idea_texts = ideas
+            idea_texts = list(ideas)
+            # no embeddings available in this branch
         else:
-            # Object input - extract embeddings if available
             for idea in ideas:
-                if hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                    embeddings.append(idea.idea_embedding)
-                    idea_texts.append(idea.idea)
+                txt = idea.idea if hasattr(idea, "idea") else str(idea)
+                idea_texts.append(txt)
+                if hasattr(idea, "idea_embedding") and idea.idea_embedding is not None:
+                    embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
                 else:
-                    # Fallback for ideas without embeddings
-                    idea_texts.append(idea.idea if hasattr(idea, 'idea') else str(idea))
-        
-        # If no embeddings available, fall back to simple sampling
-        if not embeddings:
-            step = len(idea_texts) // max_ideas
-            sampled = [idea_texts[i] for i in range(0, len(idea_texts), max(1, step))][:max_ideas]
-            
-            # Track sampling statistics
+                    embeddings.append(None)
+    
+        n = len(idea_texts)
+    
+        # Early exit: small clusters — keep existing behaviour (no clustering/noise filtering)
+        if n <= max_ideas or n <= 30:
+            self.sampling_stats['clusters_sampled'] += 1
+            self.sampling_stats['total_sampled_ideas'] += n
+            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Idea Sampling (Small/Direct): {n}→{n} (no clustering)")
+            return idea_texts
+    
+        # If we cannot cluster (missing embeddings), use a simple spacing or random fallback
+        have_dense_embeddings = all(e is not None for e in embeddings)
+        if not have_dense_embeddings:
+            k = min(max_ideas, n)
+            sampled = random.sample(idea_texts, k)
             self.sampling_stats['clusters_sampled'] += 1
             self.sampling_stats['total_sampled_ideas'] += len(sampled)
-            
-            # Report fallback sampling
             if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-                self.verbose_reporter.stat_line(f"Idea Sampling (Fallback): {original_count}→{len(sampled)} ideas (no embeddings available)")
-            
+                self.verbose_reporter.stat_line(
+                    f"Idea Sampling (Fallback: no embeddings): {n}→{len(sampled)} (random)"
+                )
             return sampled
-        
-        embeddings = np.array(embeddings)
-        
-        # Perform clustering
-        clustering = self._smart_clustering(embeddings)
-        cluster_labels = clustering.fit_predict(embeddings)
-        
-        # Group ideas by cluster
-        sub_clusters = {}
-        for i, label in enumerate(cluster_labels):
-            if label not in sub_clusters:
-                sub_clusters[label] = []
-            sub_clusters[label].append({
-                'index': i,
-                'idea': idea_texts[i],
-                'embedding': embeddings[i]
-            })
-        
-        n_sub_clusters = len(sub_clusters)
-        
-        # Proportional sampling
-        allocation = self._calculate_proportional_allocation(sub_clusters, max_ideas)
-        
-        # Sample from each sub-cluster
-        sampled_ideas = []
-        for cluster_id, cluster_ideas in sub_clusters.items():
-            n_samples = allocation.get(cluster_id, 1)
-            sampled_from_cluster = self._sample_from_subcluster(cluster_ideas, n_samples)
-            sampled_ideas.extend(sampled_from_cluster)
-        
-        final_sampled = sampled_ideas[:max_ideas]  # Ensure we don't exceed max_ideas
-        
-        # Track sampling statistics
-        self.sampling_stats['clusters_sampled'] += 1
-        self.sampling_stats['total_sampled_ideas'] += len(final_sampled)
-        
-        # Report intelligent sampling with allocation breakdown
-        if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-            allocation_summary = [str(allocation.get(i, 0)) for i in sorted(allocation.keys())]
-            allocation_str = f"[{','.join(allocation_summary)}]"
-            self.verbose_reporter.stat_line(f"Idea Sampling: {original_count}→{len(final_sampled)} ideas, {n_sub_clusters} sub-clusters, allocation: {allocation_str}")
-        
-        return final_sampled
     
-    def _calculate_proportional_allocation(self, sub_clusters: Dict, total_budget: int) -> Dict[int, int]:
-        """Allocate sample budget proportional to sub-cluster sizes"""
-        cluster_sizes = {cluster_id: len(ideas) for cluster_id, ideas in sub_clusters.items()}
-        total_ideas = sum(cluster_sizes.values())
-        
-        allocation = {}
-        remaining_budget = total_budget
-        
-        for cluster_id, size in cluster_sizes.items():
-            # Proportional share
-            proportion = size / total_ideas
-            base_allocation = max(1, int(proportion * total_budget))  # At least 1
-            
-            # Cap to prevent one cluster dominating
-            capped_allocation = min(base_allocation, 8)  # Max 8 per sub-cluster
-            
-            allocation[cluster_id] = capped_allocation
-            remaining_budget -= capped_allocation
-        
-        # Distribute any remaining budget to largest clusters
-        if remaining_budget > 0:
-            largest_clusters = sorted(cluster_sizes.items(), key=lambda x: x[1], reverse=True)
-            for cluster_id, _ in largest_clusters[:remaining_budget]:
-                allocation[cluster_id] += 1
-        
-        return allocation
+        # At this point we have embeddings and n > 30. Decide mode.
+        #mode = getattr(self.config, "idea_sampling_mode", "balanced").lower()  # 'balanced' | 'best'
     
-    def _sample_from_subcluster(self, cluster_ideas: List[Dict], n_samples: int) -> List[str]:
-        """Sample representative ideas from a single sub-cluster with vectorized operations"""
-        if n_samples >= len(cluster_ideas):
-            return [idea['idea'] for idea in cluster_ideas]
-        
-        # VECTORIZED: Pre-compute embeddings matrix once
-        embeddings_matrix = np.array([idea['embedding'] for idea in cluster_ideas])
-        
-        if n_samples == 1:
-            # VECTORIZED: Pick centroid-nearest idea
-            centroid = np.mean(embeddings_matrix, axis=0)
-            similarities = cosine_similarity(embeddings_matrix, [centroid]).flatten()
-            best_idx = np.argmax(similarities)
-            return [cluster_ideas[best_idx]['idea']]
-        
-        # VECTORIZED: For multiple samples: pick centroid-nearest + diversity
-        centroid = np.mean(embeddings_matrix, axis=0)
-        similarities = cosine_similarity(embeddings_matrix, [centroid]).flatten()
-        
-        # VECTORIZED: Pre-compute all pairwise distances once
-        distance_matrix = 1 - cosine_similarity(embeddings_matrix, embeddings_matrix)
-        
-        sampled = []
-        
-        # First pick: most representative (closest to centroid)
-        best_idx = np.argmax(similarities)
-        sampled.append(cluster_ideas[best_idx]['idea'])
-        
-        # Additional picks: maximize diversity using vectorized operations
-        used_indices = [best_idx]
-        for _ in range(n_samples - 1):
-            if len(used_indices) >= len(cluster_ideas):
-                break
-                
-            # VECTORIZED: Find idea most different from already selected
-            available_indices = [i for i in range(len(cluster_ideas)) if i not in used_indices]
-            if not available_indices:
-                break
-            
-            # VECTORIZED: Use pre-computed distance matrix
-            min_distances = distance_matrix[np.ix_(available_indices, used_indices)].min(axis=1)
-            best_relative_idx = np.argmax(min_distances)
-            best_candidate_idx = available_indices[best_relative_idx]
-            
-            sampled.append(cluster_ideas[best_candidate_idx]['idea'])
-            used_indices.append(best_candidate_idx)
-        
-        return sampled
+        emb = np.vstack(embeddings).astype(np.float32)
+    
+        # # "best" mode: top-k by cosine similarity to the global centroid in original space
+        # if mode == "best":
+        #     centroid = emb.mean(axis=0, keepdims=True)
+        #     sims = cosine_similarity(emb, centroid).ravel()
+        #     top_idx = np.argsort(sims)[-max_ideas:][::-1]
+        #     picked = [idea_texts[i] for i in top_idx]
+        #     self.sampling_stats['clusters_sampled'] += 1
+        #     self.sampling_stats['total_sampled_ideas'] += len(picked)
+        #     if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+        #         self.verbose_reporter.stat_line(
+        #             f"Idea Sampling (Best/centroid): {n}→{len(picked)} (cosine-to-centroid top-k)"
+        #         )
+        #     return picked
+    
+        # Balanced mode: UMAP(10D, cosine) → HDBSCAN(euclidean), exclude noise
+        #try:
+        import umap
+        from hdbscan import HDBSCAN
+        from sklearn.preprocessing import normalize 
+        # except Exception as e:
+        #     # If UMAP/HDBSCAN unavailable, fall back to 'best'
+        #     if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+        #         self.verbose_reporter.warning(f"UMAP/HDBSCAN not available ({e}); falling back to centroid top-k")
+        #     centroid = emb.mean(axis=0, keepdims=True)
+        #     sims = cosine_similarity(emb, centroid).ravel()
+        #     top_idx = np.argsort(sims)[-max_ideas:][::-1]
+        #     picked = [idea_texts[i] for i in top_idx]
+        #     self.sampling_stats['clusters_sampled'] += 1
+        #     self.sampling_stats['total_sampled_ideas'] += len(picked)
+        #     return picked
+    
+        # Reduce to 10D with UMAP (cosine), then cluster with HDBSCAN (euclidean)
 
+        L2_emb = normalize(emb, norm="l2", copy=False)
+        
+        reducer = umap.UMAP(n_components=10, n_neighbors=5, metric="cosine", random_state=42)
+        emb_10 = reducer.fit_transform(L2_emb)
+    
+        # Heuristic: min_cluster_size grows sublinearly with n
+        min_cluster_size = max(5, int(np.sqrt(n)))
+        hdb = HDBSCAN(min_cluster_size=min_cluster_size,
+                      min_samples=None,
+                      metric="euclidean",
+                      cluster_selection_method="eom",
+                      allow_single_cluster=False)
+        labels = hdb.fit_predict(emb_10)
+    
+        # Build clusters excluding noise (-1)
+        clusters: Dict[int, List[int]] = {}
+        for i, lbl in enumerate(labels):
+            if lbl == -1:
+                continue  # exclude noise completely
+            clusters.setdefault(int(lbl), []).append(i)
+    
+        total_non_noise = sum(len(v) for v in clusters.values())
+    
+        # If HDBSCAN yielded only noise or a degenerate result, fall back to centroid top-k
+        if total_non_noise == 0:
+            centroid = emb.mean(axis=0, keepdims=True)
+            sims = cosine_similarity(emb, centroid).ravel()
+            top_idx = np.argsort(sims)[-max_ideas:][::-1]
+            picked = [idea_texts[i] for i in top_idx]
+            self.sampling_stats['clusters_sampled'] += 1
+            self.sampling_stats['total_sampled_ideas'] += len(picked)
+            if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(
+                    f"Idea Sampling (Fallback: all-noise): {n}→{len(picked)} (centroid top-k)"
+                )
+            return picked
+    
+        # Allocation ∝ cluster size (stable rounding; may allocate 0 if there are more clusters than budget)
+        budget = min(max_ideas, total_non_noise)
+    
+        sizes = {cid: len(idxs) for cid, idxs in clusters.items()}
+        total = float(total_non_noise)
+    
+        # base quota + fractional remainder for stable rounding
+        raw = {cid: (sizes[cid] / total) * budget for cid in sizes}
+        base = {cid: int(np.floor(raw[cid])) for cid in sizes}
+        remainder = budget - sum(base.values())
+    
+        if remainder > 0:
+            order = sorted(sizes.keys(), key=lambda c: (raw[c] - base[c], sizes[c]), reverse=True)
+            for cid in order[:remainder]:
+                base[cid] += 1
+    
+        allocation = base  # final per-cluster k
+    
+        # Sample within each cluster
+        sampled_indices: List[int] = []
+        for cid, idxs in clusters.items():
+            k = min(len(idxs), allocation.get(cid, 0))
+            if k > 0:
+                sampled_indices.extend(random.sample(idxs, k))
+    
+        # Safety: cap to budget and map to texts
+        sampled_indices = sampled_indices[:budget]
+        sampled_texts = [idea_texts[i] for i in sampled_indices]
+    
+        # Stats + verbose
+        self.sampling_stats['clusters_sampled'] += 1
+        self.sampling_stats['total_sampled_ideas'] += len(sampled_texts)
+    
+        if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+            alloc_str = ", ".join(f"{cid}:{allocation[cid]}" for cid in sorted(allocation))
+            self.verbose_reporter.stat_line(
+                f"Idea Sampling (Balanced/HDBSCAN): {n}→{len(sampled_texts)} "
+                f"clusters={len(clusters)} (noise excluded), allocation: [{alloc_str}]"
+            )
+    
+        return sampled_texts
+    
     #########################################################################################################
     # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -  
     #########################################################################################################
@@ -4065,17 +3957,10 @@ class InductiveCodeGenerator:
                     code_embeddings=code_embeddings
                 )
 
-                # Calculate token overlaps (Jaccard, subset)
-                token_overlaps = self._calculate_token_overlap(
-                    theme_name=theme_name,
-                    candidate_codes=nearest_codes[:20]
-                )
-
-                # Format codes with metrics
-                codes_text = self._format_codes_with_metrics(
+                # Format codes with cosine similarity
+                codes_text = self._format_codes_with_cosine(
                     candidate_codes=nearest_codes[:20],
-                    cosine_scores=cosine_scores,
-                    token_overlaps=token_overlaps
+                    cosine_scores=cosine_scores
                 )
             else:
                 # Fallback: use simple format without metrics
