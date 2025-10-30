@@ -69,17 +69,17 @@ cd src && python pipeline.py
 
 ## High-Level Architecture
 
-### Pipeline Steps (1-10)
-1. **Data Loading** - Import SPSS files via pyreadstat
-2. **Preprocessing** - Text normalization, spell checking (Hunspell), finalization
-3. **Quality Filtering** - LLM-based filtering of meaningless responses
-4. **Idea Extraction** - Segment responses into discrete ideas
-5. **Embedding Generation** - OpenAI/Gemini embeddings with caching
-6. **Clustering** - UMAP dimensionality reduction + HDBSCAN clustering
-7. **Code Generation** - 4-chain LLM prompt system for codebook creation
-8. **Theme Identification** - Hierarchical clustering of generated codes
-9. **Code Assignment** - Map codes back to original response segments
-10. **Export to excel** 
+### Pipeline Steps (0-9)
+0. **Data Loading** - Import SPSS files via pyreadstat
+1. **Preprocessing** - Text normalization, spell checking (Hunspell), finalization
+2. **Quality Filtering** - LLM-based filtering of meaningless responses
+3. **Idea Extraction** - Segment responses into discrete ideas
+4. **Embedding Generation** - OpenAI/Gemini embeddings with caching
+5. **Initial Clustering** - UMAP dimensionality reduction + HDBSCAN clustering
+6. **Codebook Generation** - 4-chain LLM prompt system for codebook creation
+7. **Codebook Refinement** - Hierarchical clustering of generated codes into themes
+8. **Code Assignment** - Map codes back to original response segments
+9. **Export** - Export to Excel 
 
 ### Key Architecture Patterns  
 
@@ -115,7 +115,7 @@ cd src && python pipeline.py
 ### Key Files and Their Roles
 
 #### Core Pipeline Files
-- `pipeline.py` - Main orchestrator with 9-step async pipeline
+- `pipeline.py` - Main orchestrator with 10-step async pipeline (steps 0-9)
 - `config.py` - All configuration classes and defaults
 - `models.py` - Pydantic models with numpy array support
 - `prompts.py` - LLM prompt templates for various stages

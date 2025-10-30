@@ -24,7 +24,7 @@ from pydantic import BaseModel
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, MISCELLANEOUS_CODE_LABELS, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
 from prompts import CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -336,54 +336,23 @@ class CodeAssigner:
     
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
         """Create a sample prompt for token estimation (simplified version)"""
-        # Use first 5 codes for estimation + miscellaneous code (total 6)
+        # Use first 5 codes for estimation
         sample_codes = self.codebook[:min(5, len(self.codebook))]
-        misc_code = self._create_miscellaneous_code()
-        all_sample_codes = list(sample_codes) + [misc_code]
+        all_sample_codes = list(sample_codes) 
 
         candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            #f"Code label: {code.code}\nCode description: {code.definition}\n"
+            f"Code label: {code.code}\n"
             for code in all_sample_codes
         ])
-
-        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
 
         return CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
-            candidate_codes=candidate_codes_text,
-            misc_code_label=misc_label,
-            misc_threshold=self.config.miscellaneous_confidence_threshold
-        )
+            candidate_codes=candidate_codes_text)
 
-    def _create_miscellaneous_code(self) -> models.Codebook:
-        """Create language-specific miscellaneous/catch-all code"""
-        # Get language-specific label, fallback to "Other" if language not found
-        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
-
-        # Create definition based on language
-        if self.language == "Dutch":
-            definition = (
-                f"Overige reacties die niet goed binnen een specifieke code passen. "
-                f"Gebruik deze code voor vage, dubbelzinnige, of niet-gerelateerde antwoorden "
-                f"op de vraag: '{self.var_lab}'"
-            )
-        else:
-            definition = (
-                f"Other responses that do not fit well within a specific code. "
-                f"Use this code for vague, ambiguous, or unrelated answers "
-                f"to the question: '{self.var_lab}'"
-            )
-
-        return models.Codebook(
-            code=misc_label,
-            definition=definition,
-            representative_ideas=[],
-            representative_idea_ids=[],
-            cluster_id=-1  # Special marker for miscellaneous code
-        )
 
     def estimate_tokens(self, prompt: str) -> int:
         """Estimate total tokens using adaptive strategy (following qualityFilter.py)"""
@@ -479,10 +448,10 @@ class CodeAssigner:
             return self._code_embeddings
             
         except Exception as e:
-            #print(f"[DEBUG] ERROR in _get_code_embeddings: {type(e).__name__}: {e}")
+            logger.error(f"[ERROR] Failed to generate code embeddings: {type(e).__name__}: {e}")
             import traceback
-            #print(f"[DEBUG] Embedding traceback: {traceback.format_exc()}")
-            # Return zero embeddings as fallback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            print("⚠️ Warning: Code embedding generation failed, using zero vectors as fallback")
             self._code_embeddings = np.zeros((len(self.codebook), 1536))
             return self._code_embeddings
 
@@ -546,32 +515,23 @@ class CodeAssigner:
         return all_ideas
 
     def _create_prompt(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray) -> str:
-        """Create prompt for a single idea with most similar codes plus miscellaneous code"""
-        # Find top 5 most similar codes (reduced from top_k to make room for miscellaneous)
+        """Create prompt for a single idea with most similar codes"""
+        # Find top 5 most similar codes
         similar_codes = self._find_similar_codes(idea_embedding, top_k=5)
-
-        # Add miscellaneous code as 6th candidate
-        misc_code = self._create_miscellaneous_code()
-        all_candidate_codes = list(similar_codes) + [misc_code]
+        all_candidate_codes = list(similar_codes) 
 
         # Format candidate codes for prompt
         candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            f"Code label: {code.code}\n"
             for code in all_candidate_codes
         ])
 
-        # Get miscellaneous code label for prompt instructions
-        misc_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
-
-        # Create prompt
         prompt = CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
             candidate_codes=candidate_codes_text,
-            misc_code_label=misc_label,
-            misc_threshold=self.config.miscellaneous_confidence_threshold
         )
 
         return prompt
@@ -728,13 +688,12 @@ class CodeAssigner:
             assigned_codes=[fallback_code],
             assigned_themes=fallback_themes,
             assignment_confidence=0.1,
-            assignment_rationale=f"Processing failed, using fallback code"
+            assignment_rationale="Processing failed, using fallback code"
         )
     
     async def worker(self, queue: asyncio.Queue, results: List):
         """Worker coroutine that processes tasks from queue"""
-        worker_id = id(asyncio.current_task())
-        #print(f"[DEBUG] Worker {worker_id} started")
+        #worker_id = id(asyncio.current_task())
         task_count = 0
         
         while True:
@@ -1020,10 +979,11 @@ class CodeAssigner:
             return results
         
         except Exception as e:
-            #print(f"[DEBUG] CRITICAL ERROR in process_all_tasks_async: {type(e).__name__}: {e}")
+            logger.error(f"[CRITICAL ERROR] process_all_tasks_async failed: {type(e).__name__}: {e}")
             import traceback
-            #print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
-            # Return fallback responses for all tasks
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            print(f"\n❌ CODE ASSIGNMENT FAILED: {type(e).__name__}: {e}")
+            print("Returning fallback responses for all tasks...\n")
             fallback_results = []
             for task in tasks:
                 fallback_results.append(self.create_fallback_response(task))

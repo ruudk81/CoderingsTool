@@ -194,7 +194,8 @@ class CodebookRefinementProcessor:
                             subcode = RefinedSubcode(
                                 id=subcode_data.get('id', ''),  # Extract ID from response
                                 code=subcode_data['code'],
-                                description=subcode_data['description']
+                                description=subcode_data['description'],
+                                category=subcode_data.get('category', '')  # Parse category field for 3-level hierarchy
                             )
                             subcodes.append(subcode)
                         else:
@@ -305,7 +306,8 @@ def get_refinement_report(results: CodeRefinementResults) -> dict:
                     {
                         'id': subcode.id,
                         'code': subcode.code,
-                        'description': subcode.description
+                        'description': subcode.description,
+                        'category': subcode.category  # Empty string for 2-level, category name for 3-level
                     }
                     for subcode in category.subcodes
                 ]
@@ -373,13 +375,33 @@ def print_refinement_report(results: CodeRefinementResults):
             print()
         
         if results.refined_codebook.refined_codebook:
-            print("\nREFINED CATEGORIES:")
-            for i, category in enumerate(results.refined_codebook.refined_codebook, 1):
-                print(f"{i}. {category.category} ({len(category.subcodes)} subcodes)")
-                for subcode in category.subcodes:  # Show first 3 subcodes
-                    print(f"   - {subcode.code}")
-                # if len(category.subcodes) > 3:
-                #     print(f"   ... and {len(category.subcodes) - 3} more subcodes")
+            print("\nREFINED HIERARCHY:")
+            for i, theme in enumerate(results.refined_codebook.refined_codebook, 1):
+                print(f"\n{i}. Theme: {theme.category} ({len(theme.subcodes)} codes)")
+
+                # Group subcodes by category for 3-level hierarchy display
+                direct_codes = []  # Codes directly under theme (category == "")
+                categorized_codes = {}  # {category_name: [codes]}
+
+                for subcode in theme.subcodes:
+                    if subcode.category:
+                        # 3-level: Code belongs to a category
+                        if subcode.category not in categorized_codes:
+                            categorized_codes[subcode.category] = []
+                        categorized_codes[subcode.category].append(subcode)
+                    else:
+                        # 2-level: Code directly under theme
+                        direct_codes.append(subcode)
+
+                # Display direct codes (2-level)
+                for code in direct_codes:
+                    print(f"   - {code.code}")
+
+                # Display categorized codes (3-level)
+                for cat_name, codes in categorized_codes.items():
+                    print(f"   Category: {cat_name} ({len(codes)} codes)")
+                    for code in codes:
+                        print(f"      - {code.code}")
     
     print(f"{'='*60}\n")
 

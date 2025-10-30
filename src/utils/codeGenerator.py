@@ -1,6 +1,5 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-
 # === MODULES ========================================================================================================
 import asyncio
 import time
@@ -19,6 +18,10 @@ import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type #wait_exponential
 from pydantic import ValidationError
 from aiolimiter import AsyncLimiter
+
+import umap
+from hdbscan import HDBSCAN
+from sklearn.preprocessing import normalize 
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
@@ -42,7 +45,16 @@ if EXTRA_VERBOSE:
     logging.basicConfig(level=logging.INFO)
 else:
     logging.basicConfig(level=logging.CRITICAL)    
+    
 
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*n_jobs value 1 overridden to 1 by setting random_state.*",
+    category=UserWarning,
+    module=r"umap\.umap_" )
+               
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
@@ -2442,44 +2454,7 @@ class InductiveCodeGenerator:
                 )
             return sampled
     
-        # At this point we have embeddings and n > 30. Decide mode.
-        #mode = getattr(self.config, "idea_sampling_mode", "balanced").lower()  # 'balanced' | 'best'
-    
         emb = np.vstack(embeddings).astype(np.float32)
-    
-        # # "best" mode: top-k by cosine similarity to the global centroid in original space
-        # if mode == "best":
-        #     centroid = emb.mean(axis=0, keepdims=True)
-        #     sims = cosine_similarity(emb, centroid).ravel()
-        #     top_idx = np.argsort(sims)[-max_ideas:][::-1]
-        #     picked = [idea_texts[i] for i in top_idx]
-        #     self.sampling_stats['clusters_sampled'] += 1
-        #     self.sampling_stats['total_sampled_ideas'] += len(picked)
-        #     if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-        #         self.verbose_reporter.stat_line(
-        #             f"Idea Sampling (Best/centroid): {n}→{len(picked)} (cosine-to-centroid top-k)"
-        #         )
-        #     return picked
-    
-        # Balanced mode: UMAP(10D, cosine) → HDBSCAN(euclidean), exclude noise
-        #try:
-        import umap
-        from hdbscan import HDBSCAN
-        from sklearn.preprocessing import normalize 
-        # except Exception as e:
-        #     # If UMAP/HDBSCAN unavailable, fall back to 'best'
-        #     if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
-        #         self.verbose_reporter.warning(f"UMAP/HDBSCAN not available ({e}); falling back to centroid top-k")
-        #     centroid = emb.mean(axis=0, keepdims=True)
-        #     sims = cosine_similarity(emb, centroid).ravel()
-        #     top_idx = np.argsort(sims)[-max_ideas:][::-1]
-        #     picked = [idea_texts[i] for i in top_idx]
-        #     self.sampling_stats['clusters_sampled'] += 1
-        #     self.sampling_stats['total_sampled_ideas'] += len(picked)
-        #     return picked
-    
-        # Reduce to 10D with UMAP (cosine), then cluster with HDBSCAN (euclidean)
-
         L2_emb = normalize(emb, norm="l2", copy=False)
         
         reducer = umap.UMAP(n_components=10, n_neighbors=5, metric="cosine", random_state=42)

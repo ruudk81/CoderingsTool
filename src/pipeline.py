@@ -38,7 +38,7 @@ sample_size = 2000
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 5 # None = run all steps
+RUN_UNTIL_STEP = 8 # None = run all steps
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1830,8 +1830,8 @@ if __name__ == '__main__':
         tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
         tester.test_prompt_1()
         tester.test_prompt_2()
-        tester.test_prompt_3()
-        tester.test_prompt_4()
+        #tester.test_prompt_3()
+        #tester.test_prompt_4()
     
         if codebook_reasoning is not None:
             from utils.codegenResults import display_cluster_analysis
@@ -1871,7 +1871,7 @@ if __name__ == '__main__':
         model_config=model_config,
         force_recalc=force_recalc,
         verbose=VERBOSE,
-        prompt_printer_enabled=PROMPT_PRINTER
+        prompt_printer_enabled=True
     )
     check_execution_stop(8)
     
@@ -1905,7 +1905,50 @@ if __name__ == '__main__':
             print(f"Rationale: {idea.assignment_rationale}")
             print(f"Assignment Confidence: {idea.assignment_confidence}")
             print("-" * 40)
-    
+
+    # Display captured prompt (if PROMPT_PRINTER enabled)
+    if PROMPT_PRINTER:
+        import json
+        from pathlib import Path
+
+        # Prompt files are saved to 'prompt_outputs/' directory
+        prompt_dir = Path("prompt_outputs")
+
+        if prompt_dir.exists():
+            # Find code_assignment prompt files
+            prompt_files = list(prompt_dir.glob("*code_assignment*.json"))
+
+            if prompt_files:
+                # Get the most recent file
+                latest_prompt = max(prompt_files, key=lambda p: p.stat().st_mtime)
+
+                print("\n" + "="*80)
+                print("CAPTURED PROMPT FROM STEP 8 (CODE ASSIGNMENT)")
+                print("="*80)
+
+                with open(latest_prompt, 'r', encoding='utf-8') as f:
+                    prompt_data = json.load(f)
+
+                print(f"\nPrompt File: {latest_prompt.name}")
+                print(f"Step: {prompt_data.get('step_name', 'N/A')}")
+                print(f"Utility: {prompt_data.get('utility_name', 'N/A')}")
+
+                if 'metadata' in prompt_data:
+                    meta = prompt_data['metadata']
+                    print(f"Idea ID: {meta.get('idea_id', 'N/A')}")
+                    print(f"Model: {meta.get('model', 'N/A')}")
+                    print(f"Estimated Tokens: {meta.get('estimated_tokens', 'N/A')}")
+
+                print("\n" + "-"*80)
+                print("PROMPT CONTENT:")
+                print("-"*80)
+                print(prompt_data.get('prompt_content', 'No content'))
+                print("="*80 + "\n")
+            else:
+                print("\n[INFO] No code_assignment prompts captured yet")
+        else:
+            print("\n[INFO] Prompt output directory not found")
+
     # random prompt
     if False: #debug
     
@@ -1963,7 +2006,9 @@ if __name__ == '__main__':
                     var_lab=var_lab,
                     idea_id=idea_id,
                     idea_text=idea_text,
-                    candidate_codes=candidate_codes_text
+                    candidate_codes=candidate_codes_text,
+                    misc_code_label="Overig",   
+                    misc_threshold=0.6   
                 )
                 
                 print(f"\n{'='*60}")
