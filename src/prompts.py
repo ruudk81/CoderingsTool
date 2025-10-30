@@ -141,7 +141,7 @@ Survey question: {survey_question}
 </input>
 
 Definitions
-- Canonical focus entity: the main noun phrase that answers “what or who is this question about?”
+- Canonical focus entity: the main noun phrase that answers "what or who is this question about?"
   It can be:
   - a product/brand/service being evaluated
   - a person/group/institution expected to act
@@ -150,21 +150,65 @@ Definitions
 Constraints
 - Choose exactly one canonical focus.
 - Return a **concise, normalized noun phrase** in {language}.
-- Do **not** include determiners (e.g., “the”, “de”, “het”), quotes, brackets, or trailing punctuation.
+- Do **not** include determiners (e.g., "the", "de", "het"), quotes, brackets, or trailing punctuation.
 - Preserve capitalization for proper nouns/brands; otherwise use lowercase.
-- If the question uses pronouns/deictics (e.g., “this brand”, “our app”), resolve to the most specific **named** entity present; if none, use the most specific generic noun (“app”, “klantenservice”, “bezorgproces”).
+- If the question uses pronouns/deictics (e.g., "this brand", "our app"), resolve to the most specific **named** entity present; if none, use the most specific generic noun ("app", "klantenservice", "bezorgproces").
 - If multiple entities appear, pick the one **most central** to what is being evaluated, judged, or requested.
-- If the question refers to a sub-part/feature (e.g., “payment process” of a store), pick the **sub-part** if that is clearly the evaluation target.
+- If the question refers to a sub-part/feature (e.g., "payment process" of a store), pick the **sub-part** if that is clearly the evaluation target.
 
 Template requirement
 1. Create a phrasing template that downstream steps can use to express evaluations or actions.
-2. Use this structure:  
-   **"[CANONICAL_TERM] [VERB/STATE] [ATTRIBUTE_OR_ACTION]"**
+2. Use this structure:
+   **"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ATTRIBUTE_OR_ACTION]"**
+
+   Where:
+   - CANONICAL_TERM: the focus entity (e.g., "electric vehicles", "klantenservice")
+   - VERB/STATE: appropriate verb in {language} (e.g., "is", "has", "should", "needs", "zijn", "heeft", "moet")
+   - SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty if verb alone is sufficient)
+   - ATTRIBUTE_OR_ACTION: placeholder for the actual content
+
 3. Insert:
    - The canonical term (noun phrase)
-   - The most natural verb/state in {language} (e.g., “is”, “zijn”, “bieden”, “doet”, “heeft”)
+   - The most natural verb/state in {language}
+   - Any necessary scaffolding words (articles, prepositions, auxiliary verbs) to ensure grammatical completeness
    - Leave `[ATTRIBUTE_OR_ACTION]` as a placeholder
+
 4. The result should sound natural and complete up to the placeholder.
+
+Grammatical completeness constraint
+- The template MUST produce a grammatically complete sentence when [ATTRIBUTE_OR_ACTION] is replaced with a simple adjective or noun.
+- Test your template by filling [ATTRIBUTE_OR_ACTION] with a one-word example (e.g., "expensive", "better", "quality").
+- If the result is grammatically incomplete, add necessary scaffolding words BEFORE the placeholder.
+- Common scaffolding patterns:
+  * For "has/heeft": → "has the [quality/feature/association/characteristic] [ATTRIBUTE_OR_ACTION]"
+  * For "needs/moet": → "needs to [action verb] [ATTRIBUTE_OR_ACTION]"
+  * For "should/zou moeten": → "should [action verb] [ATTRIBUTE_OR_ACTION]"
+  * For "is/zijn": → "is [ATTRIBUTE_OR_ACTION]" (often already complete)
+
+Examples of template construction
+
+✓ GOOD templates (grammatically complete):
+- Survey: "Which associations do you have with Brand X?"
+  → "Brand X has the association [ATTRIBUTE_OR_ACTION]"
+  → Test: "Brand X has the association expensive" ✓
+
+- Survey: "What could the manufacturer improve?"
+  → "The manufacturer should improve [ATTRIBUTE_OR_ACTION]"
+  → Test: "The manufacturer should improve quality" ✓
+
+- Survey: "How do you rate the service?"
+  → "The service is [ATTRIBUTE_OR_ACTION]"
+  → Test: "The service is excellent" ✓
+
+✗ BAD templates (grammatically incomplete):
+- "Brand X has [ATTRIBUTE_OR_ACTION]"
+  → Test: "Brand X has expensive" ✗ (incomplete - missing noun after "has")
+
+- "The manufacturer should [ATTRIBUTE_OR_ACTION]"
+  → Test: "The manufacturer should quality" ✗ (missing verb)
+
+- "The service needs [ATTRIBUTE_OR_ACTION]"
+  → Test: "The service needs better" ✗ (incomplete - "needs" requires "to be" or noun)
 
 Output format (return **only** this JSON object)
 {{
@@ -177,6 +221,8 @@ Validation checklist before returning:
 - Values are in {language}
 - `canonical_term` is a noun phrase with no article or punctuation
 - `canonical_phrasing` includes the correct verb/state (no placeholders for it) and ends with `[ATTRIBUTE_OR_ACTION]`
+- Test grammatical completeness: replace [ATTRIBUTE_OR_ACTION] with a simple word - result must be a complete sentence
+- If incomplete, add necessary scaffolding words (articles, prepositions, auxiliary verbs) before the placeholder
 
 """
 
@@ -438,7 +484,7 @@ Critical requirements:
 """
 
 CODING_DECISION_PROMPT = """
-You are a {language} qualitative research assistant helping to maintain a codebook for survey data analysis. 
+You are a {language} qualitative research assistant helping to maintain a codebook for survey data analysis.
 Your task is to decide whether existing codes in a codebook are sufficient to describe a new theme, or whether modifications or new codes are needed.
 
 <inputs>
@@ -447,7 +493,7 @@ Here is the survey question being analyzed:
 
 Here is the new theme:
 - name: "{theme_name}"
-- decription: "{theme_description}"    
+- description: "{theme_description}"
 
 Here is the list with existing codes in the codebook:
 {code_text}
@@ -455,64 +501,139 @@ Here is the list with existing codes in the codebook:
 
 You have three possible decisions:
 - **USE**: An existing code already captures the new theme's central meaning sufficiently
-- **MODIFY**: An existing code is close but needs refinement for clarity, scope, or better alignment  
+- **MODIFY**: An existing code is close but needs refinement for clarity, scope, or better alignment
 - **CREATE**: No existing code sufficiently captures the new theme
 
 ---
 
-A. **Coverage Assessment**
-<coverage_assessment>
-Estimate how much the meaning of the new theme overlaps with the meaning of each existing code.
-Use the similarity metrics as quantitative clues:
-- **Cosine similarity** reflects semantic equivalence (meaning).
-- **Jaccard** reflects lexical similarity (shared wording).
-- **subset_t2c" reflect what % of theme words appear in the code (0.0–1.0)
-- **subset_c2t** reflect What % of code words appear in the theme (0.0–1.0)
+A. **Understanding Similarity Metrics**
+<similarity_metrics>
+Each code is provided with four similarity metrics comparing it to the new theme:
 
-Use these metrics to approximate a coverage percentage for each candidate code.
-</coverage_assessment>
+1. **Cosine (0.0-1.0)**: Semantic similarity - do the theme and code MEAN the same thing?
+   - High cosine (≥0.85) = Same underlying concept, even with different words
+   - Uses AI embeddings to capture meaning beyond exact wording
+
+2. **Jaccard (0.0-1.0)**: Word overlap - do they SHARE the exact same words?
+   - High jaccard (≥0.60) = Strong lexical/terminology overlap
+   - Measures literal word matching
+
+3. **subset_t2c (0.0-1.0)**: Theme coverage - what % of theme words appear in the code?
+   - High subset_t2c (≥0.70) = Code covers most theme concepts
+   - Low subset_t2c (<0.50) = Code misses key theme aspects
+
+4. **subset_c2t (0.0-1.0)**: Code specificity - what % of code words appear in the theme?
+   - High subset_c2t (≥0.70) = Code is specific to theme (not too broad)
+   - Low subset_c2t (<0.50) = Code includes concepts beyond the theme
+
+Use these metrics as quantitative clues, then apply qualitative judgment of meaning coverage.
+</similarity_metrics>
 
 ---
 
-B. **Decision Thresholds**
+B. **Metric Pattern Interpretation**
+<pattern_interpretation>
+Common patterns and their implications:
+
+**Pattern 1 - Exact or near-exact match:**
+- Cosine ≥0.90, Jaccard ≥0.70, both subsets ≥0.80
+- → Strong USE candidate (nearly identical concepts and wording)
+
+**Pattern 2 - Semantic match with different wording:**
+- Cosine ≥0.85, Jaccard <0.40, subset_t2c ≥0.60
+- → MODIFY candidate (same meaning, but standardize terminology)
+
+**Pattern 3 - Code too broad (includes extra concepts):**
+- subset_t2c high (≥0.70), subset_c2t low (<0.50)
+- → Code covers theme but also includes unrelated concepts
+- → Usually CREATE (theme deserves its own specific code)
+
+**Pattern 4 - Code too narrow (misses theme aspects):**
+- subset_c2t high (≥0.70), subset_t2c low (<0.50)
+- → Code is relevant but theme has additional concepts
+- → MODIFY to broaden scope, or CREATE if gap is large
+
+**Pattern 5 - Weak alignment:**
+- Cosine <0.70, Jaccard <0.30, both subsets <0.50
+- → CREATE (insufficient overlap for reuse)
+</pattern_interpretation>
+
+---
+
+C. **Decision Thresholds**
 <decision_thresholds>
 Make your final decision using both the quantitative metrics and your qualitative judgment of meaning coverage.
 
 1. **USE** — when ALL of the following are true:
-    - cosine ≥ 0.88 (was 0.92 - lowered for more reuse)
-    - jaccard ≥ 0.50
-    - subset_t2c ≥ 0.70 AND subset_c2t ≥ 0.70
+    - Cosine ≥0.88
+    - Jaccard ≥0.50
+    - subset_t2c ≥0.70 AND subset_c2t ≥0.70
     - The existing code captures the theme's meaning with no major gaps
 
-    (≈ ≥85% conceptual coverage)
+    (Approximately ≥85% conceptual coverage)
 
-2. **MODIFY** — when:
-    - 0.80 ≤ cosine < 0.88 (widened range)
-    - jaccard ≥ 0.40 (some lexical overlap)
-    - At least ONE of:
-       a) subset_c2t ≥ 0.70 AND subset_t2c < 0.70 (code too narrow - extend it)
-       b) Both subsets 0.60–0.70 (close but not quite)
-    - Minor scope or phrasing adjustment would make it fit
+2. **MODIFY** — when there is strong alignment but specific gaps exist:
+    - 0.80 ≤ Cosine <0.88 (semantically close)
+    - Jaccard ≥0.40 (some shared terminology)
+    - At least ONE of the following:
+       a) subset_c2t ≥0.70 AND subset_t2c <0.70
+          → Code is on-topic but theme has additional concepts
+          → Modification needed: Broaden code to include missing theme aspects
 
-     (≈ 70–85% conceptual coverage)
+       b) subset_t2c ≥0.70 AND subset_c2t <0.70
+          → Theme is covered but code includes extra concepts
+          → Modification needed: Narrow or refine code scope
+
+       c) Both subsets 0.60–0.70
+          → Close match with minor gaps on both sides
+          → Modification needed: Fine-tune wording for better alignment
+    - Minor scope or phrasing adjustment would make the code fit perfectly
+
+    (Approximately 70–85% conceptual coverage)
 
 3. **CREATE** — when ANY of the following are true:
-    - cosine < 0.80 (was 0.85 - stricter)
-    - jaccard < 0.40
-    - Both subset_t2c < 0.60 AND subset_c2t < 0.60 (lowered to catch more)
-    - The theme introduces distinct new concepts not in existing codes
+    - Cosine <0.80
+    - Jaccard <0.40
+    - Both subset_t2c <0.60 AND subset_c2t <0.60
+    - The theme introduces distinct new concepts not adequately covered by existing codes
 
-    (≈ <70% conceptual coverage)
+    (Approximately <70% conceptual coverage)
 </decision_thresholds>
 
 ---
 
-C. **Edge cases**
+D. **Decision Examples**
+<examples>
+Example 1 - Clear USE:
+  Theme: "Delivery speed problems"
+  Code:  "Delivery speed issues" (cosine: 0.92, jaccard: 0.67, t2c: 1.00, c2t: 0.67)
+  → Decision: USE (nearly identical meaning, minor wording difference acceptable)
+
+Example 2 - Clear MODIFY (broaden code):
+  Theme: "Fast delivery and tracking concerns"
+  Code:  "Delivery issues" (cosine: 0.82, jaccard: 0.33, t2c: 0.33, c2t: 0.50)
+  → Decision: MODIFY (code is relevant but misses "speed" and "tracking" aspects - broaden it)
+
+Example 3 - Clear MODIFY (narrow code):
+  Theme: "Late delivery"
+  Code:  "Delivery speed tracking packaging issues" (cosine: 0.81, jaccard: 0.20, t2c: 1.00, c2t: 0.25)
+  → Decision: MODIFY (code includes theme but is too broad - narrow to focus on speed)
+
+Example 4 - Clear CREATE:
+  Theme: "Packaging quality defects"
+  Code:  "Delivery speed" (cosine: 0.35, jaccard: 0.00, t2c: 0.00, c2t: 0.00)
+  → Decision: CREATE (completely different concepts - no meaningful overlap)
+</examples>
+
+---
+
+E. **Edge Cases**
 <edge_cases>
-- For borderline cases (84–86% coverage): Choose **MODIFY** if a minor adjustment would achieve full coverage; otherwise **USE**.
-- If the theme combines multiple ideas (e.g., “X and Y”), choose **CREATE** (not atomic).
-- Do not modify existing codes in ways that would broaden them beyond their intended scope.
-- Always mention which metrics or thresholds informed your decision (e.g., cosine 0.88 + subset 0.75 ⇒ MODIFY).
+- For borderline cases (84–86% coverage): Choose MODIFY if a minor adjustment would achieve full coverage; otherwise USE if meaning is already captured.
+- If the theme combines multiple distinct ideas (e.g., "X and Y"), choose CREATE (themes should be atomic).
+- Do not modify existing codes in ways that would broaden them beyond their intended scope or make them too general.
+- When metrics conflict (e.g., high cosine but low subsets), prioritize semantic meaning (cosine) but note the gap in your justification.
+- Always mention which metrics, patterns, or thresholds informed your decision (e.g., "cosine 0.88 + subset_t2c 0.75 matches Pattern 2 → MODIFY").
 </edge_cases>
 
 ---
@@ -766,8 +887,8 @@ Critical remarks:
 # =============================================================================
 
 CODEBOOK_REFINEMENT_PROMPT = """
-You are a qualitative researcher and codebook methodologist. 
-Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook. 
+You are a qualitative researcher and codebook methodologist.
+Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook.
 The descriptive codes are derived from survey responses.
 
 <inputs>
@@ -779,73 +900,110 @@ Raw descriptive codes to refine:
 {raw_codes}
 </inputs>
 
+<critical_requirement>
+**PRESERVE ALL CODES**: You MUST preserve ALL codes from the input. Do not merge or collapse codes that represent distinct concepts. Every code in the input list must appear in your output.
+</critical_requirement>
+
 <guidance>
 A high-quality codebook must be:
-- Non-redundant: No duplicate codes that restate the same idea in different words.
-- Inherently distinct: codes within the same category differ in content, not just phrasing.
-- Semantically differentiated: Wording for each code should be clearly different; minor overlap is acceptable.
-- Parsimonious: Use the fewest codes needed to cover the data comprehensively.
-- Well-structured: Organize in a clear hierarchy — Themes → Codes.
-- Each code has exactly one parent (no multi-parenting).
-- Consistently labeled: Use short, uniform, action-oriented labels that are meaningful for the survey question: “{survey_question}”.    
-    
+- **Code preservation**: ALL input codes appear in output (no merging or collapsing)
+- Non-redundant: No duplicate codes that restate the same idea in different words
+- Inherently distinct: codes within the same category differ in content, not just phrasing
+- Semantically differentiated: Wording for each code should be clearly different
+- Parsimonious: Use the fewest levels needed to organize codes clearly
+- Well-structured: Organize in a clear hierarchy (2-level or 3-level)
+- Each code has exactly one parent (no multi-parenting)
+- Consistently labeled: Short, uniform, action-oriented labels meaningful for: "{survey_question}"
+
+Structure options:
+1. **2-Level Hierarchy** (Theme → Codes):
+   Use when codes under a theme are distinct and don't naturally cluster further.
+   Example:
+   - Theme: "Pricing"
+     - Code: "Price transparency"
+     - Code: "Value for money perception"
+
+2. **3-Level Hierarchy** (Theme → Category → Codes):
+   Use when multiple codes share a semantic superordinate concept.
+   Example:
+   - Theme: "Taste"
+     - Code: "Fresh taste" (directly under theme)
+     - Category: "Additives" (intermediate grouping)
+       - Code: "Salt concerns"
+       - Code: "Sweetness preferences"
+       - Code: "Herb usage"
+
+When to use 3 levels:
+- Multiple codes share a clear superordinate concept (e.g., "additives", "delivery methods", "payment types")
+- Codes would otherwise be merged/collapsed in 2-level structure
+- The category is semantically meaningful (not arbitrary)
+- Within a theme, you can MIX: some codes directly under theme, others under categories
+
 When codes overlap semantically:
-- Merge near-duplicates into a single code and remove duplicates.
-- Consolidate overlapping codes under one inclusive label that captures the shared idea.
-- **Preserve contrasts**: Keep separate codes that reflect  distinctive, contrasting, or polar aspects/cateogries/product-attributes, even if they belong under the same broader theme.
-- Refine wording of any vague code to make its scope precise.    
+- Only merge true duplicates (identical meaning, different wording)
+- **Preserve contrasts**: Keep separate codes that reflect distinctive aspects
+- Use categories to group related codes WITHOUT collapsing them
 
 Labeling:
-- Prefer active, specific labels (e.g., “Seeks clearer instructions” over “Clarity”).
-- Include a brief definition/decision rule and 1–2 examples for each code.
+- Prefer active, specific labels (e.g., "Seeks clearer instructions" over "Clarity")
+- Include brief definition/decision rule for each code
 </guidance>
 
 <analysis_steps>
-1. Review all raw codes.
-   - Identify redundant codes (semantic duplicates, identical meaning).
-   - Identify overlapping codes that can be merged into broader codes.
+1. Review all raw codes - count them and plan to preserve ALL.
 
-2. Construct main themes that represent broad domains.
+2. Identify true duplicates (identical meaning) - these can be merged.
 
-3. Assign refined codes under these themes.
-   - Each code must represent ONE distinct, actionable concept.
-   - Remove vague or overly broad codes.
+3. Construct main themes that represent broad domains.
 
-4. Ensure consistent naming:
-   - Labels ≤ 8 words.
-   - Active or descriptive phrasing.
-   - No repetition across themes.
+4. For each theme, decide structure:
+   - Do codes naturally group into semantic categories? → Use 3 levels
+   - Are codes distinct without further grouping? → Use 2 levels
+   - Mix allowed: some codes direct, others categorized
 
-5. Document the restructuring in "analysis":
-   - How many raw codes were merged.
-   - Which semantic duplicates were consolidated.
-   - Which themes were created and why.
+5. Assign codes:
+   - Each code must represent ONE distinct concept
+   - Preserve ALL non-duplicate codes from input
+   - Use categories when semantic groupings exist
+
+6. Ensure consistent naming (≤ 8 words, active phrasing)
+
+7. Document in "analysis":
+   - How many codes preserved vs merged
+   - Why 2-level or 3-level structure was chosen per theme
+   - Which categories were created and why
 </analysis_steps>
 
 Provide your response as a valid JSON dictionary using this exact structure:
 {{
-  "analysis": "Provide your analysis here in {language} (describe main restructuring decisions, what was merged, how categories were formed).",
+  "analysis": "Provide your analysis in {language}: describe decisions, what was merged (if anything), how hierarchy was structured, why categories were or were not used.",
    "refined_codebook": [
       {{
         "theme": "Main theme label",
         "codes": [
           {{
-            "id" : "original code_id(s) - only multiple if merged"
-            "code": "Refined subcode label",
-            "description": "≤ 20 words explanation of what this code means"
+            "id": "original code_id(s)",
+            "code": "Code label",
+            "description": "≤ 20 words explanation",
+            "category": ""  // Empty string for 2-level (code directly under theme), or category name for 3-level
+          }},
+          {{
+            "id": "2",
+            "code": "Another code",
+            "description": "≤ 20 words",
+            "category": "Intermediate Category Name"  // Groups this code with others
           }}
-          // Add additional subcodes as needed
         ]
       }}
-      // Add additional categories here
     ]
 }}
 
-
 Critical requirements:
-- Output must be valid JSON only — no extra commentary or explanation before or after.  
-- Replace "codebook_id" and "language" with the actual values provided.  
-- Conduct your analysis in the specified language.  
+- Output must be valid JSON only — no commentary before or after
+- PRESERVE ALL codes from input (unless true duplicates)
+- Use "category": "" for codes directly under theme (2-level)
+- Use "category": "Name" to group related codes (3-level)
+- Conduct analysis in {language}
 """
 
 THEME_ORGANIZATION_REASONING_PROMPT = """
@@ -936,7 +1094,7 @@ Before submitting, verify that:
 # =============================================================================
 
 CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 5 candidate codes to a specific response segment.
+You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 6 candidate codes to a specific response segment.
 
 First, review the original survey question:
 <survey_question>
@@ -949,7 +1107,7 @@ Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-Now, review the 5 candidate codes and their descriptions:
+Now, review the 6 candidate codes and their descriptions:
 <candidate_codes>
 {candidate_codes}
 
@@ -957,16 +1115,27 @@ Note:
 - Prioritize the CODE LABEL; Use the CODE DESCRIPTION only as supporting context to confirm scope and clarify meaning.
 </candidate_codes>
 
+IMPORTANT - Special Code Available:
+One of the codes above is "{misc_code_label}" - a catch-all code for responses that do not fit well with any specific code.
+Use "{misc_code_label}" when:
+- The confidence for the best-fitting specific code would be less than {misc_threshold} (below "Good" fit)
+- The response is too vague, ambiguous, or unrelated to be classified specifically
+- None of the specific codes adequately capture the core meaning of the response
+
+Prefer specific codes when there is a "Good" fit or better (confidence ≥ {misc_threshold}). Only use "{misc_code_label}" for weaker conceptual fits.
+
 Your goal is to select the single best fitting code for the response segment. Follow these steps:
 
 1. Carefully read and understand each candidate code's definition.
 2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
 3. Identify which code best captures the core concept expressed in the response.
-4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
+4. Evaluate if the best specific code has a "Good" fit (≥ {misc_threshold}) or if "{misc_code_label}" is more appropriate.
+5. Assign exactly one code based on semantic meaning and fit quality.
 
 When selecting the best fitting code:
 - Prioritize exact conceptual matches based on meaning.
 - Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
+- Use "{misc_code_label}" when the best specific code's fit quality is below {misc_threshold}.
 
 After selecting the code, rate the strength of the fit using this scale:
 - Excellent (0.90–1.00): Exact match — the idea uses the same language or concepts as the code definition, with no ambiguity or need for interpretation.
