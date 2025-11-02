@@ -19,6 +19,7 @@ import warnings
 import concurrent.futures
 import multiprocessing
 import time
+import re
 
 from config import UMAPConfig, ClusteringConfig, HDBSCANConfig
 
@@ -94,7 +95,6 @@ class Clusterer:
         self._original_input_list = input_list
         self.output_list: List[ResultMapper] = []
         self._populate_from_input_list(input_list)
-        self.random_state = 42
         self.rs = np.random.default_rng(42)
         self.DBCV_D = ClusteringConfig.DBCV_D  # safe for DBCV (avoid overflow)
         self.enable_dbcv = self.clustering_config.enable_dbcv
@@ -135,14 +135,15 @@ class Clusterer:
     def _umap_embed(self, X: np.ndarray) -> np.ndarray:
         with warnings.catch_warnings():  # Suppress UMAP n_jobs warning when using random_state
             warnings.filterwarnings("ignore", message="n_jobs value .* overridden to 1 by setting random_state", category=UserWarning, module="umap",)
-    
-            if self.umap_config.parallel_jobs:
+
+            # FIX: Check use_parallel_umap flag instead of parallel_jobs value
+            if self.umap_config.use_parallel_umap:
                 random_state = None
                 transform_seed = None
-                n_jobs = -1  # use all cores; UMAP may cap/override
+                n_jobs = self.umap_config.parallel_jobs  # Use configured value
             else:
-                random_state = 42
-                transform_seed = 42
+                random_state = self.umap_config.random_state
+                transform_seed = self.umap_config.transform_seed
                 n_jobs = 1
     
             n = X.shape[0]
@@ -665,7 +666,7 @@ class Clusterer:
         """Evaluate HDBSCAN configuration with kappa-based scoring and all metrics"""
         start_time = time.time()
 
-        # Fit HDBSCAN
+        # Fit HDBSCAN (deterministic by design)
         db = HDBSCAN(
             min_cluster_size=mcs,
             min_samples=ms,
@@ -1141,12 +1142,64 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"🏆 Best configuration: min_samples={best['ms']}, min_cluster_size={best['mcs']}")
         return best["hdbscan_model"], best["labels"], best["summary"]
 
+    def _deduplicate_embeddings(self, embeddings: np.ndarray) -> Tuple[np.ndarray, Dict[int, List[int]], float]:
+
+        from collections import defaultdict
+
+        # Convert embeddings to tuples for hashing (for duplicate detection)
+        embedding_to_indices = defaultdict(list)
+
+        for i, emb in enumerate(embeddings):
+            # Use tuple of rounded values as key (handle floating point precision)
+            key = tuple(np.round(emb, decimals=8))
+            embedding_to_indices[key].append(i)
+
+        # Extract unique embeddings and create reverse mapping
+        unique_embeddings_list = []
+        idx_to_duplicates = {}
+
+        for unique_idx, (key, original_indices) in enumerate(embedding_to_indices.items()):
+            # Store first occurrence as the unique embedding
+            unique_embeddings_list.append(embeddings[original_indices[0]])
+            # Map unique index to all original indices
+            idx_to_duplicates[unique_idx] = original_indices
+
+        unique_embeddings = np.array(unique_embeddings_list)
+        compression_ratio = len(unique_embeddings) / len(embeddings)
+
+        return unique_embeddings, idx_to_duplicates, compression_ratio
+
+    def _replicate_labels(self, unique_labels: np.ndarray, idx_to_duplicates: Dict[int, List[int]], total_count: int) -> np.ndarray:
+
+        all_labels = np.empty(total_count, dtype=int)
+
+        for unique_idx, label in enumerate(unique_labels):
+            # Assign same label to all duplicates
+            for original_idx in idx_to_duplicates[unique_idx]:
+                all_labels[original_idx] = label
+
+        return all_labels
+
     def run(self):
         """Enhanced clustering pipeline with automatic optimization"""
         # Display input statistics
-        
+
         embeddings = np.array([item.idea_embedding for item in self.output_list])
         self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
+
+        # Deduplicate embeddings for clustering
+        unique_embeddings, idx_to_duplicates, compression_ratio = self._deduplicate_embeddings(embeddings)
+
+        if compression_ratio < 1.0:
+            self.verbose_reporter.stat_line(
+                f"Deduplication: {len(unique_embeddings)} unique embeddings "
+                f"({compression_ratio:.1%} compression, {len(embeddings) - len(unique_embeddings)} duplicates)"
+            )
+            #embeddings_to_cluster = unique_embeddings
+        else:
+            self.verbose_reporter.stat_line("No duplicate embeddings found")
+            #embeddings_to_cluster = embeddings
+            #idx_to_duplicates = {i: [i] for i in range(len(embeddings))}  # Identity mapping
         
         # PCA Reduction, if applicable
         self.verbose_reporter.empty_line()
@@ -1213,7 +1266,7 @@ class Clusterer:
         # Processing stats
         unique_labels = set(labels)
         num_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
-        noise_points = list(labels).count(-1)
+        #noise_points = list(labels).count(-1)
 
         # Calculate final hard noise metrics (after merging)
         pca_embeddings_array = np.vstack([item.pca_embedding for item in self.output_list])
@@ -1302,47 +1355,91 @@ class Clusterer:
             # Show up to 3 random examples from this cluster
             examples = random.sample(cluster_ideas, min(3, len(cluster_ideas)))
             for example in examples:
+                cleaned_example = re.sub(r"\[.*?\]", "", example)
+                cleaned_example = re.sub(r"\s+", " ", cleaned_example).strip()
+
                 # Truncate long ideas to 80 characters
-                if len(example) > 80:
-                    example = example[:77] + "..."
-                self.verbose_reporter.stat_line(f"    → \"{example}\"")
+                if len(cleaned_example) > 80:
+                    cleaned_example = cleaned_example[:77] + "..."
+                self.verbose_reporter.stat_line(f"    → \"{cleaned_example}\"")
             
             # Add spacing between clusters
             if (cluster_id, size) != sample_clusters[-1]:
                 self.verbose_reporter.empty_line()
 
-    def to_cluster_model(self) -> List[ClusterModel]:
-        respondent_groups = {}
-        for item in self.output_list:
-            respondent_groups.setdefault(item.respondent_id, []).append(item)
+    # def to_cluster_model(self) -> List[ClusterModel]:
+    #     respondent_groups = {}
+    #     for item in self.output_list:
+    #         respondent_groups.setdefault(item.respondent_id, []).append(item)
 
-        cluster_models = []
-        for respondent_id, items in respondent_groups.items():
-            items.sort(key=lambda x: x.processing_order)
+    #     cluster_models = []
+    #     for respondent_id, items in respondent_groups.items():
+    #         items.sort(key=lambda x: x.processing_order)
 
-            original_model = next((m for m in self._original_input_list if m.respondent_id == respondent_id), None)
+    #         original_model = next((m for m in self._original_input_list if m.respondent_id == respondent_id), None)
 
-            cluster_submodels = [
-                ClusterSubmodel(
-                    idea_id=item.idea_id,
-                    idea=item.idea,
-                    idea_embedding=item.idea_embedding,
-                    initial_cluster=item.initial_idea_cluster
-                ) for item in items
-            ]
+    #         cluster_submodels = [
+    #             ClusterSubmodel(
+    #                 idea_id=item.idea_id,
+    #                 idea=item.idea,
+    #                 idea_embedding=item.idea_embedding,
+    #                 initial_cluster=item.initial_idea_cluster
+    #             ) for item in items
+    #         ]
 
-            if original_model:
-                cluster_model = ClusterModel(
-                    **original_model.model_dump(exclude={'response_ideas'}),
-                    response_ideas=cluster_submodels)
-            else:
-                cluster_model = ClusterModel(
-                    respondent_id=respondent_id,
-                    response_ideas=cluster_submodels,
-                    #idea_embeddings=cluster_submodels,
-                    idea_count=len(cluster_submodels)
+    #         if original_model:
+    #             cluster_model = ClusterModel(
+    #                 **original_model.model_dump(exclude={'response_ideas'}),
+    #                 response_ideas=cluster_submodels)
+    #         else:
+    #             cluster_model = ClusterModel(
+    #                 respondent_id=respondent_id,
+    #                 response_ideas=cluster_submodels,
+    #                 #idea_embeddings=cluster_submodels,
+    #                 idea_count=len(cluster_submodels)
+    #             )
+
+    #         cluster_models.append(cluster_model)
+
+    #     return cluster_models
+
+
+def clean_cluster_ideas(cluster_results: List,) -> List:
+   
+    import re
+   
+    cleaned_results = []
+
+    for result in cluster_results:
+        cleaned_response_ideas = []
+
+        if result.response_ideas:
+            for idea_submodel in result.response_ideas:
+                # Extract and clean idea text
+                cleaned_idea = idea_submodel.idea
+                cleaned_idea = re.sub(r"\[.*?\]", "", cleaned_idea)
+                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+
+                # Create new ClusterSubmodel with cleaned text
+                cleaned_submodel = ClusterSubmodel(
+                    idea_id=idea_submodel.idea_id,
+                    idea=cleaned_idea,
+                    idea_embedding=idea_submodel.idea_embedding,
+                    initial_cluster=idea_submodel.initial_cluster,
+                    expanded_cluster=idea_submodel.expanded_cluster
                 )
+                cleaned_response_ideas.append(cleaned_submodel)
 
-            cluster_models.append(cluster_model)
+        # Create new ClusterModel with cleaned ideas
+        cleaned_result = ClusterModel(
+            respondent_id=result.respondent_id,
+            response=result.response,
+            response_type=result.response_type,
+            quality_filter=result.quality_filter,
+            quality_filter_code=result.quality_filter_code,
+            response_ideas=cleaned_response_ideas,
+            idea_count=len(cleaned_response_ideas)
+        )
+        cleaned_results.append(cleaned_result)
 
-        return cluster_models
+    return cleaned_results

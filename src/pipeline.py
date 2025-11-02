@@ -20,14 +20,15 @@ model_config = ModelConfig()
 # var_name = "q19"
 # var_name = "Q18Q19"
 
-# filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Q20"
-
-filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
-var_name = "Qd1_combined"
-sample_size = 2000 
+var_name = "Q20"
+sample_size = 500 
+
+# filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+# id_column = "DLNMID"
+# var_name = "Qd1_combined"
+# sample_size = 2000 
 
 # filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 # id_column = "DLNMID"
@@ -38,7 +39,7 @@ sample_size = 2000
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 3  
+RUN_UNTIL_STEP = 7
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -944,7 +945,7 @@ def step_6_generate_codebook(
     Returns:
         tuple: (codebook_main: CodebookModel, codebook_reasoning: CodeGeneratorReasoningResults or None)
     """
-    from utils import speculativeStarterCodes, codeGenerator, verboseReporter, promptPrinter
+    from utils import speculativeStarterCodes, codeGenerator, clusterer, verboseReporter, promptPrinter
     
     step_name = "codebook_generation"
 
@@ -1046,9 +1047,15 @@ def step_6_generate_codebook(
             codebook = []
             results = {}  # Empty results for caching check
         else:
+            # Clean ideas before code generation (remove brackets, normalize whitespace)
+            if verbose:
+                print("\nCleaning ideas for code generation...")
+
+            cleaned_cluster_results = clusterer.clean_cluster_ideas(initial_cluster_results) #removal of meta data/context specifiers from idea text
+          
             # Phase 2: Inductive code generation
             generator = codeGenerator.InductiveCodeGenerator(
-                cluster_results=initial_cluster_results,
+                cluster_results=cleaned_cluster_results,  # Use cleaned version
                 starter_codes=starter_codes,
                 var_lab=var_lab,
                 verbose=True,
@@ -1776,12 +1783,16 @@ if __name__ == '__main__':
     
     if False : # debug if true
         import random
+        import re
         n_samples = 1
         sampled_items = random.sample(encoded_text, n_samples)
         for item in sampled_items:
             print(item.response)
             for segment in item.response_ideas:
-                print(f"- {segment.idea}")
+                idea = segment.idea
+                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+                print(f"- {cleaned_idea}")
     
     # === STEP 4 ====
     """Generate embeddings"""
@@ -1798,12 +1809,16 @@ if __name__ == '__main__':
     
     if False: #debug if true
         import random
+        import re
         n_samples = 1
         sampled_items = random.sample(embedded_text, n_samples)
         for item in sampled_items:
             print(f"{item.response}\n")
             for segment in item.response_ideas:
-                print(f"- {segment.idea}")
+                idea = segment.idea
+                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+                print(f"- {cleaned_idea}")
     
     # === STEP 5 ====
     """Reduce data/get clusters"""
@@ -1820,6 +1835,7 @@ if __name__ == '__main__':
     
     if False: #debug - print random clusters  
         import random
+        import re
         cluster_ids = list(set([
             response_idea.initial_cluster 
             for result in initial_cluster_results 
@@ -1831,12 +1847,16 @@ if __name__ == '__main__':
         for result in initial_cluster_results:
             for response_idea in result.response_ideas:   
                 if response_idea.initial_cluster == sampled_cluster:
-                    cluster_segments.append(response_idea.idea)
+                    idea = response_idea.idea
+                    cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                    cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+                    cluster_segments.append(cleaned_idea)
         sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
         for segment_desc in sampled_segments:
             print(f"-    {segment_desc}")
         
     if False: #debug if true - print all clusters
+        import re
         cluster_ids = list(set([
             response_idea.initial_cluster 
             for result in initial_cluster_results 
@@ -1852,7 +1872,10 @@ if __name__ == '__main__':
                     for item in initial_cluster_results:
                         for subitem in item.response_ideas:
                             if subitem.initial_cluster == z:
-                                print(subitem.idea)
+                                idea = subitem.idea
+                                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+                                print(cleaned_idea)
             input("\n🔸 Press Enter to continue to the next batch of clusters...")
     
     # === STEP 6 ====
