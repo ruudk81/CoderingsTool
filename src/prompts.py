@@ -226,6 +226,102 @@ Validation checklist before returning:
 
 """
 
+CONTEXT_SPECIFIER_PROMPT1 = """
+You are analyzing survey responses to extract contextual metadata.
+
+Survey question: {survey_question}
+
+Sample responses ({chunk_size} examples):
+{chunk_responses}
+
+Extract these GROUP 1 specifiers (speaker characteristics):
+
+1. **lang**: Language/dialect code
+   - Identify the primary language and any dialect/regional variations
+   - Format: ISO code 
+   - Examples: "nl-NL" (Dutch Netherlands), "en-GB" (British English)
+
+2. **perspective**: Stakeholder viewpoint
+   - From whose perspective are these responses given?
+   - Common values: "consumer", "employee", "partner", "expert", "general_public"
+   - Examples: "consumer" (customer feedback), "employee" (internal survey)
+
+3. **intent**: Purpose/communicative function
+   - What are respondents trying to do with their responses?
+   - Common values: "evaluate", "describe", "suggest", "complain", "praise", "question"
+   - Examples: "evaluate" (assessing brand), "suggest" (recommendations)
+
+Provide concise answers (2-5 words each) in {language}.""" #structure output given to instructor = pydantic model
+
+CONTEXT_SPECIFIER_PROMPT2 = """
+You are analyzing survey responses to extract contextual metadata.
+
+Survey question: {survey_question}
+
+Sample responses ({chunk_size} examples):
+{chunk_responses}
+
+Extract these GROUP 2 specifiers (subject matter):
+
+1. **domain**: Industry/sector domain
+   - What industry or sector does this survey concern?
+   - Examples: "finance" (banking survey), "healthcare" (hospital satisfaction)
+
+2. **topic**: Specific subject matter
+   - What is the specific topic being discussed?
+   - Examples: "brand_association" (brand perception), "customer_service" (support experience)
+
+3. **entity**: Main entity/subject
+   - What specific organization, product, or brand is the primary focus?
+   - Use lowercase with underscores for multi-word names
+   - Examples: "asn_bank", "tesla_model_3", "albert_heijn", "ns_trains"
+
+Provide concise answers (2-5 words each) in {language}.""" #structure output given to instructor = pydantic model
+
+CONSOLIDATE_SPECIFIERS_GROUP1 = """
+You are consolidating contextual metadata extracted from multiple chunks of survey responses.
+
+Survey question: {survey_question}
+
+Different chunks produced these GROUP 1 specifiers (speaker characteristics):
+
+{chunk_results}
+
+Your task: Consolidate these into ONE canonical set of specifiers.
+
+Guidelines:
+- Resolve semantic variations (e.g., "evaluative" vs "assessment viewpoint" → choose most accurate)
+- For **lang**: Standardize to ISO format (e.g., "Dutch" → "nl-NL", "English" → "en-US")
+- For **perspective**: Choose the most representative viewpoint across all chunks
+- For **intent**: Choose the most common communicative goal
+
+If chunks agree: use the consensus value
+If chunks disagree: choose the most frequently occurring concept (semantic similarity, not lexical match)
+
+Return ONE consolidated set of GROUP 1 specifiers."""
+
+CONSOLIDATE_SPECIFIERS_GROUP2 = """
+You are consolidating contextual metadata extracted from multiple chunks of survey responses.
+
+Survey question: {survey_question}
+
+Different chunks produced these GROUP 2 specifiers (subject matter):
+
+{chunk_results}
+
+Your task: Consolidate these into ONE canonical set of specifiers.
+
+Guidelines:
+- Resolve semantic variations (e.g., "financial services" vs "banking sector" → choose most accurate)
+- For **domain**: Standardize to lowercase, single/hyphenated word
+- For **topic**: Choose the most representative subject matter across all chunks
+- For **entity**: Standardize format (lowercase_with_underscores)
+
+If chunks agree: use the consensus value
+If chunks disagree: choose the most frequently occurring concept (semantic similarity, not lexical match)
+
+Return ONE consolidated set of GROUP 2 specifiers."""
+
 IDEA_EXTRACTION_PROMPT = """
 You are a {language} language expert in analyzing written responses to open-ended questions in surveys. 
 Your task is to extract ALL distinct ideas expressed in a respondent's written answer.  
@@ -281,9 +377,37 @@ Written response: {response}
     - Capture both explicit statements and ideas that are clearly implied by the response.
 
 6. Edge Cases
-    - If the response is empty, irrelevant, or “N/A”: return an empty array [].
+    - If the response is empty, irrelevant, or "N/A": return an empty array [].
     - If the response is off-topic: extract ideas anyway but note they may be off-topic.
     - If only one idea is present: return it in a single-item array.
+
+7. Sentiment and Sense Extraction
+
+   For EACH idea you extract, you must also classify:
+
+   **sentiment**: The emotional/evaluative tone of the idea
+   - **positive**: Favorable, satisfied, praising, appreciative
+   - **negative**: Critical, dissatisfied, complaining, unfavorable
+   - **neutral**: Factual, neither positive nor negative, descriptive
+   - **mixed**: Contains both positive and negative elements
+
+   Examples:
+   - "excellent service" → positive
+   - "poor quality" → negative
+   - "located in Amsterdam" → neutral
+   - "good product but expensive" → mixed
+
+   **sense**: The modality or nature of the statement
+   - **factual**: Objective statement of fact or observation
+   - **evaluative**: Subjective judgment, opinion, or assessment
+   - **aspirational**: Desire, wish, or suggestion for future
+   - **experiential**: Personal experience or anecdote
+
+   Examples:
+   - "ASN Bank is sustainable" → evaluative (judgment)
+   - "I received a loan from ASN Bank" → experiential (personal experience)
+   - "ASN Bank should improve service" → aspirational (suggestion)
+   - "ASN Bank has 500,000 customers" → factual (objective fact)
 </instructions>
 
 <output_format>
@@ -291,6 +415,8 @@ Return the extracted ideas as a JSON array. Each item should include:
 - "respondent_id": exactly as provided
 - "idea_id": a string number (numbering always starts at "1" and increments sequentially -e.g. "1", "2", etc.).
 - "idea": the descriptive phrase in {language}, normalized and phrased using the provided phrasing template.
+- "sentiment": one of ["positive", "negative", "neutral", "mixed"]
+- "sense": one of ["factual", "evaluative", "aspirational", "experiential"]
 
 **TEMPLATE COMPLIANCE CHECK:**
 Before returning, verify that EVERY "idea" field starts with the exact prefix from the phrasing template.
