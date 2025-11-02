@@ -35,10 +35,8 @@ from .cached_resources import get_openai_client, get_tiktoken_encoding
 
 async_client = get_openai_client(OPENAI_API_KEY)
 
-# ============================================================================
-# RATE LIMITING CLASSES (upgraded to match qualityFilter.py)
-# ============================================================================
 
+# === RATE LIMITING CLASSES  ========================================================================================================
 class TokenBucket:
     """Simple token bucket for TPM limiting"""
     def __init__(self, tokens_per_minute):
@@ -120,7 +118,6 @@ class LatencyTracker:
 
 
 # === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
-
 @dataclass
 class ApiLimits:
     """API limits structure for bootstrap calculations"""
@@ -162,18 +159,31 @@ async def bootstrap_measure_async(call_fn, n_probes: int = 3):
 
 
 # === PYDANTIC MODELS ========================================================================================================
-
 class SubjectExtractionResponse(BaseModel):
     """Response model for subject/actor extraction"""
     decision: Literal["CANONICAL_SUBJECT", "CANONICAL_ACTOR"] = Field(default="CANONICAL_SUBJECT", description="Whether to use subject or actor phrasing")
     canonical_term: str = Field(description="The canonical subject or actor as a single word or short phrase")
     canonical_phrasing: str = Field(description="Template with canonical term and verb/state")
 
+class GenericSpecifierGroup1Response(BaseModel):
+    """Group 1: Speaker characteristics"""
+    lang: str = Field(description="Language/dialect code (e.g., nl-NL, en-US)")
+    perspective: str = Field(description="Stakeholder viewpoint (e.g., consumer, employee)")
+    intent: str = Field(description="Purpose of responses (e.g., evaluate, describe)")
+
+class GenericSpecifierGroup2Response(BaseModel):
+    """Group 2: Subject matter"""
+    domain: str = Field(description="Industry domain (e.g., finance, healthcare)")
+    topic: str = Field(description="Subject matter (e.g., brand_association, customer_service)")
+    entity: str = Field(description="Main entity (e.g., merk_x, company_name)")
+
 class IdeaResponse(BaseModel):
     """Pydantic model for idea extraction response - matches prompt output format"""
     respondent_id: str = Field(alias_choices=['respondent_id', 'respond_id', 'respondent', 'respondrespondent_id'])
     idea_id: str = Field(default="1", alias_choices=['idea_id', 'id'])
     idea: str = Field(description="The extracted idea text", alias_choices=['idea', 'content'])
+    sentiment: str = Field(default="neutral", description="Sentiment: positive, negative, neutral, mixed")
+    sense: str = Field(default="factual", description="Sense: factual, evaluative, aspirational, experiential")
 
     # Class variable to hold expected template prefix (set dynamically per extraction)
     _expected_template_prefix: str = ""
@@ -198,9 +208,7 @@ class IdeaResponse(BaseModel):
 
         return v
 
-
 # === MAIN IDEA EXTRACTOR CLASS ========================================================================================================
-
 class IdeaExtractor:
     def __init__(
         self,
@@ -267,9 +275,12 @@ class IdeaExtractor:
             'rate_limits': 0,
             'timeouts': 0
         }
-        
+
         # Cache for subject extraction to avoid redundant LLM calls
         self._subject_cache = {}
+
+        # Generic specifiers (will be populated during extraction)
+        self.generic_specifiers = {}
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting"""
@@ -349,6 +360,266 @@ class IdeaExtractor:
             )
             self._subject_cache[survey_question] = fallback
             return fallback
+
+    async def _consolidate_specifiers(self, group: int, chunk_results: List[Dict]) -> Dict[str, str]:
+        """
+        Consolidate specifier results from multiple chunks using LLM.
+
+        Args:
+            group: 1 for Group1 (lang/perspective/intent) or 2 for Group2 (domain/topic/entity)
+            chunk_results: List of results from different chunks, each with 'response' field
+
+        Returns:
+            Dict with consolidated specifier values
+        """
+        from prompts import CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2
+
+        # Format chunk results for prompt
+        formatted_results = []
+        for idx, result in enumerate(chunk_results, 1):
+            response_obj = result['response']
+            if group == 1:
+                formatted_results.append(
+                    f"Chunk {idx}:\n"
+                    f"  - lang: {response_obj.lang}\n"
+                    f"  - perspective: {response_obj.perspective}\n"
+                    f"  - intent: {response_obj.intent}"
+                )
+            else:
+                formatted_results.append(
+                    f"Chunk {idx}:\n"
+                    f"  - domain: {response_obj.domain}\n"
+                    f"  - topic: {response_obj.topic}\n"
+                    f"  - entity: {response_obj.entity}"
+                )
+
+        chunk_results_text = "\n\n".join(formatted_results)
+
+        # Select appropriate prompt and response model
+        if group == 1:
+            prompt = CONSOLIDATE_SPECIFIERS_GROUP1.format(
+                survey_question=self.var_lab,
+                chunk_results=chunk_results_text
+            )
+            response_model = GenericSpecifierGroup1Response
+        else:
+            prompt = CONSOLIDATE_SPECIFIERS_GROUP2.format(
+                survey_question=self.var_lab,
+                chunk_results=chunk_results_text
+            )
+            response_model = GenericSpecifierGroup2Response
+
+        # Make API call with rate limiting
+        async with self.semaphore:
+            await self.tpm_bucket.acquire(2000)  # Conservative estimate
+            await self.rate_limiter.acquire()
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                response_model=response_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                seed=self.model_config.seed
+            )
+
+            await self.tpm_bucket.reconcile(0)
+
+        # Convert response to dict
+        if group == 1:
+            return {
+                "lang": response.lang,
+                "perspective": response.perspective,
+                "intent": response.intent
+            }
+        else:
+            return {
+                "domain": response.domain,
+                "topic": response.topic,
+                "entity": response.entity
+            }
+
+    async def _extract_generic_specifiers(self) -> Dict[str, str]:
+
+        import random
+        from collections import Counter
+
+        # Sample responses (20% with min 50, max 1000)
+        sample_size = min(1000, max(int(0.2 * len(self.responses)), 50))
+        sample = random.sample(self.responses, min(sample_size, len(self.responses)))
+
+        # Split into chunks
+        chunk_size = 100
+        chunks = [sample[i:i+chunk_size] for i in range(0, len(sample), chunk_size)]
+
+        self.verbose_reporter.stat_line(f"Generic specifiers: {len(sample)} samples, {len(chunks)} chunks")
+
+        # Create tasks for both groups
+        tasks = []
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_text = "\n".join([f"- {r.response}" for r in chunk])
+
+            # Group 1 task (lang + perspective + intent)
+            tasks.append({
+                'task_id': f"group1_chunk{chunk_idx}",
+                'group': 1,
+                'chunk_idx': chunk_idx,
+                'chunk_text': chunk_text,
+                'chunk_size': len(chunk)
+            })
+
+            # Group 2 task (domain + topic + entity)
+            tasks.append({
+                'task_id': f"group2_chunk{chunk_idx}",
+                'group': 2,
+                'chunk_idx': chunk_idx,
+                'chunk_text': chunk_text,
+                'chunk_size': len(chunk)
+            })
+
+        # Process tasks with existing infrastructure
+        results = await self._process_generic_specifier_tasks(tasks)
+
+        # Reduce: Consolidate results using LLM (semantic consolidation, not lexical voting)
+        group1_results = [r for r in results if r['group'] == 1]
+        group2_results = [r for r in results if r['group'] == 2]
+
+        # Check for empty results and provide fallback defaults
+        if not group1_results or not group2_results:
+            self.verbose_reporter.stat_line(f"  Warning: Generic specifier extraction failed ({len(group1_results)} group1, {len(group2_results)} group2 results)")
+
+            # Determine language from self.language
+            lang_code = "nl-NL" if "dutch" in self.language.lower() or "nederlands" in self.language.lower() else "en-US"
+
+            result = {
+                "lang": lang_code,
+                "perspective": "consumer",
+                "intent": "evaluate",
+                "domain": "general",
+                "topic": "feedback",
+                "entity": "unknown"
+            }
+            self.verbose_reporter.stat_line(f"  Using fallback defaults: {result}")
+            return result
+
+        # LLM-based consolidation for Group 1 and Group 2
+        # If only 1 chunk, skip consolidation (no semantic variation to resolve)
+        if len(group1_results) == 1:
+            group1_consolidated = {
+                "lang": group1_results[0]['response'].lang,
+                "perspective": group1_results[0]['response'].perspective,
+                "intent": group1_results[0]['response'].intent
+            }
+        else:
+            group1_consolidated = await self._consolidate_specifiers(1, group1_results)
+
+        if len(group2_results) == 1:
+            group2_consolidated = {
+                "domain": group2_results[0]['response'].domain,
+                "topic": group2_results[0]['response'].topic,
+                "entity": group2_results[0]['response'].entity
+            }
+        else:
+            group2_consolidated = await self._consolidate_specifiers(2, group2_results)
+
+        # Combine consolidated results
+        result = {**group1_consolidated, **group2_consolidated}
+
+        self.verbose_reporter.stat_line(f"  Results: {result}")
+        return result
+
+    async def _process_generic_specifier_tasks(self, tasks: List[Dict]) -> List[Dict]:
+       
+        import asyncio
+
+        # Create queue and results list
+        queue = asyncio.Queue()
+        results = []
+
+        # Add tasks to queue
+        for task in tasks:
+            await queue.put(task)
+
+        # Add sentinels for workers
+        num_workers = min(10, len(tasks))  # Max 10 workers (one per task)
+        for _ in range(num_workers):
+            await queue.put(None)
+
+        # Launch workers (reuse existing worker pattern)
+        workers = [
+            asyncio.create_task(self._generic_specifier_worker(queue, results))
+            for _ in range(num_workers)
+        ]
+
+        # Wait for completion
+        await asyncio.gather(*workers)
+
+        return results
+
+    async def _generic_specifier_worker(self, queue: asyncio.Queue, results: List):
+        """Worker for processing generic specifier tasks (follows existing pattern)"""
+        while True:
+            task = await queue.get()
+            if task is None:
+                break
+
+            try:
+                # Safety check: verify rate limiters are initialized
+                if self.semaphore is None or self.rate_limiter is None:
+                    raise RuntimeError(
+                        f"Rate limiters not initialized before worker started. "
+                        f"semaphore={self.semaphore}, rate_limiter={self.rate_limiter}"
+                    )
+
+                # Acquire semaphore (reuse existing self.semaphore)
+                async with self.semaphore:
+                    # Wait for rate limit availability (conservative estimate: 1500 tokens/task)
+                    await self.tpm_bucket.acquire(1500)
+                    await self.rate_limiter.acquire()
+
+                    # Build prompt based on group
+                    if task['group'] == 1:
+                        from prompts import CONTEXT_SPECIFIER_PROMPT1
+                        prompt = CONTEXT_SPECIFIER_PROMPT1.format(
+                            language=self.language,
+                            survey_question=self.var_lab,
+                            chunk_responses=task['chunk_text'],
+                            chunk_size=task['chunk_size']
+                        )
+                        response_model = GenericSpecifierGroup1Response
+                    else:
+                        from prompts import CONTEXT_SPECIFIER_PROMPT2
+                        prompt = CONTEXT_SPECIFIER_PROMPT2.format(
+                            language=self.language,
+                            survey_question=self.var_lab,
+                            chunk_responses=task['chunk_text'],
+                            chunk_size=task['chunk_size']
+                        )
+                        response_model = GenericSpecifierGroup2Response
+
+                    # API call with structured output
+                    response = await self.client.chat.completions.create(
+                        model=self.model,
+                        response_model=response_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.0,
+                        seed=self.model_config.seed
+                    )
+
+                    # Track tokens (conservative estimate if usage not available)
+                    await self.tpm_bucket.reconcile(0)  # Update based on actual if available
+
+                    # Store result
+                    results.append({
+                        'task_id': task['task_id'],
+                        'group': task['group'],
+                        'chunk_idx': task['chunk_idx'],
+                        'response': response
+                    })
+
+            except Exception as e:
+                self.verbose_reporter.stat_line(f"Generic specifier task {task['task_id']} failed: {e}")
+            finally:
+                queue.task_done()
 
     def _build_prompt(self, respondent_id: str, response: str, canonical_phrasing: str, phrasing_template: str) -> str:
         """Build prompt for a single response"""
@@ -605,8 +876,14 @@ class IdeaExtractor:
                     ideas = []
                     for i, idea_response in enumerate(response):
                         # Handle missing or empty ideas with validation
-                        idea_text = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
-                        if idea_text and idea_text not in ["", "NA", "N/A"]:
+                        normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
+                        if normalized and normalized not in ["", "NA", "N/A"]:
+                            # Format idea with contextual specifiers
+                            idea_text = self._format_idea_with_specifiers(
+                                normalized,
+                                idea_response.sentiment,
+                                idea_response.sense
+                            )
                             # Use the idea_id from response if available, otherwise generate
                             response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                             ideas.append(models.IdeasExtractedSubmodel(
@@ -659,27 +936,65 @@ class IdeaExtractor:
         )
 
     def _normalize_idea_text(self, text: str) -> str:
-        """Normalize extracted idea text for consistency"""
         import unicodedata
 
         if not text:
             return ""
 
-        # Unicode normalization (NFC form)
         text = unicodedata.normalize('NFC', text)
-
-        # Strip leading/trailing whitespace
         text = text.strip()
-
-        # Collapse multiple spaces into single space
         text = ' '.join(text.split())
 
-        # Remove zero-width characters
         zero_width_chars = ['\u200b', '\u200c', '\u200d', '\ufeff']
         for char in zero_width_chars:
             text = text.replace(char, '')
 
         return text
+
+    def _format_idea_with_specifiers(self, normalized_text: str, sentiment: str, sense: str) -> str:
+       
+        # Generic tags (one per bracket with key=value)
+        generic_line = "".join([
+            f"[lang={self.generic_specifiers.get('lang', '')}]",
+            f"[domain={self.generic_specifiers.get('domain', '')}]",
+            f"[topic={self.generic_specifiers.get('topic', '')}]",
+            f"[perspective={self.generic_specifiers.get('perspective', '')}]",
+            f"[entity={self.generic_specifiers.get('entity', '')}]",
+            f"[intent={self.generic_specifiers.get('intent', '')}]"
+        ])
+
+        # Specific tags (one per bracket with key=value)
+        specific_line = f"[sentiment={sentiment}][sense={sense}]"
+
+        # Format: generic line + specific line + text
+        return f"{generic_line}\n{specific_line}\n{normalized_text}"
+
+    def _initialize_rate_limiters(self, avg_latency_s: float, avg_tokens: int, limits, num_tasks: int) -> int:
+        
+        # Calculate optimal concurrency using Little's Law
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        Little = compute_optimal_concurrency(
+            api_limits, avg_latency_s, avg_tokens,
+            processing_config=self.processing_config,
+            cap=self.processing_config.concurrency_cap_permissive,
+            min_conc=self.processing_config.concurrency_min_permissive
+        )
+        optimal = min(300, max(Little, 100))
+
+        # Initialize rate limiting components
+        arrival_rate = min(
+            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
+            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60)
+
+        if arrival_rate < 1:
+            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
+        else:
+            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+
+        self.semaphore = asyncio.Semaphore(min(num_tasks, optimal))
+        self.optimal_concurrency = min(num_tasks, optimal)
+
+        return optimal
 
     async def worker(self, queue: asyncio.Queue, results: List):
         """Worker coroutine that processes tasks from queue"""
@@ -726,12 +1041,24 @@ class IdeaExtractor:
         # Extract subject once at the beginning to cache it
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Extracting canonical subject/actor from survey question...")
-        
+
         # This will cache the subject for all subsequent calls
         await self._extract_subject(self.var_lab)
-        
+
+        # Initialize CONSERVATIVE rate limiters for generic specifiers extraction
+        # (Will be re-initialized with accurate bootstrap measurements later)
+        conservative_latency = 2.0  # Conservative estimate
+        conservative_tokens = self.avg_tokens  # Use initial calculation from __init__
+        self._initialize_rate_limiters(conservative_latency, conservative_tokens, limits, num_tasks=20)
         if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
+            self.verbose_reporter.stat_line(f"Initialized conservative rate limiters (latency={conservative_latency}s, tokens={conservative_tokens})\n")
+
+        # Extract generic contextual specifiers (can now use self.semaphore and self.rate_limiter)
+        self.verbose_reporter.stat_line("Extracting generic contextual specifiers...")
+        self.generic_specifiers = await self._extract_generic_specifiers()
+
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("\nRunning bootstrap measurement (3 probe calls)...")
         
         start_time = time.time()
         task_cycle = itertools.cycle(sample_tasks)
@@ -751,27 +1078,20 @@ class IdeaExtractor:
         
         # Update avg_tokens with bootstrap measurement
         self.avg_tokens = int(avg_tokens)
-        
-        # Calculate optimal concurrency using Little's Law (matching qualityFilter)
-        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-        optimal = min(300, max(Little, 100))  # constrained to range 100-300
 
-        # Initialize rate limiting components
-        arrival_rate = min(
-            limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-            limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
+        # RE-INITIALIZE rate limiters with accurate bootstrap measurements
+        optimal = self._initialize_rate_limiters(avg_latency_s, avg_tokens, limits, len(tasks))
+
+        # Calculate Little's Law for diagnostics
+        api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
+        Little = compute_optimal_concurrency(
+            api_limits, avg_latency_s, avg_tokens,
+            processing_config=self.processing_config,
+            cap=self.processing_config.concurrency_cap_permissive,
+            min_conc=self.processing_config.concurrency_min_permissive
         )
 
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-
-        self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
-        self.optimal_concurrency = min(len(tasks), optimal)
-
-        print("[RATE LIMITING SETUP]")
+        print("\nRATE LIMITING SETUP - Bootstrap Optimized")
         print(f"- Model: {self.model}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
         print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
@@ -791,7 +1111,7 @@ class IdeaExtractor:
         expected_throughput = min(rpm_throughput, tpm_throughput) 
         num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
        
-        print(f"Workers launched: (concurrent subroutines): {num_workers}")
+        print(f"\nWorkers launched: (concurrent subroutines): {num_workers}")
         print(f"API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
         
         # Create queue and results list
@@ -970,11 +1290,14 @@ class IdeaExtractor:
 
         # Show idea examples with enhanced format
         if response_examples:
+            import re
             print("\n📋 Sample extracted ideas:")
             for example in response_examples:
                 print(f'  • "{example["response"]}"')
                 for idea in example['ideas']:
-                    print(f'    → "{idea}"')
+                    cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                    cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+                    print(f'    → "{cleaned_idea}"')
                 if example != response_examples[-1]:
                     print()
         
