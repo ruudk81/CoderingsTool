@@ -374,6 +374,11 @@ class IdeaExtractor:
         """
         from prompts import CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2
 
+        # Announce consolidation is starting
+        if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+            group_name = "Group1 (lang/perspective/intent)" if group == 1 else "Group2 (domain/topic/entity)"
+            self.verbose_reporter.stat_line(f"  Consolidating {len(chunk_results)} {group_name} results via LLM...")
+
         # Format chunk results for prompt
         formatted_results = []
         for idx, result in enumerate(chunk_results, 1):
@@ -423,6 +428,17 @@ class IdeaExtractor:
             )
 
             await self.tpm_bucket.reconcile(0)
+
+        # Show consolidation result
+        if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
+            if group == 1:
+                self.verbose_reporter.stat_line(
+                    f"    Consolidated: lang={response.lang}, perspective={response.perspective}, intent={response.intent}"
+                )
+            else:
+                self.verbose_reporter.stat_line(
+                    f"    Consolidated: domain={response.domain}, topic={response.topic}, entity={response.entity}"
+                )
 
         # Convert response to dict
         if group == 1:
@@ -483,6 +499,20 @@ class IdeaExtractor:
         group1_results = [r for r in results if r['group'] == 1]
         group2_results = [r for r in results if r['group'] == 2]
 
+        # Show chunk-level results BEFORE consolidation
+        if self.verbose_reporter.enabled and group1_results and group2_results:
+            self.verbose_reporter.stat_line(f"  Chunk-level results:")
+            for r in group1_results:
+                self.verbose_reporter.stat_line(
+                    f"    Chunk {r['chunk_idx']+1} (Group1): "
+                    f"lang={r['response'].lang}, perspective={r['response'].perspective}, intent={r['response'].intent}"
+                )
+            for r in group2_results:
+                self.verbose_reporter.stat_line(
+                    f"    Chunk {r['chunk_idx']+1} (Group2): "
+                    f"domain={r['response'].domain}, topic={r['response'].topic}, entity={r['response'].entity}"
+                )
+
         # Check for empty results and provide fallback defaults
         if not group1_results or not group2_results:
             self.verbose_reporter.stat_line(f"  Warning: Generic specifier extraction failed ({len(group1_results)} group1, {len(group2_results)} group2 results)")
@@ -504,6 +534,8 @@ class IdeaExtractor:
         # LLM-based consolidation for Group 1 and Group 2
         # If only 1 chunk, skip consolidation (no semantic variation to resolve)
         if len(group1_results) == 1:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"  Single chunk - skipping consolidation for Group1")
             group1_consolidated = {
                 "lang": group1_results[0]['response'].lang,
                 "perspective": group1_results[0]['response'].perspective,
@@ -513,6 +545,8 @@ class IdeaExtractor:
             group1_consolidated = await self._consolidate_specifiers(1, group1_results)
 
         if len(group2_results) == 1:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"  Single chunk - skipping consolidation for Group2")
             group2_consolidated = {
                 "domain": group2_results[0]['response'].domain,
                 "topic": group2_results[0]['response'].topic,
