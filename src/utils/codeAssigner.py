@@ -11,8 +11,6 @@ from collections import deque
 import numpy as np
 
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-#import tiktoken
-from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
 from aiolimiter import AsyncLimiter
@@ -29,7 +27,6 @@ from prompts import CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
-from .embedder import Embedder
 from .cached_resources import get_openai_client, get_tiktoken_encoding
 
 try:
@@ -184,41 +181,6 @@ class CodeAssignmentResponse(BaseModel):
     assigned_themes: Optional[List[str]] = None
 
 
-class EmbeddingLoader:
-    """Utility class for loading and managing embeddings from cache"""
-    
-    @staticmethod
-    def load_idea_embeddings_from_cache(cache_manager, filename):
-        """Load idea embeddings from cache step 'embeddings'"""
-        embeddings_results = cache_manager.load_from_cache(
-            filename, "embeddings", models.EmbeddingsModel
-        )
-        
-        if not embeddings_results:
-            return []
-        
-        # Extract all ideas with their embeddings
-        ideas_with_embeddings = []
-        for result in embeddings_results:
-            if result.response_ideas:
-                for idea in result.response_ideas:
-                    if idea.idea_embedding is not None:
-                        ideas_with_embeddings.append({
-                            'idea': idea.idea,
-                            'idea_id': idea.idea_id,
-                            'embedding': idea.idea_embedding,
-                            'respondent_id': result.respondent_id
-                        })
-        
-        return ideas_with_embeddings
-    
-    @staticmethod
-    def format_codes_for_embedding(enriched_codebook):
-        """Format enriched codebook entries for embedding generation"""
-        # Use definitions only to match idea embedding format (just text)
-        return [code.definition for code in enriched_codebook]
-
-
 class CodeAssigner:
     """
     Simplified code assignment with direct LLM processing.
@@ -231,7 +193,6 @@ class CodeAssigner:
         codebook: List[models.Codebook],
         var_lab: str,
         code_to_theme_mapping: Optional[Dict[str, str]] = None,
-        cached_idea_embeddings: Optional[List[Dict]] = None,
         config: Optional[CodeAssignmentConfig] = None,
         model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
@@ -250,13 +211,6 @@ class CodeAssigner:
         self.verbose_reporter = VerboseReporter(verbose, capture_logging=True)
         self.prompt_printer = prompt_printer
         self._captured_prompt = False
-
-        # Cache for idea embeddings if provided (for compatibility)
-        self._cached_idea_embeddings = cached_idea_embeddings
-
-        # Code embedding cache and embedder
-        self._code_embeddings = None
-        self.embedder = Embedder(model_config=self.model_config)
 
         # Theme mapping for code-to-theme assignments
         self.code_to_theme_mapping = code_to_theme_mapping or {}
@@ -303,7 +257,11 @@ class CodeAssigner:
             'rate_limits': 0,
             'timeouts': 0
         }
-        
+
+        # Prompt/Response logging for debugging
+        self.prompt_responses = []  # Stores (respondent_id, idea_id, prompt, response, confidence)
+        self.verbose = verbose  # Store for conditional logging
+
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
 
@@ -335,15 +293,11 @@ class CodeAssigner:
         return int(avg_input * 1.15)
     
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
-        """Create a sample prompt for token estimation (simplified version)"""
-        # Use first 5 codes for estimation
-        sample_codes = self.codebook[:min(5, len(self.codebook))]
-        all_sample_codes = list(sample_codes) 
-
+        """Create a sample prompt for token estimation using all codes"""
+        # Use ALL codes for accurate estimation
         candidate_codes_text = "\n".join([
-            #f"Code label: {code.code}\nCode description: {code.definition}\n"
-            f"Code label: {code.code}\n"
-            for code in all_sample_codes
+            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            for code in self.codebook
         ])
 
         return CODE_ASSIGNMENT_PROMPT.format(
@@ -391,85 +345,6 @@ class CodeAssigner:
         
         return total_estimate
 
-    async def _get_code_embeddings(self) -> np.ndarray:
-        """Generate or retrieve cached embeddings for all codes in codebook"""
-        #print(f"[DEBUG] _get_code_embeddings called")
-        
-        if self._code_embeddings is not None:
-            #print(f"[DEBUG] Using cached code embeddings")
-            return self._code_embeddings
-        
-        #print(f"[DEBUG] Creating embeddings for {len(self.codebook)} codes")
-        self.verbose_reporter.stat_line(f"Generating embeddings for {len(self.codebook)} codes...")
-        
-        try:
-            # Create temporary models for embedding generation
-            temp_models = []
-            #print(f"[DEBUG] Creating {len(self.codebook)} temp models...")
-            
-            for i, code in enumerate(self.codebook):
-                # Create a simple model with the code definition as response text
-                temp_model = models.EmbeddingsModel(
-                    respondent_id=f"code_{i}",
-                    response=code.definition,  # Use definition for embedding
-                    response_ideas=[models.EmbeddingsSubmodel(
-                        idea_id="1",
-                        idea=code.definition
-                    )]
-                )
-                temp_models.append(temp_model)
-            
-            #print(f"[DEBUG] Created {len(temp_models)} temp models, calling embedder...")
-            
-            # Generate embeddings using async method directly
-            embedded_codes = await self.embedder._process_embeddings_with_id_tracking(temp_models)
-            #print(f"[DEBUG] Embedder returned {len(embedded_codes)} embedded codes")
-        
-            # Extract embeddings array
-            embeddings = []
-            #print(f"[DEBUG] Extracting embeddings from {len(embedded_codes)} models...")
-            
-            for i, model in enumerate(embedded_codes):
-                if hasattr(model, 'response_ideas') and model.response_ideas and len(model.response_ideas) > 0:
-                    embedding = model.response_ideas[0].idea_embedding
-                    if embedding is not None:
-                        embeddings.append(embedding)
-                        #print(f"[DEBUG] Model {i}: Got embedding of shape {embedding.shape}")
-                    else:
-                        embeddings.append(np.zeros(1536))  # text-embedding-3-large dimension
-                        #print(f"[DEBUG] Model {i}: No embedding, using zeros")
-                else:
-                    embeddings.append(np.zeros(1536))
-                    #print(f"[DEBUG] Model {i}: No response_ideas, using zeros")
-            
-            #print(f"[DEBUG] Extracted {len(embeddings)} embeddings, creating array...")
-            self._code_embeddings = np.array(embeddings)
-            #print(f"[DEBUG] Code embeddings array shape: {self._code_embeddings.shape}")
-            return self._code_embeddings
-            
-        except Exception as e:
-            logger.error(f"[ERROR] Failed to generate code embeddings: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
-            print("⚠️ Warning: Code embedding generation failed, using zero vectors as fallback")
-            self._code_embeddings = np.zeros((len(self.codebook), 1536))
-            return self._code_embeddings
-
-    def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 10) -> List[models.Codebook]:
-        """Find the top_k most similar codes to an idea based on embedding similarity"""
-        if self._code_embeddings is None:
-            raise ValueError("Code embeddings not initialized. Call _get_code_embeddings first.")
-        
-        # Calculate cosine similarity
-        similarities = cosine_similarity([idea_embedding], self._code_embeddings)[0]
-        
-        # Get top_k most similar indices
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        # Return corresponding codes
-        return [self.codebook[i] for i in top_indices]
-
-
     def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
         """Map assigned codes to their themes using cached mapping"""
         themes = []
@@ -480,23 +355,9 @@ class CodeAssigner:
         return themes
 
     def _extract_all_ideas(self) -> List[tuple]:
-        """Extract all individual ideas for processing with embeddings"""
-        # Use cached embeddings if provided (for compatibility)
-        if self._cached_idea_embeddings:
-            all_ideas = []
-            for cached_idea in self._cached_idea_embeddings:
-                all_ideas.append((
-                    cached_idea['respondent_id'],
-                    cached_idea['idea_id'],
-                    cached_idea['idea'],
-                    cached_idea['embedding']
-                ))
-            self.verbose_reporter.stat_line(f"Using {len(all_ideas)} cached ideas with embeddings")
-            return all_ideas
-        
-        # Otherwise extract from cluster models
+        """Extract all individual ideas for processing"""
         all_ideas = []
-        
+
         for model in self.cluster_models:
             if hasattr(model, 'response_ideas') and model.response_ideas:
                 for idea_submodel in model.response_ideas:
@@ -511,19 +372,15 @@ class CodeAssigner:
                         self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
             else:
                 self.verbose_reporter.stat_line(f"Warning: No response_ideas found for respondent {model.respondent_id}")
-        
+
         return all_ideas
 
-    def _create_prompt(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray) -> str:
-        """Create prompt for a single idea with most similar codes"""
-        # Find top 5 most similar codes
-        similar_codes = self._find_similar_codes(idea_embedding, top_k=5)
-        all_candidate_codes = list(similar_codes) 
-
-        # Format candidate codes for prompt
+    def _create_prompt(self, idea_id: str, idea_text: str) -> str:
+        """Create prompt for a single idea with all available codes"""
+        # Format ALL codes from codebook for prompt
         candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\n"
-            for code in all_candidate_codes
+            f"Code label: {code.code}\nCode description: {code.definition}\n"
+            for code in self.codebook
         ])
 
         prompt = CODE_ASSIGNMENT_PROMPT.format(
@@ -540,8 +397,8 @@ class CodeAssigner:
         """Probe call without structured output for bootstrap measurement"""
         idea_data = task_dict['idea_data']
         respondent_id, idea_id, idea_text, idea_embedding = idea_data
-        
-        prompt = self._create_prompt(idea_id, idea_text, idea_embedding)
+
+        prompt = self._create_prompt(idea_id, idea_text)
         
         # For probes: avoid response_model so we can read .usage
         resp = await self.client.chat.completions.create(
@@ -574,9 +431,9 @@ class CodeAssigner:
         try:
             idea_data = task['idea_data']
             respondent_id, idea_id, idea_text, idea_embedding = idea_data
-            
+
             # Build prompt
-            prompt = self._create_prompt(idea_id, idea_text, idea_embedding)
+            prompt = self._create_prompt(idea_id, idea_text)
             
             # Estimate tokens
             est_tokens = self.estimate_tokens(prompt)
@@ -655,7 +512,20 @@ class CodeAssigner:
                     # Add theme assignments
                     assigned_themes = self._assign_themes_to_codes(response.assigned_codes)
                     response.assigned_themes = assigned_themes
-                    
+
+                    # Capture prompt/response for debugging (only if verbose)
+                    if self.verbose:
+                        self.prompt_responses.append({
+                            'respondent_id': respondent_id,
+                            'idea_id': idea_id,
+                            'idea_text': idea_text,
+                            'prompt': prompt,
+                            'assigned_codes': response.assigned_codes,
+                            'confidence': response.assignment_confidence,
+                            'rationale': response.assignment_rationale,
+                            'assigned_themes': assigned_themes
+                        })
+
                     self.stats['tasks_successful'] += 1
                     return response
                     
@@ -818,8 +688,61 @@ class CodeAssigner:
                 coded_model.response_ideas = updated_ideas
             
             coded_models.append(coded_model)
-        
+
         return coded_models
+
+    def get_random_samples(self, n: int = 3, seed: int = None) -> List[Dict]:
+        """
+        Get n random prompt/response samples for inspection.
+
+        Args:
+            n: Number of samples to return (default 3)
+            seed: Random seed for reproducibility (default None)
+
+        Returns:
+            List of dictionaries containing sample data
+        """
+        if not self.prompt_responses:
+            return []
+
+        # Use numpy random for consistent behavior
+        rng = np.random.default_rng(seed)
+
+        # Sample without replacement (or all if n > total)
+        n_samples = min(n, len(self.prompt_responses))
+        indices = rng.choice(len(self.prompt_responses), size=n_samples, replace=False)
+
+        samples = [self.prompt_responses[i] for i in indices]
+        return samples
+
+    def print_samples(self, samples: List[Dict]):
+        """Pretty-print samples for inspection"""
+        if not samples:
+            print("\n⚠️ No samples available (verbose mode may be disabled)")
+            return
+
+        print(f"\n{'='*80}")
+        print(f"RANDOM CODE ASSIGNMENT SAMPLES (n={len(samples)})")
+        print(f"{'='*80}")
+
+        for i, sample in enumerate(samples, 1):
+            print(f"\n{'─'*80}")
+            print(f"SAMPLE #{i}")
+            print(f"{'─'*80}")
+            print(f"Respondent ID: {sample['respondent_id']}")
+            print(f"Idea ID: {sample['idea_id']}")
+            print(f"\nIdea Text:")
+            print(f"  {sample['idea_text']}")
+            print(f"\nAssigned Codes: {', '.join(sample['assigned_codes'])}")
+            print(f"Assigned Themes: {', '.join(sample['assigned_themes']) if sample['assigned_themes'] else 'None'}")
+            print(f"Confidence: {sample['confidence']:.2f}")
+            print(f"\nRationale:")
+            print(f"  {sample['rationale']}")
+            print(f"\n{'─'*40}")
+            print(f"FULL PROMPT:")
+            print(f"{'─'*40}")
+            print(sample['prompt'])
+            print(f"{'─'*80}\n")
 
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[CodeAssignmentResponse]:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""
@@ -832,11 +755,6 @@ class CodeAssigner:
             # Setup
             limits = get_openai_rate_limits(self.model)
 
-            # Initialize code embeddings first
-            #print(f"[DEBUG] Initializing code embeddings...")
-            await self._get_code_embeddings()
-            #print(f"[DEBUG] Code embeddings initialized successfully")
-            
             # Bootstrap measurement with probe calls (following qualityFilter.py pattern)
             sample_tasks = tasks[:min(3, len(tasks))]
             if len(sample_tasks) < 3:

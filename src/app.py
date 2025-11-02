@@ -3156,15 +3156,15 @@ def show_code_assignment_page():
                 merge_config=merge_config
             )
 
-            # Load initial_cluster_results if not present (from step 5)
+            # Load enriched cluster results from Step 6 (with expanded_cluster field)
             if 'initial_cluster_results' not in st.session_state.pipeline_results:
-                if cache_manager.is_cache_valid(st.session_state.filename, "initial_clusters", variable_key):
-                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading cluster results from cache..."))
+                if cache_manager.is_cache_valid(st.session_state.filename, "expanded_clusters", variable_key):
+                    progress_container.text("🔄 " + ("Cluster resultaten laden uit cache..." if lang == "nl" else "Loading enriched cluster results from cache..."))
                     initial_cluster_results = cache_manager.load_from_cache(
-                        st.session_state.filename, "initial_clusters", variable_key, models.ClusterModel
+                        st.session_state.filename, "expanded_clusters", variable_key, models.ClusterModel
                     )
                     st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
-                    progress_container.success("✅ " + ("Cluster data geladen" if lang == "nl" else "Cluster data loaded"))
+                    progress_container.success("✅ " + ("Verrijkte cluster data geladen" if lang == "nl" else "Enriched cluster data loaded"))
 
             # Load theme_enriched_codebook if not present (from step 7)
             if 'theme_enriched_codebook' not in st.session_state.pipeline_results:
@@ -3232,13 +3232,12 @@ def show_code_assignment_page():
                                (st.session_state.get('force_recalculate_from_step', 99) <= 8)
 
                 # Call pipeline processing function
-                code_assigned_results, code_assignment_stats = pipeline.step_8_assign_codes(
-                    initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
-                    theme_enriched_codebook=st.session_state.pipeline_results['theme_enriched_codebook'],
-                    filename=st.session_state.filename,
-                    var_lab=st.session_state.pipeline_results['var_lab'],
-                    variable_key=variable_key,
-                    cache_manager=_get_cache_manager(),
+                code_assigned_results, code_assignment_stats, code_assigner_instance = pipeline.step_8_assign_codes(
+                    st.session_state.filename,
+                    variable_key,
+                    _get_cache_manager(),
+                    st.session_state.pipeline_results['theme_enriched_codebook'],
+                    st.session_state.pipeline_results['var_lab'],
                     model_config=st.session_state.model_config,
                     force_recalc=force_recalc,
                     verbose=True,
@@ -4306,7 +4305,6 @@ def show_codebook_samples(codebook_reasoning):
         """, unsafe_allow_html=True)
 
 def show_theme_samples(refinement_report):
-    import html
     import streamlit as st
 
     if not refinement_report:
@@ -4343,66 +4341,33 @@ def show_theme_samples(refinement_report):
                     # 2-level: add to direct codes
                     direct_codes.append(subcode)
 
-            # Build HTML content
-            content_html = ""
+            # Render theme with native Streamlit expander (collapsed by default)
+            with st.expander(f"📂 {category_name} ({subcode_count} {t_subcodes})", expanded=False):
 
-            # Display direct codes first (2-level hierarchy)
-            if direct_codes:
-                for sc in direct_codes:
-                    content_html += (
-                        '<div style="margin-bottom:12px;padding-left:8px;">'
-                        f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
-                        f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
-                        '</div>'
-                    )
+                # Display direct codes first (2-level hierarchy: Theme → Code)
+                if direct_codes:
+                    for sc in direct_codes:
+                        st.markdown(f"**{sc.get('code', 'N/A')}**")
+                        st.caption(sc.get('description', 'N/A'))
+                        st.markdown("")  # Spacing between codes
 
-            # Display categorized codes (3-level hierarchy)
-            if categorized_codes:
-                for cat_name, cat_codes in categorized_codes.items():
-                    # Category header with left border accent
-                    content_html += (
-                        '<div style="margin:16px 0 8px 0;padding:8px 12px;background:#f8f9fb;'
-                        'border-left:3px solid #1f77b4;border-radius:4px;">'
-                        f'<b>📁 {html.escape(str(cat_name))}</b> '
-                        f'<span style="color:#999;font-size:13px;">({len(cat_codes)} {t_codes})</span>'
-                        '</div>'
-                    )
-                    # Category codes (indented)
-                    for sc in cat_codes:
-                        content_html += (
-                            '<div style="margin-bottom:12px;padding-left:24px;">'
-                            f'<b style="color:#1f77b4;">{html.escape(str(sc.get("code", "N/A")))}</b><br>'
-                            f'<span style="color:#666;font-size:14px;">{html.escape(str(sc.get("description", "N/A")))}</span>'
-                            '</div>'
-                        )
-
-            # Render theme with content
-            st.markdown(f"""
-<details open style="margin-bottom:16px;">
-  <summary style="cursor:pointer;padding:12px 16px;background:#f0f2f6;border-radius:8px;font-weight:600;margin-bottom:8px;user-select:none;">
-    📂 {html.escape(str(category_name))} ({subcode_count} {t_subcodes})
-  </summary>
-  <div style="padding:16px;background:white;border:1px solid #e6e6e6;border-radius:8px;margin-top:8px;line-height:1.6;">
-{content_html}
-  </div>
-</details>
-""", unsafe_allow_html=True)
+                # Display categorized codes (3-level hierarchy: Theme → Category → Code)
+                if categorized_codes:
+                    for cat_name, cat_codes in categorized_codes.items():
+                        # Category expander (expanded by default when theme is opened)
+                        with st.expander(f"📁 {cat_name} ({len(cat_codes)} {t_codes})", expanded=True):
+                            for sc in cat_codes:
+                                st.markdown(f"**{sc.get('code', 'N/A')}**")
+                                st.caption(sc.get('description', 'N/A'))
+                                st.markdown("")  # Spacing between codes
     else:
         st.write("No categories available")
 
     # --- Analysis second (collapsed) ---
     analysis_text = (refinement_report.get('analysis') or {}).get('text')
     if analysis_text:
-        st.markdown(f"""
-<details style="margin:16px 0;">
-  <summary style="cursor:pointer;padding:12px 16px;background:#f0f2f6;border-radius:8px;font-weight:600;margin-bottom:8px;user-select:none;">
-    📝 {t_analysis}
-  </summary>
-  <div style="padding:16px;background:white;border:1px solid #e6e6e6;border-radius:8px;margin-top:8px;line-height:1.6;">
-    {html.escape(str(analysis_text))}
-  </div>
-</details>
-""", unsafe_allow_html=True)
+        with st.expander(f"📝 {t_analysis}", expanded=False):
+            st.write(analysis_text)
 
 # ============================================================================
 # CODEBOOK EDITING HELPER FUNCTIONS

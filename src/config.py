@@ -205,7 +205,7 @@ class ModelConfig:
     theme_extraction_text_verbosity: str = "medium"      
 
     # Code assignment
-    code_assignment_model: str = DEFAULT_MODEL
+    code_assignment_model: str = "gpt-5-chat-latest"
 
     # =============================================================================
     # GLOBAL PARAMETERS
@@ -381,6 +381,7 @@ class CacheConfig:
         "extracted_ideas": "004",
         "embeddings": "005",
         "initial_clusters": "006",
+        "expanded_clusters": "006",
         "codebook_generation": "007",
         "codebook_refinement": "008",
         "code_assignment": "009",
@@ -567,16 +568,16 @@ class EmbeddingConfig:
 @dataclass
 class ClusteringConfig:
     """Configuration for the complete clustering pipeline"""
-    
+
     # PCA configuration
     pca_components: int = .99   # keep 99% of variance
     pca_random_state: int = 42  # random state for re-calc
-    
+
     # Metrics
     enable_dbcv       = True
     enable_meanp      = True
     centroid_distance = True
-    
+
     # Calc Metrics
     CLUSTER_METRIC = "euclidean"
     DBCV_D = 1  # safe for DBCV (avoid overflow)
@@ -584,10 +585,18 @@ class ClusteringConfig:
     default_merge_threshold: float = 0.95     # Default merge threshold for similarity-based merging
     grid_search_max_workers: Optional[int] = None  # None=auto, -1=all cores
     grid_search_timeout_seconds: float = 300.0
-    ctfidf_top_k: int = 15 
-    #ctfidf_stopwords:  = #TODO
-    ctfidf_min_df: int = 2 
-    ctfidf_ngram_range: Tuple[int,int] = (1,2) 
+    ctfidf_top_k: int = 15
+    ctfidf_min_df: int = 2
+    ctfidf_ngram_range: Tuple[int,int] = (1,2)
+
+    # Post-clustering merge configuration
+    merge_similar_clusters: bool = True  # Enable automatic merging of similar clusters
+    merge_centroid_threshold: float = 0.95  # Centroid similarity threshold for candidate screening
+    merge_pairwise_threshold: float = 0.98  # Pairwise similarity threshold for merge decision. .98 = "Essentially duplicates or rephrasings"
+    merge_quantiles: Tuple[float, float, float] = (0.25, 0.50, 0.75)  # Quantiles for similarity evaluation
+
+    # Noise assessment configuration
+    noise_assignability_threshold: float = 0.95  # Similarity threshold for classifying noise as soft (assignable) vs hard (true outliers)
 
 @dataclass
 class UMAPConfig:
