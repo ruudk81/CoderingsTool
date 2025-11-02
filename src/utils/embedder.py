@@ -3,7 +3,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 # === MODULES ========================================================================================================
 import os
 import asyncio
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from dataclasses import dataclass
 
 # Third-party imports
