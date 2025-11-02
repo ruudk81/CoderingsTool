@@ -27,7 +27,7 @@ model_config = ModelConfig()
 filename = "M000000 Associatiemonitor Merk X net databestand.sav"
 id_column = "DLNMID"
 var_name = "Qd1_combined"
-sample_size = 2000
+sample_size = 2000 
 
 # filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 # id_column = "DLNMID"
@@ -38,7 +38,7 @@ sample_size = 2000
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 8 # None = run all steps
+RUN_UNTIL_STEP = 3  
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1137,6 +1137,67 @@ def step_6_generate_codebook(
             print("WARNING: No reasoning results generated to cache")
             print("   Export will fall back to basic format without reasoning columns")
 
+        # Cache the enriched cluster results with expanded_cluster field
+        cache_manager.save_to_cache(
+            initial_cluster_results,
+            filename,
+            "expanded_clusters",
+            variable_key,
+            elapsed_time,
+            var_lab=var_lab)
+        
+        if False:
+            enriched_clusters = cache_manager.load_from_cache( filename, "expanded_clusters",   variable_key, models.ClusterModel)
+            
+            from collections import defaultdict
+            
+            print(f"Loaded {len(enriched_clusters)} cluster results")
+            
+            # Collect cluster mappings and counts
+            cluster_mapping = defaultdict(set)  # initial_cluster -> set of expanded_clusters
+            idea_counts = defaultdict(int)  # expanded_cluster -> count of ideas
+            
+            for result in enriched_clusters:
+                if result.response_ideas:
+                    for idea in result.response_ideas:
+                        initial = idea.initial_cluster
+                        expanded = idea.expanded_cluster
+            
+                        if expanded:
+                            cluster_mapping[initial].add(expanded)
+                            idea_counts[expanded] += 1
+            
+            # Print initial → expanded cluster mappings
+            print("\nCluster Expansion Summary:")
+            print(f"{'Initial Cluster':<15} | Expanded Clusters")
+            print("-" * 60)
+            
+            for initial_cluster in sorted(cluster_mapping.keys(), key=lambda x: (isinstance(x, str), x)):
+                expanded_list = sorted(cluster_mapping[initial_cluster])
+            
+                if len(expanded_list) == 1 and str(expanded_list[0]) == str(initial_cluster):
+                    # Single-theme cluster (not expanded)
+                    print(f"{initial_cluster:<15} | {expanded_list[0]} (single-theme, {idea_counts[expanded_list[0]]} ideas)")
+                else:
+                    # Multi-theme cluster (expanded)
+                    print(f"{initial_cluster:<15} | {', '.join(expanded_list)} (multi-theme)")
+                    for exp in expanded_list:
+                        print(f"{'':15} |   └─ {exp}: {idea_counts[exp]} ideas")
+            
+            # Summary statistics
+            total_initial = len(cluster_mapping)
+            total_expanded = len(idea_counts)
+            multi_theme = sum(1 for v in cluster_mapping.values() if len(v) > 1)
+            
+            print("\nSummary:")
+            print(f"  Initial clusters: {total_initial}")
+            print(f"  Expanded clusters: {total_expanded}")
+            print(f"  Multi-theme clusters: {multi_theme}")
+            print(f"  Single-theme clusters: {total_initial - multi_theme}")
+
+
+        print("Cached enriched clusters with expanded_cluster field")
+
         print(f"\n'codebook generation' completed in {elapsed_time:.2f} seconds.\n")
 
         # Optional Streamlit success message
@@ -1282,6 +1343,15 @@ def step_7_refine_codebook(
     if refinement_results and refinement_results.refined_codebook.refined_codebook:
         verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
 
+        # Create mapping from sequential ID to original source_cluster_id (expanded_cluster)
+        id_to_cluster_mapping = {}
+        if codebook_reasoning and hasattr(codebook_reasoning, 'codebook') and codebook_reasoning.codebook:
+            for idx, code_entry in enumerate(codebook_reasoning.codebook, start=1):
+                if isinstance(code_entry, dict):
+                    source_cluster_id = code_entry.get('source_cluster_id')
+                    if source_cluster_id:
+                        id_to_cluster_mapping[str(idx)] = source_cluster_id
+
         # Create ThemeEnrichedCodebookEntry objects from refined codebook
         enriched_entries = []
         code_to_theme_mapping = {}
@@ -1306,7 +1376,7 @@ def step_7_refine_codebook(
                     theme_description=theme_name,
                     category=subcode.category,  # Empty string for 2-level, category name for 3-level
                     category_description=subcode.category if subcode.category else "",  # Use category name as description
-                    source_cluster=subcode.id  # Use original code ID as source cluster
+                    source_cluster=id_to_cluster_mapping.get(subcode.id, subcode.id)  # Use expanded_cluster ID from mapping
                 )
                 enriched_entries.append(enriched_entry)
 
@@ -1359,30 +1429,30 @@ def step_7_refine_codebook(
 
 
 def step_8_assign_codes(
-    initial_cluster_results,
-    theme_enriched_codebook,
     filename,
+    variable_key,
+    cache_manager,
+    theme_enriched_codebook,
     var_lab,
-    variable_key=None,              # Auto-generate if None
-    cache_manager=None,             # Use global if None
     model_config=None,              # Use global if None
     force_recalc=False,
     verbose=True,
+    verbose_detailed=False,
     prompt_printer_enabled=False,
     streamlit_container=None        # Optional progress updates
 ):
-    """Step 8: Assign codes to individual ideas
+    """Step 8: Assign codes to individual ideas using enriched clusters from Step 6
 
     Args:
-        initial_cluster_results: List of ClusterModel instances from step 5
-        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
         filename: SPSS filename for caching
+        variable_key: Cache key
+        cache_manager: CacheManager instance
+        theme_enriched_codebook: ThemeEnrichedCodebookModel from step 7
         var_lab: Variable label for context
-        variable_key: Cache key (auto-generated if None)
-        cache_manager: CacheManager instance (uses global if None)
         model_config: ModelConfig instance for LLM calls (uses global if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        verbose_detailed: Enable detailed verbose output
         prompt_printer_enabled: Enable prompt printing
         streamlit_container: Optional Streamlit container for progress updates
 
@@ -1397,28 +1467,12 @@ def step_8_assign_codes(
 
     step_name = "code_assignment_direct"
 
-    # Auto-generate variable_key if not provided
-    if variable_key is None:
-        selected_variables = globals().get('selected_variables', [])
-        is_merged = globals().get('is_merged', False)
-        sample_size = globals().get('sample_size', None)
-        merge_config = globals().get('merge_config', None)
-
-        from utils.cacheManager import generate_enhanced_variable_key
-        variable_key = generate_enhanced_variable_key(
-            selected_variables if selected_variables else ["unknown"],
-            is_merged,
-            sample_size=sample_size,
-            merge_config=merge_config
-        )
-
-    # Use global cache_manager if not provided
-    if cache_manager is None:
-        cache_manager = globals().get('cache_manager')
-        if cache_manager is None:
-            from utils.cacheManager import CacheManager
-            from config import CacheConfig
-            cache_manager = CacheManager(CacheConfig())
+    # Load enriched clusters from Step 6 (with expanded_cluster field)
+    initial_cluster_results = cache_manager.load_from_cache(
+        filename,
+        "expanded_clusters",
+        variable_key
+    )
 
     # Use global model_config if not provided
     if model_config is None:
@@ -1461,9 +1515,9 @@ def step_8_assign_codes(
             print(f"\nDirect assignment: Processing ideas from {len(initial_cluster_results)} cluster results")
             print(f"Using complete codebook with {len(theme_enriched_codebook.codes)} codes")
 
-            # Create simplified code assigner without embeddings
+            # Create code assigner (sends all codes to LLM)
             code_assigner_instance = codeAssigner.CodeAssigner(
-                cluster_models=initial_cluster_results,  # Use original cluster models
+                cluster_models=initial_cluster_results,
                 codebook=[models.Codebook(
                     code=entry.code,
                     definition=entry.definition,
@@ -1472,7 +1526,6 @@ def step_8_assign_codes(
                 ) for entry in theme_enriched_codebook.codes],
                 var_lab=var_lab,
                 code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
-                cached_idea_embeddings=None,
                 model_config=model_config,
                 verbose=verbose,
                 prompt_printer=prompt_printer
@@ -1535,7 +1588,9 @@ def step_8_assign_codes(
         'processing_time': elapsed_time if 'elapsed_time' in locals() else 0.0
     }
 
-    return code_assigned_results, stats
+    # Return instance if it exists (for prompt inspection), otherwise None
+    instance_for_inspection = code_assigner_instance if 'code_assigner_instance' in locals() else None
+    return code_assigned_results, stats, instance_for_inspection
 
 
 def step_9_export_results(
@@ -1864,16 +1919,25 @@ if __name__ == '__main__':
     # === STEP 8 ====
     """Assign codes (and themes)"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
-    code_assigned_results, stats = step_8_assign_codes(
-        initial_cluster_results, theme_enriched_codebook, filename, var_lab,
-        variable_key=variable_key,
-        cache_manager=cache_manager,
+    code_assigned_results, stats, code_assigner_instance = step_8_assign_codes(
+        filename,
+        variable_key,
+        cache_manager,
+        theme_enriched_codebook,
+        var_lab,
         model_config=model_config,
         force_recalc=force_recalc,
         verbose=VERBOSE,
         prompt_printer_enabled=True
     )
     check_execution_stop(8)
+    
+    # initial_clusters
+    # for initial in initial_cluster_results:
+    #     for response in initial.response_ideas:
+    #         if response.initial_cluster == 42:
+    #             print(response.idea)
+
     
     # codebook
     for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
@@ -1887,155 +1951,35 @@ if __name__ == '__main__':
             code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
             theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
         
-    # random assignments
+    # random assignments with prompts
     if False: #debug
         import random
-        sampled_result = random.choice(code_assigned_results)
-        print(f"Respondent ID: {sampled_result.respondent_id}")
-        print(f"Response: {sampled_result.response}")
-        #print(f"Idea count: {sampled_result.idea_count}")
-        #print(f"Codebook: {sampled_result.assignment_metadata.get('codebook_used')}")
-        #print("---- Assigned Codes ----")
-        for idea in sampled_result.response_ideas:
-            print("-" * 40)
-            print(f"Idea ID: {idea.idea_id}")
-            print(f"Idea: {idea.idea}")
-            print(f"Assigned Codes: {', '.join(idea.assigned_codes)}")
-            #print(f"Assigned Themes: {', '.join(idea.assigned_themes)}")
-            print(f"Rationale: {idea.assignment_rationale}")
-            print(f"Assignment Confidence: {idea.assignment_confidence}")
-            print("-" * 40)
+        # Sample directly from captured prompts
+        if code_assigner_instance and code_assigner_instance.prompt_responses:
+            n_samples = 1
+            sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
 
-    # Display captured prompt (if PROMPT_PRINTER enabled)
-    if PROMPT_PRINTER:
-        import json
-        from pathlib import Path
+            for item in sampled:
+                print("FULL PROMPT:")
+                print(f"{'─'*80}")
+                print(item['prompt'])
+                print(f"{'='*80}\n")
+                
+                print("RANDOM CODE ASSIGNMENT SAMPLE")
+                print(f"{'='*80}")
+                #print(f"Respondent ID: {item['respondent_id']}")
+                print(f"Idea ID: {item['idea_id']}")
+                print(f"\nIdea Text: {item['idea_text']}")
+                code = ''.join(item['assigned_codes'])
+                print(f"\nAssigned Codes: {code}\n")
+                print(f"Confidence: {item['confidence']:.2f}\n")
+                print(f"Rationale: {item['rationale']}")
+                print(f"\n{'─'*80}")
 
-        # Prompt files are saved to 'prompt_outputs/' directory
-        prompt_dir = Path("prompt_outputs")
-
-        if prompt_dir.exists():
-            # Find code_assignment prompt files
-            prompt_files = list(prompt_dir.glob("*code_assignment*.json"))
-
-            if prompt_files:
-                # Get the most recent file
-                latest_prompt = max(prompt_files, key=lambda p: p.stat().st_mtime)
-
-                print("\n" + "="*80)
-                print("CAPTURED PROMPT FROM STEP 8 (CODE ASSIGNMENT)")
-                print("="*80)
-
-                with open(latest_prompt, 'r', encoding='utf-8') as f:
-                    prompt_data = json.load(f)
-
-                print(f"\nPrompt File: {latest_prompt.name}")
-                print(f"Step: {prompt_data.get('step_name', 'N/A')}")
-                print(f"Utility: {prompt_data.get('utility_name', 'N/A')}")
-
-                if 'metadata' in prompt_data:
-                    meta = prompt_data['metadata']
-                    print(f"Idea ID: {meta.get('idea_id', 'N/A')}")
-                    print(f"Model: {meta.get('model', 'N/A')}")
-                    print(f"Estimated Tokens: {meta.get('estimated_tokens', 'N/A')}")
-
-                print("\n" + "-"*80)
-                print("PROMPT CONTENT:")
-                print("-"*80)
-                print(prompt_data.get('prompt_content', 'No content'))
-                print("="*80 + "\n")
-            else:
-                print("\n[INFO] No code_assignment prompts captured yet")
         else:
-            print("\n[INFO] Prompt output directory not found")
+            print("⚠️ No prompt data available (verbose mode disabled or cached results)")
 
-    # random prompt
-    if False: #debug
     
-        print("\n" + "="*80)
-        print("RANDOM PROMPT TESTING (DEBUG)")
-        print("="*80)
-    
-        # Extract ideas directly from initial_cluster_results
-        all_ideas_for_debug = []
-        for result in initial_cluster_results:
-            if result.response_ideas:
-                for idea in result.response_ideas:
-                    all_ideas_for_debug.append({
-                        'idea_id': idea.idea_id,
-                        'idea': idea.idea,
-                        'respondent_id': result.respondent_id
-                    })
-    
-        
-        from prompts import CODE_ASSIGNMENT_PROMPT
-        
-        if 'code_assigned_results' in locals() and 'all_ideas_for_debug' in locals() and all_ideas_for_debug:
-            # Pick random idea from debug data
-            random_idea = random.choice(all_ideas_for_debug)
-            
-            # Get idea details
-            idea_id = random_idea['idea_id']
-            idea_text = random_idea['idea']
-            respondent_id = random_idea['respondent_id']
-            
-            print("[TARGET] Random Selected Idea:")
-            print(f"  ID: {idea_id}")
-            print(f"  Respondent: {respondent_id}")
-            print(f"  Position: {all_ideas_for_debug.index(random_idea) + 1} of {len(all_ideas_for_debug)}")
-            print(f"  Text ({len(idea_text)} chars): {idea_text}")
-            
-            # Get first 5 codes as candidate codes (simplified for demo)
-            if 'theme_enriched_codebook' in locals() and theme_enriched_codebook.codes:
-                similar_codes = theme_enriched_codebook.codes # First 5 codes as example
-                
-                # print("\nCandidate Codes (first 5):")
-                # for j, code in enumerate(similar_codes, 1):
-                #     print(f"  {j}. {code.code}: {code.definition}")
-                
-                # Format candidate codes for prompt (match CodeAssigner format)
-                candidate_codes_text = "\n".join([
-                    f"Code label: {code.code}\nCode description: {code.definition}\n" 
-                    #f"Code: {code.definition}\n"
-                    for code in similar_codes
-                ])
-                
-                # Create prompt using same logic as CodeAssigner
-                prompt = CODE_ASSIGNMENT_PROMPT.format(
-                    language="Dutch",  # Match pipeline language
-                    var_lab=var_lab,
-                    idea_id=idea_id,
-                    idea_text=idea_text,
-                    candidate_codes=candidate_codes_text,
-                    misc_code_label="Overig",   
-                    misc_threshold=0.6   
-                )
-                
-                print(f"\n{'='*60}")
-                print("FORMATTED PROMPT:")
-                print(f"{'='*60}")
-                print(prompt)
-                #print("="*60)
-                
-                for result in code_assigned_results:
-                    segments = result.response_ideas
-                    for segment in segments:
-                        if segment.idea_id == idea_id:
-                            print(f"\n{'='*60}")
-                            print("llM RESPNSE:")
-                            print(f"{'='*60}")
-                            # print(f"Response: {segment.idea_id}")
-                            print(f"Response: {segment.idea}")
-                            print("Assigned code:\n", "".join(segment.assigned_codes))
-                            print(f"\nReasoning:\n {segment.assignment_rationale}")
-                            print(f"\nConfidence: {segment.assignment_confidence}")
-                            #print("\n")
-                
-            else:
-                print("ERROR: No codebook available for prompt generation")
-        else:
-            print("ERROR: Missing code_assigned_results or all_ideas_for_debug for random prompt test")
-       
     # === STEP 9  =====
     """Export Results"""
     excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, quality_filtered_text=quality_filtered_text, verbose=VERBOSE)

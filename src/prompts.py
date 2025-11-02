@@ -822,6 +822,11 @@ Critical remarks:
 # STEP 7 THEME ORGANIZATION WITH REASONING MODELS
 # =============================================================================
 
+# BACKUP (2025-10-31): Original version before anti-collapse fix
+# Issue: Was collapsing meaningfully different codes based on abstraction level
+# Example: "Salt", "Bitter", "Sweet" → collapsed to "Taste preferences"
+# Fix: Distinguish semantic merging from hierarchical grouping
+
 CODEBOOK_REFINEMENT_PROMPT = """
 You are a qualitative researcher and codebook methodologist.
 Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook.
@@ -837,93 +842,170 @@ Raw descriptive codes to refine:
 </inputs>
 
 <critical_requirement>
-Preserve the *conceptual content* of all codes.
+Preserve the *conceptual content* of ALL codes.
 - Do NOT remove or lose any unique ideas.
-- You MAY merge true duplicates or near-duplicates (semantically identical codes).
-- You MUST preserve contrasts or nuanced distinctions between different ideas.
+- Do NOT collapse distinct concepts into a single code.
+- You MAY merge true duplicates (semantically identical codes).
+- You MUST preserve ALL meaningful distinctions between different ideas.
+
+IMPORTANT DISTINCTION:
+• MERGING = Combining semantic duplicates (reduces redundancy) ✓
+• COLLAPSING = Combining distinct concepts (loses information) ✗
+
+Example of MERGING (correct):
+  "Price transparency" + "Clear pricing information" → "Price transparency" (same concept, different words)
+
+Example of COLLAPSING (incorrect):
+  "Salt concerns" + "Bitterness" + "Sweetness preferences" → "Taste preferences" (3 DIFFERENT concepts lost!)
+
+NEVER collapse codes just because they belong to the same category or theme.
 </critical_requirement>
+
+<do_not_collapse_rules>
+Keep codes SEPARATE when they represent:
+1. Different specific concepts (even if related)
+   ✗ WRONG: "Fast delivery" + "Careful packaging" → "Delivery quality"
+   ✓ RIGHT: Keep both as separate codes under "Delivery" category
+
+2. Different aspects of the same topic
+   ✗ WRONG: "High price concern" + "Value for money" → "Pricing"
+   ✓ RIGHT: Keep both (different evaluative perspectives on price)
+
+3. Different levels of specificity with practical utility
+   ✗ WRONG: "Salt level" + "Sugar amount" + "Spiciness" → "Seasoning"
+   ✓ RIGHT: Keep all three (researchers may want to report these separately)
+
+4. Contrasting or opposing viewpoints
+   ✗ WRONG: "Too expensive" + "Good value" → "Price perception"
+   ✓ RIGHT: Keep both (opposite evaluations matter for analysis)
+
+The ONLY time to merge codes:
+• They express the EXACT SAME concept using different words (synonyms/paraphrases)
+• Examples: "Reliable service" + "Trustworthy provider" → "Reliability"
+• Test: Would a researcher ever want to distinguish between these? If yes → keep separate.
+</do_not_collapse_rules>
 
 <guidance>
 A high-quality codebook must be:
-- Non-redundant: No duplicate codes that restate the same idea in different words.
-- Inherently distinct: Codes within the same category differ in content, not just phrasing.
-- Semantically differentiated: Wording for each code should be clearly different; minor overlap is acceptable.
-- Parsimonious: Use the fewest codes needed to cover the data comprehensively.
-- Well-structured: Organize in a clear hierarchy (2- or 3-level).
-- Each code has exactly one parent (no multi-parenting).
+- Non-redundant: No semantic duplicates (same idea in different words)
+- Preserves distinctions: ALL meaningfully different codes retained
+- Well-structured: Organize related codes in clear hierarchy (prefer 2-level)
+- Each code has exactly one parent (no multi-parenting)
 - Consistently labeled: Use short, uniform, action-oriented labels meaningful for: "{survey_question}"
 
-When codes overlap semantically:
-- Merge near-duplicates into a single inclusive code that captures the shared idea.
-- Combine equivalent expressions (e.g., "Ziet Merk X als betrouwbaar" + "Ervaart betrouwbare dienstverlening" → "Betrouwbaarheid van Merk X").
-- **Preserve contrasts**: Keep separate codes that express different aspects, polarities, or evaluative tones.
-- Refine vague or overlapping codes so their scope and boundaries are clear.
+Hierarchy guidelines:
+• **PREFER 2-Level** (Theme → Codes) when possible
+  Example:
+  - Theme: "Pricing"
+    - Code: "Price transparency"
+    - Code: "Value for money perception"
+    - Code: "Competitive pricing"
 
-Structure options:
-1. **2-Level Hierarchy** (Theme → Codes)
-   Example:
-   - Theme: "Pricing"
-     - Code: "Price transparency"
-     - Code: "Value for money perception"
+• **Use 3-Level** (Theme → Category → Codes) ONLY when:
+  - Multiple codes naturally group under a clear intermediate concept
+  - The category adds organizational clarity (not just abstraction)
+  - Example:
+    - Theme: "Product Quality"
+      - Category: "Taste Attributes"
+        - Code: "Saltiness level" (keep separate)
+        - Code: "Bitterness perception" (keep separate)
+        - Code: "Sweetness preferences" (keep separate)
+      - Code: "Freshness" (directly under theme)
 
-2. **3-Level Hierarchy** (Theme → Category → Codes)
-   Example:
-   - Theme: "Taste"
-     - Code: "Fresh taste"
-     - Category: "Additives"
-       - Code: "Salt concerns"
-       - Code: "Sweetness preferences"
-       - Code: "Herb usage"
-
-When to use 3 levels:
-- Multiple codes share a clear superordinate concept (e.g., "additives", "delivery methods")
-- Codes would otherwise be merged but can instead be grouped
-- Categories must be semantically meaningful, not arbitrary
-- Mix allowed: some codes directly under theme, others in categories
+Remember: Categories GROUP codes, they don't REPLACE them!
 
 Labeling:
-- Prefer active, specific labels (e.g., “Seeks clearer instructions” over “Clarity”)
+- Prefer active, specific labels (e.g., "Seeks clearer instructions" over "Clarity")
 - Include a short definition/decision rule (≤ 20 words)
 </guidance>
 
+<merge_decision_criteria>
+For EVERY potential merge, ask:
+1. Are these the EXACT SAME concept? (semantic identity test)
+2. Would researchers want to distinguish these in analysis? (practical utility test)
+
+If answer to #1 is NO → DO NOT MERGE (keep as separate codes)
+If answer to #2 is YES → DO NOT MERGE (keep as separate codes)
+
+Only merge when #1 is YES AND #2 is NO.
+
+Examples:
+• "Merk X is reliable" + "Experiences reliable service"
+  → #1: YES (same concept), #2: NO (no utility in separating)
+  → ACTION: MERGE to "Merk X reliability"
+
+• "Salt concerns" + "Sweetness preferences"
+  → #1: NO (different concepts), #2: YES (researchers want to distinguish)
+  → ACTION: KEEP SEPARATE (group under "Additives" category if helpful)
+
+• "High fees" + "Expensive pricing"
+  → #1: YES (same concept), #2: NO (no utility in separating)
+  → ACTION: MERGE to "High pricing concerns"
+
+• "High fees" + "Good value for money"
+  → #1: NO (contrasting perspectives), #2: YES (contrast is meaningful)
+  → ACTION: KEEP SEPARATE
+</merge_decision_criteria>
+
 <analysis_steps>
-1. Review all raw codes and identify duplicates or near-duplicates.
-2. Merge only semantically equivalent items.
-3. Construct main themes (2–4 per dataset).
-4. Decide structure per theme (2- or 3-level).
-5. Assign codes: each unique idea → one code.
-6. Use concise, active phrasing.
-7. Provide rationale in analysis: what was merged, why, and how structure was chosen.
+1. Review all raw codes and identify TRUE duplicates (semantic identity test)
+2. Merge ONLY semantically equivalent items (apply decision criteria)
+3. Construct main themes (2–5 per dataset, based on data)
+4. Assign ALL remaining codes to themes (prefer 2-level structure)
+5. Create categories (3-level) ONLY if they add clear organizational value
+6. Use concise, active phrasing for code labels
+7. Provide detailed analysis:
+   - Which codes were merged (with IDs) and why
+   - Which similar codes were kept separate and why
+   - How hierarchy was structured
+   - Total codes preserved vs. merged
 </analysis_steps>
+
+<examples>
+Example 1 - Correct approach (keeping distinctions):
+Raw codes: ["Salt content too high", "Bitter aftertaste", "Sweetness level perfect", "Fresh taste"]
+Result:
+- Theme: "Taste"
+  - Code: "Salt content concerns" (id: 1)
+  - Code: "Bitter aftertaste" (id: 2)
+  - Code: "Sweetness satisfaction" (id: 3)
+  - Code: "Freshness perception" (id: 4)
+Analysis: "All four codes represent distinct taste perceptions. Kept separate despite shared theme."
+
+Example 2 - Correct merging (semantic duplicates):
+Raw codes: ["Price transparency", "Clear pricing info", "See prices clearly", "Value for money"]
+Result:
+- Theme: "Pricing"
+  - Code: "Price transparency" (merged ids: 1,2,3)
+  - Code: "Value for money perception" (id: 4)
+Analysis: "Merged codes 1-3 as semantic duplicates. Kept code 4 separate (different concept: value vs. clarity)."
+</examples>
 
 Output strictly as JSON:
 {{
-  "analysis": "Provide your analysis in {language}: describe decisions, what was merged (if anything), how hierarchy was structured, why categories were or were not used.",
-   "refined_codebook": [
-      {{
-        "theme": "Main theme label",
-        "codes": [
-          {{
-            "id": "original code_id(s)",
-            "code": "Code label",
-            "description": "≤ 20 words explanation",
-            "category": ""  // Empty string for 2-level (code directly under theme), or category name for 3-level
-          }},
-          {{
-            "id": "2",
-            "code": "Another code",
-            "description": "≤ 20 words",
-            "category": "Intermediate Category Name"  // Groups this code with others
-          }}
-        ]
-      }}
-    ]
-}}    
-    
+  "analysis": "Provide detailed analysis in {language}: (1) Which codes were merged and why (include IDs), (2) Which similar codes were kept separate and why, (3) How hierarchy was structured, (4) Total codes preserved vs. merged count.",
+  "refined_codebook": [
+    {{
+      "theme": "Main theme label",
+      "codes": [
+        {{
+          "id": "original code_id (or comma-separated IDs if merged)",
+          "code": "Code label",
+          "description": "≤ 20 words explanation",
+          "category": ""  // Empty string for 2-level (prefer this), or category name for 3-level
+        }}
+      ]
+    }}
+  ]
+}}
+
 Critical requirements:
 - Output must be valid JSON only — no commentary before or after
-- Use "category": "" for codes directly under theme (2-level)
-- Use "category": "Name" to group related codes (3-level)
+- Default to "category": "" (2-level structure preferred)
+- Use "category": "Name" ONLY when it adds clear organizational value
+- In analysis, justify EVERY merge with semantic identity reasoning
+- In analysis, explain why related codes were kept separate
+- Report total: X original codes → Y refined codes (Z merged, Y-Z preserved)
 - Conduct analysis in {language}
 """
 
