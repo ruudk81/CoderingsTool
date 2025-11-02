@@ -1300,6 +1300,7 @@ class InductiveCodeGenerator:
         **kwargs  # For backward compatibility
     ):
         self.cluster_results = cluster_results
+                
         self.starter_codes = starter_codes
         self.var_lab = var_lab
         self.verbose = verbose
@@ -1337,7 +1338,7 @@ class InductiveCodeGenerator:
                 'gpt-4.1': 'gpt-4o', 
                 'gpt-4.1-turbo': 'gpt-4o'}
             
-            tiktoken_model = tiktoken_model_mapping.get(self.config.model) #TODO this is only for 4.1 what about other models, including 4o and 5?
+            tiktoken_model = tiktoken_model_mapping.get(self.config.model) 
             if tiktoken_model:
                 try:
                     self.encoding = tiktoken.encoding_for_model(tiktoken_model)
@@ -1844,18 +1845,7 @@ class InductiveCodeGenerator:
         all_codes: List[Dict[str, str]],
         code_embeddings: List[np.ndarray]
     ) -> Dict[str, float]:
-        """
-        Calculate cosine similarity between theme and each candidate code.
-
-        Args:
-            theme_embedding: Theme embedding vector
-            candidate_codes: List of candidate codes to calculate similarity for
-            all_codes: Complete list of codes in current codebook
-            code_embeddings: Embeddings for all codes (same order as all_codes)
-
-        Returns:
-            Dict mapping code_label -> cosine_similarity (0.0 to 1.0)
-        """
+       
         similarities = {}
 
         for candidate in candidate_codes:
@@ -1885,17 +1875,7 @@ class InductiveCodeGenerator:
         candidate_codes: List[Dict[str, str]],
         cosine_scores: Dict[str, float]
     ) -> str:
-        """
-        Format codes with cosine similarity metric for prompt.
-
-        Args:
-            candidate_codes: List of codes to format
-            cosine_scores: Cosine similarity scores per code
-
-        Returns:
-            Formatted string with cosine metric, e.g.:
-            "- Code Name (cosine: 0.85)"
-        """
+       
         formatted_lines = []
 
         for code in candidate_codes:

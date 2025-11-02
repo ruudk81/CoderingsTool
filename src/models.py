@@ -56,9 +56,7 @@ class CodeAssignedModel(ClusterModel):
 
 
 # === CODEBOOK  MODELS ========================================================================================================
-
 """codebook_main"""
-
 class CodebookEntry(BaseModel):
     code: str
     definition: str
@@ -72,7 +70,6 @@ class CodebookModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 """refined_codebook"""
-
 class RefinedSubcode(BaseModel):
     id: str  # Original code ID(s) - multiple if merged (e.g., "1,2,3")
     code: str
@@ -99,7 +96,7 @@ class CodeRefinementResults(BaseModel):
     timestamp: str
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-"""enriched_codebook"""
+"""speculative codes"""
 class CodeDefinition(BaseModel):
     code: str
     definition: str
@@ -121,9 +118,6 @@ class ThemeEnrichedCodebookEntry(CodebookEntry):
     category_description: str = ""  # Category description (empty for 2-level)
     source_cluster: Optional[Union[int, str]] = None  
     
-
-    
-
 class ThemeEnrichedCodebookModel(CodebookModel):
     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
     themes_summary: Optional[List[Dict[str, Any]]] = None
