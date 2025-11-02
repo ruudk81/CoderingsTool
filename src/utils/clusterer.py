@@ -970,7 +970,8 @@ class Clusterer:
         # Get structure-scaled baseline
         ms, mcs, notes = self._suggest_params(U)
         self.verbose_reporter.stat_line(f"Param suggestion: {notes}")
-    
+        self.verbose_reporter.empty_line()
+
         # Small micro-grid around ms (keep mcs fixed for now)
         ms_grid = sorted({int(np.clip(f * ms, 1, mcs)) for f in [0.8, 1.0, 1.2]})
     
@@ -1115,10 +1116,11 @@ class Clusterer:
             else:
                 # Halving didn't help - keep original best and stop
                 break
-    
+
         if note_all:
+            self.verbose_reporter.empty_line()
             self.verbose_reporter.stat_line("Polish loop decisions: " + " | ".join(note_all))
-    
+
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line(f"🏆 Best configuration: min_samples={best['ms']}, min_cluster_size={best['mcs']}")
         return best["hdbscan_model"], best["labels"], best["summary"]
@@ -1196,6 +1198,19 @@ class Clusterer:
         unique_labels = set(labels)
         num_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
         noise_points = list(labels).count(-1)
+
+        # Calculate final hard noise metrics (after merging)
+        pca_embeddings_array = np.vstack([item.pca_embedding for item in self.output_list])
+        cluster_members = {}
+        if num_clusters > 0:
+            by_cluster = defaultdict(list)
+            for vec, label in zip(pca_embeddings_array, labels):
+                if label >= 0:
+                    by_cluster[int(label)].append(vec)
+            cluster_members = {cid: np.vstack(members) for cid, members in by_cluster.items()}
+
+        final_noise_breakdown = self._assess_noise_quality(pca_embeddings_array, labels, cluster_members)
+        hard_noise_count = int(final_noise_breakdown['hard_noise_rate'] * len(self.output_list))
         
         cluster_sizes = {}
         for label in labels:
@@ -1214,7 +1229,7 @@ class Clusterer:
             self.verbose_reporter.empty_line()
             self.verbose_reporter.section_header("FINAL CLUSTERING RESULTS")
             self.verbose_reporter.stat_line(f"Total clusters: {num_clusters}")
-            self.verbose_reporter.stat_line(f"Noise points: {noise_points} ({noise_points / len(self.output_list) * 100:.1f}%)")
+            self.verbose_reporter.stat_line(f"Hard noise points: {hard_noise_count} ({final_noise_breakdown['hard_noise_rate']:.1%})")
             self.verbose_reporter.stat_line(f"Cluster sizes - Min: {min(sizes)}, Q1: {q1}, Median: {median}, Q3: {q3}, Max: {max(sizes)}")
             
             # Show top 5 largest clusters
