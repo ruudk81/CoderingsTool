@@ -519,9 +519,38 @@ class Clusterer:
             **hard_noise_stats
         }
 
+    class UnionFind:
+        """Union-find data structure with path compression for cluster merging"""
+        def __init__(self, elements):
+            self.parent = {e: e for e in elements}
+            self.rank = {e: 0 for e in elements}
+
+        def find(self, x):
+            """Find root with path compression"""
+            if self.parent[x] != x:
+                self.parent[x] = self.find(self.parent[x])
+            return self.parent[x]
+
+        def union(self, x, y):
+            """Union by rank"""
+            root_x, root_y = self.find(x), self.find(y)
+            if root_x == root_y:
+                return
+            if self.rank[root_x] < self.rank[root_y]:
+                self.parent[root_x] = root_y
+            elif self.rank[root_x] > self.rank[root_y]:
+                self.parent[root_y] = root_x
+            else:
+                self.parent[root_y] = root_x
+                self.rank[root_x] += 1
+
+        def get_components(self):
+            """Return mapping of each element to its component representative"""
+            return {e: self.find(e) for e in self.parent}
+
     def _merge_similar_clusters(self, labels: np.ndarray) -> np.ndarray:
         """
-        Merge clusters with high similarity based on centroid and pairwise comparisons.
+        Merge clusters using graph-based transitive closure with union-find.
 
         Args:
             labels: Initial cluster assignments
@@ -535,7 +564,7 @@ class Clusterer:
         self.verbose_reporter.empty_line()
         self.verbose_reporter.section_header("CLUSTER MERGING")
 
-        # Compute centroids for all clusters
+        # Step 1: Compute centroids and build cluster membership
         centroids, sizes = self._compute_cluster_centroids(labels)
         n_initial_clusters = len(centroids)
 
@@ -547,13 +576,13 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"Centroid threshold: {self.clustering_config.merge_centroid_threshold}")
         self.verbose_reporter.stat_line(f"Pairwise threshold: {self.clustering_config.merge_pairwise_threshold}")
 
-        # Build index mapping: cluster_id -> item indices
+        # Build cluster_to_indices mapping
         cluster_to_indices = defaultdict(list)
         for i, label in enumerate(labels):
             if label >= 0:
                 cluster_to_indices[int(label)].append(i)
 
-        # Find candidate pairs based on centroid similarity
+        # Step 2: Find ALL candidate pairs based on centroid similarity
         cluster_ids = sorted(centroids.keys())
         centroid_matrix = np.vstack([centroids[cid] for cid in cluster_ids])
 
@@ -573,18 +602,12 @@ class Clusterer:
             self.verbose_reporter.stat_line("No similar clusters found - no merging needed")
             return labels
 
-        # Evaluate candidates with pairwise similarity
-        merge_map = {}  # Maps cluster_id -> target_cluster_id
-        merged_count = 0
-
+        # Step 3: Evaluate pairwise similarity for ALL candidates
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Evaluating candidate pairs:")
 
+        merge_edges = []  # Store all merge-worthy pairs
         for cluster_a, cluster_b, centroid_sim in candidates:
-            # Skip if already merged
-            if cluster_a in merge_map or cluster_b in merge_map:
-                continue
-
             # Get item indices for both clusters
             indices_a = np.array(cluster_to_indices[cluster_a])
             indices_b = np.array(cluster_to_indices[cluster_b])
@@ -596,56 +619,47 @@ class Clusterer:
             quantile_mean = np.mean([stats['q25'], stats['q50'], stats['q75']])
 
             if quantile_mean >= self.clustering_config.merge_pairwise_threshold:
-                # Merge into larger cluster
-                if sizes[cluster_a] >= sizes[cluster_b]:
-                    merge_map[cluster_b] = cluster_a
-                    target, source = cluster_a, cluster_b
-                else:
-                    merge_map[cluster_a] = cluster_b
-                    target, source = cluster_b, cluster_a
-
-                merged_count += 1
+                merge_edges.append((cluster_a, cluster_b, centroid_sim, quantile_mean, sizes[cluster_a], sizes[cluster_b]))
                 self.verbose_reporter.stat_line(
-                    f"  ✓ Merge {source}→{target} | "
-                    f"sizes: {sizes[source]}, {sizes[target]} | "
+                    f"  ✓ Edge {cluster_a}↔{cluster_b} | "
+                    f"sizes: {sizes[cluster_a]}, {sizes[cluster_b]} | "
                     f"centroid: {centroid_sim:.3f} | "
-                    f"q25/q50/q75: {stats['q25']:.3f}/{stats['q50']:.3f}/{stats['q75']:.3f} | "
-                    f"mean: {quantile_mean:.3f}"
+                    f"quantile_mean: {quantile_mean:.3f}"
                 )
 
-                # Update sizes for next iterations
-                sizes[target] += sizes[source]
-            # else:
-            #     self.verbose_reporter.stat_line(
-            #         f"  ✗ Keep separate {cluster_a}, {cluster_b} | "
-            #         f"centroid: {centroid_sim:.3f} | "
-            #         f"q25/q50/q75: {stats['q25']:.3f}/{stats['q50']:.3f}/{stats['q75']:.3f} | "
-            #         f"mean: {quantile_mean:.3f}"
-            #     )
-
-        # Apply merges
-        if merge_map:
-            labels_merged = labels.copy()
-            for i, label in enumerate(labels):
-                if label in merge_map:
-                    labels_merged[i] = merge_map[label]
-
-            # Renumber to sequential IDs
-            labels_final = self._renumber_clusters(labels_merged)
-
-            n_final_clusters = len(np.unique(labels_final[labels_final >= 0]))
-
-            self.verbose_reporter.empty_line()
-            self.verbose_reporter.stat_line("Merging complete:")
-            self.verbose_reporter.stat_line(f"  Initial clusters: {n_initial_clusters}")
-            self.verbose_reporter.stat_line(f"  Merged pairs: {merged_count}")
-            self.verbose_reporter.stat_line(f"  Final clusters: {n_final_clusters}")
-            self.verbose_reporter.stat_line(f"  Reduction: {n_initial_clusters - n_final_clusters} clusters removed")
-
-            return labels_final
-        else:
-            self.verbose_reporter.stat_line("No merges performed")
+        if not merge_edges:
+            self.verbose_reporter.stat_line("No merge-worthy pairs found")
             return labels
+
+        # Step 4: Use union-find to group clusters into connected components
+        uf = self.UnionFind(cluster_ids)
+        for cluster_a, cluster_b, _, _, _, _ in merge_edges:
+            uf.union(cluster_a, cluster_b)
+
+        # Get component mapping (each cluster -> its component representative)
+        component_map = uf.get_components()
+
+        # Step 5: Relabel all points to their component representative
+        labels_merged = labels.copy()
+        for old_id, component_id in component_map.items():
+            labels_merged[labels == old_id] = component_id
+
+        # Step 6: Renumber to sequential IDs
+        labels_final = self._renumber_clusters(labels_merged)
+
+        # Step 7: Report results
+        unique_components = set(component_map.values())
+        n_final_clusters = len(unique_components)
+        n_merged = n_initial_clusters - n_final_clusters
+
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("Merging complete:")
+        self.verbose_reporter.stat_line(f"  Initial clusters: {n_initial_clusters}")
+        self.verbose_reporter.stat_line(f"  Merge edges: {len(merge_edges)}")
+        self.verbose_reporter.stat_line(f"  Final clusters: {n_final_clusters}")
+        self.verbose_reporter.stat_line(f"  Reduction: {n_merged} clusters removed")
+
+        return labels_final
     
     def _evaluate_hdbscan(self, U: np.ndarray, ms: int, mcs: int) -> Dict[str, Any]:
         """Evaluate HDBSCAN configuration with kappa-based scoring and all metrics"""
