@@ -924,18 +924,18 @@ class Clusterer:
         return ms, mcs, f"baseline(ms={ms}, mcs={mcs}, ladder={ladder})"
     
     
-    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = 5, max_mcs: int = 250) -> tuple[int, int, str]:
+    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = 5, max_mcs: int = 250) -> tuple[int, int, str, str]:
         """
         A → B: structure sets direction (factor), size sets scale (baseline).
+        Returns: (ms, mcs, notes_a, notes_b)
         """
         f, notes_a = self._structure_factor_from_space(U)
         ms0, mcs0, notes_b = self._baseline_by_n(U.shape[0])
-    
+
         ms  = max(min_ms, int(np.clip(int(round(ms0 * f)), min_ms, U.shape[0])))
         mcs = int(np.clip(int(round(mcs0 * f)), min_mcs, max_mcs))
-    
-        notes = f"[A] {notes_a}; [B] {notes_b}; → scaled(ms={ms}, mcs={mcs})"
-        return ms, mcs, notes
+
+        return ms, mcs, notes_a, notes_b
     
     
     @staticmethod
@@ -968,8 +968,10 @@ class Clusterer:
     def _auto_hdbscan_grid(self, U: np.ndarray):
 
         # Get structure-scaled baseline
-        ms, mcs, notes = self._suggest_params(U)
-        self.verbose_reporter.stat_line(f"Param suggestion: {notes}")
+        ms, mcs, notes_a, notes_b = self._suggest_params(U)
+        self.verbose_reporter.stat_line("Param suggestion:")
+        self.verbose_reporter.stat_line(f"  [A] {notes_a}")
+        self.verbose_reporter.stat_line(f"  [B] {notes_b}; → scaled(ms={ms}, mcs={mcs})")
         self.verbose_reporter.empty_line()
 
         # Small micro-grid around ms (keep mcs fixed for now)
