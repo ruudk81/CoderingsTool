@@ -605,7 +605,7 @@ class IdeaExtractor:
                     ideas = []
                     for i, idea_response in enumerate(response):
                         # Handle missing or empty ideas with validation
-                        idea_text = idea_response.idea.strip() if idea_response.idea else ""
+                        idea_text = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if idea_text and idea_text not in ["", "NA", "N/A"]:
                             # Use the idea_id from response if available, otherwise generate
                             response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
@@ -657,6 +657,29 @@ class IdeaExtractor:
             ],
             idea_count=1
         )
+
+    def _normalize_idea_text(self, text: str) -> str:
+        """Normalize extracted idea text for consistency"""
+        import unicodedata
+
+        if not text:
+            return ""
+
+        # Unicode normalization (NFC form)
+        text = unicodedata.normalize('NFC', text)
+
+        # Strip leading/trailing whitespace
+        text = text.strip()
+
+        # Collapse multiple spaces into single space
+        text = ' '.join(text.split())
+
+        # Remove zero-width characters
+        zero_width_chars = ['\u200b', '\u200c', '\u200d', '\ufeff']
+        for char in zero_width_chars:
+            text = text.replace(char, '')
+
+        return text
 
     async def worker(self, queue: asyncio.Queue, results: List):
         """Worker coroutine that processes tasks from queue"""
