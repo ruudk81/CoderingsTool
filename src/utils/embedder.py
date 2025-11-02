@@ -218,39 +218,70 @@ class Embedder:
             except:
                 if i == retries - 1:
                     raise
-                await asyncio.sleep(base * (2 ** i))   
+                await asyncio.sleep(base * (2 ** i))
 
+    def _deduplicate_texts(self, response_data: List[ResponseData]) -> tuple:
+        """Extract unique texts and create replication mapping"""
+        unique_texts_dict = {}
+        text_to_indices = {}
+
+        for item in response_data:
+            text = item.text_to_embed
+            if text not in unique_texts_dict:
+                unique_texts_dict[text] = item.array_index
+                text_to_indices[text] = [item.array_index]
+            else:
+                text_to_indices[text].append(item.array_index)
+
+        unique_texts = list(unique_texts_dict.keys())
+        compression_ratio = len(unique_texts) / len(response_data)
+
+        return unique_texts, text_to_indices, compression_ratio
+
+    def _replicate_embeddings(self, response_data: List[ResponseData],
+                             unique_texts: List[str], unique_embeddings: List,
+                             text_to_indices: Dict[str, List[int]]) -> List:
+        """Replicate unique embeddings to all instances"""
+        all_embeddings = [None] * len(response_data)
+
+        for text, embedding in zip(unique_texts, unique_embeddings):
+            for idx in text_to_indices[text]:
+                all_embeddings[idx] = embedding
+
+        return all_embeddings
 
     async def _process_embeddings_with_id_tracking(self, data: List[models.EmbeddingsModel]) -> List[models.EmbeddingsModel]:
         """Process embeddings with explicit ID tracking"""
         
         # Generate segment identifiers
         response_data = self._get_ResponseData(data)
-        
+
         if not response_data:
             return data
+
+        # Deduplicate texts
+        unique_texts, text_to_indices, compression_ratio = self._deduplicate_texts(response_data)
+
+        self.verbose_reporter.stat_line(
+            f"Processing {len(response_data)} ideas: {len(unique_texts)} unique texts "
+            f"({compression_ratio:.1%} compression)"
+        )
+
+        # Extract unique texts for embedding
+        texts_to_embed = unique_texts
         
-        # Extract texts for embedding
-        texts_to_embed = [response_item.text_to_embed for response_item in response_data]
-        
-        self.verbose_reporter.stat_line(f"Processing {len(texts_to_embed)} embeddings with ID tracking")
-        
-        # Create batches
-        # Use provider-specific batch size for optimal performance
+        # Create batches of unique texts only
         if self.provider == "gemini":
             batch_size = getattr(self.config, 'gemini_batch_size', 20)
         elif self.provider == "openai":
             batch_size = getattr(self.config, 'openai_batch_size', 100)
         else:
             batch_size = self.config.batch_size
+
         batches = []
-        batch_identifiers = []
-        
         for i in range(0, len(texts_to_embed), batch_size):
             batch_texts = texts_to_embed[i:i+batch_size]
-            batch_ids = response_data[i:i+batch_size]
             batches.append(batch_texts)
-            batch_identifiers.append(batch_ids)
         
         # Process batches concurrently with provider-specific limits
         if self.provider == "gemini":
@@ -261,56 +292,30 @@ class Embedder:
             max_concurrent = self.config.max_concurrent_requests
         
         semaphore = asyncio.Semaphore(max_concurrent)
-        
-        
-        async def process_batch_with_tracking(batch_texts: List[str],
-                                      batch_ids: List[ResponseData]) -> List[Tuple[ResponseData, np.ndarray]]:
-            async with semaphore:
-                vectors = await self._with_retries(lambda: self._embed_batch(batch_texts)) #was: await self._embed_batch(batch_texts)
-        
-                # Defensive check: sizes must match
-                if len(vectors) != len(batch_ids):
-                    raise RuntimeError(f"Provider returned {len(vectors)} vectors for {len(batch_ids)} ids")
-        
-                # Preserve order: providers return embeddings in input order
-                results: List[Tuple[ResponseData, np.ndarray]] = []
-                for identifier, vec in zip(batch_ids, vectors):
-                    results.append((identifier, vec))
-                return results
 
-        # async def process_batch_with_tracking(batch_texts: List[str], batch_ids: List[ResponseData]) -> List[Tuple[ResponseData, np.ndarray]]:
-        #     async with semaphore:
-        #         response = await self.client.embeddings.create(
-        #             input=batch_texts, 
-        #             model=self.embedding_model
-        #         )
-                
-                # Pair embeddings with their identifiers
-                # results = []
-                # for identifier, embedding_data in zip(batch_ids, response.data):
-                #     embedding_array = np.array(embedding_data.embedding, dtype=np.float32)
-                #     results.append((identifier, embedding_array))
-                
-        #         return results
-        
+        async def process_batch(batch_texts: List[str]) -> List[np.ndarray]:
+            async with semaphore:
+                vectors = await self._with_retries(lambda: self._embed_batch(batch_texts))
+                if len(vectors) != len(batch_texts):
+                    raise RuntimeError(f"Provider returned {len(vectors)} vectors for {len(batch_texts)} texts")
+                return vectors
+
         # Process all batches
-        tasks = [
-            process_batch_with_tracking(batch_texts, batch_ids)
-            for batch_texts, batch_ids in zip(batches, batch_identifiers)
-        ]
-        
+        tasks = [process_batch(batch_texts) for batch_texts in batches]
         batch_results = await asyncio.gather(*tasks)
-        
-        # Flatten results while preserving exact original order using array_index
-        all_embeddings = [None] * len(response_data)
-        all_identifiers = [None] * len(response_data)
-        
+
+        # Flatten unique embeddings
+        unique_embeddings = []
         for batch_result in batch_results:
-            for identifier, embedding in batch_result:
-                # Use array_index to restore exact original order
-                original_index = identifier.array_index
-                all_embeddings[original_index] = embedding
-                all_identifiers[original_index] = identifier
+            unique_embeddings.extend(batch_result)
+
+        # Replicate embeddings to all instances
+        all_embeddings = self._replicate_embeddings(
+            response_data, unique_texts, unique_embeddings, text_to_indices
+        )
+
+        # Create identifiers list for compatibility with downstream code
+        all_identifiers = response_data
         
         # Apply question-aware processing if enabled and processing descriptions
         if (self.config.use_question_aware and 
