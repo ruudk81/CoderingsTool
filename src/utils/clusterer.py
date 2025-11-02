@@ -326,15 +326,326 @@ class Clusterer:
         for vec, label in zip(embeddings, labels):
             if label is not None and label >= 0:
                 by_cluster[int(label)].append(vec)
-        
+
         centroids = {}
         sizes = {}
         for cluster_id, vectors in by_cluster.items():
             vectors_array = np.vstack(vectors)
             centroids[cluster_id] = vectors_array.mean(axis=0)
             sizes[cluster_id] = vectors_array.shape[0]
-        
+
         return centroids, sizes
+
+    def _compute_cluster_centroids(self, labels: np.ndarray) -> Tuple[Dict[int, np.ndarray], Dict[int, int]]:
+        """
+        Compute L2-normalized centroids from pca_embedding for each cluster (excluding noise).
+
+        Returns:
+            centroids: Dict mapping cluster_id -> centroid vector
+            sizes: Dict mapping cluster_id -> cluster size
+        """
+        by_cluster = defaultdict(list)
+
+        # Group embeddings by cluster
+        for item, label in zip(self.output_list, labels):
+            if label >= 0:  # Exclude noise (-1)
+                by_cluster[int(label)].append(item.pca_embedding)
+
+        centroids = {}
+        sizes = {}
+
+        # Compute centroids (mean of L2-normalized embeddings)
+        for cluster_id, embeddings in by_cluster.items():
+            embeddings_array = np.vstack(embeddings)
+            centroid = embeddings_array.mean(axis=0)
+            # Re-normalize the centroid
+            centroid = centroid / (np.linalg.norm(centroid) + 1e-12)
+            centroids[cluster_id] = centroid
+            sizes[cluster_id] = len(embeddings)
+
+        return centroids, sizes
+
+    def _pairwise_cluster_similarity(self, cluster_a_ids: np.ndarray, cluster_b_ids: np.ndarray) -> Dict[str, float]:
+        """
+        Calculate all pairwise cosine similarities between two clusters.
+
+        Args:
+            cluster_a_ids: Indices of items in cluster A
+            cluster_b_ids: Indices of items in cluster B
+
+        Returns:
+            Dictionary with quantile statistics: q25, q50 (median), q75, mean
+        """
+        # Get embeddings for both clusters
+        embeddings_a = np.vstack([self.output_list[i].pca_embedding for i in cluster_a_ids])
+        embeddings_b = np.vstack([self.output_list[i].pca_embedding for i in cluster_b_ids])
+
+        # Compute all pairwise cosine similarities (dot product since already L2-normalized)
+        similarities = embeddings_a @ embeddings_b.T
+
+        # Flatten to 1D array
+        similarities_flat = similarities.flatten()
+
+        # Calculate quantiles
+        q25 = float(np.quantile(similarities_flat, 0.25))
+        q50 = float(np.quantile(similarities_flat, 0.50))
+        q75 = float(np.quantile(similarities_flat, 0.75))
+        mean = float(np.mean(similarities_flat))
+
+        return {
+            'q25': q25,
+            'q50': q50,
+            'q75': q75,
+            'mean': mean
+        }
+
+    def _renumber_clusters(self, labels: np.ndarray) -> np.ndarray:
+        """
+        Renumber clusters sequentially: noise=-1, valid clusters=0 to n-1.
+
+        Args:
+            labels: Array with potentially non-sequential cluster IDs
+
+        Returns:
+            Array with sequential cluster IDs
+        """
+        # Get unique cluster IDs (excluding noise)
+        unique_clusters = sorted([label for label in np.unique(labels) if label >= 0])
+
+        # Create mapping: old_id -> new_id
+        mapping = {old_id: new_id for new_id, old_id in enumerate(unique_clusters)}
+        mapping[-1] = -1  # Noise stays as -1
+
+        # Apply mapping
+        renumbered = np.array([mapping[label] for label in labels])
+
+        return renumbered
+
+    def _assess_noise_quality(self, U: np.ndarray, labels: np.ndarray, cluster_members: Dict[int, np.ndarray]) -> Dict[str, float]:
+        """
+        Assess whether noise points are 'soft noise' (assignable) or 'hard noise' (true outliers).
+        Uses member-based quantile logic (consistent with merge logic).
+
+        Args:
+            U: UMAP embeddings array
+            labels: Cluster labels (with -1 for noise)
+            cluster_members: Dict mapping cluster_id -> array of member embeddings
+
+        Returns:
+            Dictionary with:
+                - total_noise_rate: fraction of all points labeled as noise
+                - soft_noise_rate: fraction assignable (quantile similarity >= threshold)
+                - hard_noise_rate: fraction truly problematic (quantile similarity < threshold)
+                - mean_noise_similarity: average best quantile score across noise points
+        """
+        noise_mask = labels == -1
+        n_total = len(labels)
+
+        # No noise case
+        if not np.any(noise_mask):
+            return {
+                'total_noise_rate': 0.0,
+                'soft_noise_rate': 0.0,
+                'hard_noise_rate': 0.0,
+                'mean_noise_similarity': 1.0
+            }
+
+        # No clusters case (all noise)
+        if len(cluster_members) == 0:
+            return {
+                'total_noise_rate': float(noise_mask.sum() / n_total),
+                'soft_noise_rate': 0.0,
+                'hard_noise_rate': float(noise_mask.sum() / n_total),
+                'mean_noise_similarity': 0.0
+            }
+
+        # Get noise points
+        noise_points = U[noise_mask]
+        n_noise = noise_points.shape[0]
+
+        # For each noise point, find best cluster match using quantile-based scoring
+        # Note: U (pca_embeddings) are already L2-normalized, so dot product = cosine similarity
+        best_matches = []
+        threshold = self.clustering_config.noise_assignability_threshold
+
+        for noise_point in noise_points:
+            cluster_scores = []
+            for cluster_id, members in cluster_members.items():
+                # Compute all pairwise similarities (dot product = cosine for L2-normalized)
+                similarities = noise_point @ members.T  # (n_members,)
+
+                # Calculate quantile-based score (same as merge logic)
+                q25 = float(np.quantile(similarities, 0.25))
+                q50 = float(np.quantile(similarities, 0.50))
+                q75 = float(np.quantile(similarities, 0.75))
+                score = np.mean([q25, q50, q75])
+
+                cluster_scores.append(score)
+
+            # Best match = highest quantile score across all clusters
+            best_match = max(cluster_scores) if cluster_scores else 0.0
+            best_matches.append(best_match)
+
+        best_matches = np.array(best_matches)
+
+        # Classify by threshold
+        assignable = best_matches >= threshold
+        n_soft = assignable.sum()
+        n_hard = n_noise - n_soft
+
+        # Calculate hard noise score distribution
+        hard_noise_stats = {}
+        if n_hard > 0:
+            hard_scores = best_matches[~assignable]  # Hard noise = NOT assignable
+            hard_noise_stats = {
+                'hard_noise_q25': float(np.quantile(hard_scores, 0.25)),
+                'hard_noise_median': float(np.quantile(hard_scores, 0.50)),
+                'hard_noise_q75': float(np.quantile(hard_scores, 0.75)),
+                'hard_noise_mean': float(hard_scores.mean())
+            }
+        else:
+            hard_noise_stats = {
+                'hard_noise_q25': None,
+                'hard_noise_median': None,
+                'hard_noise_q75': None,
+                'hard_noise_mean': None
+            }
+
+        return {
+            'total_noise_rate': float(n_noise / n_total),
+            'soft_noise_rate': float(n_soft / n_total),
+            'hard_noise_rate': float(n_hard / n_total),
+            'mean_noise_similarity': float(best_matches.mean()),
+            **hard_noise_stats
+        }
+
+    def _merge_similar_clusters(self, labels: np.ndarray) -> np.ndarray:
+        """
+        Merge clusters with high similarity based on centroid and pairwise comparisons.
+
+        Args:
+            labels: Initial cluster assignments
+
+        Returns:
+            Updated cluster assignments with merged clusters
+        """
+        if not self.clustering_config.merge_similar_clusters:
+            return labels
+
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.section_header("CLUSTER MERGING")
+
+        # Compute centroids for all clusters
+        centroids, sizes = self._compute_cluster_centroids(labels)
+        n_initial_clusters = len(centroids)
+
+        if n_initial_clusters < 2:
+            self.verbose_reporter.stat_line("Less than 2 clusters - skipping merge")
+            return labels
+
+        self.verbose_reporter.stat_line(f"Initial clusters: {n_initial_clusters}")
+        self.verbose_reporter.stat_line(f"Centroid threshold: {self.clustering_config.merge_centroid_threshold}")
+        self.verbose_reporter.stat_line(f"Pairwise threshold: {self.clustering_config.merge_pairwise_threshold}")
+
+        # Build index mapping: cluster_id -> item indices
+        cluster_to_indices = defaultdict(list)
+        for i, label in enumerate(labels):
+            if label >= 0:
+                cluster_to_indices[int(label)].append(i)
+
+        # Find candidate pairs based on centroid similarity
+        cluster_ids = sorted(centroids.keys())
+        centroid_matrix = np.vstack([centroids[cid] for cid in cluster_ids])
+
+        # Compute centroid similarities (cosine = dot product for L2-normalized)
+        centroid_similarities = centroid_matrix @ centroid_matrix.T
+
+        candidates = []
+        for i in range(len(cluster_ids)):
+            for j in range(i + 1, len(cluster_ids)):
+                sim = centroid_similarities[i, j]
+                if sim >= self.clustering_config.merge_centroid_threshold:
+                    candidates.append((cluster_ids[i], cluster_ids[j], sim))
+
+        self.verbose_reporter.stat_line(f"Candidate pairs (centroid > {self.clustering_config.merge_centroid_threshold}): {len(candidates)}")
+
+        if not candidates:
+            self.verbose_reporter.stat_line("No similar clusters found - no merging needed")
+            return labels
+
+        # Evaluate candidates with pairwise similarity
+        merge_map = {}  # Maps cluster_id -> target_cluster_id
+        merged_count = 0
+
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("Evaluating candidate pairs:")
+
+        for cluster_a, cluster_b, centroid_sim in candidates:
+            # Skip if already merged
+            if cluster_a in merge_map or cluster_b in merge_map:
+                continue
+
+            # Get item indices for both clusters
+            indices_a = np.array(cluster_to_indices[cluster_a])
+            indices_b = np.array(cluster_to_indices[cluster_b])
+
+            # Calculate pairwise similarities
+            stats = self._pairwise_cluster_similarity(indices_a, indices_b)
+
+            # Merge decision based on quantile mean
+            quantile_mean = np.mean([stats['q25'], stats['q50'], stats['q75']])
+
+            if quantile_mean >= self.clustering_config.merge_pairwise_threshold:
+                # Merge into larger cluster
+                if sizes[cluster_a] >= sizes[cluster_b]:
+                    merge_map[cluster_b] = cluster_a
+                    target, source = cluster_a, cluster_b
+                else:
+                    merge_map[cluster_a] = cluster_b
+                    target, source = cluster_b, cluster_a
+
+                merged_count += 1
+                self.verbose_reporter.stat_line(
+                    f"  ✓ Merge {source}→{target} | "
+                    f"sizes: {sizes[source]}, {sizes[target]} | "
+                    f"centroid: {centroid_sim:.3f} | "
+                    f"q25/q50/q75: {stats['q25']:.3f}/{stats['q50']:.3f}/{stats['q75']:.3f} | "
+                    f"mean: {quantile_mean:.3f}"
+                )
+
+                # Update sizes for next iterations
+                sizes[target] += sizes[source]
+            # else:
+            #     self.verbose_reporter.stat_line(
+            #         f"  ✗ Keep separate {cluster_a}, {cluster_b} | "
+            #         f"centroid: {centroid_sim:.3f} | "
+            #         f"q25/q50/q75: {stats['q25']:.3f}/{stats['q50']:.3f}/{stats['q75']:.3f} | "
+            #         f"mean: {quantile_mean:.3f}"
+            #     )
+
+        # Apply merges
+        if merge_map:
+            labels_merged = labels.copy()
+            for i, label in enumerate(labels):
+                if label in merge_map:
+                    labels_merged[i] = merge_map[label]
+
+            # Renumber to sequential IDs
+            labels_final = self._renumber_clusters(labels_merged)
+
+            n_final_clusters = len(np.unique(labels_final[labels_final >= 0]))
+
+            self.verbose_reporter.empty_line()
+            self.verbose_reporter.stat_line("Merging complete:")
+            self.verbose_reporter.stat_line(f"  Initial clusters: {n_initial_clusters}")
+            self.verbose_reporter.stat_line(f"  Merged pairs: {merged_count}")
+            self.verbose_reporter.stat_line(f"  Final clusters: {n_final_clusters}")
+            self.verbose_reporter.stat_line(f"  Reduction: {n_initial_clusters - n_final_clusters} clusters removed")
+
+            return labels_final
+        else:
+            self.verbose_reporter.stat_line("No merges performed")
+            return labels
     
     def _evaluate_hdbscan(self, U: np.ndarray, ms: int, mcs: int) -> Dict[str, Any]:
         """Evaluate HDBSCAN configuration with kappa-based scoring and all metrics"""
@@ -349,18 +660,37 @@ class Clusterer:
             cluster_selection_epsilon=0.0,
             alpha=1.0
         ).fit(U)
-        
+
         labels = db.labels_
         noise_rate = float(np.mean(labels == -1))
         n_clusters = int(np.unique(labels[labels >= 0]).size)
-      
+
+        # Group PCA embeddings by cluster for noise assessment
+        # (Use pca_embedding from output_list - already L2-normalized, same as merge logic)
+        pca_embeddings_array = np.vstack([item.pca_embedding for item in self.output_list])
+
+        cluster_members = {}
+        if n_clusters > 0:
+            by_cluster = defaultdict(list)
+            for vec, label in zip(pca_embeddings_array, labels):
+                if label >= 0:
+                    by_cluster[int(label)].append(vec)
+            # Convert lists to arrays
+            cluster_members = {cid: np.vstack(members) for cid, members in by_cluster.items()}
+
+        # Assess noise quality (soft vs hard) using member-based quantile logic
+        noise_breakdown = self._assess_noise_quality(pca_embeddings_array, labels, cluster_members)
+
         # Calculate ALL metrics including expensive ones
         M = self._calculate_metrics(U, labels, db)
-        
+
+        # Add all noise breakdown metrics (including distribution stats)
+        M.update(noise_breakdown)
+
         # Calculate median cluster size
         _, counts = np.unique(labels[labels >= 0], return_counts=True)
         med_size = int(np.median(counts)) if counts.size else 0
-        
+
         summary = ClusterSummary(
             n_points=U.shape[0],
             min_cluster_size=int(mcs),
@@ -369,9 +699,9 @@ class Clusterer:
             noise_rate=float(round(noise_rate, 3)),
             median_cluster_size=int(med_size),
         )
-        
+
         elapsed_time = time.time() - start_time
-        
+
         return {
             "mcs": mcs,
             "ms": ms,
@@ -609,28 +939,29 @@ class Clusterer:
     
     
     @staticmethod
-    def _apply_threshold_rule(ms: int, mcs: int, dbcv: Optional[float], noise: float,
+    def _apply_threshold_rule(ms: int, mcs: int, dbcv: Optional[float], hard_noise: float,
                               min_ms: int = 2, min_mcs: int = 5,
                               dbcv_cut: float = 0.50, noise_cut: float = 0.20) -> tuple[int, int, str, bool]:
         """
-        If noise > 20% OR (DBCV available and < 0.50): halve ms and mcs. Floors applied.
+        If hard_noise > 20% OR (DBCV available and < 0.50): halve ms and mcs. Floors applied.
+        hard_noise = fraction of noise points with low similarity to all clusters (true outliers).
         Returns (new_ms, new_mcs, note, changed_flag).
         """
         trigger = False
         note_parts = []
-        if noise is not None and noise > noise_cut:
+        if hard_noise is not None and hard_noise > noise_cut:
             trigger = True
-            note_parts.append(f"noise {noise:.2f}>{noise_cut:.2f}")
+            note_parts.append(f"hard_noise {hard_noise:.2f}>{noise_cut:.2f}")
         if (dbcv is not None) and (dbcv < dbcv_cut):
             trigger = True
             note_parts.append(f"dbcv {dbcv:.2f}<{dbcv_cut:.2f}")
-    
+
         if trigger:
             ms_new  = max(min_ms, int(np.ceil(0.5 * ms)))
             mcs_new = max(min_mcs, int(np.ceil(0.5 * mcs)))
             note_parts.append(f"halve→ ms={ms_new}, mcs={mcs_new}")
             return ms_new, mcs_new, "; ".join(note_parts), True
-    
+
         return ms, mcs, "no change", False
     
 
@@ -673,8 +1004,16 @@ class Clusterer:
             r["k"] = float(k_n[i])
     
         results.sort(key=lambda r: r["score"], reverse=True)
-        best = results[0]
-    
+
+        # Smart selection: prefer configs with acceptable hard_noise (< 20%)
+        acceptable = [r for r in results if r["metrics"].get("hard_noise_rate", 1.0) < 0.20]
+        if acceptable:
+            # Pick best among acceptable configs
+            best = max(acceptable, key=lambda r: r["score"])
+        else:
+            # No acceptable configs - pick best overall (will trigger halving)
+            best = results[0]
+
         # Verbose reporting (kept from your original)
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Complete evaluation results (sorted by score):")
@@ -690,9 +1029,28 @@ class Clusterer:
             )
         self.verbose_reporter.empty_line()
         for r in results:
+            m = r["metrics"]
+            total_noise = m.get('noise_rate', 0.0)
+            soft_noise = m.get('soft_noise_rate', 0.0)
+            hard_noise = m.get('hard_noise_rate', 0.0)
             self.verbose_reporter.stat_line(
-                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k={r['k']:.3f} | noise={r['noise']:.3f}"
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k={r['k']:.3f} | "
+                f"noise: {total_noise:.1%} (soft: {soft_noise:.1%}, hard: {hard_noise:.1%})"
             )
+
+        # Display hard noise similarity distribution in separate section
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("Hard noise similarity distribution:")
+        for r in results:
+            m = r["metrics"]
+            if m.get('hard_noise_q25') is not None:
+                self.verbose_reporter.stat_line(
+                    f"  mcs={r['mcs']:>3} | ms={r['ms']:>3}: "
+                    f"q25={m['hard_noise_q25']:.2f}, "
+                    f"median={m['hard_noise_median']:.2f}, "
+                    f"q75={m['hard_noise_q75']:.2f}, "
+                    f"mean={m['hard_noise_mean']:.2f}"
+                )
         self.verbose_reporter.empty_line()
         for r in results:
             m = r["metrics"]
@@ -705,11 +1063,11 @@ class Clusterer:
                 f"Sil={m.get('sil', float('nan')):.3f} | DB={m.get('DB', float('nan')):.3f} | {cdist}{cdist5}"
             )
     
-        # --- Polish loop: halve if noise/DBCV trigger; re-eval up to 3 rounds
+        # --- Polish loop: halve if hard_noise/DBCV trigger; re-eval up to 3 rounds
         ms_best, mcs_best = best["ms"], best["mcs"]
         dbcv0 = best["metrics"].get("dbcv", None)
-        noise0 = best["metrics"].get("noise_rate", np.nan)
-    
+        hard_noise_best = best["metrics"].get("hard_noise_rate", np.nan)
+
         rounds = 3
         changed = True
         note_all = []
@@ -717,18 +1075,19 @@ class Clusterer:
             rounds -= 1
             ms_new, mcs_new, note, changed = self._apply_threshold_rule(
                 ms_best, mcs_best,
-                dbcv=dbcv0, noise=noise0,
+                dbcv=dbcv0, hard_noise=hard_noise_best,
                 min_ms=2, min_mcs=5, dbcv_cut=0.50, noise_cut=0.20
             )
             note_all.append(note)
             if not changed:
                 break
-    
+
             # re-eval a micro-grid around the new ms
             ms_grid = sorted({int(np.clip(f * ms_new, 1, mcs_new)) for f in [0.8, 1.0, 1.2]})
             results2 = self._grid_search(U, ms_grid, mcs_new)
             if not results2:
                 break
+
             # re-score same as above
             sil  = np.clip([r["metrics"].get("sil", np.nan) for r in results2], 0, 1)
             db   = [r["metrics"].get("DB",  np.nan) for r in results2]; db = 1.0 - np.clip(db, 0, 1)
@@ -744,13 +1103,18 @@ class Clusterer:
             for i, r in enumerate(results2):
                 r["score"] = float(final_score[i])
             results2.sort(key=lambda r: r["score"], reverse=True)
-            best2 = results2[0]
-    
-            # update best
-            best = best2
-            ms_best, mcs_best = best2["ms"], best2["mcs"]
-            dbcv0 = best2["metrics"].get("dbcv", None)
-            noise0 = best2["metrics"].get("noise_rate", np.nan)
+            candidate = results2[0]
+
+            # Check if halving improved hard_noise
+            if candidate["metrics"].get("hard_noise_rate", np.nan) < hard_noise_best:
+                # Halving helped - accept new config
+                best = candidate
+                ms_best, mcs_best = candidate["ms"], candidate["mcs"]
+                dbcv0 = candidate["metrics"].get("dbcv", None)
+                hard_noise_best = candidate["metrics"].get("hard_noise_rate", np.nan)
+            else:
+                # Halving didn't help - keep original best and stop
+                break
     
         if note_all:
             self.verbose_reporter.stat_line("Polish loop decisions: " + " | ".join(note_all))
@@ -817,10 +1181,17 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"  Noise rate: {summary.noise_rate:.1%}")
         self.verbose_reporter.stat_line(f"  Median cluster size: {summary.median_cluster_size}")
 
-        # Assign labels to items 
+        # Assign labels to items
         for item, label in zip(self.output_list, labels):
             item.initial_idea_cluster = int(label)
-        
+
+        # Merge similar clusters if enabled
+        if self.clustering_config.merge_similar_clusters:
+            labels = self._merge_similar_clusters(labels)
+            # Update items with merged labels
+            for item, label in zip(self.output_list, labels):
+                item.initial_idea_cluster = int(label)
+
         # Processing stats
         unique_labels = set(labels)
         num_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
