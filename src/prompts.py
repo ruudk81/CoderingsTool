@@ -1280,3 +1280,108 @@ Critical requirements:
 
 Begin the code assignment now.
 """
+
+# Stage 1: Evaluate default code from cluster
+DEFAULT_CODE_EVALUATION_PROMPT = """
+You are a {language} language expert in qualitative data analysis. Your task is to evaluate how well a default code fits a specific response segment.
+
+First, review the survey question:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Next, examine the response segment to analyze:
+<idea_to_analyze>
+Idea ID: {idea_id}
+Idea Text: {idea_text}
+</idea_to_analyze>
+
+This response segment came from a cluster of similar responses. Here is the default code generated from that cluster:
+<default_code>
+Code: {default_code}
+Definition: {default_definition}
+</default_code>
+
+Your task is to evaluate how well this default code captures the meaning of the response segment.
+
+Consider:
+1. Does the code definition accurately describe the idea expressed?
+2. Is there semantic alignment between the idea and the code?
+3. Would this code be appropriate for categorizing this response?
+
+Provide a confidence score using this scale:
+- 0.90-1.00: Perfect fit - the code exactly captures the idea's meaning
+- 0.70-0.89: Good fit - strong conceptual alignment with minor differences
+- 0.60-0.69: Acceptable fit - the code captures the general concept adequately
+- 0.40-0.59: Weak fit - partial alignment but significant gaps in meaning
+- 0.00-0.39: Poor fit - the code does not capture the idea's core meaning
+
+Provide your response in the following JSON format:
+{{
+  "idea_id": "{idea_id}",
+  "confidence": CONFIDENCE_SCORE,
+  "rationale": "Brief explanation of why this code does or does not fit (in {language})"
+}}
+
+Critical requirements:
+- The confidence score must reflect semantic fit
+- The rationale must explain the conceptual match or mismatch
+- Return ONLY the JSON object
+
+Begin the evaluation now.
+"""
+
+# Stage 2: Fallback assignment from all codes
+FALLBACK_CODE_ASSIGNMENT_PROMPT = """
+You are a {language} language expert in qualitative data analysis. Your task is to assign the best code from all available codes to a response segment.
+
+First, review the survey question:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Next, examine the response segment to analyze:
+<idea_to_analyze>
+Idea ID: {idea_id}
+Idea Text: {idea_text}
+</idea_to_analyze>
+
+The default code from this idea's cluster did not fit well (confidence: {default_confidence:.2f}).
+
+Now, review ALL available codes from the complete codebook:
+<all_codes>
+{all_codes}
+</all_codes>
+
+Your task is to select the single best code that captures the meaning of this response segment.
+
+Follow these steps:
+1. Carefully read and understand each code's definition
+2. Analyze the semantic meaning of the response segment
+3. Identify which code best captures the core concept expressed
+4. Assign exactly one code based on semantic alignment
+
+Provide a confidence score using this scale:
+- 0.90-1.00: Perfect fit - exact conceptual match
+- 0.70-0.89: Good fit - strong semantic alignment
+- 0.60-0.69: Acceptable fit - captures the general concept
+- 0.40-0.59: Weak fit - partial alignment
+- 0.00-0.39: Poor fit - limited relevance
+
+Provide your response in the following JSON format:
+{{
+  "idea_id": "{idea_id}",
+  "assigned_codes": ["SINGLE_CODE_NAME"],
+  "assignment_confidence": CONFIDENCE_SCORE,
+  "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
+}}
+
+Critical requirements:
+- Use exact code names as provided in the codes list
+- Assign one and only one code
+- The confidence score must reflect semantic fit
+- The rationale must explain the conceptual connection
+- Return ONLY the JSON object
+
+Begin the code assignment now.
+"""

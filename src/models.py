@@ -38,8 +38,9 @@ class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
 
 class ClusterSubmodel(EmbeddingsSubmodel):
-    initial_cluster: Optional[Union[int, str]] = None   
+    initial_cluster: Optional[Union[int, str]] = None
     expanded_cluster: Optional[str] = None
+    cluster_theme: Optional[str] = None  # Theme name from Step 6 Chain 1
     
 class ClusterModel(EmbeddingsModel):
     response_ideas: Optional[List[ClusterSubmodel]] = None  

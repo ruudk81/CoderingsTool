@@ -105,6 +105,7 @@ class ResultsExporter:
                                 'idea_text': idea.idea,
                                 'initial_cluster_id': parent_cluster,
                                 'source_cluster_id': source_cluster,  # This is the sub-cluster from enriched codebook
+                                'cluster_theme': idea.cluster_theme if hasattr(idea, 'cluster_theme') else '',
                                 'theme_name': code_info['theme_name'],
                                 'theme_description': code_info['theme_description'],
                                 'category': code_info['category'],  # Category column (empty for 2-level hierarchy)
@@ -132,6 +133,7 @@ class ResultsExporter:
                             'idea_text': idea.idea,
                             'initial_cluster_id': parent_cluster,
                             'source_cluster_id': source_cluster,
+                            'cluster_theme': idea.cluster_theme if hasattr(idea, 'cluster_theme') else '',
                             'theme_name': '',
                             'theme_description': '',
                             'category': '',  # Empty category for no code assigned case
@@ -165,6 +167,7 @@ class ResultsExporter:
                     'idea_text': '',
                     'initial_cluster_id': '',
                     'source_cluster_id': '',
+                    'cluster_theme': '',
                     'code_label': str(filter_code),
                     'code_description': filter_label,
                     'assignment_rationale': 'Filtered in quality check',
@@ -277,6 +280,7 @@ class ResultsExporter:
                                 'idea_text': idea.idea,
                                 'initial_cluster_id': parent_cluster,
                                 'source_cluster_id': source_cluster,
+                                'cluster_theme': idea.cluster_theme if hasattr(idea, 'cluster_theme') else '',
                                 'theme_name': code_info['theme_name'],
                                 'theme_description': code_info['theme_description'],
                                 'category': code_info['category'],  # Category column (empty for 2-level hierarchy)
@@ -310,6 +314,7 @@ class ResultsExporter:
                             'idea_text': idea.idea,
                             'initial_cluster_id': parent_cluster,
                             'source_cluster_id': source_cluster,
+                            'cluster_theme': idea.cluster_theme if hasattr(idea, 'cluster_theme') else '',
                             'theme_name': '',
                             'theme_description': '',
                             'category': '',  # Empty category for no code assigned case
@@ -347,6 +352,7 @@ class ResultsExporter:
                     'idea_text': '',
                     'initial_cluster_id': '',
                     'source_cluster_id': '',
+                    'cluster_theme': '',
                     'code_label': str(filter_code),
                     'code_description': filter_label,
                     'assignment_rationale': 'Filtered in quality check',
@@ -417,6 +423,7 @@ class ResultsExporter:
             'Idea Text',
             'Initial Cluster ID',
             'Source Cluster ID',
+            'Cluster Theme',
             'Code Label',
             'Code Description',
             'Assignment Rationale',
@@ -455,7 +462,7 @@ class ResultsExporter:
                         raise
                     
                     # Format confidence values
-                    if c_idx == 10 and value is not None:  # Assignment confidence column (shifted by 1 due to new column)
+                    if c_idx == 11 and value is not None:  # Assignment confidence column (K - after adding Cluster Theme)
                         try:
                             cell.value = float(value)
                             cell.number_format = '0.00'
@@ -473,14 +480,15 @@ class ResultsExporter:
             'D': 50,  # Idea Text
             'E': 18,  # Initial Cluster ID
             'F': 18,  # Source Cluster ID
-            'G': 30,  # Code Label
-            'H': 50,  # Code Description
-            'I': 60,  # Assignment Rationale
-            'J': 20,  # Assignment Confidence
-            'K': 30,  # Theme Name
-            'L': 50,  # Theme Description
-            'M': 30,  # Category
-            'N': 50   # Category Description
+            'G': 40,  # Cluster Theme
+            'H': 30,  # Code Label
+            'I': 50,  # Code Description
+            'J': 60,  # Assignment Rationale
+            'K': 20,  # Assignment Confidence
+            'L': 30,  # Theme Name
+            'M': 50,  # Theme Description
+            'N': 30,  # Category
+            'O': 50   # Category Description
         }
         
         for col, width in column_widths.items():
@@ -635,6 +643,7 @@ class ResultsExporter:
             'Idea Text',
             'Initial Cluster ID',
             'Source Cluster ID',
+            'Cluster Theme',
             'Code Label',
             'Code Description',
             'Assignment Rationale',
@@ -673,7 +682,7 @@ class ResultsExporter:
                 cell.border = border
                 
                 # Format confidence values
-                if c_idx == 10 and value is not None:  # Assignment confidence column
+                if c_idx == 11 and value is not None:  # Assignment confidence column (K - after adding Cluster Theme)
                     try:
                         cell.value = float(value)
                         cell.number_format = '0.00'
@@ -688,17 +697,18 @@ class ResultsExporter:
             'D': 50,  # Idea Text
             'E': 18,  # Initial Cluster ID
             'F': 18,  # Source Cluster ID
-            'G': 30,  # Code Label
-            'H': 50,  # Code Description
-            'I': 60,  # Assignment Rationale
-            'J': 20,  # Assignment Confidence
-            'K': 30,  # Theme Name
-            'L': 50,  # Theme Description
-            'M': 30,  # Category
-            'N': 50,  # Category Description
-            'O': 60,  # Codegen_theme
-            'P': 60,  # Codegen_recommendation
-            'Q': 60   # Codebook_validation
+            'G': 40,  # Cluster Theme
+            'H': 30,  # Code Label
+            'I': 50,  # Code Description
+            'J': 60,  # Assignment Rationale
+            'K': 20,  # Assignment Confidence
+            'L': 30,  # Theme Name
+            'M': 50,  # Theme Description
+            'N': 30,  # Category
+            'O': 50,  # Category Description
+            'P': 60,  # Codegen_theme
+            'Q': 60,  # Codegen_recommendation
+            'R': 60   # Codebook_validation
         }
         
         for col, width in column_widths.items():

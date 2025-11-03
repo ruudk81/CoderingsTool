@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 7
+RUN_UNTIL_STEP = 8
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1474,11 +1474,11 @@ def step_8_assign_codes(
 
     step_name = "code_assignment_direct"
 
-    # Load enriched clusters from Step 6 (with expanded_cluster field)
     initial_cluster_results = cache_manager.load_from_cache(
         filename,
         "expanded_clusters",
-        variable_key
+        variable_key,
+        models.ClusterModel
     )
 
     # Use global model_config if not provided
@@ -1539,6 +1539,10 @@ def step_8_assign_codes(
             )
 
             code_assigned_results = code_assigner_instance.assign()
+
+            # Print assignment strategy stats (default vs fallback)
+            if verbose:
+                code_assigner_instance.print_assignment_stats()
 
         for result in code_assigned_results:
             if not hasattr(result, 'assignment_metadata') or result.assignment_metadata is None:
