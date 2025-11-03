@@ -1426,7 +1426,8 @@ def clean_cluster_ideas(cluster_results: List,) -> List:
                     idea=cleaned_idea,
                     idea_embedding=idea_submodel.idea_embedding,
                     initial_cluster=idea_submodel.initial_cluster,
-                    expanded_cluster=idea_submodel.expanded_cluster
+                    expanded_cluster=idea_submodel.expanded_cluster,
+                    cluster_theme=idea_submodel.cluster_theme
                 )
                 cleaned_response_ideas.append(cleaned_submodel)
 

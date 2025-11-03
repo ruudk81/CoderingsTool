@@ -180,6 +180,19 @@ class CodeAssignmentResponse(BaseModel):
     assignment_rationale: str
     assigned_themes: Optional[List[str]] = None
 
+class DefaultCodeEvaluationResponse(BaseModel):
+    """Stage 1: Evaluating default code from cluster"""
+    idea_id: str
+    confidence: float
+    rationale: str
+
+class FallbackCodeAssignmentResponse(BaseModel):
+    """Stage 2: Selecting from all codes"""
+    idea_id: str
+    assigned_codes: List[str]
+    assignment_confidence: float
+    assignment_rationale: str
+
 
 class CodeAssigner:
     """
@@ -258,9 +271,18 @@ class CodeAssigner:
             'timeouts': 0
         }
 
+        # Two-stage assignment stats
+        self.stage_1_calls = 0
+        self.stage_2_calls = 0
+        self.used_default_count = 0
+        self.used_fallback_count = 0
+
         # Prompt/Response logging for debugging
-        self.prompt_responses = []  # Stores (respondent_id, idea_id, prompt, response, confidence)
-        self.verbose = verbose  # Store for conditional logging
+        self.prompt_responses = []
+        self.verbose = verbose
+
+        # Build cluster→codes mapping
+        self.cluster_to_codes = self._build_cluster_code_mapping()
 
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
@@ -291,7 +313,25 @@ class CodeAssigner:
         avg_input = total_tokens / sample_count
         # Assume 15% output ratio initially
         return int(avg_input * 1.15)
-    
+
+    def _build_cluster_code_mapping(self) -> Dict[str, List[models.Codebook]]:
+        """Build mapping from expanded_cluster ID to codes generated from that cluster"""
+        from collections import defaultdict
+        mapping = defaultdict(list)
+
+        for code in self.codebook:
+            if hasattr(code, 'source_cluster') and code.source_cluster:
+                mapping[str(code.source_cluster)].append(code)
+
+        # Convert to regular dict and log stats
+        cluster_dict = dict(mapping)
+        if self.verbose:
+            total_clusters_with_codes = len(cluster_dict)
+            avg_codes_per_cluster = sum(len(codes) for codes in cluster_dict.values()) / total_clusters_with_codes if total_clusters_with_codes > 0 else 0
+            self.verbose_reporter.stat_line(f"Cluster→Code mapping: {total_clusters_with_codes} clusters, avg {avg_codes_per_cluster:.1f} codes/cluster")
+
+        return cluster_dict
+
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
         """Create a sample prompt for token estimation using all codes"""
         # Use ALL codes for accurate estimation
@@ -355,18 +395,23 @@ class CodeAssigner:
         return themes
 
     def _extract_all_ideas(self) -> List[tuple]:
-        """Extract all individual ideas for processing"""
+        """Extract all individual ideas for processing with expanded_cluster info"""
         all_ideas = []
 
         for model in self.cluster_models:
             if hasattr(model, 'response_ideas') and model.response_ideas:
                 for idea_submodel in model.response_ideas:
                     if hasattr(idea_submodel, 'idea_embedding') and idea_submodel.idea_embedding is not None:
+                        # Extract expanded_cluster (fallback to initial_cluster if not available)
+                        expanded_cluster = getattr(idea_submodel, 'expanded_cluster', None) or \
+                                         getattr(idea_submodel, 'initial_cluster', None)
+
                         all_ideas.append((
                             model.respondent_id,
                             idea_submodel.idea_id,
                             idea_submodel.idea,
-                            idea_submodel.idea_embedding
+                            idea_submodel.idea_embedding,
+                            expanded_cluster
                         ))
                     else:
                         self.verbose_reporter.stat_line(f"Warning: No embedding for idea {idea_submodel.idea_id}")
@@ -396,7 +441,7 @@ class CodeAssigner:
     async def probe_call_no_structured(self, task_dict):
         """Probe call without structured output for bootstrap measurement"""
         idea_data = task_dict['idea_data']
-        respondent_id, idea_id, idea_text, idea_embedding = idea_data
+        respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
 
         prompt = self._create_prompt(idea_id, idea_text)
         
@@ -410,6 +455,62 @@ class CodeAssigner:
 
         u = getattr(resp, "usage", None)
         return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+
+    async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook) -> DefaultCodeEvaluationResponse:
+        """Stage 1: Evaluate how well the default code from cluster fits the idea"""
+        from prompts import DEFAULT_CODE_EVALUATION_PROMPT
+
+        prompt = DEFAULT_CODE_EVALUATION_PROMPT.format(
+            language=self.language,
+            var_lab=self.var_lab,
+            idea_id=idea_id,
+            idea_text=idea_text,
+            default_code=default_code.code,
+            default_definition=default_code.definition
+        )
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            response_model=DefaultCodeEvaluationResponse,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            seed=self.model_config.seed
+        )
+
+        self.stage_1_calls += 1
+        return response
+
+    async def assign_from_all_codes(self, idea_id: str, idea_text: str, default_confidence: float) -> FallbackCodeAssignmentResponse:
+        """Stage 2: Pick best code from all available codes when default fails"""
+        from prompts import FALLBACK_CODE_ASSIGNMENT_PROMPT
+
+        # Format all codes
+        all_codes_text = "\n".join([
+            f"Code: {code.code}\nDefinition: {code.definition}\n"
+            for code in self.codebook
+        ])
+
+        prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
+            language=self.language,
+            var_lab=self.var_lab,
+            idea_id=idea_id,
+            idea_text=idea_text,
+            default_confidence=default_confidence,
+            all_codes=all_codes_text
+        )
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            response_model=FallbackCodeAssignmentResponse,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            seed=self.model_config.seed
+        )
+
+        self.stage_2_calls += 1
+        return response
 
     @retry(
         retry=retry_if_exception_type((
@@ -425,120 +526,97 @@ class CodeAssigner:
         reraise=True
     )
     async def process_task(self, task: Dict) -> CodeAssignmentResponse:
-        """Process a single code assignment task"""
+        """Two-stage code assignment: evaluate default from cluster, fallback to all codes if needed"""
         task_start = time.perf_counter()
-        
+
         try:
             idea_data = task['idea_data']
-            respondent_id, idea_id, idea_text, idea_embedding = idea_data
+            respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
 
-            # Build prompt
-            prompt = self._create_prompt(idea_id, idea_text)
-            
-            # Estimate tokens
-            est_tokens = self.estimate_tokens(prompt)
-            
-            # Log estimation for first few tasks
-            if task.get('task_index', 0) < 5:
-                logger.info(f"[ESTIMATION DEBUG] Task {task.get('task_index', 0)}: estimated {est_tokens} tokens")
-            
-            # Capture prompt for first task
-            if self.prompt_printer and task.get('task_index', 0) == 0:
-                self.prompt_printer.capture_prompt(
-                    step_name="code_assignment",
-                    utility_name="CodeAssigner",
-                    prompt_content=prompt,
-                    prompt_type="code_assignment",
-                    metadata={
-                        "model": self.model,
-                        "var_lab": self.var_lab,
-                        "language": self.language,
-                        "estimated_tokens": est_tokens,
-                        "idea_id": idea_id
-                    }
-                )
-           
-            # TPM bucket for token limiting
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            
-            # Calculate dynamic timeout BEFORE rate limiting for progressive learning
-            timeout = self.latency_tracker.get_timeout(est_tokens)
-            
-            # Unified rate limiting and semaphore
-            async with self.semaphore:
-                async with self.rate_limiter:
-                    
-                    # Make API call
-                    response = await asyncio.wait_for(
-                        self.client.chat.completions.create(
-                            model=self.model,
-                            response_model=CodeAssignmentResponse,
-                            messages=[{"role": "user", "content": prompt}],
-                            temperature=self.config.temperature,
-                            max_tokens=self.config.max_tokens,
-                            seed=self.model_config.seed
-                        ),
-                        timeout=timeout
-                    )
-                    
-                    # Record latency
-                    latency = time.perf_counter() - task_start
-                    self.latency_tracker.add(latency)
-                    
-                    # Track actual token usage for learning and reconciliation
-                    if hasattr(response, '_raw_response'):
-                        usage = response._raw_response.usage
-                        if usage:
-                            actual_total_tokens = usage.total_tokens
-                            actual_output_tokens = usage.completion_tokens
-                            
-                            # Update output token history for estimation learning
-                            if len(self.output_token_history) < 5:
-                                self.output_token_history.append(actual_output_tokens)
-                            
-                            # Track actual total tokens for rolling average
-                            self.actual_total_tokens.append(actual_total_tokens)
-                            
-                            # Track estimation accuracy
-                            estimation_error = abs(actual_total_tokens - est_tokens)
-                            self.estimation_errors.append(estimation_error)
-                            
-                            # Reconcile token difference with bucket
-                            delta = actual_total_tokens - est_tokens
-                            # if task.get('task_index', 0) < 5:
-                            #     print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
-                            await self.tpm_bucket.reconcile(delta)
-                    
-                    # Add theme assignments
-                    assigned_themes = self._assign_themes_to_codes(response.assigned_codes)
-                    response.assigned_themes = assigned_themes
+            # Metadata for tracking default vs fallback
+            metadata = {
+                'used_default': False,
+                'fallback_triggered': False,
+                'default_confidence': None,
+                'expanded_cluster': expanded_cluster
+            }
 
-                    # Capture prompt/response for debugging (only if verbose)
-                    if self.verbose:
-                        self.prompt_responses.append({
-                            'respondent_id': respondent_id,
-                            'idea_id': idea_id,
-                            'idea_text': idea_text,
-                            'prompt': prompt,
-                            'assigned_codes': response.assigned_codes,
-                            'confidence': response.assignment_confidence,
-                            'rationale': response.assignment_rationale,
-                            'assigned_themes': assigned_themes
-                        })
+            # Get default code(s) from this idea's cluster
+            default_codes = self.cluster_to_codes.get(str(expanded_cluster), [])
 
-                    self.stats['tasks_successful'] += 1
-                    return response
-                    
+            if not default_codes:
+                # No codes from this cluster - go straight to fallback (Stage 2)
+                metadata['fallback_triggered'] = True
+                stage_2_result = await self.assign_from_all_codes(idea_id, idea_text, default_confidence=0.0)
+
+                assigned_code = stage_2_result.assigned_codes[0]
+                confidence = stage_2_result.assignment_confidence
+                rationale = f"No default code available. {stage_2_result.assignment_rationale}"
+                self.used_fallback_count += 1
+
+            else:
+                # Stage 1: Evaluate default code from cluster
+                default_code = default_codes[0]  # Use first code from cluster
+                stage_1_result = await self.evaluate_default_code(idea_id, idea_text, default_code)
+
+                metadata['default_confidence'] = stage_1_result.confidence
+
+                if stage_1_result.confidence >= 0.6:
+                    # Use default code
+                    metadata['used_default'] = True
+                    assigned_code = default_code.code
+                    confidence = stage_1_result.confidence
+                    rationale = stage_1_result.rationale
+                    self.used_default_count += 1
+
+                else:
+                    # Stage 2: Fallback to all codes
+                    metadata['fallback_triggered'] = True
+                    stage_2_result = await self.assign_from_all_codes(idea_id, idea_text, stage_1_result.confidence)
+
+                    assigned_code = stage_2_result.assigned_codes[0]
+                    confidence = stage_2_result.assignment_confidence
+                    rationale = f"Default: {stage_1_result.rationale} | Fallback: {stage_2_result.assignment_rationale}"
+                    self.used_fallback_count += 1
+
+            # Create response
+            response = CodeAssignmentResponse(
+                idea_id=idea_id,
+                idea=idea_text,
+                assigned_codes=[assigned_code],
+                assignment_confidence=confidence,
+                assignment_rationale=rationale
+            )
+
+            # Add theme mapping
+            response.assigned_themes = self._assign_themes_to_codes([assigned_code])
+
+            # Capture for debugging (only if verbose)
+            if self.verbose:
+                self.prompt_responses.append({
+                    'respondent_id': respondent_id,
+                    'idea_id': idea_id,
+                    'idea_text': idea_text,
+                    'expanded_cluster': expanded_cluster,
+                    'assigned_codes': [assigned_code],
+                    'confidence': confidence,
+                    'rationale': rationale,
+                    'metadata': metadata
+                })
+
+            self.stats['tasks_successful'] += 1
+            return response
+
         except asyncio.TimeoutError:
             self.stats['timeouts'] += 1
             logger.warning(f"Task {task['task_id']} timed out")
             raise  # Let tenacity retry
-            
+
         except RateLimitError:
             self.stats['rate_limits'] += 1
             logger.warning(f"Task {task['task_id']} hit rate limit")
             raise  # Let tenacity retry
-            
+
         except Exception as e:
             logger.error(f"Task {task['task_id']} failed: {type(e).__name__}: {e}")
             raise  # Let tenacity retry
@@ -546,7 +624,7 @@ class CodeAssigner:
     def create_fallback_response(self, task: Dict) -> CodeAssignmentResponse:
         """Create fallback response for failed tasks"""
         idea_data = task['idea_data']
-        respondent_id, idea_id, idea_text, idea_embedding = idea_data
+        respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
         
         # Return fallback response (first available code)
         fallback_code = self.codebook[0].code if self.codebook else "Unknown"
@@ -606,47 +684,7 @@ class CodeAssigner:
 
     def _merge_results_into_models(self, assignment_results: List[CodeAssignmentResponse]) -> List[models.CodeAssignedModel]:
         """Merge assignment results back into model structure"""
-        
-        # If using cached embeddings, create simple models from assignments
-        if self._cached_idea_embeddings and not self.cluster_models:
-            coded_models = []
-            
-            # Group assignments by respondent_id
-            respondent_assignments = {}
-            for result in assignment_results:
-                # Extract respondent_id from the cached data
-                for cached_idea in self._cached_idea_embeddings:
-                    if cached_idea['idea_id'] == result.idea_id:
-                        resp_id = cached_idea['respondent_id']
-                        if resp_id not in respondent_assignments:
-                            respondent_assignments[resp_id] = []
-                        respondent_assignments[resp_id].append(result)
-                        break
-            
-            # Create CodeAssignedModel for each respondent
-            for resp_id, assignments in respondent_assignments.items():
-                assigned_ideas = []
-                for assignment in assignments:
-                    assigned_idea = models.AssignedIdeaSubmodel(
-                        idea_id=assignment.idea_id,
-                        idea=assignment.idea,
-                        assigned_codes=assignment.assigned_codes,
-                        assignment_confidence=assignment.assignment_confidence,
-                        assignment_rationale=assignment.assignment_rationale,
-                        assigned_themes=assignment.assigned_themes
-                    )
-                    assigned_ideas.append(assigned_idea)
-                
-                coded_model = models.CodeAssignedModel(
-                    respondent_id=resp_id,
-                    response='',  # We don't have the full response text
-                    response_ideas=assigned_ideas
-                )
-                coded_models.append(coded_model)
-            
-            return coded_models
-        
-        # Original logic for cluster models
+
         # Create lookup for assignments by idea_id
         assignments_lookup = {result.idea_id: result for result in assignment_results}
         
@@ -666,6 +704,7 @@ class CodeAssigner:
                         idea=idea_submodel.idea,
                         initial_cluster=getattr(idea_submodel, 'initial_cluster', None),
                         expanded_cluster=getattr(idea_submodel, 'expanded_cluster', None),
+                        cluster_theme=getattr(idea_submodel, 'cluster_theme', None),
                         idea_embedding=getattr(idea_submodel, 'idea_embedding', None)
                     )
                     
@@ -743,6 +782,32 @@ class CodeAssigner:
             print(f"{'─'*40}")
             print(sample['prompt'])
             print(f"{'─'*80}\n")
+
+    def print_assignment_stats(self):
+        """Print detailed stats about default vs fallback usage"""
+        total = self.used_default_count + self.used_fallback_count
+
+        if total == 0:
+            print("\n⚠️ No assignment stats available")
+            return
+
+        default_pct = (self.used_default_count / total) * 100
+        fallback_pct = (self.used_fallback_count / total) * 100
+
+        print(f"\n{'='*80}")
+        print(f"CODE ASSIGNMENT STRATEGY BREAKDOWN")
+        print(f"{'='*80}")
+        print(f"Total ideas processed: {total}")
+        print(f"")
+        print(f"Used default (cluster code): {self.used_default_count} ({default_pct:.1f}%)")
+        print(f"Used fallback (all codes):   {self.used_fallback_count} ({fallback_pct:.1f}%)")
+        print(f"")
+        print(f"API calls:")
+        print(f"  Stage 1 (evaluate default): {self.stage_1_calls}")
+        print(f"  Stage 2 (fallback):         {self.stage_2_calls}")
+        print(f"  Total API calls:            {self.stage_1_calls + self.stage_2_calls}")
+        print(f"  Avg calls per idea:         {(self.stage_1_calls + self.stage_2_calls) / total:.2f}")
+        print(f"{'='*80}\n")
 
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[CodeAssignmentResponse]:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""

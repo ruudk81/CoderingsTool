@@ -2200,7 +2200,27 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_complete("Multi-Theme Cluster Expansion")
         
         return expanded_themes, expanded_clusters, multi_theme_mapping
-    
+
+    def _create_expanded_cluster_to_theme_mapping(self) -> Dict[str, str]:
+        """
+        Create mapping from expanded_cluster IDs to theme labels.
+
+        Uses step1_summaries which contains theme extraction results where:
+        - Single-theme clusters: cluster_id → one theme
+        - Multi-theme clusters: sub-cluster IDs (e.g., "12-1", "12-2") → individual themes
+
+        Returns:
+            Dict mapping expanded_cluster ID (e.g., "12-1") to theme_label (e.g., "Customer Service")
+        """
+        mapping = {}
+        for cluster_id, summary in self.step1_summaries.items():
+            # cluster_id is already the expanded_cluster ID after expansion
+            theme_label = summary.get('theme_label', '')
+            if theme_label:
+                mapping[str(cluster_id)] = theme_label
+
+        return mapping
+
     async def redistribute_ideas_to_subthemes(self, original_cluster_id: int, sub_cluster_ids: List[str],  original_cluster_data: Dict, sub_themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]) -> Dict[str, Dict]:
         """Redistribute ideas from original cluster to sub-clusters based on embedding similarity"""
         #self.verbose_reporter.step_start(f"Redistributing ideas for cluster {original_cluster_id}")
@@ -2301,9 +2321,11 @@ class InductiveCodeGenerator:
         return redistributed_clusters
     
     async def _update_cluster_models_with_redistribution(self, multi_theme_mapping: Dict[int, List[str]], original_clusters: Dict, themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]):
-        """Update ClusterModel objects with expanded_cluster assignments based on similarity"""
-        
-        
+        """Update ClusterModel objects with expanded_cluster and cluster_theme assignments based on similarity"""
+
+        # Create expanded_cluster → theme_label mapping
+        expanded_cluster_to_theme = self._create_expanded_cluster_to_theme_mapping()
+
         # For each multi-theme cluster
         for orig_cluster_id, sub_cluster_ids in multi_theme_mapping.items():
             if orig_cluster_id not in original_clusters:
@@ -2349,6 +2371,10 @@ class InductiveCodeGenerator:
                             if idea.idea_id in idea_to_expanded_cluster:
                                 idea.expanded_cluster = idea_to_expanded_cluster[idea.idea_id]
                                 updated_ideas_count += 1
+
+                                # Set cluster_theme from mapping
+                                if idea.expanded_cluster in expanded_cluster_to_theme:
+                                    idea.cluster_theme = expanded_cluster_to_theme[idea.expanded_cluster]
             
         
         # For single-theme clusters, set expanded_cluster to string version of initial_cluster
@@ -2359,10 +2385,14 @@ class InductiveCodeGenerator:
                     if idea.expanded_cluster is None and idea.initial_cluster is not None:
                         # Single-theme cluster: expanded_cluster = str(initial_cluster)
                         # Check both integer and string forms for type consistency
-                        if (idea.initial_cluster not in multi_theme_mapping and 
+                        if (idea.initial_cluster not in multi_theme_mapping and
                             str(idea.initial_cluster) not in multi_theme_mapping):
                             idea.expanded_cluster = str(idea.initial_cluster)
                             single_theme_updates += 1
+
+                            # Set cluster_theme for single-theme clusters
+                            if idea.expanded_cluster in expanded_cluster_to_theme:
+                                idea.cluster_theme = expanded_cluster_to_theme[idea.expanded_cluster]
         
     #########################################################################################################
     # IDEA SAMPLING METHODS — UMAP(10D) + HDBSCAN (euclidean), noise excluded
