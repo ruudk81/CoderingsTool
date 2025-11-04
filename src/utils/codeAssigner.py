@@ -318,10 +318,25 @@ class CodeAssigner:
         """Build mapping from expanded_cluster ID to codes generated from that cluster"""
         from collections import defaultdict
         mapping = defaultdict(list)
+        merged_codes_count = 0
 
         for code in self.codebook:
             if hasattr(code, 'source_cluster') and code.source_cluster:
-                mapping[str(code.source_cluster)].append(code)
+                # Split comma-separated cluster IDs (e.g., "8,11,23" → ["8", "11", "23"])
+                cluster_ids = str(code.source_cluster).split(',')
+
+                # Log if multiple clusters share this code
+                if len(cluster_ids) > 1:
+                    merged_codes_count += 1
+                    if self.verbose:
+                        cluster_list = [c.strip() for c in cluster_ids]
+                        self.verbose_reporter.info(f"  Code '{code.code[:50]}...' mapped to {len(cluster_list)} clusters: {cluster_list}")
+
+                # Create mapping for each individual cluster ID
+                for cluster_id in cluster_ids:
+                    cluster_id = cluster_id.strip()  # Remove whitespace
+                    if cluster_id:  # Skip empty strings
+                        mapping[cluster_id].append(code)
 
         # Convert to regular dict and log stats
         cluster_dict = dict(mapping)
@@ -329,6 +344,8 @@ class CodeAssigner:
             total_clusters_with_codes = len(cluster_dict)
             avg_codes_per_cluster = sum(len(codes) for codes in cluster_dict.values()) / total_clusters_with_codes if total_clusters_with_codes > 0 else 0
             self.verbose_reporter.stat_line(f"Cluster→Code mapping: {total_clusters_with_codes} clusters, avg {avg_codes_per_cluster:.1f} codes/cluster")
+            if merged_codes_count > 0:
+                self.verbose_reporter.stat_line(f"  {merged_codes_count} codes shared across multiple clusters")
 
         return cluster_dict
 
