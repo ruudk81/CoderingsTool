@@ -76,6 +76,7 @@ class RefinedSubcode(BaseModel):
     code: str
     description: str
     category: str = ""  # Empty string when code is directly under theme; category name for 3-level hierarchy
+    source_cluster: str = ""  # Cluster ID(s) from Step 6 - may be comma-separated for merged codes (e.g., "8,11,23")
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookCategory(BaseModel):
