@@ -201,8 +201,18 @@ class CodebookRefinementProcessor:
                     for subcode_data in subcodes_data:
                         if isinstance(subcode_data, dict) and 'code' in subcode_data and 'description' in subcode_data:
                             # Map sequential ID back to source_cluster_id
+                            # Handle merged IDs from GPT-5 (e.g., "2,3" → "8,12")
                             sequential_id = subcode_data.get('id', '')
-                            source_cluster = id_to_cluster_map.get(sequential_id, '')
+
+                            if ',' in sequential_id:
+                                # GPT-5 merged multiple codes - split and look up each cluster
+                                id_parts = [id.strip() for id in sequential_id.split(',')]
+                                cluster_parts = [id_to_cluster_map.get(id, '') for id in id_parts]
+                                # Filter out empty values and join
+                                source_cluster = ','.join([c for c in cluster_parts if c])
+                            else:
+                                # Single ID, direct lookup
+                                source_cluster = id_to_cluster_map.get(sequential_id, '')
 
                             subcode = RefinedSubcode(
                                 id=sequential_id,  # Keep sequential ID for traceability
