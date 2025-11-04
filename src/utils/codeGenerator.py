@@ -822,6 +822,9 @@ class SharedCodebook:
             bool: True if code was found and updated, False otherwise
         """
         async with self._lock:
+            # DEBUG: Log search attempt
+            search_normalized = self._normalize_code_name(code_text)
+
             for existing in self._codes:
                 if self._is_duplicate(existing['code'], code_text):
                     # Found the code - append cluster ID
@@ -838,18 +841,24 @@ class SharedCodebook:
                             'version': self._version,
                             'action': 'cluster_id_appended_for_use',
                             'code': code_text,
+                            'code_found': existing['code'],
                             'cluster_id': cluster_id,
+                            'updated_source_cluster_id': existing['source_cluster_id'],
                             'timestamp': time.time()
                         })
                         return True
 
-            # Code not found
+            # Code not found - log details for debugging
+            all_codes_normalized = [self._normalize_code_name(c['code']) for c in self._codes[:5]]
             self._update_log.append({
                 'version': self._version,
                 'action': 'append_cluster_failed',
                 'code': code_text,
+                'code_normalized': search_normalized,
                 'cluster_id': cluster_id,
                 'reason': 'code_not_found',
+                'total_codes_in_codebook': len(self._codes),
+                'first_5_codes_normalized': all_codes_normalized,
                 'timestamp': time.time()
             })
             return False
