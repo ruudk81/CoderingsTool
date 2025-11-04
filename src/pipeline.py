@@ -1529,7 +1529,8 @@ def step_8_assign_codes(
                     code=entry.code,
                     definition=entry.definition,
                     theme=entry.theme,
-                    theme_description=entry.theme_description
+                    theme_description=entry.theme_description,
+                    source_cluster=entry.source_cluster  # Preserve source_cluster for default code mapping
                 ) for entry in theme_enriched_codebook.codes],
                 var_lab=var_lab,
                 code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
@@ -2017,3 +2018,71 @@ if __name__ == '__main__':
     print("All steps (0-9) executed")
     print(f"Results exported to: {excel_path}")
     print(f"{'='*80}\n")
+    
+    
+if False: #debug
+     cluster_results = cache_manager.load_from_cache(filename,"expanded_clusters", variable_key, models.ClusterModel) 
+     for result in cluster_results:
+         for dat in result.response_ideas:
+             #print(dat.expanded_cluster)
+             if dat.expanded_cluster == '14':
+                 print(dat.idea)
+     
+         
+     step_name = "codebook_refinement"
+     codebook = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
+       
+     source_cluster_ids = []  
+     for entry in codebook:
+         for dat in entry.original_codebook:
+             for key, value in dat.items():
+                 if key == 'source_cluster_id':
+                     source_cluster_ids.append(value)
+                     print(value)
+             #break
+     print(sorted(source_cluster_ids, key=lambda x: [int(p) for p in x.split('-')]))
+     
+ 
+     cluster_ids = []  
+     for entry in codebook_reasoning:
+         key, value = entry
+         for val in value:
+             for k, v in val.items():
+                 # print(k)
+                 if k == "cluster_id":
+                     #cluster_ids.append(v)
+                     print(v)
+                 if k == "final_code":
+                     print(v)
+                     break
+     print(sorted(cluster_ids, key=lambda x: [int(p) for p in x.split('-')]))
+     
+         
+     # for entry in codebook:
+     #     for dat in entry.refined_codebook:
+     #         print(dat[1])
+     #         break
+         
+     step_name = "codebook_refinement"
+     codebook = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
+      
+
+     for entry in codebook:
+        for dat in entry.refined_codebook:
+            key, value = dat
+            # #print(key)
+            # if key == "refined_codebook":
+            #     print(value)
+            
+            for key, value in dat.items():
+                if key == 'source_cluster_id':
+                    source_cluster_ids.append(value)
+                    print(value)
+            #break
+     
+     for entry in codebook_reasoning:  # This is Step 6, not Step 7
+          key, value = entry
+          for val in value:
+              for k, v in val.items():
+                  if k == "source_cluster_id":  # or "cluster_id"
+                      print(v)
