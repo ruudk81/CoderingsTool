@@ -811,6 +811,49 @@ class SharedCodebook:
             
             return added_count > 0
 
+    async def append_cluster_to_code(self, code_text: str, cluster_id: Union[int, str]) -> bool:
+        """Append a cluster ID to an existing code's source_cluster_id (for USE decisions)
+
+        Args:
+            code_text: The code text to find
+            cluster_id: The cluster ID to append
+
+        Returns:
+            bool: True if code was found and updated, False otherwise
+        """
+        async with self._lock:
+            for existing in self._codes:
+                if self._is_duplicate(existing['code'], code_text):
+                    # Found the code - append cluster ID
+                    if cluster_id and str(cluster_id) != 'unknown':
+                        existing_clusters = existing.get('source_cluster_id', '')
+                        if existing_clusters:
+                            # Append to comma-separated list
+                            existing['source_cluster_id'] = f"{existing_clusters},{cluster_id}"
+                        else:
+                            # First cluster ID
+                            existing['source_cluster_id'] = str(cluster_id)
+
+                        self._update_log.append({
+                            'version': self._version,
+                            'action': 'cluster_id_appended_for_use',
+                            'code': code_text,
+                            'cluster_id': cluster_id,
+                            'timestamp': time.time()
+                        })
+                        return True
+
+            # Code not found
+            self._update_log.append({
+                'version': self._version,
+                'action': 'append_cluster_failed',
+                'code': code_text,
+                'cluster_id': cluster_id,
+                'reason': 'code_not_found',
+                'timestamp': time.time()
+            })
+            return False
+
 
 # ============================================================================
 # THEME-BASED SIMILARITY ENGINE
@@ -3788,11 +3831,25 @@ class InductiveCodeGenerator:
             # Handle USE decisions (optimized path - no validation/code_generation)
             if decision == "use":
                 decision_stats['use'] += 1
-                if result.get('optimization') == 'use_early_return':
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision (optimized) - no codebook update for '{decision_info.source_code or 'unknown code'}'")
+
+                # NEW: Append this cluster's ID to the source code's source_cluster_id
+                source_code = decision_info.source_code
+                if source_code and cluster_id:
+                    appended = await self.shared_codebook.append_cluster_to_code(source_code, cluster_id)
+                    if appended:
+                        if result.get('optimization') == 'use_early_return':
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision (optimized) - appended cluster to '{source_code}'")
+                        else:
+                            self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision - appended cluster to '{source_code}'")
+                    else:
+                        self.verbose_reporter.warning(f"C{cluster_id}: USE decision - failed to append cluster to '{source_code}' (code not found)")
                 else:
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision - no codebook update for '{decision_info.source_code or 'unknown code'}'")
-                continue  # USE decisions don't modify the codebook
+                    if result.get('optimization') == 'use_early_return':
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision (optimized) - no source code or cluster ID")
+                    else:
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision - no source code or cluster ID")
+
+                continue  # USE decisions don't add/modify codes, only append cluster IDs
             
             # For CREATE and MODIFY decisions, we need validation and code_generation
             if not result.get('validation') or not result.get('code_generation'):
