@@ -740,7 +740,7 @@ class SharedCodebook:
             
             # Batch add all new codes with enhanced duplicate detection
             added_count = 0
-            duplicates_prevented = 0
+            duplicates_merged = 0  # Count of cluster IDs merged into existing codes
             
             for code_dict in new_codes:
                 code = code_dict['code']
@@ -750,18 +750,41 @@ class SharedCodebook:
                 # Enhanced duplicate check - normalize and compare
                 is_duplicate = False
                 duplicate_of = None
-                
+                duplicate_entry = None
+
                 for existing in self._codes:
                     if self._is_duplicate(existing['code'], code):
                         is_duplicate = True
                         duplicate_of = existing['code']
+                        duplicate_entry = existing  # Keep reference to merge into
                         break
-                
-                if not is_duplicate:
+
+                if is_duplicate:
+                    # MERGE cluster IDs instead of preventing duplicate
+                    if cluster_id and cluster_id != 'unknown':
+                        existing_clusters = duplicate_entry.get('source_cluster_id', '')
+                        if existing_clusters:
+                            # Append new cluster ID to existing comma-separated list
+                            duplicate_entry['source_cluster_id'] = f"{existing_clusters},{cluster_id}"
+                        else:
+                            # First cluster ID for this code
+                            duplicate_entry['source_cluster_id'] = str(cluster_id)
+
+                    duplicates_merged += 1
+                    self._update_log.append({
+                        'version': self._version,
+                        'action': 'cluster_id_merged',
+                        'code': code,
+                        'cluster_id': cluster_id,
+                        'merged_into': duplicate_of,
+                        'timestamp': time.time()
+                    })
+                else:
+                    # New code - add normally
                     code_entry = {'code': code, 'definition': definition}
                     if cluster_id and cluster_id != 'unknown':
                         code_entry['source_cluster_id'] = str(cluster_id)
-                    
+
                     self._codes.append(code_entry)
                     added_count += 1
                     self._update_log.append({
@@ -771,29 +794,18 @@ class SharedCodebook:
                         'cluster_id': cluster_id,
                         'timestamp': time.time()
                     })
-                else:
-                    # Log prevented duplicate
-                    duplicates_prevented += 1
-                    self._update_log.append({
-                        'version': self._version,
-                        'action': 'duplicate_prevented',
-                        'attempted_code': code,
-                        'duplicate_of': duplicate_of,
-                        'cluster_id': cluster_id,
-                        'timestamp': time.time()
-                    })
             
             # Update version once for the entire batch
             if added_count > 0:
                 self._version += 1
             
-            # Log summary if duplicates were prevented
-            if duplicates_prevented > 0:
+            # Log summary if cluster IDs were merged
+            if duplicates_merged > 0:
                 self._update_log.append({
                     'version': self._version,
                     'action': 'batch_summary',
                     'added_count': added_count,
-                    'duplicates_prevented': duplicates_prevented,
+                    'cluster_ids_merged': duplicates_merged,
                     'timestamp': time.time()
                 })
             
