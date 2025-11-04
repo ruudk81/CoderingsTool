@@ -284,6 +284,16 @@ class CodeAssigner:
         # Build cluster→codes mapping
         self.cluster_to_codes = self._build_cluster_code_mapping()
 
+        # Debug: Show what codebook was received
+        if self.verbose:
+            self.verbose_reporter.info(f"\n[DEBUG] CodeAssigner received {len(self.codebook)} codes")
+            for i, code in enumerate(self.codebook[:3]):
+                self.verbose_reporter.info(f"  Code {i+1}: {code.code}")
+                if hasattr(code, 'source_cluster'):
+                    self.verbose_reporter.info(f"    source_cluster: '{code.source_cluster}'")
+                else:
+                    self.verbose_reporter.info(f"    source_cluster: MISSING ATTRIBUTE")
+
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
 
