@@ -98,7 +98,11 @@ class CodebookRefinementProcessor:
             return self._create_error_results(reasoning_results, start_time, str(e))
     
     def _extract_raw_codes(self, reasoning_results: CodeGeneratorReasoningResults) -> List[dict]:
-        """Extract raw codes with IDs from reasoning results"""
+        """Extract raw codes with IDs from reasoning results
+
+        Returns:
+            List of dicts with 'id', 'code', 'definition', and 'source_cluster_id' fields
+        """
         raw_codes = []
         code_id_counter = 1
 
@@ -109,7 +113,8 @@ class CodebookRefinementProcessor:
                     raw_codes.append({
                         'id': str(code_id_counter),
                         'code': code_data['code'],
-                        'definition': code_data.get('definition', '')
+                        'definition': code_data.get('definition', ''),
+                        'source_cluster_id': code_data.get('source_cluster_id', '')  # Preserve source cluster mapping
                     })
                     code_id_counter += 1
 
@@ -125,27 +130,31 @@ class CodebookRefinementProcessor:
                             raw_codes.append({
                                 'id': str(code_id_counter),
                                 'code': code_text,
-                                'definition': validated_code.get('definition', '')
+                                'definition': validated_code.get('definition', ''),
+                                'source_cluster_id': str(cluster_id)  # Use cluster_id as source
                             })
                             code_id_counter += 1
-        
+
         return raw_codes
     
     def _call_refinement_llm(self, survey_question: str, raw_codes: List[dict]) -> RefinedCodebookModel:
         """Call GPT-5 for codebook refinement using simple sync call"""
         from openai import OpenAI
-        
+
+        # Build mapping from sequential ID to source_cluster_id
+        id_to_cluster_map = {code['id']: code.get('source_cluster_id', '') for code in raw_codes}
+
         # Format codes for prompt with IDs
         formatted_codes = '\n'.join([f"- [ID: {code['id']}] {code['code']}" for code in raw_codes])
-        
+
         # Create prompt
         prompt = CODEBOOK_REFINEMENT_PROMPT.format(
             language=self.config.language,
             survey_question=survey_question,
             raw_codes=formatted_codes)
-        
+
         self.reporter.info(f"Calling {self.model_config.codebook_refinement_model} for refinement")
-        
+
         # Simple sync client
         client = OpenAI(api_key=self.api_key)
         
@@ -179,23 +188,28 @@ class CodebookRefinementProcessor:
             
             # Manually convert nested structures to Pydantic objects with defensive programming
             from models import RefinedSubcode, RefinedCodebookCategory
-            
+
             categories = []
             refined_codebook_data = response_data.get('refined_codebook', [])
-            
+
             for cat_data in refined_codebook_data:
                 try:
                     # Convert codes defensively (changed from 'subcodes' to 'codes')
                     subcodes = []
                     subcodes_data = cat_data.get('codes', [])
-                    
+
                     for subcode_data in subcodes_data:
                         if isinstance(subcode_data, dict) and 'code' in subcode_data and 'description' in subcode_data:
+                            # Map sequential ID back to source_cluster_id
+                            sequential_id = subcode_data.get('id', '')
+                            source_cluster = id_to_cluster_map.get(sequential_id, '')
+
                             subcode = RefinedSubcode(
-                                id=subcode_data.get('id', ''),  # Extract ID from response
+                                id=sequential_id,  # Keep sequential ID for traceability
                                 code=subcode_data['code'],
                                 description=subcode_data['description'],
-                                category=subcode_data.get('category', '')  # Parse category field for 3-level hierarchy
+                                category=subcode_data.get('category', ''),  # Parse category field for 3-level hierarchy
+                                source_cluster=source_cluster  # Map back to original cluster IDs
                             )
                             subcodes.append(subcode)
                         else:

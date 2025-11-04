@@ -1350,15 +1350,6 @@ def step_7_refine_codebook(
     if refinement_results and refinement_results.refined_codebook.refined_codebook:
         verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
 
-        # Create mapping from sequential ID to original source_cluster_id (expanded_cluster)
-        id_to_cluster_mapping = {}
-        if codebook_reasoning and hasattr(codebook_reasoning, 'codebook') and codebook_reasoning.codebook:
-            for idx, code_entry in enumerate(codebook_reasoning.codebook, start=1):
-                if isinstance(code_entry, dict):
-                    source_cluster_id = code_entry.get('source_cluster_id')
-                    if source_cluster_id:
-                        id_to_cluster_mapping[str(idx)] = source_cluster_id
-
         # Create ThemeEnrichedCodebookEntry objects from refined codebook
         enriched_entries = []
         code_to_theme_mapping = {}
@@ -1383,7 +1374,7 @@ def step_7_refine_codebook(
                     theme_description=theme_name,
                     category=subcode.category,  # Empty string for 2-level, category name for 3-level
                     category_description=subcode.category if subcode.category else "",  # Use category name as description
-                    source_cluster=id_to_cluster_mapping.get(subcode.id, subcode.id)  # Use expanded_cluster ID from mapping
+                    source_cluster=subcode.source_cluster  # Use source_cluster directly from RefinedSubcode
                 )
                 enriched_entries.append(enriched_entry)
 
