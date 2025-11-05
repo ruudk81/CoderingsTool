@@ -1131,7 +1131,7 @@ def step_6_generate_codebook(
 
                     if verbose:
                         verbose_reporter.empty_line()
-                        verbose_reporter.stat_line(f"[VALIDATION] Step 6 cluster mapping:")
+                        verbose_reporter.stat_line("[VALIDATION] Step 6 cluster mapping:")
                         verbose_reporter.stat_line(f"  Total clusters processed: {total_clusters}")
                         verbose_reporter.stat_line(f"  Clusters mapped to codes: {mapped_clusters}")
 
@@ -1145,7 +1145,7 @@ def step_6_generate_codebook(
                         missing = all_cluster_ids - mapped_cluster_ids
                         verbose_reporter.warning(f"  Missing cluster IDs: {sorted(missing)}")
                     else:
-                        verbose_reporter.stat_line(f"  ✓ All clusters successfully mapped")
+                        verbose_reporter.stat_line("  ✓ All clusters successfully mapped")
 
             else:
                 print("Warning: Codebook generator returned no results")
@@ -1195,7 +1195,7 @@ def step_6_generate_codebook(
 
         # Cache the enriched cluster results with expanded_cluster field
         cache_manager.save_to_cache(
-            initial_cluster_results,
+            generator.cluster_results,  # Use updated objects with expanded_cluster populated
             filename,
             "expanded_clusters",
             variable_key,
@@ -1460,7 +1460,7 @@ def step_7_refine_codebook(
                         step7_clusters.add(cluster_id.strip())
 
             verbose_reporter.empty_line()
-            verbose_reporter.stat_line(f"[VALIDATION] Step 7 cluster preservation:")
+            verbose_reporter.stat_line("[VALIDATION] Step 7 cluster preservation:")
             verbose_reporter.stat_line(f"  Clusters from Step 6: {len(step6_clusters)}")
             verbose_reporter.stat_line(f"  Clusters in Step 7: {len(step7_clusters)}")
 
@@ -1474,7 +1474,7 @@ def step_7_refine_codebook(
                     verbose_reporter.warning(f"  WARNING: {len(added)} unexpected clusters added!")
                     verbose_reporter.warning(f"  Added cluster IDs: {sorted(added)}")
             else:
-                verbose_reporter.stat_line(f"  ✓ All clusters preserved through refinement")
+                verbose_reporter.stat_line("  ✓ All clusters preserved through refinement")
 
     else:
         print("ERROR: No refinement results available to create theme enriched codebook")
