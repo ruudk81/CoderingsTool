@@ -1068,14 +1068,37 @@ def step_6_generate_codebook(
             codebook = []  # Legacy format for backward compatibility
 
             if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
-                # Use the deduplicated codebook directly from results
-                final_codebook = results.codebook
+                # Build codebook from cluster_results to ensure all clusters are included
+                # Group clusters by their final code to handle duplicates
+                code_to_clusters = {}
+                code_to_definition = {}
+
+                for cluster_result in results.cluster_results:
+                    cluster_id = str(cluster_result.get('cluster_id', ''))
+                    final_code = cluster_result.get('final_code', '')
+                    final_definition = cluster_result.get('final_definition', '')
+
+                    if final_code and cluster_id:
+                        if final_code not in code_to_clusters:
+                            code_to_clusters[final_code] = []
+                            code_to_definition[final_code] = final_definition
+                        code_to_clusters[final_code].append(cluster_id)
+
+                # Build final codebook with merged cluster IDs
+                final_codebook = []
+                for code_text, cluster_ids in code_to_clusters.items():
+                    final_codebook.append({
+                        'code': code_text,
+                        'definition': code_to_definition[code_text],
+                        'source_cluster_id': ','.join(cluster_ids)
+                    })
 
                 # Display final codebook summary
                 if verbose and final_codebook:
                     verbose_reporter.empty_line()
                     print("[STATS] FINAL CODEBOOK SUMMARY")
                     verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
+                    verbose_reporter.stat_line(f"Total clusters mapped: {sum(len(ids) for ids in code_to_clusters.values())}")
 
                     # Show sample codes
                     verbose_reporter.empty_line()
@@ -1088,7 +1111,9 @@ def step_6_generate_codebook(
                         definition = item['definition']
                         if len(definition) > 100:
                             definition = definition[:97] + "..."
-                        print(f"  {idx}. {item['code']}")
+                        cluster_count = len(item['source_cluster_id'].split(','))
+                        cluster_info = f" (→ {cluster_count} clusters)" if cluster_count > 1 else ""
+                        print(f"  {idx}. {item['code']}{cluster_info}")
 
                     codebook_entry = models.CodebookEntry(
                         code=item['code'],
@@ -1098,6 +1123,30 @@ def step_6_generate_codebook(
                     codebook_entries.append(codebook_entry)
 
                     idx += 1
+
+                # Validation: Ensure all clusters are mapped
+                if results and hasattr(results, 'cluster_results'):
+                    total_clusters = len(results.cluster_results)
+                    mapped_clusters = sum(len(ids) for ids in code_to_clusters.values())
+
+                    if verbose:
+                        verbose_reporter.empty_line()
+                        verbose_reporter.stat_line(f"[VALIDATION] Step 6 cluster mapping:")
+                        verbose_reporter.stat_line(f"  Total clusters processed: {total_clusters}")
+                        verbose_reporter.stat_line(f"  Clusters mapped to codes: {mapped_clusters}")
+
+                    if mapped_clusters != total_clusters:
+                        verbose_reporter.warning(f"  WARNING: {total_clusters - mapped_clusters} clusters not mapped to codes!")
+                        # Find missing clusters
+                        all_cluster_ids = {str(cr.get('cluster_id', '')) for cr in results.cluster_results}
+                        mapped_cluster_ids = set()
+                        for ids in code_to_clusters.values():
+                            mapped_cluster_ids.update(ids)
+                        missing = all_cluster_ids - mapped_cluster_ids
+                        verbose_reporter.warning(f"  Missing cluster IDs: {sorted(missing)}")
+                    else:
+                        verbose_reporter.stat_line(f"  ✓ All clusters successfully mapped")
+
             else:
                 print("Warning: Codebook generator returned no results")
 
@@ -1397,6 +1446,35 @@ def step_7_refine_codebook(
         )
 
         verbose_reporter.step_complete(f"Created theme enriched codebook: {len(enriched_entries)} codes in {len(themes_summary)} themes")
+
+        # Validation: Ensure all cluster IDs from Step 6 are preserved after Step 7 refinement
+        if codebook_reasoning and hasattr(codebook_reasoning, 'cluster_results') and verbose:
+            # Get all cluster IDs from Step 6 codebook_reasoning
+            step6_clusters = {str(cr.get('cluster_id', '')) for cr in codebook_reasoning.cluster_results if cr.get('cluster_id')}
+
+            # Get all cluster IDs from Step 7 refined codebook
+            step7_clusters = set()
+            for entry in enriched_entries:
+                if hasattr(entry, 'source_cluster') and entry.source_cluster:
+                    for cluster_id in str(entry.source_cluster).split(','):
+                        step7_clusters.add(cluster_id.strip())
+
+            verbose_reporter.empty_line()
+            verbose_reporter.stat_line(f"[VALIDATION] Step 7 cluster preservation:")
+            verbose_reporter.stat_line(f"  Clusters from Step 6: {len(step6_clusters)}")
+            verbose_reporter.stat_line(f"  Clusters in Step 7: {len(step7_clusters)}")
+
+            if step6_clusters != step7_clusters:
+                lost = step6_clusters - step7_clusters
+                if lost:
+                    verbose_reporter.warning(f"  WARNING: {len(lost)} clusters lost during refinement!")
+                    verbose_reporter.warning(f"  Lost cluster IDs: {sorted(lost)}")
+                added = step7_clusters - step6_clusters
+                if added:
+                    verbose_reporter.warning(f"  WARNING: {len(added)} unexpected clusters added!")
+                    verbose_reporter.warning(f"  Added cluster IDs: {sorted(added)}")
+            else:
+                verbose_reporter.stat_line(f"  ✓ All clusters preserved through refinement")
 
     else:
         print("ERROR: No refinement results available to create theme enriched codebook")
@@ -1977,6 +2055,7 @@ if __name__ == '__main__':
         if code_assigner_instance and code_assigner_instance.prompt_responses:
             n_samples = 1
             sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
+            print(sampled)
 
             for item in sampled:
                 print("FULL PROMPT:")
