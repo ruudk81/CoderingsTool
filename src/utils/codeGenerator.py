@@ -2739,30 +2739,32 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_complete("Code Generation Token Measurement")
         return measured_averages
     
-    async def process_batches_sequentially(self, dissimilarity_batches: List[List[str]], 
-                                         clusters: Dict, themes: Dict, 
+    async def process_batches_sequentially(self, dissimilarity_batches: List[List[str]],
+                                         clusters: Dict, themes: Dict,
                                          theme_embeddings: Dict) -> List[Dict[str, Any]]:
         """Process Level 1 batches sequentially, Level 2 batches concurrently with staggering"""
         self.verbose_reporter.step_start("Two-Level Batch Processing")
         self.verbose_reporter.stat_line(f"Processing {len(dissimilarity_batches)} Level 1 batches sequentially")
-        
+
         # Store theme embeddings for use in candidate selection
         self._theme_embeddings_cache = theme_embeddings
-        
+
         # Measure token usage for code generation steps
         self.code_gen_token_measurements = await self._measure_code_generation_tokens(clusters, themes)
-        
+
         # Calculate global rate limiting strategy
         composite_tokens = (
             self.code_gen_token_measurements.get('candidate_selection', 1200) +
             self.code_gen_token_measurements.get('code_generation', 1000) +
             self.code_gen_token_measurements.get('validation', 900)
         )
-        
+
         total_clusters = sum(len(batch) for batch in dissimilarity_batches)
         self.verbose_reporter.stat_line(f"Total clusters to process: {total_clusters}")
         self.verbose_reporter.stat_line(f"Composite tokens per cluster: {composite_tokens}")
-        
+
+        # Initialize instance variable to track all results (needed for MODIFY updates)
+        self.all_results = []
         all_results = []
         total_batches = len(dissimilarity_batches)
         
@@ -2791,6 +2793,7 @@ class InductiveCodeGenerator:
             # Flatten and collect results
             for sub_batch_result in batch_results:
                 all_results.extend(sub_batch_result)
+                self.all_results.extend(sub_batch_result)  # Keep instance variable in sync
             
             # Level 1 batch complete - codebook is updated
             version_info = await self.shared_codebook.get_version_info()
@@ -2807,7 +2810,8 @@ class InductiveCodeGenerator:
             else:
                 recovery_results = await self._process_modification_leak_recovery(clusters, themes, theme_embeddings)
             all_results.extend(recovery_results)
-        
+            self.all_results.extend(recovery_results)  # Keep instance variable in sync
+
         return all_results
     
     async def _process_modification_leak_recovery(self, clusters: Dict, themes: Dict, theme_embeddings: Dict) -> List[Dict[str, Any]]:
@@ -3889,12 +3893,16 @@ class InductiveCodeGenerator:
                 updates_made = True
                 self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: Replaced '{modify_op['original_code']}' with '{modify_op['new_code']}'")
 
-                # Update cluster_results: change any cluster with old code to new code
-                for cr in self.cluster_results:
-                    if cr.get('final_code') == modify_op['original_code']:
-                        cr['final_code'] = modify_op['new_code']
-                        if self.verbose_detailed:
-                            self.verbose_reporter.stat_line(f"  Updated C{cr.get('cluster_id')}'s final_code to '{modify_op['new_code']}'")
+                # Update all_results: change any cluster with old code to new code
+                # This ensures pipeline.py groups correctly by final_code
+                updates_count = 0
+                for result_item in self.all_results:
+                    if result_item.get('final_code') == modify_op['original_code']:
+                        result_item['final_code'] = modify_op['new_code']
+                        updates_count += 1
+
+                if updates_count > 0 and self.verbose_detailed:
+                    self.verbose_reporter.stat_line(f"  Updated {updates_count} cluster(s) to use new code name")
 
                 # Post-MODIFY validation: Check if new code creates duplicate
                 final_codes, _ = await self.shared_codebook.get_current_snapshot()
