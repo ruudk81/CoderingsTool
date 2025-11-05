@@ -3560,30 +3560,52 @@ class InductiveCodeGenerator:
         """Async method for code generation - returns proper CodeGeneratorReasoningResults"""
         # Run the design pipeline
         results = await self.design()
-        
-        # Extract deduplicated codebook from SharedCodebook
-        final_codes, version = await self.shared_codebook.get_current_snapshot()
-        
+
+        # Build codebook from cluster_results to preserve ALL cluster mappings
+        # (SharedCodebook only tracks last cluster per code, losing multi-cluster mappings)
+        code_to_clusters = {}
+        code_to_definition = {}
+
+        for cluster_result in results:
+            cluster_id = str(cluster_result.get('cluster_id', ''))
+            final_code = cluster_result.get('final_code', '')
+            final_definition = cluster_result.get('final_definition', '')
+
+            if final_code and cluster_id:
+                if final_code not in code_to_clusters:
+                    code_to_clusters[final_code] = []
+                    code_to_definition[final_code] = final_definition
+                code_to_clusters[final_code].append(cluster_id)
+
+        # Build final codebook with complete cluster mappings
+        final_codes = []
+        for code_text, cluster_ids in code_to_clusters.items():
+            final_codes.append({
+                'code': code_text,
+                'definition': code_to_definition[code_text],
+                'source_cluster_id': ','.join(cluster_ids)  # Preserve ALL cluster IDs
+            })
+
         # Get raw cluster data for stats calculations
         cluster_data = self._prepare_cluster_data_for_results()
-        
-        
+
+
         # Convert to CodeGeneratorReasoningResults format
         return CodeGeneratorReasoningResults(
             # Raw cluster results
             cluster_results=results,
-            
+
             step1_inputs=self.step1_inputs,
-            step2_inputs=self.step2_inputs,   
+            step2_inputs=self.step2_inputs,
             step3_inputs=self.step3_inputs,
             step4_inputs=self.step4_inputs,
-            
+
             step1_summaries=self.step1_summaries,
-            step2_analysis=self.step2_analysis,  
+            step2_analysis=self.step2_analysis,
             step3_recommendations=self.step3_recommendations,
             step4_validations=self.step4_validations,
             step4_validated_codes=self.step4_validated_codes,
-            
+
             # Processing metadata
             stats=self.summary(),
             generator_version="codeGenerator_4 chain prompt",
@@ -3591,12 +3613,12 @@ class InductiveCodeGenerator:
             total_clusters=len(self.cluster_assignments),
             total_ideas=sum(len(cluster_data.get('ideas', [])) for cluster_data in cluster_data.values()) if cluster_data else 0,
             processing_timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-            
+
             # Cluster assignments for cross-reference
             cluster_assignments=self.cluster_assignments,
-            
+
             # New fields for alignment with old codeGenerator
-            codebook=final_codes,  # Final deduplicated codebook from SharedCodebook
+            codebook=final_codes,  # Codebook built from cluster_results with ALL cluster mappings
             cluster_data=cluster_data,  # Raw cluster data for stats calculations
             validation_details=self.step4_validations,  # Detailed validation results
             redistribution_stats=self._redistribution_stats if self._redistribution_stats['clusters_redistributed'] else None
@@ -3867,7 +3889,7 @@ class InductiveCodeGenerator:
 
                     if not code_exists:
                         # Prompt 4 confused theme name with existing code - correct decision to CREATE
-                        self.verbose_reporter.warning(f"C{cluster_id}: USE source_code '{source_code_to_check}' not found in codebook - correcting to CREATE")
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: USE source_code '{source_code_to_check}' not found in codebook - correcting to CREATE")
                         create_codes.append({
                             'code': validated_code.code,
                             'definition': validated_code.definition,
