@@ -285,14 +285,45 @@ class CodeAssigner:
         self.cluster_to_codes = self._build_cluster_code_mapping()
 
         # Debug: Show what codebook was received
-        if self.verbose:
-            self.verbose_reporter.info(f"\n[DEBUG] CodeAssigner received {len(self.codebook)} codes")
-            for i, code in enumerate(self.codebook[:3]):
-                self.verbose_reporter.info(f"  Code {i+1}: {code.code}")
-                if hasattr(code, 'source_cluster'):
-                    self.verbose_reporter.info(f"    source_cluster: '{code.source_cluster}'")
-                else:
-                    self.verbose_reporter.info(f"    source_cluster: MISSING ATTRIBUTE")
+        # if self.verbose:
+        #     self.verbose_reporter.info(f"\n[DEBUG] CodeAssigner received {len(self.codebook)} codes")
+        #     for i, code in enumerate(self.codebook[:3]):
+        #         self.verbose_reporter.info(f"  Code {i+1}: {code.code}")
+        #         if hasattr(code, 'source_cluster'):
+        #             self.verbose_reporter.info(f"    source_cluster: '{code.source_cluster}'")
+        #         else:
+        #             self.verbose_reporter.info("    source_cluster: MISSING ATTRIBUTE")
+
+        #     # Debug: Sample ideas' expanded_cluster values
+        #     all_ideas = []
+        #     for cluster_model in self.cluster_models:
+        #         if hasattr(cluster_model, 'response_ideas') and cluster_model.response_ideas:
+        #             all_ideas.extend(cluster_model.response_ideas)
+
+        #     if all_ideas:
+        #         sample_ideas = all_ideas[:10]  # First 10 ideas
+        #         self.verbose_reporter.info(f"\n[DEBUG] Sample of {len(sample_ideas)} ideas' cluster assignments:")
+
+        #         cluster_types = {}  # Track different formats
+        #         for idea in sample_ideas:
+        #             exp_cluster = getattr(idea, 'expanded_cluster', None)
+        #             init_cluster = getattr(idea, 'initial_cluster', None)
+        #             cluster_type = type(exp_cluster).__name__
+        #             cluster_value = str(exp_cluster)
+
+        #             if cluster_type not in cluster_types:
+        #                 cluster_types[cluster_type] = []
+        #             cluster_types[cluster_type].append(cluster_value)
+
+        #             self.verbose_reporter.info(
+        #                 f"  Idea {idea.idea_id}: "
+        #                 f"initial_cluster={init_cluster}, "
+        #                 f"expanded_cluster={exp_cluster} (type: {cluster_type})"
+        #             )
+
+        #         self.verbose_reporter.info(f"\n[DEBUG] Cluster value types found:")
+        #         for ctype, values in cluster_types.items():
+        #             self.verbose_reporter.info(f"  {ctype}: {len(values)} ideas, examples: {values[:3]}")
 
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
@@ -338,9 +369,9 @@ class CodeAssigner:
                 # Log if multiple clusters share this code
                 if len(cluster_ids) > 1:
                     merged_codes_count += 1
-                    if self.verbose:
-                        cluster_list = [c.strip() for c in cluster_ids]
-                        self.verbose_reporter.info(f"  Code '{code.code[:50]}...' mapped to {len(cluster_list)} clusters: {cluster_list}")
+                    # if self.verbose:
+                    #     cluster_list = [c.strip() for c in cluster_ids]
+                    #     #self.verbose_reporter.info(f"  Code '{code.code[:50]}...' mapped to {len(cluster_list)} clusters: {cluster_list}")
 
                 # Create mapping for each individual cluster ID
                 for cluster_id in cluster_ids:
