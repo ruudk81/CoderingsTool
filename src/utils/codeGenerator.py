@@ -3920,17 +3920,7 @@ class InductiveCodeGenerator:
                 elif final_decision == "use":
                     # Prompt 4 decided to USE existing code (override CREATE/MODIFY from Prompt 2)
                     decision_stats['use'] += 1
-
-                    # Append this cluster's ID to the source code's source_cluster_id
-                    source_code = final_source_code or validated_code.code
-                    if source_code and cluster_id:
-                        appended = await self.shared_codebook.append_cluster_to_code(source_code, cluster_id)
-                        if appended:
-                            self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (override) - appended cluster to '{source_code}'")
-                        else:
-                            self.verbose_reporter.warning(f"C{cluster_id}: FINAL USE decision (override) - failed to append cluster to '{source_code}' (code not found)")
-                    else:
-                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (override) - no source code or cluster ID")
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (override) - no codebook update for '{final_source_code or validated_code.code}'")
                 
                 else:
                     self.verbose_reporter.error(f"C{cluster_id}: Unknown decision '{final_decision}' or missing source_code for modify")
