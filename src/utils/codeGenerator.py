@@ -3856,9 +3856,29 @@ class InductiveCodeGenerator:
                     self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL MODIFY decision - will replace '{final_source_code}' with '{validated_code.code}'")
                 
                 elif final_decision == "use":
-                    # Prompt 4 decided to USE existing code (override CREATE/MODIFY from Prompt 2)
-                    decision_stats['use'] += 1
-                    self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (override) - no codebook update for '{final_source_code or validated_code.code}'")
+                    # Validate USE decision - check if source_code actually exists in SharedCodebook
+                    current_codes, _ = await self.shared_codebook.get_current_snapshot()
+                    source_code_to_check = final_source_code or validated_code.code
+
+                    code_exists = any(
+                        code['code'].lower() == source_code_to_check.lower()
+                        for code in current_codes
+                    )
+
+                    if not code_exists:
+                        # Prompt 4 confused theme name with existing code - correct decision to CREATE
+                        self.verbose_reporter.warning(f"C{cluster_id}: USE source_code '{source_code_to_check}' not found in codebook - correcting to CREATE")
+                        create_codes.append({
+                            'code': validated_code.code,
+                            'definition': validated_code.definition,
+                            'cluster_id': cluster_id
+                        })
+                        decision_stats['create'] += 1
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision (corrected) - will add '{validated_code.code}'")
+                    else:
+                        # Valid USE decision - code exists in SharedCodebook
+                        decision_stats['use'] += 1
+                        self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL USE decision (validated) - using '{source_code_to_check}'")
                 
                 else:
                     self.verbose_reporter.error(f"C{cluster_id}: Unknown decision '{final_decision}' or missing source_code for modify")
