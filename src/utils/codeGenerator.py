@@ -3888,7 +3888,14 @@ class InductiveCodeGenerator:
             if replaced:
                 updates_made = True
                 self.verbose_reporter.stat_line(f"C{modify_op['cluster_id']}: Replaced '{modify_op['original_code']}' with '{modify_op['new_code']}'")
-                
+
+                # Update cluster_results: change any cluster with old code to new code
+                for cr in self.cluster_results:
+                    if cr.get('final_code') == modify_op['original_code']:
+                        cr['final_code'] = modify_op['new_code']
+                        if self.verbose_detailed:
+                            self.verbose_reporter.stat_line(f"  Updated C{cr.get('cluster_id')}'s final_code to '{modify_op['new_code']}'")
+
                 # Post-MODIFY validation: Check if new code creates duplicate
                 final_codes, _ = await self.shared_codebook.get_current_snapshot()
                 duplicate_count = sum(1 for code in final_codes 
