@@ -23,7 +23,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from prompts import CODE_ASSIGNMENT_PROMPT
+from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -279,6 +279,7 @@ class CodeAssigner:
 
         # Prompt/Response logging for debugging
         self.prompt_responses = []
+        self.last_prompt = ""  # Track the last prompt used for assignment
         self.verbose = verbose
 
         # Build cluster→codes mapping
@@ -391,19 +392,21 @@ class CodeAssigner:
         return cluster_dict
 
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
-        """Create a sample prompt for token estimation using all codes"""
-        # Use ALL codes for accurate estimation
-        candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n"
+        """Create worst-case prompt for token estimation (Stage 2 with all codes)"""
+        # Use Stage 2 prompt - largest prompt for conservative token estimation
+        all_codes_text = "\n".join([
+            f"Code: {code.code}\nDefinition: {code.definition}\n"
             for code in self.codebook
         ])
 
-        return CODE_ASSIGNMENT_PROMPT.format(
+        return FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
-            candidate_codes=candidate_codes_text)
+            default_confidence=0.0,
+            all_codes=all_codes_text
+        )
 
 
     def estimate_tokens(self, prompt: str) -> int:
@@ -479,19 +482,20 @@ class CodeAssigner:
         return all_ideas
 
     def _create_prompt(self, idea_id: str, idea_text: str) -> str:
-        """Create prompt for a single idea with all available codes"""
-        # Format ALL codes from codebook for prompt
-        candidate_codes_text = "\n".join([
-            f"Code label: {code.code}\nCode description: {code.definition}\n"
+        """Create prompt for probe calls using Stage 2 (all codes) prompt"""
+        # Format all codes
+        all_codes_text = "\n".join([
+            f"Code: {code.code}\nDefinition: {code.definition}\n"
             for code in self.codebook
         ])
 
-        prompt = CODE_ASSIGNMENT_PROMPT.format(
+        prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
-            candidate_codes=candidate_codes_text,
+            default_confidence=0.0,
+            all_codes=all_codes_text
         )
 
         return prompt
@@ -514,9 +518,12 @@ class CodeAssigner:
         u = getattr(resp, "usage", None)
         return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
 
-    async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook) -> DefaultCodeEvaluationResponse:
-        """Stage 1: Evaluate how well the default code from cluster fits the idea"""
-        from prompts import DEFAULT_CODE_EVALUATION_PROMPT
+    async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook):
+        """Stage 1: Evaluate how well the default code from cluster fits the idea
+
+        Returns:
+            tuple: (DefaultCodeEvaluationResponse, str) - response and prompt used
+        """
 
         prompt = DEFAULT_CODE_EVALUATION_PROMPT.format(
             language=self.language,
@@ -526,6 +533,8 @@ class CodeAssigner:
             default_code=default_code.code,
             default_definition=default_code.definition
         )
+
+        self.last_prompt = prompt  # Store for backward compatibility
 
         response = await self.client.chat.completions.create(
             model=self.model,
@@ -537,12 +546,15 @@ class CodeAssigner:
         )
 
         self.stage_1_calls += 1
-        return response
+        return response, prompt
 
-    async def assign_from_all_codes(self, idea_id: str, idea_text: str, default_confidence: float) -> FallbackCodeAssignmentResponse:
-        """Stage 2: Pick best code from all available codes when default fails"""
-        from prompts import FALLBACK_CODE_ASSIGNMENT_PROMPT
+    async def assign_from_all_codes(self, idea_id: str, idea_text: str, default_confidence: float):
+        """Stage 2: Pick best code from all available codes when default fails
 
+        Returns:
+            tuple: (FallbackCodeAssignmentResponse, str) - response and prompt used
+        """
+       
         # Format all codes
         all_codes_text = "\n".join([
             f"Code: {code.code}\nDefinition: {code.definition}\n"
@@ -558,6 +570,8 @@ class CodeAssigner:
             all_codes=all_codes_text
         )
 
+        self.last_prompt = prompt  # Store for backward compatibility
+
         response = await self.client.chat.completions.create(
             model=self.model,
             response_model=FallbackCodeAssignmentResponse,
@@ -568,7 +582,7 @@ class CodeAssigner:
         )
 
         self.stage_2_calls += 1
-        return response
+        return response, prompt
 
     @retry(
         retry=retry_if_exception_type((
@@ -585,7 +599,7 @@ class CodeAssigner:
     )
     async def process_task(self, task: Dict) -> CodeAssignmentResponse:
         """Two-stage code assignment: evaluate default from cluster, fallback to all codes if needed"""
-        task_start = time.perf_counter()
+        #task_start = time.perf_counter()
 
         try:
             idea_data = task['idea_data']
@@ -599,13 +613,16 @@ class CodeAssigner:
                 'expanded_cluster': expanded_cluster
             }
 
+            # Local variable to capture the prompt for this specific task (avoid race conditions)
+            prompt_used = ""
+
             # Get default code(s) from this idea's cluster
             default_codes = self.cluster_to_codes.get(str(expanded_cluster), [])
 
             if not default_codes:
                 # No codes from this cluster - go straight to fallback (Stage 2)
                 metadata['fallback_triggered'] = True
-                stage_2_result = await self.assign_from_all_codes(idea_id, idea_text, default_confidence=0.0)
+                stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, default_confidence=0.0)
 
                 assigned_code = stage_2_result.assigned_codes[0]
                 confidence = stage_2_result.assignment_confidence
@@ -615,7 +632,7 @@ class CodeAssigner:
             else:
                 # Stage 1: Evaluate default code from cluster
                 default_code = default_codes[0]  # Use first code from cluster
-                stage_1_result = await self.evaluate_default_code(idea_id, idea_text, default_code)
+                stage_1_result, prompt_used = await self.evaluate_default_code(idea_id, idea_text, default_code)
 
                 metadata['default_confidence'] = stage_1_result.confidence
 
@@ -630,7 +647,7 @@ class CodeAssigner:
                 else:
                     # Stage 2: Fallback to all codes
                     metadata['fallback_triggered'] = True
-                    stage_2_result = await self.assign_from_all_codes(idea_id, idea_text, stage_1_result.confidence)
+                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, stage_1_result.confidence)
 
                     assigned_code = stage_2_result.assigned_codes[0]
                     confidence = stage_2_result.assignment_confidence
@@ -652,6 +669,7 @@ class CodeAssigner:
             # Capture for debugging (only if verbose)
             if self.verbose:
                 self.prompt_responses.append({
+                    'prompt': prompt_used,  # Use local variable to avoid race conditions with concurrent tasks
                     'respondent_id': respondent_id,
                     'idea_id': idea_id,
                     'idea_text': idea_text,
@@ -828,15 +846,15 @@ class CodeAssigner:
             print(f"{'─'*80}")
             print(f"Respondent ID: {sample['respondent_id']}")
             print(f"Idea ID: {sample['idea_id']}")
-            print(f"\nIdea Text:")
+            print("\nIdea Text:")
             print(f"  {sample['idea_text']}")
             print(f"\nAssigned Codes: {', '.join(sample['assigned_codes'])}")
             print(f"Assigned Themes: {', '.join(sample['assigned_themes']) if sample['assigned_themes'] else 'None'}")
             print(f"Confidence: {sample['confidence']:.2f}")
-            print(f"\nRationale:")
+            print("\nRationale:")
             print(f"  {sample['rationale']}")
             print(f"\n{'─'*40}")
-            print(f"FULL PROMPT:")
+            print("FULL PROMPT:")
             print(f"{'─'*40}")
             print(sample['prompt'])
             print(f"{'─'*80}\n")
@@ -853,14 +871,14 @@ class CodeAssigner:
         fallback_pct = (self.used_fallback_count / total) * 100
 
         print(f"\n{'='*80}")
-        print(f"CODE ASSIGNMENT STRATEGY BREAKDOWN")
+        print("CODE ASSIGNMENT STRATEGY BREAKDOWN")
         print(f"{'='*80}")
         print(f"Total ideas processed: {total}")
-        print(f"")
+        print("")
         print(f"Used default (cluster code): {self.used_default_count} ({default_pct:.1f}%)")
         print(f"Used fallback (all codes):   {self.used_fallback_count} ({fallback_pct:.1f}%)")
-        print(f"")
-        print(f"API calls:")
+        print("")
+        print("API calls:")
         print(f"  Stage 1 (evaluate default): {self.stage_1_calls}")
         print(f"  Stage 2 (fallback):         {self.stage_2_calls}")
         print(f"  Total API calls:            {self.stage_1_calls + self.stage_2_calls}")

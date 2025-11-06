@@ -2055,7 +2055,7 @@ if __name__ == '__main__':
         if code_assigner_instance and code_assigner_instance.prompt_responses:
             n_samples = 1
             sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
-            print(sampled)
+            #print(sampled)
 
             for item in sampled:
                 print("FULL PROMPT:")
