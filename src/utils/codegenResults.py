@@ -65,6 +65,31 @@ def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str
         result['theme']['theme_label'] = step1_data.get("theme_label", None)
         result['theme']['theme_description'] = step1_data.get("theme_description", None)
 
+        # Extract new fields from full theme object
+        if 'themes' in step1_data and step1_data['themes']:
+            first_theme = step1_data['themes'][0]
+            # Handle both Pydantic objects and dicts
+            if hasattr(first_theme, 'abstraction_level'):
+                result['theme']['abstraction_level'] = first_theme.abstraction_level
+                if hasattr(first_theme, 'assignment_rules'):
+                    rules = first_theme.assignment_rules
+                    result['theme']['inclusion_rules'] = rules.inclusion if hasattr(rules, 'inclusion') else []
+                    result['theme']['exclusion_rules'] = rules.exclusion if hasattr(rules, 'exclusion') else []
+                    if hasattr(rules, 'near_neighbor'):
+                        neighbor = rules.near_neighbor
+                        result['theme']['near_neighbor_label'] = neighbor.label if hasattr(neighbor, 'label') else None
+                        result['theme']['tell_apart_rule'] = neighbor.tell_apart_rule if hasattr(neighbor, 'tell_apart_rule') else None
+            elif isinstance(first_theme, dict):
+                result['theme']['abstraction_level'] = first_theme.get('abstraction_level', None)
+                if 'assignment_rules' in first_theme:
+                    rules = first_theme['assignment_rules']
+                    result['theme']['inclusion_rules'] = rules.get('inclusion', [])
+                    result['theme']['exclusion_rules'] = rules.get('exclusion', [])
+                    if 'near_neighbor' in rules:
+                        neighbor = rules['near_neighbor']
+                        result['theme']['near_neighbor_label'] = neighbor.get('label', None)
+                        result['theme']['tell_apart_rule'] = neighbor.get('tell_apart_rule', None)
+
     # 3. Extract candidate codes
     if step2_analysis and cluster_id in step2_analysis:
         step2_data = step2_analysis[cluster_id]
@@ -87,6 +112,16 @@ def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str
         result['recommendations']['decision_type'] = decision_data.get('decision', None)
         result['recommendations']['source_code'] = decision_data.get('source_code', None)
         result['recommendations']['justification'] = decision_data.get('justification', None)
+
+        # Extract modify_parameters if present
+        if 'modify_parameters' in decision_data:
+            modify_params = decision_data['modify_parameters']
+            result['recommendations']['modify_instruction'] = modify_params.get('modify_instruction', None)
+            result['recommendations']['motive_comparison'] = modify_params.get('motive_comparison', None)
+            result['recommendations']['abstraction_level_action'] = modify_params.get('abstraction_level_action', None)
+            result['recommendations']['inclusion_update'] = modify_params.get('inclusion_update', None)
+            result['recommendations']['exclusion_update'] = modify_params.get('exclusion_update', None)
+            result['recommendations']['parent_theme_label'] = modify_params.get('parent_theme_label', None)
 
     if generated_code_data:
         result['recommendations']['final_code_label'] = generated_code_data.get('code_label_proposal', None)
@@ -172,10 +207,79 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
             print("[No analysis]")
 
         print(f"\n🔍 CLUSTER {cluster_id} THEME:")
-        if theme_id > 0: 
+        if theme_id > 0:
             #print(f"Theme: {theme_id}")
             print(f"Label: {theme_label}")
             print(f"Description: {theme_description}")
+
+            # Display new fields if available
+            if 'themes' in step1_data and step1_data['themes']:
+                first_theme = step1_data['themes'][0]
+                
+                if False: # modification parameters
+                    # Abstraction level
+                    abstraction_level = None
+                    if hasattr(first_theme, 'abstraction_level'):
+                        abstraction_level = first_theme.abstraction_level
+                    elif isinstance(first_theme, dict):
+                        abstraction_level = first_theme.get('abstraction_level')
+    
+                    if abstraction_level:
+                        print(f"Abstraction Level: {abstraction_level}")
+    
+                    # Assignment rules
+                    assignment_rules = None
+                    if hasattr(first_theme, 'assignment_rules'):
+                        assignment_rules = first_theme.assignment_rules
+                    elif isinstance(first_theme, dict):
+                        assignment_rules = first_theme.get('assignment_rules')
+    
+                    if assignment_rules:
+                        # Inclusion rules
+                        inclusion = []
+                        if hasattr(assignment_rules, 'inclusion'):
+                            inclusion = assignment_rules.inclusion
+                        elif isinstance(assignment_rules, dict):
+                            inclusion = assignment_rules.get('inclusion', [])
+    
+                        if inclusion:
+                            print("Inclusion Rules:")
+                            for rule in inclusion:
+                                print(f"  • {rule}")
+    
+                        # Exclusion rules
+                        exclusion = []
+                        if hasattr(assignment_rules, 'exclusion'):
+                            exclusion = assignment_rules.exclusion
+                        elif isinstance(assignment_rules, dict):
+                            exclusion = assignment_rules.get('exclusion', [])
+    
+                        if exclusion:
+                            print("Exclusion Rules:")
+                            for rule in exclusion:
+                                print(f"  • {rule}")
+    
+                        # Near neighbor
+                        near_neighbor = None
+                        if hasattr(assignment_rules, 'near_neighbor'):
+                            near_neighbor = assignment_rules.near_neighbor
+                        elif isinstance(assignment_rules, dict):
+                            near_neighbor = assignment_rules.get('near_neighbor')
+    
+                        if near_neighbor:
+                            neighbor_label = None
+                            tell_apart = None
+                            if hasattr(near_neighbor, 'label'):
+                                neighbor_label = near_neighbor.label
+                                tell_apart = near_neighbor.tell_apart_rule
+                            elif isinstance(near_neighbor, dict):
+                                neighbor_label = near_neighbor.get('label')
+                                tell_apart = near_neighbor.get('tell_apart_rule')
+    
+                            if neighbor_label:
+                                print(f"Near Neighbor: {neighbor_label}")
+                                if tell_apart:
+                                    print(f"  How to tell apart: {tell_apart}")
         else:
             print("[No themes identified]")
     else:
@@ -242,7 +346,25 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
             print(f"{decision_type.upper()} this existing code: {source_display}")      
 
         print(f"\nReasoning: {justification}")
-        
+
+        # Display modify_parameters if present
+        if False: 
+            if 'modify_parameters' in decision_data:
+                modify_params = decision_data['modify_parameters']
+                print("\nModification Details:")
+                if modify_params.get('modify_instruction') and modify_params['modify_instruction'] != 'none':
+                    print(f"  Type: {modify_params['modify_instruction']}")
+                if modify_params.get('motive_comparison'):
+                    print(f"  Motive: {modify_params['motive_comparison']}")
+                if modify_params.get('abstraction_level_action') and modify_params['abstraction_level_action'] != 'none':
+                    print(f"  Abstraction action: {modify_params['abstraction_level_action']}")
+                if modify_params.get('inclusion_update'):
+                    print(f"  Inclusion updates: {modify_params['inclusion_update']}")
+                if modify_params.get('exclusion_update'):
+                    print(f"  Exclusion updates: {modify_params['exclusion_update']}")
+                if modify_params.get('parent_theme_label'):
+                    print(f"  Parent theme: {modify_params['parent_theme_label']}")
+
         print(f"\nRecommended code: {final_code_label}")
 
         # else:
