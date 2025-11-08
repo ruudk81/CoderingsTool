@@ -27,7 +27,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel  
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
+from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 from .verboseReporter import VerboseReporter
 
 try:
@@ -54,45 +54,6 @@ warnings.filterwarnings(
     message=r".*n_jobs value 1 overridden to 1 by setting random_state.*",
     category=UserWarning,
     module=r"umap\.umap_" )
-
-# ============================================================================
-# MODIFICATION INSTRUCTION TEMPLATES
-# ============================================================================
-
-VERTICAL_INSTRUCTIONS = """
-   - Keep the abstraction level of the original code.
-   - Create a **single atomic shared concept** that:
-        (a) captures the meaning of both original code and new theme,
-        (b) is grounded in the shared intent (same motive),
-        (c) remains expressible as **one idea** in the label.
-   - The modified label must:
-        • reflect the broadened meaning,
-        • NOT introduce multiple aspects or motives,
-        • NOT be more abstract than necessary.
-   - The modified definition must:
-        • describe the **shared meaning space**,
-        • reflect: original inclusions + inclusion_update,
-        • exclude: original exclusions + exclusion_update.
-   - Do **not** modify assignment rules here."""
-
-HIERARCHICAL_INSTRUCTIONS = """
-   - Shared conceptual domain but different motives → create hierarchical structure.
-   - Original code and new theme remain **atomic child codes**.
-   - Parent code represents the shared **purpose/motive domain**.
-
-   Parent label:
-        - If parent_theme_label provided → use it as-is.
-        - If null → generate a label at **Driver/Motive/Why** level.
-        - Must:
-            • express shared purpose/orientation,
-            • NOT describe behaviors/outcomes,
-            • NOT blend child labels,
-            • be broader, not vaguer.
-
-   Structure:
-       - Parent = conceptual anchor (why level),
-       - Children = distinct manifestations (how/what),
-       - Child meanings **do not change**."""
 
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
@@ -4267,7 +4228,15 @@ class InductiveCodeGenerator:
                 coding_decision_obj = candidate_selection.coding_decision
                 decision = coding_decision_obj.decision.upper()
                 source_code = coding_decision_obj.source_code
-
+                
+                #get definition
+                source_code_definition = None
+                if coding_decision_obj.matched_candidates: 
+                    for candidate in coding_decision_obj.matched_candidates: 
+                        if candidate.code == source_code: 
+                            source_code_definition = candidate.definition
+                            break
+                
                 # Fallback logic: if MODIFY decision but no source_code, fall back to CREATE
                 if decision == "MODIFY" and (not source_code or source_code.lower() in ['null', 'none', '']):
                     if self.verbose_detailed:
@@ -4298,6 +4267,7 @@ class InductiveCodeGenerator:
                 "theme_id": theme_id,
                 "cluster_summary": theme_name,
                 "source_code": source_code,
+                "source_definition": source_code_definition,
                 # Theme parameters (for both CREATE and MODIFY prompts)
                 "inclusion": self._get_inclusion_rules(theme_data),
                 "exclusion": self._get_exclusion_rules(theme_data),
@@ -4312,29 +4282,22 @@ class InductiveCodeGenerator:
                 if modify_instr == "vertical_broaden_same_motive":
                     modification_instructions = VERTICAL_INSTRUCTIONS
                 elif modify_instr == "hierarchical_parent_diff_motive_same_family":
-                    modification_instructions = HIERARCHICAL_INSTRUCTIONS
+                    HIERARCHICAL_INSTRUCTIONS_FORMATTED = HIERARCHICAL_INSTRUCTIONS.replace("{parent_theme_label}", coding_decision_obj.modify_parameters.parent_theme_label)
+                    modification_instructions = HIERARCHICAL_INSTRUCTIONS_FORMATTED
                 else:
                     modification_instructions = ""  # Fallback for "none"
 
                 params.update({
-                    "modify_instruction": modify_instr,
-                    "motive_comparison": coding_decision_obj.modify_parameters.motive_comparison,
-                    "abstraction_level_action": coding_decision_obj.modify_parameters.abstraction_level_action,
-                    "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update,
-                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update,
-                    "parent_theme_label": coding_decision_obj.modify_parameters.parent_theme_label,
-                    "modification_instructions": modification_instructions
+                    "modification_instructions": modification_instructions,
+                    "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update or "",
+                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update or ""
                 })
             else:
                 # Fallback values for when candidate_selection is invalid
                 params.update({
-                    "modify_instruction": "none",
-                    "motive_comparison": "different_not_related",
-                    "abstraction_level_action": "none",
-                    "inclusion_update": "null",
-                    "exclusion_update": "null",
-                    "parent_theme_label": "null",
-                    "modification_instructions": ""
+                    "modification_instructions": "",
+                    "inclusion_update": "",
+                    "exclusion_update": ""
                 })
             
             prompt = CODING_GENERATION_PROMPT.format(**params)
