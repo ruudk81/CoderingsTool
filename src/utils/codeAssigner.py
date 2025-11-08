@@ -636,7 +636,7 @@ class CodeAssigner:
 
                 metadata['default_confidence'] = stage_1_result.confidence
 
-                if stage_1_result.confidence >= 0.6:
+                if stage_1_result.confidence >= 0.7:
                     # Use default code
                     metadata['used_default'] = True
                     assigned_code = default_code.code
