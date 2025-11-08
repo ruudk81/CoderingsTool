@@ -71,22 +71,22 @@ def get_cluster_analysis(codebook_reasoning, cluster_id: Optional[Union[int, str
             # Handle both Pydantic objects and dicts
             if hasattr(first_theme, 'abstraction_level'):
                 result['theme']['abstraction_level'] = first_theme.abstraction_level
-                if hasattr(first_theme, 'assignment_rules'):
-                    rules = first_theme.assignment_rules
-                    result['theme']['inclusion_rules'] = rules.inclusion if hasattr(rules, 'inclusion') else []
-                    result['theme']['exclusion_rules'] = rules.exclusion if hasattr(rules, 'exclusion') else []
-                    if hasattr(rules, 'near_neighbor'):
-                        neighbor = rules.near_neighbor
+                if hasattr(first_theme, 'assignment_examples'):
+                    examples = first_theme.assignment_examples
+                    result['theme']['inclusion_examples'] = examples.inclusion if hasattr(examples, 'inclusion') else []
+                    result['theme']['exclusion_examples'] = examples.exclusion if hasattr(examples, 'exclusion') else []
+                    if hasattr(examples, 'near_neighbor'):
+                        neighbor = examples.near_neighbor
                         result['theme']['near_neighbor_label'] = neighbor.label if hasattr(neighbor, 'label') else None
                         result['theme']['tell_apart_rule'] = neighbor.tell_apart_rule if hasattr(neighbor, 'tell_apart_rule') else None
             elif isinstance(first_theme, dict):
                 result['theme']['abstraction_level'] = first_theme.get('abstraction_level', None)
-                if 'assignment_rules' in first_theme:
-                    rules = first_theme['assignment_rules']
-                    result['theme']['inclusion_rules'] = rules.get('inclusion', [])
-                    result['theme']['exclusion_rules'] = rules.get('exclusion', [])
-                    if 'near_neighbor' in rules:
-                        neighbor = rules['near_neighbor']
+                if 'assignment_examples' in first_theme:
+                    examples = first_theme['assignment_examples']
+                    result['theme']['inclusion_examples'] = examples.get('inclusion', [])
+                    result['theme']['exclusion_examples'] = examples.get('exclusion', [])
+                    if 'near_neighbor' in examples:
+                        neighbor = examples['near_neighbor']
                         result['theme']['near_neighbor_label'] = neighbor.get('label', None)
                         result['theme']['tell_apart_rule'] = neighbor.get('tell_apart_rule', None)
 
@@ -227,45 +227,45 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                     if abstraction_level:
                         print(f"Abstraction Level: {abstraction_level}")
     
-                    # Assignment rules
-                    assignment_rules = None
-                    if hasattr(first_theme, 'assignment_rules'):
-                        assignment_rules = first_theme.assignment_rules
+                    # Assignment examples
+                    assignment_examples = None
+                    if hasattr(first_theme, 'assignment_examples'):
+                        assignment_examples = first_theme.assignment_examples
                     elif isinstance(first_theme, dict):
-                        assignment_rules = first_theme.get('assignment_rules')
-    
-                    if assignment_rules:
-                        # Inclusion rules
+                        assignment_examples = first_theme.get('assignment_examples')
+
+                    if assignment_examples:
+                        # Inclusion examples
                         inclusion = []
-                        if hasattr(assignment_rules, 'inclusion'):
-                            inclusion = assignment_rules.inclusion
-                        elif isinstance(assignment_rules, dict):
-                            inclusion = assignment_rules.get('inclusion', [])
-    
+                        if hasattr(assignment_examples, 'inclusion'):
+                            inclusion = assignment_examples.inclusion
+                        elif isinstance(assignment_examples, dict):
+                            inclusion = assignment_examples.get('inclusion', [])
+
                         if inclusion:
-                            print("Inclusion Rules:")
-                            for rule in inclusion:
-                                print(f"  • {rule}")
-    
-                        # Exclusion rules
+                            print("Inclusion Examples:")
+                            for example in inclusion:
+                                print(f"  • {example}")
+
+                        # Exclusion examples
                         exclusion = []
-                        if hasattr(assignment_rules, 'exclusion'):
-                            exclusion = assignment_rules.exclusion
-                        elif isinstance(assignment_rules, dict):
-                            exclusion = assignment_rules.get('exclusion', [])
-    
+                        if hasattr(assignment_examples, 'exclusion'):
+                            exclusion = assignment_examples.exclusion
+                        elif isinstance(assignment_examples, dict):
+                            exclusion = assignment_examples.get('exclusion', [])
+
                         if exclusion:
-                            print("Exclusion Rules:")
-                            for rule in exclusion:
-                                print(f"  • {rule}")
-    
+                            print("Exclusion Examples:")
+                            for example in exclusion:
+                                print(f"  • {example}")
+
                         # Near neighbor
                         near_neighbor = None
-                        if hasattr(assignment_rules, 'near_neighbor'):
-                            near_neighbor = assignment_rules.near_neighbor
-                        elif isinstance(assignment_rules, dict):
-                            near_neighbor = assignment_rules.get('near_neighbor')
-    
+                        if hasattr(assignment_examples, 'near_neighbor'):
+                            near_neighbor = assignment_examples.near_neighbor
+                        elif isinstance(assignment_examples, dict):
+                            near_neighbor = assignment_examples.get('near_neighbor')
+
                         if near_neighbor:
                             neighbor_label = None
                             tell_apart = None
@@ -275,7 +275,7 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
                             elif isinstance(near_neighbor, dict):
                                 neighbor_label = near_neighbor.get('label')
                                 tell_apart = near_neighbor.get('tell_apart_rule')
-    
+
                             if neighbor_label:
                                 print(f"Near Neighbor: {neighbor_label}")
                                 if tell_apart:
