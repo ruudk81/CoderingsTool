@@ -517,9 +517,13 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # =============================================================================
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher applying Braun & Clarke’s (2006) thematic analysis method. 
-Your task is to analyze a cluster of descriptive codes and construct one or more themes by identifying dominant patterns of shared meaning. 
-The descriptive codes are derived from responses to the research question.
+You are a qualitative researcher applying Braun & Clarke’s (2006) thematic analysis method.
+
+Your task is to:
+a) analyze a cluster of descriptive codes and construct one or more ATOMIC themes (central organizing concepts) 
+b) draft first-version codebook entries for each theme, including inclusion/exclusion rules and abstraction level. 
+
+Please realize that the drafts are the initial parameters that future updates will refine.
 
 <inputs>
 Language to use: {language}
@@ -533,15 +537,23 @@ Cluster of descriptive codes to analyze:
 {cluster_text}
 </inputs>
 
-<guidance>
-- A central organizing concept (COC) is a unifying pattern of shared meaning, sentiment, or intention that brings together a group of codes into an **ATOMIC** theme in light of the research question.
 
+<definitions>
+- ATOMIC THEME = one single idea, action, expectation, or motive relevant to the research question (no mixing).
+- ABSTRACTION LEVEL = the conceptual “height” of the theme. Use one of:
+  • "Driver/Motive/Why" (highest) 
+  • "Attribute/What" (mid)
+  • "Action/How" (concrete)
+- NEAR-NEIGHBOR = an adjacent concept likely to be confused with the theme.
+</definitions>
+
+<guidance>
 - Atomic means:
-  • One single idea, action, or expectation (not multiple at once).  
-  • Belongs to one aspect, domain, category, or product attribute only.  
-  • Expresses one consistent sentiment or intention (no mixing of positive/negative, or “keep” vs. “change”).  
-  • Is concrete and directly actionable — cannot be meaningfully split further.  
-  • If a code mentions multiple aspects (joined by “and,” “or,” commas, lists), crosses domains, or contains contradictory stances → split into multiple atomic concepts.  
+  • Single idea only (no “and/or” combinations).
+  • One aspect/domain/category/attribute only.
+  • One consistent sentiment/intention (no polarity mixing).
+  • Concrete and directly actionable.
+- If a code mentions multiple aspects or mixed sentiment → split into separate atomic concepts.
 </guidance>
 
 Follow these steps exactly and in order. Do not skip or reorder any step. Use your analytical judgment and reflexivity throughout—remember that themes are not discovered in data but actively constructed.
@@ -571,36 +583,53 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
     - Remove COCs without a dominant shared pattern or conceptual overlap.
     - Remove vague or overly broad COCs (e.g., “positivity,” “challenges,” “general satisfaction”).
 
-5. Construct theme(s):
-    - Each theme must represent ONE ATOMIC concept only — see <guidance>.
-    - If multiple atomic concepts exist, create multiple theme objects (one per concept).
-    - Do not combine multiple aspects, domains, or contradictory stances into a single theme.
-   
-6. Document the analysis:
-    - State how many COCs were identified.
-    - If only one COC: explain why it is sufficient.
-    - If multiple COCs: justify why not a single COC.
-
-7. Write a theme label and clarification for that label:
-    - Theme Label Template: "[≤ 10 words |  active/actionable formulation of ONE ATOMIC theme in relation to the research question - short, active, atomic]"
-    - Clarification Template: "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label - tight, grounded, evidence-based]"
-
+5. For each retained COC, produce a codebook-ready draft with:
+   - theme_label: "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]"
+   - theme_clarification: "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]"
+   - abstraction_level: Select one of: "Driver/Motive/Why" | "Attribute/What" | "Action/How"
+   - assignment_rules:
+       inclusion: Write precise, positive rules that describe when to assign the theme (start each rule with a verb; prefer observable cues).
+       exclusion: Define boundaries that prevent overreach (what must NOT be included).
+       near_neighbor:
+        • label: closest potentially-confusable theme or "Unknown"
+        • tell_apart_rule: one sentence explaining how to distinguish the two.
+       
+6) Document the analysis:
+   - State how many COCs were identified and retained.
+   - If only one COC: explain why it is sufficient.
+   - If multiple COCs: justify why a single COC would violate atomicity or clarity.
 </analysis_steps>
 
-Provide your response as a valid JSON dictionary using this exact structure:
+Output strictly as valid JSON using this exact structure (values in {language}, field names in English):
 {{
   "{cluster_id}": {{
-    "analysis": "Provide your analysis here in {language}. Use the following format:\n\n1. [First analytical point]\n2. [Second analytical point]\n3. [Continue numbering each point sequentially].\n\nEach new point must start on a new line and be clearly numbered.",
+    "analysis": "Provide your analysis here in {language}.",
     "extracted_themes": [
       {{
         "theme_id": 1,
-        "theme_label": "[≤10-word label in {language}]",
-        "theme_clarification": "[≤30-word clarification in {language}, with representative codes]"
+        "theme_label": "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]",
+        "theme_clarification": "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]",
+        "abstraction_level": "Driver/Motive/Why | Attribute/What | Action/How",
+        "assignment_rules": {{
+          "inclusion": [
+            "[inclusion rule 1 in {language}]",
+            "[inclusion rule 2 in {language}]"
+          ],
+          "exclusion": [
+            "[exclusion rule 1 in {language}]",
+            "[exclusion rule 2 in {language}]"
+          ],
+          "near_neighbor": {{
+            "label": "[neighbor label in {language} or 'Unknown']",
+            "tell_apart_rule": "[1-sentence distinction in {language}]"
+          }}
+        }}
       }}
       // Add additional theme objects here if more than one COC was found
     ]
   }}
 }}
+
 
 Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation before or after.
@@ -609,163 +638,160 @@ Critical requirements:
 - Conduct your analysis in the specified language.
 """
 
+
 CODING_DECISION_PROMPT = """
-You are a {language} qualitative research assistant helping to maintain a codebook for survey data analysis.
-Your task is to decide whether existing codes in a codebook are sufficient to describe a new theme, or whether modifications or new codes are needed.
+You are a {language} qualitative research assistant responsible for maintaining a structured codebook.
+
+Your task is to classify a new theme by deciding whether it should:
+- be assigned to an existing code (**USE**),
+- extend an existing code (**MODIFY – Vertical / same motive**),
+- consolidate into a parent code that groups multiple codes (**MODIFY – Hierarchical / different motive but same conceptual family**),
+- or be added as a new code (**CREATE**).
+
+You must base your reasoning on:
+1) Cosine similarity (semantic proximity),
+2) The underlying motive/intent (the "why" behind the theme),
+3) The conceptual structure of the codebook (to maintain clear boundaries).
 
 <inputs>
-Here is the survey question being analyzed:
+Survey Question:
 "{survey_question}"
 
-Here is the new theme:
+New Theme to Classify:
 - name: "{theme_name}"
 - description: "{theme_description}"
 
-Here is the list with existing codes in the codebook:
+Further information about the theme:
+- abstraction level: "{abstraction_level}"
+- what's included: 
+    {inclusion}
+- what's excluded: 
+    {exclusion}
+- boundary: {near_neighbor}
+
+Existing Codes:
 {code_text}
 </inputs>
 
-You have three possible decisions:
-- **USE**: An existing code already captures the new theme's central meaning sufficiently
-- **MODIFY**: An existing code is close but needs refinement for clarity, scope, or better alignment
-- **CREATE**: No existing code sufficiently captures the new theme
+Follow these steps exactly and in order. Do not skip or reorder any step. 
 
----
+<analysis_steps>
+1. Cosine Similarity Rules:
 
-A. **Understanding Cosine Similarity**
-<cosine_similarity>
-Each code is provided with a cosine similarity score (0.0-1.0) comparing it to the new theme:
+- **≥ 0.90** → Same meaning → **USE**
+- **< 0.70** → Different meaning → **CREATE**
+- **0.70–0.90** → Perform Motive Test
 
-**Cosine Similarity** measures semantic similarity - do the theme and code MEAN the same thing?
-- Uses AI embeddings to capture meaning beyond exact wording
-- Handles synonyms and paraphrasing (e.g., "fast delivery" ≈ "quick shipping")
-- High cosine (≥0.88) = Semantically equivalent concepts
-- Medium cosine (0.75-0.88) = Similar concepts needing refinement
-- Low cosine (<0.75) = Different concepts
+2. MOTIVE TEST:
+Ask: *Does the new theme share the same underlying motive/driver as the highest-similarity code?*
 
-Cosine captures what matters in qualitative coding: whether two descriptions refer to the same underlying concept, regardless of the specific words used.
-</cosine_similarity>
+- Same motive → **MODIFY (Vertical Expansion)**  
+  • Add new expressions to **inclusion rules**  
+  • Keep same abstraction level  
+  • Maintain atomicity
 
----
-B. **Decision Guidelines (STRICT)**
-<decision_guidelines>
-Make your decision strictly based on cosine similarity — no exceptions:
+- Different motive but same conceptual family → **MODIFY (Hierarchical Expansion)**  
+  • Create or reference a **parent** theme at a higher abstraction level  
+  • Existing code and new theme become **sub-themes**
 
-   1. Pick the single best match = candidate with the highest cosine.
-   2. Apply guidelines:
-       - USE if cosine ≥ 0.88
-       - MODIFY if 0.75 ≤ cosine < 0.88
-       - CREATE if cosine < 0.75
-   3. Final consistency check before output:
-       - If decision=MODIFY and cosine<0.75 ⇒ set to CREATE
-       - If decision=USE and cosine<0.88 ⇒ set to MODIFY
-</decision_guidelines>
+- Different motive and not in same family → **CREATE** new code
 
----
+3. Structural Constraints (Always Enforce)
+- Codes must remain **atomic**: one idea, one motive, one sentiment.
+- Inclusion rules describe when to assign the theme.
+- Exclusion rules describe common misfits to keep boundaries clear.
+</analysis_steps>
 
-C. **Decision Examples**
-<examples>
-Example 1 - Clear USE:
-  Theme: "Delivery speed problems"
-  Code:  "Delivery speed issues" (cosine: 0.92)
-  → Decision: USE (semantically equivalent - nearly identical meaning)
+Respond with **valid JSON only** in the following structure:
 
-Example 2 - Clear USE (synonyms):
-  Theme: "Fast shipping concerns"
-  Code:  "Quick delivery issues" (cosine: 0.91)
-  → Decision: USE (different words, same meaning - cosine captures this)
-
-Example 3 - Clear MODIFY:
-  Theme: "Fast delivery and tracking concerns"
-  Code:  "Delivery issues" (cosine: 0.82)
-  → Decision: MODIFY (related concepts, but theme includes tracking aspect - broaden code scope)
-
-Example 4 - Clear CREATE:
-  Theme: "Packaging quality defects"
-  Code:  "Delivery speed" (cosine: 0.35)
-  → Decision: CREATE (completely different concepts - insufficient overlap)
-</examples>
-
----
-
-D. **Edge Cases**
-<edge_cases>
-- For borderline cases (cosine 0.85-0.90): Use qualitative judgment - if meaning is fully captured despite minor wording differences, choose USE; if refinement would improve clarity, choose MODIFY.
-- If the theme combines multiple distinct ideas (e.g., "X and Y"), choose CREATE (themes should be atomic).
-- When modifying, ensure changes don't broaden codes beyond their intended scope or make them too general.
-- Always cite the cosine score in your justification (e.g., "cosine 0.83 indicates semantic similarity; MODIFY to broaden scope").
-- Trust the cosine score - it captures semantic meaning that word-matching cannot.
-</edge_cases>
-
----
-
-Your response must be valid JSON only, following this exact format:
-
-Output schema:
 {{
   "coding_decision": {{
     "theme_number": {theme_id},
     "theme_name": "Exact name of the theme from <theme_to_code>",
     "matched_candidates": [
-      {{"code": "Exact candidate code A", "definition": "Definition in light of the survey question"}},
-      {{"code": "Exact candidate code B", "definition": "Definition in light of the survey question"}}
-    ],
+        {{"code": "Exact candidate code A", "definition": "Definition in light of the survey question"}},
+        // Add additional candidaties,if there are any 
+        ]
     "decision": "USE | MODIFY | CREATE",
     "source_code": "Exact candidate code name if use/modify, or null if create",
-    "justification": "Justify decision by referencing "best_cosine": <number> and "rule_applied": "USE(≥0.88)" | "MODIFY(0.75–0.88)" | "CREATE(<0.75)".
+    "modify_parameters":{{
+       "modify_instruction": "vertical_broaden_same_motive | hierarchical_parent_diff_motive_same_family | none",
+       "motive_comparison": "same | different_same_family | different_not_related",
+       "abstraction_level_action": "keep | broaden_to_parent | none",
+       "inclusion_update": "null or concrete additions to inclusion rules",
+       "exclusion_update": "null or concrete boundary clarifications",
+       "parent_theme_label": "null or suggested parent label"}},
+    "justification": "Explain modification decision by referencing cosine score and whether motive was same or different, or null if use/create".
   }}
 }}
 
+Examples (for Interpretation)
 
-Critical requirements:
-- Output must be valid JSON only — no extra commentary or explanation.
-- Use theme_id provided.
+1. **Vertical MODIFY Example**
+cosine = 0.81, same motive
+→ "This theme expresses the same underlying reason as Code A but in a new form. MODIFY (vertical)."
+
+2. **Hierarchical MODIFY Example**
+cosine = 0.80, different motive but same conceptual family
+→ "This theme shares the domain of Code A but with a different driving motive. MODIFY (hierarchical)."
+
+3. **CREATE Example**
+cosine = 0.64
+→ "The meaning and motive differ significantly. CREATE new code."
+
+REQUIREMENTS
+- Output **must be valid JSON only** (no commentary).
 - Keep field names in English; write values in {language}.
-- Justification must clearly state the estimated overlap percentage and reference the cosine score and decision rule applied.
+- Include **cosine score** in justification.
+- Identify motive comparison explicitly.
+
 """
 
 CODE_CREATION_PROMPT = """
-You are a qualitative research assistant helping to maintain a codebook for survey data analysis. 
-Your task is to CREATE a new code that captures a distinct theme emerging from responses to a specific survey question.
+You are a {language} qualitative research assistant. 
+Your task is to CREATE a new **atomic** code that captures the meaning of a newly identified theme from survey responses.
 
 <inputs>
-1) Language to use: {language}
-
-2) Survey question:
+Survey question:
 "{survey_question}"
 
-3) New theme that emerged:
+New theme:
 - name: "{theme_name}"
 - description: "{theme_description}"
 </inputs>
 
-Follow these critical coding principles:
+DEFINITION OF AN ATOMIC CODE:
+- Expresses exactly **one** idea, action, attitude, or expectation.
+- Cannot be split into two meaningful codes without losing clarity.
+- Contains **no conjunctions** (and/or), **no lists**, and **no dual motives**.
 
-- **ATOMIC**: The code must express ONE clear idea only.
-    - Forbidden punctuation (unless lexicalized): "/", "&", "+", ",", ";", ":", "-", "–"
-    - Use only ONE main verb if present.
-- **PRECISE**: Code boundaries must be specific enough to enable consistent coding decisions.
-- **CONCISE**: Code labels should be 5–10 words maximum. If longer, shorten while preserving meaning.
-- **OPERATIONAL**: Code label and definition must align with the survey question.
-- **GROUNDED**: Base your label and definition on the provided theme.    
+LABEL RULES (strict):
+- ≤ 10 words 
+- Active/actionable formulation of ONE ATOMIC theme in relation to the research question
+- Atomic means "One domain or aspect only"
+- If verb is used → one main verb (present tense).
+- **Never** include reasons (no "to", "so that", "because").
+- Avoid punctuation: "/", "&", ",", "–", ":" (unless lexicalized).
+- Maintain **one polarity** (either increase/strengthen OR reduce/avoid).
 
-Consider these possible **code types**:
-- Attribute codes: qualities or characteristics
-- Process codes: actions, procedures, or methods  
-- Relational codes: interactions or relationships
-- State codes: existing conditions or statuses
-- Evaluative codes: assessments or judgments
-- Brand/company names: named entities
+DEFINITION RULES:
+- ≤ 30 words
+- grounded in theme description
+- Must describe **what belongs in this code**, not why it happens.
+- Must align directly with the survey question.
+- Use a **clear, observable assignment cue** (e.g., behaviors, expressions, judgments).
+- Do not explain causes, conditions, or interpretations.
 
-Use these **strong patterns** for code definitions (≤25 words):
-- "References to [specific limitation or constraint] affecting [process or outcome]."
-- "Mentions of [positive or negative] changes in [behavior or practice]."
-- "Expressions of [emotion or attitude] regarding [situation or process]."
+GOOD DEFINITION PATTERNS:
+- "References to…"
+- "Mentions of…"
+- "Expressions of…"
+- "Concerns about…"
 
-Avoid these **weak patterns**:
-- Compound: "References to [issue A] including [aspect 1], [aspect 2], [aspect 3]."
-- Vague: "Mentions of various [things] related to [topic]."
-- Interpretive: "Underlying [abstract concept] manifesting in different ways."
+AVOID:
+- Broad summaries (e.g., “general dissatisfaction”).
+- Multi-part or layered meaning.
+- Psychological interpretation not grounded in wording.
 
 Output the result in this strict JSON schema (no commentary or explanation):
 {{
@@ -785,67 +811,81 @@ Critical remarks:
 """
 
 CODING_MODIFICATION_PROMPT = """
-You are a qualitative research assistant helping to maintain a codebook for survey data analysis. 
-Your task is to MODIFY an existing code so that it fits a new theme, while preserving the **core meaning** of the original code.
+You are a {language} qualitative research assistant updating a codebook.
+Your task is to MODIFY an existing code so that it fully and correctly includes a new theme,
+while preserving **atomic meaning** and **clear conceptual boundaries**.
 
 <inputs>
-1) Language to use: {language}
-
-2) Survey question:
+Survey question:
 "{survey_question}"
 
-3) New theme that emerged:
+New theme:
 - name: "{theme_name}"
 - description: "{theme_description}"
 
-4) Original code to modify:
+- inclusion (what this theme *does* refer to): 
+    {inclusion}
+- exclusion (what this theme *does NOT* refer to): 
+    {exclusion}
+
+Original code to modify:
 {source_code}
+
+Modification parameters (from previous decision stage):
+- modify_instruction: {modify_instruction}
+- motive_comparison: {motive_comparison}
+- abstraction_level_action: {abstraction_level_action}
+- inclusion_update: {inclusion_update}
+- exclusion_update: {exclusion_update}
+- parent_theme_label: {parent_theme_label}
 </inputs>
 
-Follow these critical coding principles:
+------------------------------------------------------------
+MODIFICATION INSTRUCTIONS:
+{modification_instructions}
 
-- **ATOMIC**: The code must express ONE clear idea only.
-    - Forbidden punctuation (unless lexicalized): "/", "&", "+", ",", ";", ":", "-", "–"
-    - Use only ONE main verb if present.
-- **PRECISE**: Code boundaries must be specific enough to enable consistent coding decisions.
-- **CONCISE**: Code labels should be 5–10 words maximum. If longer, shorten while preserving meaning.
-- **OPERATIONAL**: Code label and definition must align with the survey question.
-- **GROUNDED**: Base your label and definition on the provided theme.    
+------------------------------------------------------------
+LABEL RULES:
+    - ≤ 10 words 
+    - Active/actionable formulation of ONE ATOMIC theme in relation to the research question
+    - Atomic means "One domain or aspect only"
+    - If verb is used → one main verb (present tense).
+    - **Never** include reasons (no "to", "so that", "because").
+    - Avoid punctuation: "/", "&", ",", "–", ":" (unless lexicalized).
+    - Maintain **one polarity** (either increase/strengthen OR reduce/avoid).
 
-Consider these possible **code types**:
-- Attribute codes: qualities or characteristics
-- Process codes: actions, procedures, or methods  
-- Relational codes: interactions or relationships
-- State codes: existing conditions or statuses
-- Evaluative codes: assessments or judgments
-- Brand/company names: named entities
+4) DEFINITION RULES:
+    - ≤ 30 words
+    - grounded in theme description
+    - Must describe **what belongs in this code**, not why it happens.
+    - Must align directly with the survey question.
+    - Use a **clear, observable assignment cue** (e.g., behaviors, expressions, judgments).
+    - Do not explain causes, conditions, or interpretations.
+    - GOOD DEFINITION PATTERNS:
+        • "References to…"
+        • "Mentions of…"
+        • "Expressions of…"
+        • "Concerns about…"
 
-Use these **strong patterns** for code definitions (≤25 words):
-- "References to [specific limitation or constraint] affecting [process or outcome]."
-- "Mentions of [positive or negative] changes in [behavior or practice]."
-- "Expressions of [emotion or attitude] regarding [situation or process]."
+------------------------------------------------------------
+OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
 
-Avoid these **weak patterns**:
-- Compound: "References to [issue A] including [aspect 1], [aspect 2], [aspect 3]."
-- Vague: "Mentions of various [things] related to [topic]."
-- Interpretive: "Underlying [abstract concept] manifesting in different ways.
-
-Output the result in this strict JSON schema (no commentary or explanation):
 {{
   "generated_code": {{
     "theme_number": {theme_id},
     "theme_name": "{cluster_summary}",
     "source_code": {source_code},
-    "code_label": "new or modified code label in {language}",
-    "code_definition": "≤25-word operational definition in {language}"
+    "code_label": "yur new/modified code label in {language}",
+    "code_definition": "your definition in {language}"
   }}
 }}
 
-Critical remarks:
-- Use theme_id provided.
-- Use theme_name provided.
-- Use source_code provided
+REQUIREMENTS:
+- Output must be valid JSON only.
+- No commentary outside JSON.
+- If hierarchical_parent_diff_motive_same_family → ensure parent label is conceptual, not descriptive or repetitive.
 """
+
 
 VALIDATION_PROMPT = """
 You are a {language} curator of codebooks for thematic analysis following Braun & Clarke (2006) methodology. 
@@ -1222,64 +1262,64 @@ Before submitting, verify that:
 # STEP 8: CODE ASSIGNMENT
 # =============================================================================
 
-CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 6 candidate codes to a specific response segment.
+# CODE_ASSIGNMENT_PROMPT = """
+# You are a {language} language expert in qualitative data analysis, specializing in applying codebooks to open-ended survey responses. Your task is to assign the single most appropriate code from a focused list of 6 candidate codes to a specific response segment.
 
-First, review the original survey question:
-<survey_question>
-{var_lab}
-</survey_question>
+# First, review the original survey question:
+# <survey_question>
+# {var_lab}
+# </survey_question>
 
-Next, examine the response segment you need to analyze:
-<idea_to_analyze>
-Idea ID: {idea_id}
-Idea Text: {idea_text}
-</idea_to_analyze>
+# Next, examine the response segment you need to analyze:
+# <idea_to_analyze>
+# Idea ID: {idea_id}
+# Idea Text: {idea_text}
+# </idea_to_analyze>
 
-Now, review the 6 candidate codes and their descriptions:
-<candidate_codes>
-{candidate_codes}
-</candidate_codes>
+# Now, review the 6 candidate codes and their descriptions:
+# <candidate_codes>
+# {candidate_codes}
+# </candidate_codes>
 
-Your goal is to select the single best fitting code for the response segment. Follow these steps:
-1. Carefully read and understand each candidate code's definition.
-2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
-3. Identify which code best captures the core concept expressed in the response.
-4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
+# Your goal is to select the single best fitting code for the response segment. Follow these steps:
+# 1. Carefully read and understand each candidate code's definition.
+# 2. Analyze the semantic meaning of the response segment, considering the context of the survey question.
+# 3. Identify which code best captures the core concept expressed in the response.
+# 4. Assign exactly one code, even if the fit isn't perfect. Choose the best available option based on semantic meaning.
 
-When selecting the best fitting code:
-- Prioritize exact conceptual matches based on meaning.
-- Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
+# When selecting the best fitting code:
+# - Prioritize exact conceptual matches based on meaning.
+# - Do not rely solely on surface keywords. Base your choice on semantic alignment with the code's definition.
 
 
-After selecting the code, rate the strength of the fit using this scale:
-- Excellent (0.90–1.00): Exact match — the idea uses the same language or concepts as the code definition, with no ambiguity or need for interpretation.
-- Very Good (0.80–0.89): Very strong fit — conceptually aligns and clearly supports the code with minimal nuance or deviation.
-- Good (0.60–0.79): Clear but partial fit — the idea relates directly to the code, though some nuance, context, or wording differs from the definition.
-- Moderate (0.50–0.59): Partial or uncertain fit — the idea touches on similar concepts but lacks clarity, depth, or consistent alignment with the code.
-- Poor (0.30–0.49): Barely relevant — the connection to the code is weak or indirect, applied mainly due to lack of a better alternative.
-- Very Poor (0.00–0.29): Not relevant — the idea does not reflect the intent, meaning, or scope of the code.
+# After selecting the code, rate the strength of the fit using this scale:
+# - Excellent (0.90–1.00): Exact match — the idea uses the same language or concepts as the code definition, with no ambiguity or need for interpretation.
+# - Very Good (0.80–0.89): Very strong fit — conceptually aligns and clearly supports the code with minimal nuance or deviation.
+# - Good (0.60–0.79): Clear but partial fit — the idea relates directly to the code, though some nuance, context, or wording differs from the definition.
+# - Moderate (0.50–0.59): Partial or uncertain fit — the idea touches on similar concepts but lacks clarity, depth, or consistent alignment with the code.
+# - Poor (0.30–0.49): Barely relevant — the connection to the code is weak or indirect, applied mainly due to lack of a better alternative.
+# - Very Poor (0.00–0.29): Not relevant — the idea does not reflect the intent, meaning, or scope of the code.
 
-Provide your response in the following JSON format:
-<output_format>
-{{
-  "idea_id": "{idea_id}",
-  "idea": "{idea_text}",
-  "assigned_codes": ["SINGLE_CODE_NAME"],
-  "assignment_confidence": CONFIDENCE_SCORE,
-  "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
-}}
-</output_format>
+# Provide your response in the following JSON format:
+# <output_format>
+# {{
+#   "idea_id": "{idea_id}",
+#   "idea": "{idea_text}",
+#   "assigned_codes": ["SINGLE_CODE_NAME"],
+#   "assignment_confidence": CONFIDENCE_SCORE,
+#   "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
+# }}
+# </output_format>
 
-Critical requirements:
-- Use exact code names as provided in the candidate codes list.
-- Assign one and only one code per response.
-- The confidence score must reflect conceptual fit, not how likely you feel about the assignment.
-- The rationale must explain the semantic connection to the code definition.
-- Return ONLY the JSON object in {language}.
+# Critical requirements:
+# - Use exact code names as provided in the candidate codes list.
+# - Assign one and only one code per response.
+# - The confidence score must reflect conceptual fit, not how likely you feel about the assignment.
+# - The rationale must explain the semantic connection to the code definition.
+# - Return ONLY the JSON object in {language}.
 
-Begin the code assignment now.
-"""
+# Begin the code assignment now.
+# """
 
 # Stage 1: Evaluate default code from cluster
 DEFAULT_CODE_EVALUATION_PROMPT = """
@@ -1310,11 +1350,13 @@ Consider:
 3. Would this code be appropriate for categorizing this response?
 
 Provide a confidence score using this scale:
-- 0.90-1.00: Perfect fit - the code exactly captures the idea's meaning
-- 0.70-0.89: Good fit - strong conceptual alignment with minor differences
-- 0.60-0.69: Acceptable fit - the code captures the general concept adequately
-- 0.40-0.59: Weak fit - partial alignment but significant gaps in meaning
-- 0.00-0.39: Poor fit - the code does not capture the idea's core meaning
+• 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
+• 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
+• 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
+• 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
+• 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
+• 0.00–0.29: No Confidence — No meaningful similarity at all.
+
 
 Provide your response in the following JSON format:
 {{
@@ -1362,11 +1404,13 @@ Follow these steps:
 4. Assign exactly one code based on semantic alignment
 
 Provide a confidence score using this scale:
-- 0.90-1.00: Perfect fit - exact conceptual match
-- 0.70-0.89: Good fit - strong semantic alignment
-- 0.60-0.69: Acceptable fit - captures the general concept
-- 0.40-0.59: Weak fit - partial alignment
-- 0.00-0.39: Poor fit - limited relevance
+• 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
+• 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
+• 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
+• 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
+• 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
+• 0.00–0.29: No Confidence — No meaningful similarity at all.
+
 
 Provide your response in the following JSON format:
 {{

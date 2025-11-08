@@ -4,7 +4,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 import asyncio
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, Literal
 #import json
 from collections import deque
 import itertools
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import difflib
 
 from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from pydantic import BaseModel, ConfigDict, RootModel
+from pydantic import BaseModel, ConfigDict, RootModel, Field, field_validator
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type #wait_exponential
 from pydantic import ValidationError
@@ -54,20 +54,89 @@ warnings.filterwarnings(
     message=r".*n_jobs value 1 overridden to 1 by setting random_state.*",
     category=UserWarning,
     module=r"umap\.umap_" )
-               
+
+# ============================================================================
+# MODIFICATION INSTRUCTION TEMPLATES
+# ============================================================================
+
+VERTICAL_INSTRUCTIONS = """
+   - Keep the abstraction level of the original code.
+   - Create a **single atomic shared concept** that:
+        (a) captures the meaning of both original code and new theme,
+        (b) is grounded in the shared intent (same motive),
+        (c) remains expressible as **one idea** in the label.
+   - The modified label must:
+        • reflect the broadened meaning,
+        • NOT introduce multiple aspects or motives,
+        • NOT be more abstract than necessary.
+   - The modified definition must:
+        • describe the **shared meaning space**,
+        • reflect: original inclusions + inclusion_update,
+        • exclude: original exclusions + exclusion_update.
+   - Do **not** modify assignment rules here."""
+
+HIERARCHICAL_INSTRUCTIONS = """
+   - Shared conceptual domain but different motives → create hierarchical structure.
+   - Original code and new theme remain **atomic child codes**.
+   - Parent code represents the shared **purpose/motive domain**.
+
+   Parent label:
+        - If parent_theme_label provided → use it as-is.
+        - If null → generate a label at **Driver/Motive/Why** level.
+        - Must:
+            • express shared purpose/orientation,
+            • NOT describe behaviors/outcomes,
+            • NOT blend child labels,
+            • be broader, not vaguer.
+
+   Structure:
+       - Parent = conceptual anchor (why level),
+       - Children = distinct manifestations (how/what),
+       - Child meanings **do not change**."""
+
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
 
 """Prompt 1 : Theme Extraction"""
+class NearNeighbor(BaseModel):
+    label: str = Field(..., min_length=1)
+    tell_apart_rule: str = Field(..., min_length=1)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class AssignmentRules(BaseModel):
+    inclusion: List[str] = Field(..., min_length=1)
+    exclusion: List[str] = Field(..., min_length=1)
+    near_neighbor: NearNeighbor
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class ClusterThemeItem(BaseModel):
-    theme_id: int 
-    theme_label: str 
-    theme_clarification: str  
+    theme_id: int
+    theme_label: str = Field(..., max_length=100)
+    theme_clarification: str = Field(..., max_length=300)
+    abstraction_level: Literal["Driver/Motive/Why", "Attribute/What", "Action/How"]
+    assignment_rules: AssignmentRules
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator('theme_label')
+    @classmethod
+    def validate_label_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 10:
+            raise ValueError(f"theme_label must be ≤10 words, got {word_count}")
+        return v
+
+    @field_validator('theme_clarification')
+    @classmethod
+    def validate_clarification_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 30:
+            raise ValueError(f"theme_clarification must be ≤30 words, got {word_count}")
+        return v
 
 class ClusterSummaryItem(BaseModel):
-    analysis: str  
-    extracted_themes: List[ClusterThemeItem] 
+    analysis: str
+    extracted_themes: List[ClusterThemeItem]
 
 class ClusterSummaryOutput(RootModel[Dict[str, ClusterSummaryItem]]):
     root: Dict[str, ClusterSummaryItem]
@@ -78,14 +147,24 @@ class MatchedCandidate(BaseModel):
     definition: str
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class ModifyParameters(BaseModel):
+    modify_instruction: Literal["vertical_broaden_same_motive", "hierarchical_parent_diff_motive_same_family", "none"]
+    motive_comparison: Literal["same", "different_same_family", "different_not_related"]
+    abstraction_level_action: Literal["keep", "broaden_to_parent", "none"]
+    inclusion_update: Optional[str] = None
+    exclusion_update: Optional[str] = None
+    parent_theme_label: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class CodingDecision(BaseModel):
     theme_number: int
-    theme_name: str 
+    theme_name: str
     matched_candidates: List[MatchedCandidate]
     decision: str  # use | modify | create
-    source_code: Optional[str] = None   
+    source_code: Optional[str] = None
+    modify_parameters: ModifyParameters
     justification: str
-    
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodingDecisionOutput(BaseModel):
@@ -1850,6 +1929,49 @@ class InductiveCodeGenerator:
             return f"{theme.theme_clarification}"
         return "No theme desciption"
 
+    def _get_abstraction_level(self, theme_data) -> str:
+        """Extract abstraction level from theme data"""
+        if hasattr(theme_data, 'root'):
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                theme = cluster_summary_items[0].extracted_themes[0]
+                if hasattr(theme, 'abstraction_level'):
+                    return theme.abstraction_level
+        return "Unknown"
+
+    def _get_inclusion_rules(self, theme_data) -> str:
+        """Extract and format inclusion rules from theme data"""
+        if hasattr(theme_data, 'root'):
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                theme = cluster_summary_items[0].extracted_themes[0]
+                if hasattr(theme, 'assignment_rules'):
+                    rules = theme.assignment_rules.inclusion
+                    return "\n".join([f"  - {rule}" for rule in rules])
+        return "No inclusion rules specified"
+
+    def _get_exclusion_rules(self, theme_data) -> str:
+        """Extract and format exclusion rules from theme data"""
+        if hasattr(theme_data, 'root'):
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                theme = cluster_summary_items[0].extracted_themes[0]
+                if hasattr(theme, 'assignment_rules'):
+                    rules = theme.assignment_rules.exclusion
+                    return "\n".join([f"  - {rule}" for rule in rules])
+        return "No exclusion rules specified"
+
+    def _get_near_neighbor(self, theme_data) -> str:
+        """Extract and format near neighbor info from theme data"""
+        if hasattr(theme_data, 'root'):
+            cluster_summary_items = list(theme_data.root.values())
+            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
+                theme = cluster_summary_items[0].extracted_themes[0]
+                if hasattr(theme, 'assignment_rules'):
+                    neighbor = theme.assignment_rules.near_neighbor
+                    return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
+        return "Unknown"
+
     def _calculate_cosine_similarities(
         self,
         theme_embedding: np.ndarray,
@@ -2689,6 +2811,10 @@ class InductiveCodeGenerator:
                 language=DEFAULT_LANGUAGE,
                 theme_name=self._get_theme_name(theme_data),
                 theme_description=self._get_theme_statement(theme_data),
+                abstraction_level=self._get_abstraction_level(theme_data),
+                inclusion=self._get_inclusion_rules(theme_data),
+                exclusion=self._get_exclusion_rules(theme_data),
+                near_neighbor=self._get_near_neighbor(theme_data),
                 code_text=codes_text,
                 theme_id=theme_id
             )
@@ -2700,6 +2826,9 @@ class InductiveCodeGenerator:
                 survey_question=self.var_lab,
                 theme_name=self._get_theme_name(theme_data),
                 theme_description=self._get_theme_statement(theme_data),
+                abstraction_level=self._get_abstraction_level(theme_data),
+                inclusion=self._get_inclusion_rules(theme_data),
+                exclusion=self._get_exclusion_rules(theme_data),
                 theme_id=theme_id,
                 cluster_summary=self._get_theme_name(theme_data)
             )
@@ -3081,6 +3210,10 @@ class InductiveCodeGenerator:
                         language=DEFAULT_LANGUAGE,
                         theme_name=self._get_theme_name(theme_data),
                         theme_description=self._get_theme_statement(theme_data),
+                        abstraction_level=self._get_abstraction_level(theme_data),
+                        inclusion=self._get_inclusion_rules(theme_data),
+                        exclusion=self._get_exclusion_rules(theme_data),
+                        near_neighbor=self._get_near_neighbor(theme_data),
                         code_text="",  # Empty for estimation
                         theme_id=theme_id
                     )
@@ -3683,7 +3816,7 @@ class InductiveCodeGenerator:
             if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
                 decision = candidate_selection.coding_decision.decision.lower()
             
-            # OPTIMIZATION: Skip Steps 2 & 3 for USE decisions
+            # Skip Steps 2 & 3 for USE decisions
             if decision == "use":
                 if self.verbose_detailed:
                     self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision detected - skipping code generation and validation steps")
@@ -3699,7 +3832,7 @@ class InductiveCodeGenerator:
                             selected_candidate = candidate
                             break
                 
-                # Use EXACT same format as real step3_recommendations
+                # Use EXACT same format as  step3_recommendations
                 self.step3_recommendations[cluster_id] = {
                     'coding_proposal': 'USE',
                     'source_code': coding_decision.source_code,
@@ -4028,6 +4161,10 @@ class InductiveCodeGenerator:
                 "language": DEFAULT_LANGUAGE,
                 "theme_name": theme_name,
                 "theme_description": theme_description,
+                "abstraction_level": self._get_abstraction_level(theme_data),
+                "inclusion": self._get_inclusion_rules(theme_data),
+                "exclusion": self._get_exclusion_rules(theme_data),
+                "near_neighbor": self._get_near_neighbor(theme_data),
                 "code_text": codes_text,
                 "theme_id": theme_id
             }
@@ -4086,6 +4223,14 @@ class InductiveCodeGenerator:
                         "theme_name": response.coding_decision.theme_name,
                         "decision": response.coding_decision.decision,
                         "source_code": response.coding_decision.source_code,  # Now corrected
+                        "modify_parameters": {
+                            "modify_instruction": response.coding_decision.modify_parameters.modify_instruction,
+                            "motive_comparison": response.coding_decision.modify_parameters.motive_comparison,
+                            "abstraction_level_action": response.coding_decision.modify_parameters.abstraction_level_action,
+                            "inclusion_update": response.coding_decision.modify_parameters.inclusion_update,
+                            "exclusion_update": response.coding_decision.modify_parameters.exclusion_update,
+                            "parent_theme_label": response.coding_decision.modify_parameters.parent_theme_label
+                        },
                         "justification": response.coding_decision.justification,
                         "matched_candidates": [
                             {"code": candidate.code, "definition": candidate.definition}
@@ -4113,11 +4258,16 @@ class InductiveCodeGenerator:
     async def _generate_code(self, cluster_id: Union[int, str], cluster_data: Dict, theme_data, candidate_selection):
         """Generate code with unlimited concurrency - pure API call"""
         try:
+            # Default values if candidate_selection is invalid
+            decision = "CREATE"
+            source_code = "null"
+            CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
+
             if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
                 coding_decision_obj = candidate_selection.coding_decision
                 decision = coding_decision_obj.decision.upper()
                 source_code = coding_decision_obj.source_code
-                
+
                 # Fallback logic: if MODIFY decision but no source_code, fall back to CREATE
                 if decision == "MODIFY" and (not source_code or source_code.lower() in ['null', 'none', '']):
                     if self.verbose_detailed:
@@ -4129,7 +4279,11 @@ class InductiveCodeGenerator:
                     CODING_GENERATION_PROMPT = CODING_MODIFICATION_PROMPT
                 else:
                     CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-                
+            else:
+                # No valid candidate_selection, default to CREATE
+                if self.verbose_detailed:
+                    self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - No valid candidate_selection, defaulting to CREATE")
+
             theme_id = self._get_theme_id(theme_data) 
             theme_name = self._get_theme_name(theme_data)
             theme_description = self._get_theme_description(theme_data)
@@ -4143,8 +4297,45 @@ class InductiveCodeGenerator:
                 "coding_decision": decision,
                 "theme_id": theme_id,
                 "cluster_summary": theme_name,
-                "source_code": source_code
+                "source_code": source_code,
+                # Theme parameters (for both CREATE and MODIFY prompts)
+                "inclusion": self._get_inclusion_rules(theme_data),
+                "exclusion": self._get_exclusion_rules(theme_data),
+                "abstraction_level": self._get_abstraction_level(theme_data),
             }
+
+            # Add modify parameters only if we have valid candidate_selection
+            if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
+                modify_instr = coding_decision_obj.modify_parameters.modify_instruction
+
+                # Select appropriate modification instructions based on type
+                if modify_instr == "vertical_broaden_same_motive":
+                    modification_instructions = VERTICAL_INSTRUCTIONS
+                elif modify_instr == "hierarchical_parent_diff_motive_same_family":
+                    modification_instructions = HIERARCHICAL_INSTRUCTIONS
+                else:
+                    modification_instructions = ""  # Fallback for "none"
+
+                params.update({
+                    "modify_instruction": modify_instr,
+                    "motive_comparison": coding_decision_obj.modify_parameters.motive_comparison,
+                    "abstraction_level_action": coding_decision_obj.modify_parameters.abstraction_level_action,
+                    "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update,
+                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update,
+                    "parent_theme_label": coding_decision_obj.modify_parameters.parent_theme_label,
+                    "modification_instructions": modification_instructions
+                })
+            else:
+                # Fallback values for when candidate_selection is invalid
+                params.update({
+                    "modify_instruction": "none",
+                    "motive_comparison": "different_not_related",
+                    "abstraction_level_action": "none",
+                    "inclusion_update": "null",
+                    "exclusion_update": "null",
+                    "parent_theme_label": "null",
+                    "modification_instructions": ""
+                })
             
             prompt = CODING_GENERATION_PROMPT.format(**params)
             
