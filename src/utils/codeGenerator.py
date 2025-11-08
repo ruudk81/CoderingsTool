@@ -65,7 +65,7 @@ class NearNeighbor(BaseModel):
     tell_apart_rule: str = Field(..., min_length=1)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-class AssignmentRules(BaseModel):
+class AssignmentExamples(BaseModel):
     inclusion: List[str] = Field(..., min_length=1)
     exclusion: List[str] = Field(..., min_length=1)
     near_neighbor: NearNeighbor
@@ -76,7 +76,7 @@ class ClusterThemeItem(BaseModel):
     theme_label: str = Field(..., max_length=100)
     theme_clarification: str = Field(..., max_length=300)
     abstraction_level: Literal["Driver/Motive/Why", "Attribute/What", "Action/How"]
-    assignment_rules: AssignmentRules
+    assignment_examples: AssignmentExamples
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @field_validator('theme_label')
@@ -1900,27 +1900,27 @@ class InductiveCodeGenerator:
                     return theme.abstraction_level
         return "Unknown"
 
-    def _get_inclusion_rules(self, theme_data) -> str:
-        """Extract and format inclusion rules from theme data"""
+    def _get_inclusion_examples(self, theme_data) -> str:
+        """Extract and format inclusion examples from theme data"""
         if hasattr(theme_data, 'root'):
             cluster_summary_items = list(theme_data.root.values())
             if cluster_summary_items and cluster_summary_items[0].extracted_themes:
                 theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_rules'):
-                    rules = theme.assignment_rules.inclusion
-                    return "\n".join([f"  - {rule}" for rule in rules])
-        return "No inclusion rules specified"
+                if hasattr(theme, 'assignment_examples'):
+                    examples = theme.assignment_examples.inclusion
+                    return "\n".join([f"  - {example}" for example in examples])
+        return "No inclusion examples specified"
 
-    def _get_exclusion_rules(self, theme_data) -> str:
-        """Extract and format exclusion rules from theme data"""
+    def _get_exclusion_examples(self, theme_data) -> str:
+        """Extract and format exclusion examples from theme data"""
         if hasattr(theme_data, 'root'):
             cluster_summary_items = list(theme_data.root.values())
             if cluster_summary_items and cluster_summary_items[0].extracted_themes:
                 theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_rules'):
-                    rules = theme.assignment_rules.exclusion
-                    return "\n".join([f"  - {rule}" for rule in rules])
-        return "No exclusion rules specified"
+                if hasattr(theme, 'assignment_examples'):
+                    examples = theme.assignment_examples.exclusion
+                    return "\n".join([f"  - {example}" for example in examples])
+        return "No exclusion examples specified"
 
     def _get_near_neighbor(self, theme_data) -> str:
         """Extract and format near neighbor info from theme data"""
@@ -1928,8 +1928,8 @@ class InductiveCodeGenerator:
             cluster_summary_items = list(theme_data.root.values())
             if cluster_summary_items and cluster_summary_items[0].extracted_themes:
                 theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_rules'):
-                    neighbor = theme.assignment_rules.near_neighbor
+                if hasattr(theme, 'assignment_examples'):
+                    neighbor = theme.assignment_examples.near_neighbor
                     return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
         return "Unknown"
 
@@ -2773,8 +2773,8 @@ class InductiveCodeGenerator:
                 theme_name=self._get_theme_name(theme_data),
                 theme_description=self._get_theme_statement(theme_data),
                 abstraction_level=self._get_abstraction_level(theme_data),
-                inclusion=self._get_inclusion_rules(theme_data),
-                exclusion=self._get_exclusion_rules(theme_data),
+                inclusion=self._get_inclusion_examples(theme_data),
+                exclusion=self._get_exclusion_examples(theme_data),
                 near_neighbor=self._get_near_neighbor(theme_data),
                 code_text=codes_text,
                 theme_id=theme_id
@@ -2788,8 +2788,8 @@ class InductiveCodeGenerator:
                 theme_name=self._get_theme_name(theme_data),
                 theme_description=self._get_theme_statement(theme_data),
                 abstraction_level=self._get_abstraction_level(theme_data),
-                inclusion=self._get_inclusion_rules(theme_data),
-                exclusion=self._get_exclusion_rules(theme_data),
+                inclusion=self._get_inclusion_examples(theme_data),
+                exclusion=self._get_exclusion_examples(theme_data),
                 theme_id=theme_id,
                 cluster_summary=self._get_theme_name(theme_data)
             )
@@ -3172,8 +3172,8 @@ class InductiveCodeGenerator:
                         theme_name=self._get_theme_name(theme_data),
                         theme_description=self._get_theme_statement(theme_data),
                         abstraction_level=self._get_abstraction_level(theme_data),
-                        inclusion=self._get_inclusion_rules(theme_data),
-                        exclusion=self._get_exclusion_rules(theme_data),
+                        inclusion=self._get_inclusion_examples(theme_data),
+                        exclusion=self._get_exclusion_examples(theme_data),
                         near_neighbor=self._get_near_neighbor(theme_data),
                         code_text="",  # Empty for estimation
                         theme_id=theme_id
@@ -4123,8 +4123,8 @@ class InductiveCodeGenerator:
                 "theme_name": theme_name,
                 "theme_description": theme_description,
                 "abstraction_level": self._get_abstraction_level(theme_data),
-                "inclusion": self._get_inclusion_rules(theme_data),
-                "exclusion": self._get_exclusion_rules(theme_data),
+                "inclusion": self._get_inclusion_examples(theme_data),
+                "exclusion": self._get_exclusion_examples(theme_data),
                 "near_neighbor": self._get_near_neighbor(theme_data),
                 "code_text": codes_text,
                 "theme_id": theme_id
@@ -4269,8 +4269,8 @@ class InductiveCodeGenerator:
                 "source_code": source_code,
                 "source_definition": source_code_definition,
                 # Theme parameters (for both CREATE and MODIFY prompts)
-                "inclusion": self._get_inclusion_rules(theme_data),
-                "exclusion": self._get_exclusion_rules(theme_data),
+                "inclusion": self._get_inclusion_examples(theme_data),
+                "exclusion": self._get_exclusion_examples(theme_data),
                 "abstraction_level": self._get_abstraction_level(theme_data),
             }
 
