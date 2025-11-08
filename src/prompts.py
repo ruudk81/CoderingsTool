@@ -554,6 +554,23 @@ Cluster of descriptive codes to analyze:
   • One consistent sentiment/intention (no polarity mixing).
   • Concrete and directly actionable.
 - If a code mentions multiple aspects or mixed sentiment → split into separate atomic concepts.
+
+Label constraints (strict):
+- ≤ 10 words 
+- Active/actionable formulation of ONE ATOMIC theme in relation to the research question
+- Atomic means "One domain or aspect only"
+- If verb is used → one main verb (present tense).
+- **Never** include reasons (no "to", "so that", "because").
+- Avoid punctuation: "/", "&", ",", "–", ":" (unless lexicalized).
+- Maintain **one polarity** (either increase/strengthen OR reduce/avoid).
+
+Definition constraints (strict):
+- ≤ 30 words
+- grounded in theme description
+- Must describe **what belongs in this code**, not why it happens.
+- Must align directly with the survey question.
+- Use a **clear, observable assignment cue** (e.g., behaviors, expressions, judgments).
+- Do not explain causes, conditions, or interpretations.
 </guidance>
 
 Follow these steps exactly and in order. Do not skip or reorder any step. Use your analytical judgment and reflexivity throughout—remember that themes are not discovered in data but actively constructed.
@@ -568,16 +585,14 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
     - Eliminate codes that do not represent a meaningful segment (too rare, irrelevant, or idiosyncratic).
 
 3. Identify COC(s):
-    - Can all codes be grouped around one central organizing ?
-    - Practical test: 
-        - Can I summarize all codes into one sentence that:
-            a) alligns with <guidance>,
-            b) captures exactly ONE ATOMIC theme,
-            c) contains no coordinating conjunctions (e.g., "and," "or") or list punctuation (commas, slashes),
-            d) preserves unity, consistency, and contrast?
-        - If yes → single COC. If no → multiple COCs.
-    - If one COC exists, continue with it; otherwise, work with multiple COCs.
-
+    - Practical test: Can all codes be summarized in one sentence that:
+     (a) aligns with <guidance>,
+     (b) captures exactly ONE ATOMIC theme,
+     (c) uses no coordinating conjunctions or list punctuation,
+     (d) preserves unity, consistency, and contrast?
+   - If yes → single COC. If no → multiple COCs.
+   - Proceed with the resulting COC(s).
+      
 4. Refine COCs:
     - Remove singletons (COCs based on only one code).
     - Remove COCs without a dominant shared pattern or conceptual overlap.
@@ -587,13 +602,15 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
    - theme_label: "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]"
    - theme_clarification: "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]"
    - abstraction_level: Select one of: "Driver/Motive/Why" | "Attribute/What" | "Action/How"
-   - assignment_rules:
-       inclusion: Write precise, positive rules that describe when to assign the theme (start each rule with a verb; prefer observable cues).
-       exclusion: Define boundaries that prevent overreach (what must NOT be included).
-       near_neighbor:
-        • label: closest potentially-confusable theme or "Unknown"
-        • tell_apart_rule: one sentence explaining how to distinguish the two.
-       
+   - assignment_rules (EXAMPLES, not exhaustive rules):
+       • inclusion: Provide 2–3 short, positive EXAMPLE assignment statements (each starts with a verb; use observable cues).
+         — Example stems: "Code when respondent mentions …"; "Assign if the answer expresses …"; "Apply when text states …"
+       • exclusion: Provide 1–2 short EXAMPLE boundary statements to prevent overreach (what must NOT be included).
+         — Example stems: "Do NOT code when …"; "Exclude if the statement refers to …"
+       • near_neighbor:
+         — label: closest potentially-confusable theme or "Unknown"
+         — tell_apart_rule: one sentence explaining how to distinguish the two (e.g., “This theme focuses on X (driver/what/how), whereas the neighbor focuses on Y.”)
+  
 6) Document the analysis:
    - State how many COCs were identified and retained.
    - If only one COC: explain why it is sufficient.
@@ -612,12 +629,10 @@ Output strictly as valid JSON using this exact structure (values in {language}, 
         "abstraction_level": "Driver/Motive/Why | Attribute/What | Action/How",
         "assignment_rules": {{
           "inclusion": [
-            "[inclusion rule 1 in {language}]",
-            "[inclusion rule 2 in {language}]"
+            "[examples inclusion in {language}]",
           ],
           "exclusion": [
-            "[exclusion rule 1 in {language}]",
-            "[exclusion rule 2 in {language}]"
+            "[examples exclusion in {language}]"
           ],
           "near_neighbor": {{
             "label": "[neighbor label in {language} or 'Unknown']",
@@ -637,7 +652,6 @@ Critical requirements:
 - Replace "cluster_id"  with the actual values provided.
 - Conduct your analysis in the specified language.
 """
-
 
 CODING_DECISION_PROMPT = """
 You are a {language} qualitative research assistant responsible for maintaining a structured codebook.
@@ -810,42 +824,77 @@ Critical remarks:
 - Use source_code provided
 """
 
+#Placeholders CODING_MODIFICATION_PROMPT 
+VERTICAL_INSTRUCTIONS = """
+   - Keep the abstraction level of the original code.
+   - Create a **single atomic shared concept** that:
+        (a) captures the meaning of both original code and new theme,
+        (b) is grounded in the shared intent (same motive),
+        (c) remains expressible as **one idea** in the label.
+   - The modified label must:
+        • reflect the broadened meaning,
+        • NOT introduce multiple aspects or motives,
+        • NOT be more abstract than necessary.
+   - The modified definition must:
+        • describe the **shared meaning space**,
+        • reflect: original inclusions + inclusion_update,
+        • exclude: original exclusions + exclusion_update.
+   - Do **not** modify assignment rules here."""
+
+HIERARCHICAL_INSTRUCTIONS = """
+   - Shared conceptual domain but different motives → create hierarchical structure.
+   - Original code and new theme remain **atomic child codes**.
+   - Parent code represents the shared **purpose/motive domain**.
+
+   Parent label:
+        - parent theme = {parent_theme_label}  
+        - If parent theme is not None or Null → use it as-is.
+        - If null → generate a label at **Driver/Motive/Why** level.
+        - Must:
+            • express shared purpose/orientation,
+            • NOT describe behaviors/outcomes,
+            • NOT blend child labels,
+            • be broader, not vaguer.
+
+   Structure:
+       - Parent = conceptual anchor (why level),
+       - Children = distinct manifestations (how/what),
+       - Child meanings **do not change**."""
+
 CODING_MODIFICATION_PROMPT = """
 You are a {language} qualitative research assistant updating a codebook.
-Your task is to MODIFY an existing code so that it fully and correctly includes a new theme,
-while preserving **atomic meaning** and **clear conceptual boundaries**.
+Your task is to MODIFY an existing code so that it fully and correctly includes a new theme, while preserving **atomic meaning** and **clear conceptual boundaries**.
 
 <inputs>
 Survey question:
 "{survey_question}"
 
-New theme:
+New theme to integrate:
 - name: "{theme_name}"
 - description: "{theme_description}"
+- Included expressions (these SHOULD be covered by the code):
+  {inclusion}
+- Excluded expressions (these should NOT be covered by the code):
+  {exclusion}
 
-- inclusion (what this theme *does* refer to): 
-    {inclusion}
-- exclusion (what this theme *does NOT* refer to): 
-    {exclusion}
+Original code (to be modified):
+- code_label: {source_code}
+- code_definition: {source_definition}
 
-Original code to modify:
-{source_code}
-
-Modification parameters (from previous decision stage):
-- modify_instruction: {modify_instruction}
-- motive_comparison: {motive_comparison}
-- abstraction_level_action: {abstraction_level_action}
-- inclusion_update: {inclusion_update}
-- exclusion_update: {exclusion_update}
-- parent_theme_label: {parent_theme_label}
+Required modifications:
+- inclusion_update (new expressions that must now be included in-scope):
+  {inclusion_update}
+- exclusion_update (boundaries to clarify so scope does not overextend):
+  {exclusion_update}
 </inputs>
 
-------------------------------------------------------------
+Follow these instruction exactly and in order. Do not skip or reorder any instruction. 
+
+<coding_instructions>
 MODIFICATION INSTRUCTIONS:
 {modification_instructions}
 
-------------------------------------------------------------
-LABEL RULES:
+LABEL INSTRUCTIONS:
     - ≤ 10 words 
     - Active/actionable formulation of ONE ATOMIC theme in relation to the research question
     - Atomic means "One domain or aspect only"
@@ -854,7 +903,7 @@ LABEL RULES:
     - Avoid punctuation: "/", "&", ",", "–", ":" (unless lexicalized).
     - Maintain **one polarity** (either increase/strengthen OR reduce/avoid).
 
-4) DEFINITION RULES:
+DEFINITION INSTRUCTIONS:
     - ≤ 30 words
     - grounded in theme description
     - Must describe **what belongs in this code**, not why it happens.
@@ -866,8 +915,8 @@ LABEL RULES:
         • "Mentions of…"
         • "Expressions of…"
         • "Concerns about…"
+</coding_instructions>
 
-------------------------------------------------------------
 OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
 
 {{
