@@ -598,6 +598,20 @@ class ClusteringConfig:
     # Noise assessment configuration
     noise_assignability_threshold: float = 0.95  # Similarity threshold for classifying noise as soft (assignable) vs hard (true outliers)
 
+    # Noise reclustering configuration (two-pass clustering)
+    enable_noise_reclustering: bool = True  # Enable second clustering pass on noise points
+    noise_parameter_strategy: str = "adaptive"  # Parameter strategy: "adaptive", "aggressive", "fixed"
+    noise_min_cluster_size: int = 3  # Minimum points for viable noise-derived cluster
+    noise_min_total_points: int = 10  # Skip noise reclustering if fewer noise points
+    noise_cluster_cohesion_threshold: float = 0.70  # Internal similarity threshold for quality filtering
+    noise_min_clusters: int = 1  # Minimum viable clusters to accept reclustering result
+
+    # Parameter strategy settings
+    noise_mcs_divisor: int = 3  # For "aggressive": main_mcs // divisor
+    noise_ms_divisor: int = 2  # For "aggressive": main_ms // divisor
+    noise_fixed_mcs: int = 5  # For "fixed": fixed min_cluster_size
+    noise_fixed_ms: int = 3  # For "fixed": fixed min_samples
+
 @dataclass
 class UMAPConfig:
     """Configuration for UMAP dimensionality reduction"""

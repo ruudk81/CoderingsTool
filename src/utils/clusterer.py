@@ -1142,43 +1142,184 @@ class Clusterer:
         self.verbose_reporter.stat_line(f"🏆 Best configuration: min_samples={best['ms']}, min_cluster_size={best['mcs']}")
         return best["hdbscan_model"], best["labels"], best["summary"]
 
-    def _deduplicate_embeddings(self, embeddings: np.ndarray) -> Tuple[np.ndarray, Dict[int, List[int]], float]:
+    def _calculate_noise_parameters(self, n_noise: int, original_mcs: int, original_ms: int) -> Tuple[int, int]:
+        """
+        Calculate HDBSCAN parameters for noise reclustering based on strategy.
 
-        from collections import defaultdict
+        Args:
+            n_noise: Number of noise points to recluster
+            original_mcs: Original min_cluster_size from main clustering
+            original_ms: Original min_samples from main clustering
 
-        # Convert embeddings to tuples for hashing (for duplicate detection)
-        embedding_to_indices = defaultdict(list)
+        Returns:
+            Tuple of (min_samples, min_cluster_size) for noise reclustering
+        """
+        strategy = self.clustering_config.noise_parameter_strategy
 
-        for i, emb in enumerate(embeddings):
-            # Use tuple of rounded values as key (handle floating point precision)
-            key = tuple(np.round(emb, decimals=8))
-            embedding_to_indices[key].append(i)
+        if strategy == "adaptive":
+            # Adaptive based on noise point count
+            if n_noise < 50:
+                mcs = 3
+                ms = 2
+            elif n_noise < 200:
+                mcs = 5
+                ms = 3
+            else:
+                mcs = max(3, int(0.02 * n_noise))  # 2% of noise points
+                ms = max(2, mcs // 2)
 
-        # Extract unique embeddings and create reverse mapping
-        unique_embeddings_list = []
-        idx_to_duplicates = {}
+        elif strategy == "aggressive":
+            # Fraction of original parameters
+            mcs = max(3, original_mcs // self.clustering_config.noise_mcs_divisor)
+            ms = max(2, original_ms // self.clustering_config.noise_ms_divisor)
 
-        for unique_idx, (key, original_indices) in enumerate(embedding_to_indices.items()):
-            # Store first occurrence as the unique embedding
-            unique_embeddings_list.append(embeddings[original_indices[0]])
-            # Map unique index to all original indices
-            idx_to_duplicates[unique_idx] = original_indices
+        elif strategy == "fixed":
+            # Fixed values from config
+            mcs = self.clustering_config.noise_fixed_mcs
+            ms = self.clustering_config.noise_fixed_ms
 
-        unique_embeddings = np.array(unique_embeddings_list)
-        compression_ratio = len(unique_embeddings) / len(embeddings)
+        else:
+            raise ValueError(f"Unknown noise_parameter_strategy: {strategy}")
 
-        return unique_embeddings, idx_to_duplicates, compression_ratio
+        # Ensure ms <= mcs
+        ms = min(ms, mcs)
 
-    def _replicate_labels(self, unique_labels: np.ndarray, idx_to_duplicates: Dict[int, List[int]], total_count: int) -> np.ndarray:
+        return ms, mcs
 
-        all_labels = np.empty(total_count, dtype=int)
+    def _assess_noise_cluster_quality(self, pca_embeddings_noise: np.ndarray,
+                                     noise_labels: np.ndarray) -> List[int]:
+        """
+        Filter noise-derived clusters by quality thresholds.
 
-        for unique_idx, label in enumerate(unique_labels):
-            # Assign same label to all duplicates
-            for original_idx in idx_to_duplicates[unique_idx]:
-                all_labels[original_idx] = label
+        Args:
+            pca_embeddings_noise: PCA embeddings for noise points only (L2-normalized)
+            noise_labels: Cluster labels from noise reclustering
 
-        return all_labels
+        Returns:
+            List of valid cluster IDs that meet quality criteria
+        """
+        valid_clusters = []
+
+        for cluster_id in np.unique(noise_labels[noise_labels >= 0]):
+            cluster_mask = noise_labels == cluster_id
+            cluster_points = pca_embeddings_noise[cluster_mask]
+            n_points = cluster_points.shape[0]
+
+            # Check 1: Minimum size
+            if n_points < self.clustering_config.noise_min_cluster_size:
+                continue
+
+            # Check 2: Internal cohesion (mean pairwise similarity)
+            if n_points > 1:
+                pairwise_sim = cluster_points @ cluster_points.T
+                # Get upper triangle (excluding diagonal)
+                triu_indices = np.triu_indices_from(pairwise_sim, k=1)
+                if len(triu_indices[0]) > 0:
+                    mean_cohesion = float(np.mean(pairwise_sim[triu_indices]))
+                else:
+                    mean_cohesion = 1.0  # Single point, perfect cohesion
+            else:
+                mean_cohesion = 1.0  # Single point
+
+            if mean_cohesion < self.clustering_config.noise_cluster_cohesion_threshold:
+                continue
+
+            valid_clusters.append(int(cluster_id))
+
+        return valid_clusters
+
+    def _recluster_noise_points(self, labels: np.ndarray, U: np.ndarray,
+                               pca_embeddings: np.ndarray,
+                               original_mcs: int, original_ms: int) -> np.ndarray:
+        """
+        Two-pass clustering: Attempt to find viable clusters among ALL noise points.
+
+        Args:
+            labels: Current cluster labels (with -1 for noise)
+            U: UMAP embeddings
+            pca_embeddings: PCA embeddings (L2-normalized)
+            original_mcs: Original min_cluster_size from main clustering
+            original_ms: Original min_samples from main clustering
+
+        Returns:
+            Updated labels with noise-derived clusters numbered sequentially
+        """
+        if not self.clustering_config.enable_noise_reclustering:
+            return labels
+
+        # Section 1: Identify ALL noise points
+        noise_mask = labels == -1
+        n_total_noise = noise_mask.sum()
+
+        if n_total_noise < self.clustering_config.noise_min_total_points:
+            self.verbose_reporter.stat_line(
+                f"Skipping noise reclustering: only {n_total_noise} noise points "
+                f"(minimum: {self.clustering_config.noise_min_total_points})"
+            )
+            return labels
+
+        # Section 2: Calculate noise reclustering parameters
+        noise_ms, noise_mcs = self._calculate_noise_parameters(
+            n_total_noise, original_mcs, original_ms
+        )
+
+        # Section 3: Run HDBSCAN on ALL noise points
+        U_noise = U[noise_mask]
+
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.section_header("NOISE RECLUSTERING PASS")
+        self.verbose_reporter.stat_line(f"Total noise points: {n_total_noise}")
+        self.verbose_reporter.stat_line(f"Parameters: min_samples={noise_ms}, min_cluster_size={noise_mcs}")
+
+        noise_hdbscan = HDBSCAN(
+            min_cluster_size=noise_mcs,
+            min_samples=noise_ms,
+            metric=self.CLUSTER_METRIC,
+            cluster_selection_method="leaf",
+            cluster_selection_epsilon=0.0,
+            alpha=1.0
+        ).fit(U_noise)
+
+        noise_labels = noise_hdbscan.labels_
+
+        # Section 4: Quality filtering
+        pca_embeddings_noise = pca_embeddings[noise_mask]
+        valid_noise_clusters = self._assess_noise_cluster_quality(
+            pca_embeddings_noise, noise_labels
+        )
+
+        if len(valid_noise_clusters) < self.clustering_config.noise_min_clusters:
+            self.verbose_reporter.stat_line(
+                f"Noise reclustering found {len(valid_noise_clusters)} viable clusters "
+                f"(below minimum of {self.clustering_config.noise_min_clusters})"
+            )
+            return labels
+
+        # Section 5: Renumber and integrate
+        labels_updated = labels.copy()
+        max_main_cluster = labels[labels >= 0].max() if np.any(labels >= 0) else -1
+        next_cluster_id = max_main_cluster + 1
+
+        noise_indices = np.where(noise_mask)[0]
+        n_recovered = 0
+
+        for old_noise_cluster_id in valid_noise_clusters:
+            cluster_mask_in_noise = noise_labels == old_noise_cluster_id
+            global_indices = noise_indices[cluster_mask_in_noise]
+            labels_updated[global_indices] = next_cluster_id
+            n_recovered += len(global_indices)
+            next_cluster_id += 1
+
+        # Section 6: Reporting
+        n_noise_clusters = len(valid_noise_clusters)
+        recovery_rate = n_recovered / n_total_noise if n_total_noise > 0 else 0.0
+        final_noise = (labels_updated == -1).sum()
+
+        self.verbose_reporter.stat_line(f"Viable clusters discovered: {n_noise_clusters}")
+        self.verbose_reporter.stat_line(f"Points recovered: {n_recovered} ({recovery_rate:.1%})")
+        self.verbose_reporter.stat_line(f"Residual noise: {final_noise} ({final_noise/len(labels):.1%})")
+
+        return labels_updated
 
     def run(self):
         """Enhanced clustering pipeline with automatic optimization"""
@@ -1187,20 +1328,6 @@ class Clusterer:
         embeddings = np.array([item.idea_embedding for item in self.output_list])
         self.verbose_reporter.stat_line(f"Input: {len(self.output_list)} idea embeddings ({embeddings.shape[1]} dimensions)")
 
-        # Deduplicate embeddings for clustering
-        unique_embeddings, idx_to_duplicates, compression_ratio = self._deduplicate_embeddings(embeddings)
-
-        if compression_ratio < 1.0:
-            self.verbose_reporter.stat_line(
-                f"Deduplication: {len(unique_embeddings)} unique embeddings "
-                f"({compression_ratio:.1%} compression, {len(embeddings) - len(unique_embeddings)} duplicates)"
-            )
-            #embeddings_to_cluster = unique_embeddings
-        else:
-            self.verbose_reporter.stat_line("No duplicate embeddings found")
-            #embeddings_to_cluster = embeddings
-            #idx_to_duplicates = {i: [i] for i in range(len(embeddings))}  # Identity mapping
-        
         # PCA Reduction, if applicable
         self.verbose_reporter.empty_line()
        
@@ -1260,6 +1387,24 @@ class Clusterer:
         if self.clustering_config.merge_similar_clusters:
             labels = self._merge_similar_clusters(labels)
             # Update items with merged labels
+            for item, label in zip(self.output_list, labels):
+                item.initial_idea_cluster = int(label)
+
+        # Noise reclustering (two-pass clustering)
+        if self.clustering_config.enable_noise_reclustering:
+            # Get PCA embeddings array (already stored in output_list)
+            pca_embeddings_array = np.vstack([item.pca_embedding for item in self.output_list])
+
+            # Recluster noise points
+            labels = self._recluster_noise_points(
+                labels=labels,
+                U=umap_embeddings,
+                pca_embeddings=pca_embeddings_array,
+                original_mcs=summary.min_cluster_size,
+                original_ms=summary.min_samples
+            )
+
+            # Update items with final labels (including noise-derived clusters)
             for item, label in zip(self.output_list, labels):
                 item.initial_idea_cluster = int(label)
 
@@ -1367,41 +1512,40 @@ class Clusterer:
             if (cluster_id, size) != sample_clusters[-1]:
                 self.verbose_reporter.empty_line()
 
-    # def to_cluster_model(self) -> List[ClusterModel]:
-    #     respondent_groups = {}
-    #     for item in self.output_list:
-    #         respondent_groups.setdefault(item.respondent_id, []).append(item)
+    def to_cluster_model(self) -> List[ClusterModel]:
+        respondent_groups = {}
+        for item in self.output_list:
+            respondent_groups.setdefault(item.respondent_id, []).append(item)
 
-    #     cluster_models = []
-    #     for respondent_id, items in respondent_groups.items():
-    #         items.sort(key=lambda x: x.processing_order)
+        cluster_models = []
+        for respondent_id, items in respondent_groups.items():
+            items.sort(key=lambda x: x.processing_order)
 
-    #         original_model = next((m for m in self._original_input_list if m.respondent_id == respondent_id), None)
+            original_model = next((m for m in self._original_input_list if m.respondent_id == respondent_id), None)
 
-    #         cluster_submodels = [
-    #             ClusterSubmodel(
-    #                 idea_id=item.idea_id,
-    #                 idea=item.idea,
-    #                 idea_embedding=item.idea_embedding,
-    #                 initial_cluster=item.initial_idea_cluster
-    #             ) for item in items
-    #         ]
+            cluster_submodels = [
+                ClusterSubmodel(
+                    idea_id=item.idea_id,
+                    idea=item.idea,
+                    idea_embedding=item.idea_embedding,
+                    initial_cluster=item.initial_idea_cluster
+                ) for item in items
+            ]
 
-    #         if original_model:
-    #             cluster_model = ClusterModel(
-    #                 **original_model.model_dump(exclude={'response_ideas'}),
-    #                 response_ideas=cluster_submodels)
-    #         else:
-    #             cluster_model = ClusterModel(
-    #                 respondent_id=respondent_id,
-    #                 response_ideas=cluster_submodels,
-    #                 #idea_embeddings=cluster_submodels,
-    #                 idea_count=len(cluster_submodels)
-    #             )
+            if original_model:
+                cluster_model = ClusterModel(
+                    **original_model.model_dump(exclude={'response_ideas'}),
+                    response_ideas=cluster_submodels)
+            else:
+                cluster_model = ClusterModel(
+                    respondent_id=respondent_id,
+                    response_ideas=cluster_submodels,
+                    idea_count=len(cluster_submodels)
+                )
 
-    #         cluster_models.append(cluster_model)
+            cluster_models.append(cluster_model)
 
-    #     return cluster_models
+        return cluster_models
 
 
 def clean_cluster_ideas(cluster_results: List,) -> List:
