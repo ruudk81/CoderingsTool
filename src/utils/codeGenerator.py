@@ -2813,7 +2813,11 @@ class InductiveCodeGenerator:
                 step3_recommendation='{"generated_code": {"theme_number": 1, "theme_name": "Example theme", "code_label": "Example code", "code_definition": "Example definition"}}',
                 theme_id=theme_id,
                 cluster_summary=self._get_theme_name(theme_data),
-                source_code="Null"
+                source_code="Null",
+                inclusion_examples="  • Example inclusion 1\n  • Example inclusion 2",
+                exclusion_examples="  • Example exclusion",
+                near_neighbor_label="Example neighbor",
+                tell_apart_rule="Example distinction rule"
             )
             validation_tokens = len(self.encoding.encode(validation_prompt)) + 100  # + completion estimate
             token_measurements['validation'].append(validation_tokens)
@@ -4317,14 +4321,20 @@ class InductiveCodeGenerator:
                 params.update({
                     "modification_instructions": modification_instructions,
                     "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update or "",
-                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update or ""
+                    "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update or "",
+                    "current_inclusion": self._get_inclusion_examples(theme_data),
+                    "current_exclusion": self._get_exclusion_examples(theme_data),
+                    "current_near_neighbor": self._get_near_neighbor(theme_data)
                 })
             else:
                 # Fallback values for when candidate_selection is invalid
                 params.update({
                     "modification_instructions": "",
                     "inclusion_update": "",
-                    "exclusion_update": ""
+                    "exclusion_update": "",
+                    "current_inclusion": "",
+                    "current_exclusion": "",
+                    "current_near_neighbor": ""
                 })
             
             prompt = CODING_GENERATION_PROMPT.format(**params)
@@ -4408,6 +4418,22 @@ class InductiveCodeGenerator:
                 step3_recommendation_text = "No recommendations"
             
             source_code = self.step3_recommendations.get(cluster_id, {}).get('source_code', 'null')
+
+            # Extract assignment_examples from code_generation or fallback to theme_data
+            if code_generation and hasattr(code_generation, 'generated_code') and hasattr(code_generation.generated_code, 'assignment_examples') and code_generation.generated_code.assignment_examples:
+                assignment_ex = code_generation.generated_code.assignment_examples
+                inclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.inclusion]) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else "No specific examples provided"
+                exclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.exclusion]) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else "No specific examples provided"
+                near_neighbor_label = assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else "Unknown"
+                tell_apart_rule = assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else "N/A"
+            else:
+                # Fallback to original theme_data
+                inclusion_examples = self._get_inclusion_examples(theme_data)
+                exclusion_examples = self._get_exclusion_examples(theme_data)
+                near_neighbor = self._get_near_neighbor(theme_data)
+                near_neighbor_label = near_neighbor.split(" (Tell apart: ")[0] if near_neighbor else "Unknown"
+                tell_apart_rule = near_neighbor.split(" (Tell apart: ")[1].rstrip(")") if " (Tell apart: " in near_neighbor else "N/A"
+
             # Prepare exact parameters for prompt
             params = {
                 'language': DEFAULT_LANGUAGE,
@@ -4418,7 +4444,11 @@ class InductiveCodeGenerator:
                 'step3_recommendation': step3_recommendation_text,
                 'theme_id': theme_id,
                 'cluster_summary': theme_name,
-                "source_code": source_code
+                "source_code": source_code,
+                "inclusion_examples": inclusion_examples,
+                "exclusion_examples": exclusion_examples,
+                "near_neighbor_label": near_neighbor_label,
+                "tell_apart_rule": tell_apart_rule
             }
             
             prompt = VALIDATION_PROMPT.format(**params)
