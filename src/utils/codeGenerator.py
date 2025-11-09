@@ -3679,8 +3679,13 @@ class InductiveCodeGenerator:
                 if final_code not in code_to_clusters:
                     code_to_clusters[final_code] = []
                     code_to_definition[final_code] = final_definition
+                else:
+                    # Update definition if current one is None/empty and we have a better one
+                    if final_definition and not code_to_definition[final_code]:
+                        code_to_definition[final_code] = final_definition
 
-                    # NEW: Extract assignment_examples from validation result
+                # Extract assignment_examples from validation result (only if not yet set for this code)
+                if final_code not in code_to_assignment_examples:
                     validation = cluster_result.get('validation')
                     if validation and hasattr(validation, 'code_validation'):
                         code_validation = validation.code_validation
