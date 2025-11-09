@@ -5,7 +5,7 @@ import asyncio
 import time
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union, Literal
-#import json
+import json
 from collections import deque
 import itertools
 import logging
@@ -3689,8 +3689,8 @@ class InductiveCodeGenerator:
                             if hasattr(validated_code, 'assignment_examples') and validated_code.assignment_examples:
                                 assignment_ex = validated_code.assignment_examples
                                 code_to_assignment_examples[final_code] = {
-                                    'inclusion_examples': assignment_ex.inclusion if hasattr(assignment_ex, 'inclusion') else None,
-                                    'exclusion_examples': assignment_ex.exclusion if hasattr(assignment_ex, 'exclusion') else None,
+                                    'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
+                                    'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
                                     'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
                                     'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
                                 }
