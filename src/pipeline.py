@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 8
+RUN_UNTIL_STEP = 6
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -990,6 +990,7 @@ def step_6_generate_codebook(
         codebook_models = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodebookModel)
         if codebook_models and len(codebook_models) > 0:
             codebook_main = codebook_models[0]
+            codebook_entries = list(codebook_main.codes)  # Populate for Step 7
             verbose_reporter.summary("CODEBOOK FROM CACHE", {
                 "Total codes": len(codebook_main.codes),
                 "Source variable": codebook_main.source_variable
