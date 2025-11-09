@@ -4507,7 +4507,8 @@ class InductiveCodeGenerator:
                         'source_code': response.code_validation.source_code,  # NEW
                         'validated_code': {
                             'code': response.code_validation.validated_code.code,
-                            'definition': response.code_validation.validated_code.definition
+                            'definition': response.code_validation.validated_code.definition,
+                            'assignment_examples': response.code_validation.validated_code.assignment_examples
                         }
                     }
                 }
