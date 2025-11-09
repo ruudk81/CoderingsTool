@@ -62,6 +62,10 @@ class CodebookEntry(BaseModel):
     code: str
     definition: str
     source_cluster: Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
+    inclusion_examples: Optional[List[str]] = None
+    exclusion_examples: Optional[List[str]] = None
+    near_neighbor_label: Optional[str] = None
+    tell_apart_rule: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodebookModel(BaseModel):
@@ -106,9 +110,13 @@ class CodeDefinition(BaseModel):
 class Codebook(BaseModel):
     code: str
     definition: str
-    source_cluster:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"    
+    source_cluster:  Optional[str] = None    # Support sub-clusters like "12-1", "12-2"
     theme: Optional[str] = None
-    theme_description: Optional[str] = None   
+    theme_description: Optional[str] = None
+    inclusion_examples: Optional[List[str]] = None
+    exclusion_examples: Optional[List[str]] = None
+    near_neighbor_label: Optional[str] = None
+    tell_apart_rule: Optional[str] = None   
 
 """theme enriched_codebook"""
 class ThemeEnrichedCodebookEntry(CodebookEntry):

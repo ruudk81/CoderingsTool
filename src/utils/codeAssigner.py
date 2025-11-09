@@ -455,6 +455,12 @@ class CodeAssigner:
                 themes.append(theme)
         return themes
 
+    def _format_examples_list(self, examples: Optional[List[str]]) -> str:
+        """Format examples list for prompt display"""
+        if not examples:
+            return "No specific examples provided"
+        return "\n".join([f"  • {ex}" for ex in examples])
+
     def _extract_all_ideas(self) -> List[tuple]:
         """Extract all individual ideas for processing with expanded_cluster info"""
         all_ideas = []
@@ -531,7 +537,11 @@ class CodeAssigner:
             idea_id=idea_id,
             idea_text=idea_text,
             default_code=default_code.code,
-            default_definition=default_code.definition
+            default_definition=default_code.definition,
+            inclusion_examples=self._format_examples_list(default_code.inclusion_examples),
+            exclusion_examples=self._format_examples_list(default_code.exclusion_examples),
+            near_neighbor_label=default_code.near_neighbor_label or "Unknown",
+            tell_apart_rule=default_code.tell_apart_rule or "N/A"
         )
 
         self.last_prompt = prompt  # Store for backward compatibility
@@ -554,10 +564,14 @@ class CodeAssigner:
         Returns:
             tuple: (FallbackCodeAssignmentResponse, str) - response and prompt used
         """
-       
-        # Format all codes
+
+        # Format all codes with assignment examples
         all_codes_text = "\n".join([
-            f"Code: {code.code}\nDefinition: {code.definition}\n"
+            f"Code: {code.code}\n"
+            f"Definition: {code.definition}\n"
+            f"Include when: {self._format_examples_list(code.inclusion_examples)}\n"
+            f"Exclude when: {self._format_examples_list(code.exclusion_examples)}\n"
+            f"Boundary: Differs from '{code.near_neighbor_label or 'Unknown'}' - {code.tell_apart_rule or 'N/A'}\n"
             for code in self.codebook
         ])
 

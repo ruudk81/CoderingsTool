@@ -115,6 +115,8 @@ class ModifyParameters(BaseModel):
     inclusion_update: Optional[str] = None
     exclusion_update: Optional[str] = None
     parent_theme_label: Optional[str] = None
+    near_neighbor_label_update: Optional[str] = None
+    tell_apart_rule_update: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodingDecision(BaseModel):
@@ -125,6 +127,7 @@ class CodingDecision(BaseModel):
     source_code: Optional[str] = None
     modify_parameters: ModifyParameters
     justification: str
+    updated_assignment_examples: Optional[AssignmentExamples] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -139,6 +142,7 @@ class GeneratedCode(BaseModel):
     source_code: Optional[str] = None
     code_label: str
     code_definition: str
+    assignment_examples: Optional[AssignmentExamples] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodeGenerationOutput(BaseModel):
@@ -149,6 +153,7 @@ class CodeGenerationOutput(BaseModel):
 class ValidatedCode(BaseModel):
     code: str
     definition: str
+    assignment_examples: Optional[AssignmentExamples] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class OriginalRecommendation(BaseModel):
@@ -3659,6 +3664,7 @@ class InductiveCodeGenerator:
         # (SharedCodebook only tracks last cluster per code, losing multi-cluster mappings)
         code_to_clusters = {}
         code_to_definition = {}
+        code_to_assignment_examples = {}  # NEW: Track assignment_examples
 
         for cluster_result in results:
             cluster_id = str(cluster_result.get('cluster_id', ''))
@@ -3669,16 +3675,37 @@ class InductiveCodeGenerator:
                 if final_code not in code_to_clusters:
                     code_to_clusters[final_code] = []
                     code_to_definition[final_code] = final_definition
+
+                    # NEW: Extract assignment_examples from validation result
+                    validation = cluster_result.get('validation')
+                    if validation and hasattr(validation, 'code_validation'):
+                        code_validation = validation.code_validation
+                        if hasattr(code_validation, 'validated_code'):
+                            validated_code = code_validation.validated_code
+                            if hasattr(validated_code, 'assignment_examples') and validated_code.assignment_examples:
+                                assignment_ex = validated_code.assignment_examples
+                                code_to_assignment_examples[final_code] = {
+                                    'inclusion_examples': assignment_ex.inclusion if hasattr(assignment_ex, 'inclusion') else None,
+                                    'exclusion_examples': assignment_ex.exclusion if hasattr(assignment_ex, 'exclusion') else None,
+                                    'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
+                                    'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
+                                }
                 code_to_clusters[final_code].append(cluster_id)
 
         # Build final codebook with complete cluster mappings
         final_codes = []
         for code_text, cluster_ids in code_to_clusters.items():
-            final_codes.append({
+            code_entry = {
                 'code': code_text,
                 'definition': code_to_definition[code_text],
                 'source_cluster_id': ','.join(cluster_ids)  # Preserve ALL cluster IDs
-            })
+            }
+
+            # NEW: Add assignment_examples if available
+            if code_text in code_to_assignment_examples:
+                code_entry.update(code_to_assignment_examples[code_text])
+
+            final_codes.append(code_entry)
 
         # Get raw cluster data for stats calculations
         cluster_data = self._prepare_cluster_data_for_results()
