@@ -521,7 +521,7 @@ You are a qualitative researcher applying Braun & Clarke’s (2006) thematic ana
 
 Your task is to:
 a) analyze a cluster of descriptive codes and construct one or more ATOMIC themes (central organizing concepts) 
-b) draft first-version codebook entries for each theme, including inclusion/exclusion rules and abstraction level. 
+b) draft first-version codebook entries for each theme, including inclusion/exclusion examples and abstraction level. 
 
 Please realize that the drafts are the initial parameters that future updates will refine.
 
@@ -536,7 +536,6 @@ Research question:
 Cluster of descriptive codes to analyze:
 {cluster_text}
 </inputs>
-
 
 <definitions>
 - ATOMIC THEME = one single idea, action, expectation, or motive relevant to the research question (no mixing).
@@ -602,11 +601,9 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
    - theme_label: "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]"
    - theme_clarification: "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]"
    - abstraction_level: Select one of: "Driver/Motive/Why" | "Attribute/What" | "Action/How"
-   - assignment_rules (EXAMPLES, not exhaustive rules):
-       • inclusion: Provide 2–3 short, positive EXAMPLE assignment statements (each starts with a verb; use observable cues).
-         — Example stems: "Code when respondent mentions …"; "Assign if the answer expresses …"; "Apply when text states …"
-       • exclusion: Provide 1–2 short EXAMPLE boundary statements to prevent overreach (what must NOT be included).
-         — Example stems: "Do NOT code when …"; "Exclude if the statement refers to …"
+   - assignment_examples (EXAMPLES, not rules):
+       • inclusion: Provide 2–3 short, positive EXAMPLE assignment expressions (each starts with a verb; use observable cues).
+       • exclusion: Provide 1–2 short EXAMPLE boundary examples to prevent overreach (what must NOT be included).
        • near_neighbor:
          — label: closest potentially-confusable theme or "Unknown"
          — tell_apart_rule: one sentence explaining how to distinguish the two (e.g., “This theme focuses on X (driver/what/how), whereas the neighbor focuses on Y.”)
@@ -627,7 +624,7 @@ Output strictly as valid JSON using this exact structure (values in {language}, 
         "theme_label": "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]",
         "theme_clarification": "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]",
         "abstraction_level": "Driver/Motive/Why | Attribute/What | Action/How",
-        "assignment_rules": {{
+        "assignment_examples": {{
           "inclusion": [
             "[examples inclusion in {language}]",
           ],
@@ -690,7 +687,7 @@ Existing Codes:
 Follow these steps exactly and in order. Do not skip or reorder any step. 
 
 <analysis_steps>
-1. Cosine Similarity Rules:
+1. Cosine Similarity Rules (EXTREMELY STRICT - no deviation allowed):
 
 - **≥ 0.90** → Same meaning → **USE**
 - **< 0.70** → Different meaning → **CREATE**
@@ -714,6 +711,15 @@ Ask: *Does the new theme share the same underlying motive/driver as the highest-
 - Codes must remain **atomic**: one idea, one motive, one sentiment.
 - Inclusion rules describe when to assign the theme.
 - Exclusion rules describe common misfits to keep boundaries clear.
+
+4. Update Assignment Examples
+- If decision is **USE** → preserve original assignment_examples unchanged
+- If decision is **MODIFY**:
+  • inclusion: combine original + new expressions from the theme
+  • exclusion: combine original + new boundary clarifications if needed
+  • near_neighbor: update label if boundaries shifted due to modification
+  • tell_apart_rule: update if the distinction from neighbor changed
+- If decision is **CREATE** → use assignment_examples from the new theme as-is
 </analysis_steps>
 
 Respond with **valid JSON only** in the following structure:
@@ -734,8 +740,18 @@ Respond with **valid JSON only** in the following structure:
        "abstraction_level_action": "keep | broaden_to_parent | none",
        "inclusion_update": "null or concrete additions to inclusion rules",
        "exclusion_update": "null or concrete boundary clarifications",
-       "parent_theme_label": "null or suggested parent label"}},
-    "justification": "Explain modification decision by referencing cosine score and whether motive was same or different, or null if use/create".
+       "parent_theme_label": "null or suggested parent label",
+       "near_neighbor_label_update": "null or updated neighbor label if boundaries changed",
+       "tell_apart_rule_update": "null or updated tell-apart rule if distinction changed"}},
+    "justification": "Explain modification decision by referencing cosine score and whether motive was same or different, or null if use/create",
+    "updated_assignment_examples": {{
+      "inclusion": ["[updated or original inclusion examples in {language}]"],
+      "exclusion": ["[updated or original exclusion examples in {language}]"],
+      "near_neighbor": {{
+        "label": "[updated or original neighbor label in {language}]",
+        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
+      }}
+    }}.
   }}
 }}
 
@@ -807,6 +823,12 @@ AVOID:
 - Multi-part or layered meaning.
 - Psychological interpretation not grounded in wording.
 
+ASSIGNMENT EXAMPLES:
+- Provide concrete, actionable assignment examples to guide future code assignment
+- inclusion: 2-3 short examples of expressions that SHOULD be coded here
+- exclusion: 1-2 short examples of what should NOT be included
+- near_neighbor: Identify closest confusable concept and how to tell them apart
+
 Output the result in this strict JSON schema (no commentary or explanation):
 {{
   "generated_code": {{
@@ -814,7 +836,15 @@ Output the result in this strict JSON schema (no commentary or explanation):
     "theme_name": "{cluster_summary}",
     "source_code": "null",
     "code_label": "new or modified code label in {language}",
-    "code_definition": "≤25-word operational definition in {language}"
+    "code_definition": "≤25-word operational definition in {language}",
+    "assignment_examples": {{
+      "inclusion": ["[2-3 concrete examples of what to include in {language}]"],
+      "exclusion": ["[1-2 concrete examples of what to exclude in {language}]"],
+      "near_neighbor": {{
+        "label": "[closest confusable concept in {language} or 'Unknown']",
+        "tell_apart_rule": "[1-sentence distinction in {language}]"
+      }}
+    }}
   }}
 }}
 
@@ -881,6 +911,14 @@ Original code (to be modified):
 - code_label: {source_code}
 - code_definition: {source_definition}
 
+Current assignment examples (to be updated):
+- Current inclusion examples:
+  {current_inclusion}
+- Current exclusion examples:
+  {current_exclusion}
+- Current boundary (near neighbor):
+  {current_near_neighbor}
+
 Required modifications:
 - inclusion_update (new expressions that must now be included in-scope):
   {inclusion_update}
@@ -915,6 +953,12 @@ DEFINITION INSTRUCTIONS:
         • "Mentions of…"
         • "Expressions of…"
         • "Concerns about…"
+
+ASSIGNMENT EXAMPLES INSTRUCTIONS:
+    - Update assignment examples to reflect the modified code:
+      • inclusion: Combine original + new expressions from inclusion_update
+      • exclusion: Combine original + new boundaries from exclusion_update
+      • near_neighbor: Update label/rule if boundaries changed due to modification
 </coding_instructions>
 
 OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
@@ -925,7 +969,15 @@ OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
     "theme_name": "{cluster_summary}",
     "source_code": {source_code},
     "code_label": "yur new/modified code label in {language}",
-    "code_definition": "your definition in {language}"
+    "code_definition": "your definition in {language}",
+    "assignment_examples": {{
+      "inclusion": ["[updated inclusion examples combining original + new in {language}]"],
+      "exclusion": ["[updated exclusion examples combining original + new in {language}]"],
+      "near_neighbor": {{
+        "label": "[updated or original neighbor label in {language}]",
+        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
+      }}
+    }}
   }}
 }}
 
@@ -953,7 +1005,12 @@ A new theme emerged from analyzing responses to this survey question:
 
 This is the new theme:
 - name: "{theme_name}"
-- description: "{theme_description}"    
+- description: "{theme_description}"
+
+Assignment examples to validate:
+- inclusion: {inclusion_examples}
+- exclusion: {exclusion_examples}
+- near_neighbor: {near_neighbor_label} (Tell apart: {tell_apart_rule})
 
 The proposal to review:
 {step3_recommendation}
@@ -993,13 +1050,19 @@ Step 4: If rejected on the grounds of parsimony, non-redunancy or overlap, make 
 - **MODIFY**: An existing code is close but needs refinement for clarity, scope, or better alignment  
 - **CREATE**: No existing code sufficiently captures the new theme
 
-Step 5: Determine your final components:
+Step 5: Validate Assignment Examples:
+- Ensure inclusion examples align with the refined code/definition
+- Ensure exclusion examples maintain clear boundaries
+- Verify near_neighbor and tell_apart_rule are still accurate
+- Refine if needed to match validated code
+
+Step 6: Determine your final components:
 - validated_decision: USE, MODIFY, or CREATE code
-- source_code: 
+- source_code:
     - If USE, this exact code: {source_code}
     - If MODIFY, the exact code from the existing codebook you seek to modify
     - If CREATE, write "null"
-- validated_code and validated_decision: final compliant label and definition
+- validated_code and validated_decision: final compliant label, definition, and assignment_examples
 - decision_rationale: brief explanation of approval/rejection
 </scratchpad>
 
@@ -1020,7 +1083,15 @@ Output schema:
     "source_code": "If USE, this exact code: {source_code}; If MODIFY, the exact code from the existing codebook you seek to modify - or null, if CREATE",
     "validated_code": {{
       "code": "Final validated label (≤10 words, rule-compliant)",
-      "definition": "Final validated definition (≤25 words, operational, grounded)"
+      "definition": "Final validated definition (≤25 words, operational, grounded)",
+      "assignment_examples": {{
+        "inclusion": ["[validated/refined inclusion examples in {language}]"],
+        "exclusion": ["[validated/refined exclusion examples in {language}]"],
+        "near_neighbor": {{
+          "label": "[validated neighbor label in {language}]",
+          "tell_apart_rule": "[validated tell-apart rule in {language}]"
+        }}
+      }}
     }}
   }}
 }}
@@ -1370,42 +1441,170 @@ Before submitting, verify that:
 # Begin the code assignment now.
 # """
 
+# # Stage 1: Evaluate default code from cluster
+# DEFAULT_CODE_EVALUATION_PROMPT = """
+# You are a {language} language expert in qualitative data analysis. Your task is to evaluate how well a default code fits a specific response segment.
+
+# First, review the survey question:
+# <survey_question>
+# {var_lab}
+# </survey_question>
+
+# Next, examine the response segment to analyze:
+# <idea_to_analyze>
+# Idea ID: {idea_id}
+# Idea Text: {idea_text}
+# </idea_to_analyze>
+
+# This response segment came from a cluster of similar responses. Here is the default code generated from that cluster:
+# <default_code>
+# Code: {default_code}
+# Definition: {default_definition}
+# </default_code>
+
+# Your task is to evaluate how well this default code captures the meaning of the response segment.
+
+# Consider:
+# 1. Does the code definition accurately describe the idea expressed?
+# 2. Is there semantic alignment between the idea and the code?
+# 3. Would this code be appropriate for categorizing this response?
+
+# Provide a confidence score using this scale:
+# • 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
+# • 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
+# • 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
+# • 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
+# • 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
+# • 0.00–0.29: No Confidence — No meaningful similarity at all.
+
+
+# Provide your response in the following JSON format:
+# {{
+#   "idea_id": "{idea_id}",
+#   "confidence": CONFIDENCE_SCORE,
+#   "rationale": "Brief explanation of why this code does or does not fit (in {language})"
+# }}
+
+# Critical requirements:
+# - The confidence score must reflect semantic fit
+# - The rationale must explain the conceptual match or mismatch
+# - Return ONLY the JSON object
+
+# Begin the evaluation now.
+# """
+
+# # Stage 2: Fallback assignment from all codes
+# FALLBACK_CODE_ASSIGNMENT_PROMPT = """
+# You are a {language} language expert in qualitative data analysis. Your task is to assign the best code from all available codes to a response segment.
+
+# First, review the survey question:
+# <survey_question>
+# {var_lab}
+# </survey_question>
+
+# Next, examine the response segment to analyze:
+# <idea_to_analyze>
+# Idea ID: {idea_id}
+# Idea Text: {idea_text}
+# </idea_to_analyze>
+
+# The default code from this idea's cluster did not fit well (confidence: {default_confidence:.2f}).
+
+# Now, review ALL available codes from the complete codebook:
+# <all_codes>
+# {all_codes}
+# </all_codes>
+
+# Your task is to select the single best code that captures the meaning of this response segment.
+
+# Follow these steps:
+# 1. Carefully read and understand each code's definition
+# 2. Analyze the semantic meaning of the response segment
+# 3. Identify which code best captures the core concept expressed
+# 4. Assign exactly one code based on semantic alignment
+
+# Provide a confidence score using this scale:
+# • 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
+# • 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
+# • 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
+# • 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
+# • 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
+# • 0.00–0.29: No Confidence — No meaningful similarity at all.
+
+
+# Provide your response in the following JSON format:
+# {{
+#   "idea_id": "{idea_id}",
+#   "assigned_codes": ["SINGLE_CODE_NAME"],
+#   "assignment_confidence": CONFIDENCE_SCORE,
+#   "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
+# }}
+
+# Critical requirements:
+# - Use exact code names as provided in the codes list
+# - Assign one and only one code
+# - The confidence score must reflect semantic fit
+# - The rationale must explain the conceptual connection
+# - Return ONLY the JSON object
+
+# Begin the code assignment now.
+# """
+
 # Stage 1: Evaluate default code from cluster
 DEFAULT_CODE_EVALUATION_PROMPT = """
-You are a {language} language expert in qualitative data analysis. Your task is to evaluate how well a default code fits a specific response segment.
+You are a {language} qualitative coding specialist.
+
+Goal
+Decide if the response expresses the SPECIFIC concept in the code definition. Do not assume or infer unstated links.
+
+Decision rules
+- If the response is broader/more generic than the code → the code does NOT fit (confidence ≤ 0.49).
+- If the response only touches the same theme but not the specific concept → does NOT fit (confidence ≤ 0.49).
+- If no explicit or clearly paraphrased evidence of the code’s concept appears in the text → does NOT fit (confidence ≤ 0.39).
+
+Evidence requirement
+Extract the minimal supporting span from the response. If none exists, set "evidence": null.
+
+Anchors for confidence
+- 0.90–1.00: Specific concept is explicitly present (or an unambiguous paraphrase); supporting span exists; another trained coder would almost certainly agree.
+- 0.70–0.89: Strong overlap with minor nuance gaps; supporting span exists.
+- 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting span is weak or generic.
+- 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope.
 
 First, review the survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Next, examine the response segment to analyze:
+Next, examine the response:
 <idea_to_analyze>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-This response segment came from a cluster of similar responses. Here is the default code generated from that cluster:
+Default code:
 <default_code>
 Code: {default_code}
 Definition: {default_definition}
 </default_code>
 
-Your task is to evaluate how well this default code captures the meaning of the response segment.
+Assignment guidance:
+<assignment_examples>
+Include when:
+{inclusion_examples}
 
-Consider:
-1. Does the code definition accurately describe the idea expressed?
-2. Is there semantic alignment between the idea and the code?
-3. Would this code be appropriate for categorizing this response?
+Exclude when:
+{exclusion_examples}
 
-Provide a confidence score using this scale:
-• 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
-• 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
-• 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
-• 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
-• 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
-• 0.00–0.29: No Confidence — No meaningful similarity at all.
+Boundary: This code covers "{default_code}", which differs from "{near_neighbor_label}"
+Tell apart: {tell_apart_rule}
+</assignment_examples>
 
+Anchors for confidence
+- 0.90–1.00: Specific concept is explicitly present (or an unambiguous paraphrase); supporting span exists; another trained coder would almost certainly agree.
+- 0.70–0.89: Strong overlap with minor nuance gaps; supporting span exists.
+- 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting span is weak or generic.
+- 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope.
 
 Provide your response in the following JSON format:
 {{
@@ -1424,42 +1623,36 @@ Begin the evaluation now.
 
 # Stage 2: Fallback assignment from all codes
 FALLBACK_CODE_ASSIGNMENT_PROMPT = """
-You are a {language} language expert in qualitative data analysis. Your task is to assign the best code from all available codes to a response segment.
+You are a {language} qualitative coding specialist.
 
-First, review the survey question:
+Goal
+Select EXACTLY ONE code whose definition matches the response. Do not infer meaning that is not stated.
+
+Decision rules
+- If no code has clear evidence in the response, assign "ONBEKEND" (UNMATCHED) with low confidence.
+- A code only fits if the specific concept in its definition is explicitly stated or clearly paraphrased in the response.
+- If the response is more general than a code, that code does NOT fit.
+
+Survey question:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Next, examine the response segment to analyze:
+Response to analyze:
 <idea_to_analyze>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
 </idea_to_analyze>
 
-The default code from this idea's cluster did not fit well (confidence: {default_confidence:.2f}).
-
-Now, review ALL available codes from the complete codebook:
+Available codes in the codebook:
 <all_codes>
 {all_codes}
 </all_codes>
 
-Your task is to select the single best code that captures the meaning of this response segment.
-
-Follow these steps:
-1. Carefully read and understand each code's definition
-2. Analyze the semantic meaning of the response segment
-3. Identify which code best captures the core concept expressed
-4. Assign exactly one code based on semantic alignment
-
-Provide a confidence score using this scale:
-• 0.90–1.00: Extreme Confidence — Essentially identical meaning; no meaningful differences.
-• 0.70–0.89: High Confidence — Strong semantic overlap; only minor nuance differences.
-• 0.60–0.69: Moderate Confidence — Related meaning, but not consistently aligned.
-• 0.50–0.59: Low Confidence — Loosely related topic; weak semantic alignment.
-• 0.30–0.49: Very Low Confidence — Barely related; mostly mismatched meaning.
-• 0.00–0.29: No Confidence — No meaningful similarity at all.
-
+Important constraints:
+- Assign exactly one code (or "ONBEKEND" if none fit).
+- Use the exact code name as listed.
+- Extract a supporting evidence span from the response text. If none exists, use null and limit confidence to ≤ 0.49.
 
 Provide your response in the following JSON format:
 {{
@@ -1469,12 +1662,4 @@ Provide your response in the following JSON format:
   "assignment_rationale": "Brief explanation of the conceptual match (in {language})"
 }}
 
-Critical requirements:
-- Use exact code names as provided in the codes list
-- Assign one and only one code
-- The confidence score must reflect semantic fit
-- The rationale must explain the conceptual connection
-- Return ONLY the JSON object
-
-Begin the code assignment now.
 """

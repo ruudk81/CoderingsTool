@@ -1118,7 +1118,11 @@ def step_6_generate_codebook(
                     codebook_entry = models.CodebookEntry(
                         code=item['code'],
                         definition=item['definition'],
-                        source_cluster=item['source_cluster_id']
+                        source_cluster=item['source_cluster_id'],
+                        inclusion_examples=item.get('inclusion_examples'),
+                        exclusion_examples=item.get('exclusion_examples'),
+                        near_neighbor_label=item.get('near_neighbor_label'),
+                        tell_apart_rule=item.get('tell_apart_rule')
                     )
                     codebook_entries.append(codebook_entry)
 
@@ -1404,6 +1408,16 @@ def step_7_refine_codebook(
         code_to_theme_mapping = {}
         themes_summary = []
 
+        # Create mapping from code to assignment_examples from original codebook
+        code_to_assignment_examples = {}
+        for entry in codebook_entries:
+            code_to_assignment_examples[entry.code] = {
+                'inclusion_examples': entry.inclusion_examples,
+                'exclusion_examples': entry.exclusion_examples,
+                'near_neighbor_label': entry.near_neighbor_label,
+                'tell_apart_rule': entry.tell_apart_rule
+            }
+
         for category in refinement_results.refined_codebook.refined_codebook:
             theme_name = category.category
 
@@ -1415,6 +1429,9 @@ def step_7_refine_codebook(
             })
 
             for subcode in category.subcodes:
+                # Get assignment_examples from original codebook
+                assignment_ex = code_to_assignment_examples.get(subcode.code, {})
+
                 # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
                 enriched_entry = models.ThemeEnrichedCodebookEntry(
                     code=subcode.code,
@@ -1423,7 +1440,11 @@ def step_7_refine_codebook(
                     theme_description=theme_name,
                     category=subcode.category,  # Empty string for 2-level, category name for 3-level
                     category_description=subcode.category if subcode.category else "",  # Use category name as description
-                    source_cluster=subcode.source_cluster  # Use source_cluster directly from RefinedSubcode
+                    source_cluster=subcode.source_cluster,  # Use source_cluster directly from RefinedSubcode
+                    inclusion_examples=assignment_ex.get('inclusion_examples'),
+                    exclusion_examples=assignment_ex.get('exclusion_examples'),
+                    near_neighbor_label=assignment_ex.get('near_neighbor_label'),
+                    tell_apart_rule=assignment_ex.get('tell_apart_rule')
                 )
                 enriched_entries.append(enriched_entry)
 
@@ -1599,7 +1620,11 @@ def step_8_assign_codes(
                     definition=entry.definition,
                     theme=entry.theme,
                     theme_description=entry.theme_description,
-                    source_cluster=entry.source_cluster  # Preserve source_cluster for default code mapping
+                    source_cluster=entry.source_cluster,  # Preserve source_cluster for default code mapping
+                    inclusion_examples=entry.inclusion_examples,
+                    exclusion_examples=entry.exclusion_examples,
+                    near_neighbor_label=entry.near_neighbor_label,
+                    tell_apart_rule=entry.tell_apart_rule
                 ) for entry in theme_enriched_codebook.codes],
                 var_lab=var_lab,
                 code_to_theme_mapping=theme_enriched_codebook.code_to_theme_mapping,
@@ -1976,14 +2001,14 @@ if __name__ == '__main__':
         step3_recommendations = codebook_reasoning.step3_recommendations
         available_ids = list(step3_recommendations.keys())
         cluster_id = random.choice(available_ids)
-
+        cluster_id="33"
     
         from utils import codegenPromptTester
         tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
         tester.test_prompt_1()
         tester.test_prompt_2()
-        #tester.test_prompt_3()
-        #tester.test_prompt_4()
+        tester.test_prompt_3()
+        tester.test_prompt_4()
     
         if codebook_reasoning is not None:
             from utils.codegenResults import display_cluster_analysis
