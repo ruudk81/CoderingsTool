@@ -1116,12 +1116,17 @@ def step_6_generate_codebook(
                         cluster_info = f" (→ {cluster_count} clusters)" if cluster_count > 1 else ""
                         print(f"  {idx}. {item['code']}{cluster_info}")
 
+                    # Parse JSON strings back to Lists for assignment_examples
+                    import json
+                    inclusion_ex = item.get('inclusion_examples')
+                    exclusion_ex = item.get('exclusion_examples')
+
                     codebook_entry = models.CodebookEntry(
                         code=item['code'],
                         definition=item['definition'],
                         source_cluster=item['source_cluster_id'],
-                        inclusion_examples=item.get('inclusion_examples'),
-                        exclusion_examples=item.get('exclusion_examples'),
+                        inclusion_examples=json.loads(inclusion_ex) if inclusion_ex and isinstance(inclusion_ex, str) else inclusion_ex,
+                        exclusion_examples=json.loads(exclusion_ex) if exclusion_ex and isinstance(exclusion_ex, str) else exclusion_ex,
                         near_neighbor_label=item.get('near_neighbor_label'),
                         tell_apart_rule=item.get('tell_apart_rule')
                     )
