@@ -1108,166 +1108,79 @@ Critical remarks:
 # STEP 7 THEME ORGANIZATION WITH REASONING MODELS
 # =============================================================================
 
-# BACKUP (2025-10-31): Original version before anti-collapse fix
-# Issue: Was collapsing meaningfully different codes based on abstraction level
-# Example: "Salt", "Bitter", "Sweet" → collapsed to "Taste preferences"
-# Fix: Distinguish semantic merging from hierarchical grouping
-
 CODEBOOK_REFINEMENT_PROMPT = """
-You are a qualitative researcher and codebook methodologist.
-Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook.
-The descriptive codes are derived from survey responses.
+You are a qualitative research methodologist and codebook architect. 
+Your task is to transform a raw list of descriptive codes into a MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
 
-<inputs>
-Language to use: {language}
+Here is the survey question you are working with:
+<survey_question>
+{survey_question}
+</survey_question>
 
-survey_question: {survey_question}
-
-Raw descriptive codes to refine:
+Here are the raw descriptive codes to organize:
+<raw_codes>
 {raw_codes}
-</inputs>
+</raw_codes>
 
-<critical_requirement>
-Preserve the *conceptual content* of ALL codes.
-- Do NOT remove or lose any unique ideas.
-- Do NOT collapse distinct concepts into a single code.
-- You MAY merge true duplicates (semantically identical codes).
-- You MUST preserve ALL meaningful distinctions between different ideas.
+You must conduct your analysis and provide all output in this language:
+<language>
+{language}
+</language>
 
-IMPORTANT DISTINCTION:
-• MERGING = Combining semantic duplicates (reduces redundancy) ✓
-• COLLAPSING = Combining distinct concepts (loses information) ✗
+Now, internalize these strict guidelines:
+<guidelines>
+1. MECE Principle and Code Preservation
 
-Example of MERGING (correct):
-  "Price transparency" + "Clear pricing information" → "Price transparency" (same concept, different words)
+Your goal is to organize codes into a MECE structure while preserving all distinct conceptual content.
 
-Example of COLLAPSING (incorrect):
-  "Salt concerns" + "Bitterness" + "Sweetness preferences" → "Taste preferences" (3 DIFFERENT concepts lost!)
+- Mutually Exclusive: Sibling codes must represent clearly different ideas. No code should logically belong under multiple siblings.
+- Collectively Exhaustive: Every original code must be placed somewhere (no omissions).
 
-NEVER collapse codes just because they belong to the same category or theme.
-</critical_requirement>
+Preservation Rules:
+- DO NOT remove any code or idea.
+- DO NOT collapse distinct concepts into broader labels.
+- You MAY merge codes only when they express the exact same concept in different wording.
+- If two codes differ in evaluation, focus, actor, intensity, or practical use → they are distinct and must remain separate.
 
-<do_not_collapse_rules>
-Keep codes SEPARATE when they represent:
-1. Different specific concepts (even if related)
-   ✗ WRONG: "Fast delivery" + "Careful packaging" → "Delivery quality"
-   ✓ RIGHT: Keep both as separate codes under "Delivery" category
+**Key Decision Test for Merging:**
+If a trained human coder could reliably treat these two codes as interchangeable without losing meaning → merge.
+Otherwise → keep separate.
 
-2. Different aspects of the same topic
-   ✗ WRONG: "High price concern" + "Value for money" → "Pricing"
-   ✓ RIGHT: Keep both (different evaluative perspectives on price)
+**Key Decision Test for Separating:**
+If a researcher would want to report these codes separately → keep separate.
 
-3. Different levels of specificity with practical utility
-   ✗ WRONG: "Salt level" + "Sugar amount" + "Spiciness" → "Seasoning"
-   ✓ RIGHT: Keep all three (researchers may want to report these separately)
+2. Hierarchy Structure
 
-4. Contrasting or opposing viewpoints
-   ✗ WRONG: "Too expensive" + "Good value" → "Price perception"
-   ✓ RIGHT: Keep both (opposite evaluations matter for analysis)
+Use the smallest structure that preserves clarity:
+- Prefer 2-level hierarchy: Theme → Code.
+- Use 3-level hierarchy: Theme → Concept → Code **only** if:
+  - At least 2 codes share a highly specific sub-idea,
+  - AND grouping them improves coder accuracy.
 
-The ONLY time to merge codes:
-• They express the EXACT SAME concept using different words (synonyms/paraphrases)
-• Examples: "Reliable service" + "Trustworthy provider" → "Reliability"
-• Test: Would a researcher ever want to distinguish between these? If yes → keep separate.
-</do_not_collapse_rules>
+Each code has exactly one parent.
 
-<guidance>
-A high-quality codebook must be:
-- Non-redundant: No semantic duplicates (same idea in different words)
-- Preserves distinctions: ALL meaningfully different codes retained
-- Well-structured: Organize related codes in clear hierarchy (prefer 2-level)
-- Each code has exactly one parent (no multi-parenting)
-- Consistently labeled: Use short, uniform, action-oriented labels meaningful for: "{survey_question}"
+3. Theme Naming
 
-Hierarchy guidelines:
-• **PREFER 2-Level** (Theme → Codes) when possible
-  Example:
-  - Theme: "Pricing"
-    - Code: "Price transparency"
-    - Code: "Value for money perception"
-    - Code: "Competitive pricing"
+To prevent abstraction drift:
+- Themes must be named using the *interpretive lens of the survey question*, not generic language.
+- Themes must describe *what is being talked about*, not just the domain label.
+- Avoid vague theme names like "Quality", "Experience", "General Feedback".
+- Prefer concrete semantic anchors, e.g., "Smaak & Textuur", "Portiegrootte & Verzadiging", "Prijsperceptie".
 
-• **Use 3-Level** (Theme → Category → Codes) ONLY when:
-  - Multiple codes naturally group under a clear intermediate concept
-  - The category adds organizational clarity (not just abstraction)
-  - Example:
-    - Theme: "Product Quality"
-      - Category: "Taste Attributes"
-        - Code: "Saltiness level" (keep separate)
-        - Code: "Bitterness perception" (keep separate)
-        - Code: "Sweetness preferences" (keep separate)
-      - Code: "Freshness" (directly under theme)
+</guidelines>
 
-Remember: Categories GROUP codes, they don't REPLACE them!
+Follow these codebook refinement steps exactly and in order. Do not skip or reorder any instruction. 
 
-Labeling:
-- Prefer active, specific labels (e.g., "Seeks clearer instructions" over "Clarity")
-- Include a short definition/decision rule (≤ 20 words)
-</guidance>
+1. **Deduplicate (MERGE-ONLY):** Identify semantic duplicates and justify each merge with a one-sentence "identity test" rationale
+2. **Propose Themes:** Create themes that reflect the survey question lens (not generic buckets)
+3. **Place Codes:** Organize codes under themes, adding Concept level if it improves the structure
+4. **MECE Audit:**
+   - **Sibling overlap check:** For each sibling set, identify potential confusion pairs and explain how your decision rules separate them
+   - **Coverage check:** List any raw codes that remain out-of-scope and explain why
+   - **Count summary:** Provide X original → Y after merge (Z merged, Y−Z preserved)
 
-<merge_decision_criteria>
-For EVERY potential merge, ask:
-1. Are these the EXACT SAME concept? (semantic identity test)
-2. Would researchers want to distinguish these in analysis? (practical utility test)
 
-If answer to #1 is NO → DO NOT MERGE (keep as separate codes)
-If answer to #2 is YES → DO NOT MERGE (keep as separate codes)
-
-Only merge when #1 is YES AND #2 is NO.
-
-Examples:
-• "ASN is reliable" + "Experiences reliable service"
-  → #1: YES (same concept), #2: NO (no utility in separating)
-  → ACTION: MERGE to "ASN reliability"
-
-• "Salt concerns" + "Sweetness preferences"
-  → #1: NO (different concepts), #2: YES (researchers want to distinguish)
-  → ACTION: KEEP SEPARATE (group under "Additives" category if helpful)
-
-• "High fees" + "Expensive pricing"
-  → #1: YES (same concept), #2: NO (no utility in separating)
-  → ACTION: MERGE to "High pricing concerns"
-
-• "High fees" + "Good value for money"
-  → #1: NO (contrasting perspectives), #2: YES (contrast is meaningful)
-  → ACTION: KEEP SEPARATE
-</merge_decision_criteria>
-
-<analysis_steps>
-1. Review all raw codes and identify TRUE duplicates (semantic identity test)
-2. Merge ONLY semantically equivalent items (apply decision criteria)
-3. Construct main themes (2–5 per dataset, based on data)
-4. Assign ALL remaining codes to themes (prefer 2-level structure)
-5. Create categories (3-level) ONLY if they add clear organizational value
-6. Use concise, active phrasing for code labels
-7. Provide detailed analysis:
-   - Which codes were merged (with IDs) and why
-   - Which similar codes were kept separate and why
-   - How hierarchy was structured
-   - Total codes preserved vs. merged
-</analysis_steps>
-
-<examples>
-Example 1 - Correct approach (keeping distinctions):
-Raw codes: ["Salt content too high", "Bitter aftertaste", "Sweetness level perfect", "Fresh taste"]
-Result:
-- Theme: "Taste"
-  - Code: "Salt content concerns" (id: 1)
-  - Code: "Bitter aftertaste" (id: 2)
-  - Code: "Sweetness satisfaction" (id: 3)
-  - Code: "Freshness perception" (id: 4)
-Analysis: "All four codes represent distinct taste perceptions. Kept separate despite shared theme."
-
-Example 2 - Correct merging (semantic duplicates):
-Raw codes: ["Price transparency", "Clear pricing info", "See prices clearly", "Value for money"]
-Result:
-- Theme: "Pricing"
-  - Code: "Price transparency" (merged ids: 1,2,3)
-  - Code: "Value for money perception" (id: 4)
-Analysis: "Merged codes 1-3 as semantic duplicates. Kept code 4 separate (different concept: value vs. clarity)."
-</examples>
-
-Output strictly as JSON:
+You must output your response as valid JSON only, with no commentary before or after. Use this exact structure:
 {{
   "analysis": "Provide detailed analysis in {language}: (1) Which codes were merged and why (include IDs), (2) Which similar codes were kept separate and why, (3) How hierarchy was structured, (4) Total codes preserved vs. merged count.",
   "refined_codebook": [
@@ -1278,105 +1191,206 @@ Output strictly as JSON:
           "id": "original code_id (or comma-separated IDs if merged)",
           "code": "Code label",
           "description": "≤ 20 words explanation",
-          "category": ""  // Empty string for 2-level (prefer this), or category name for 3-level
+          "category": ""  // Empty string for 2-level, or category name for 3-level
         }}
       ]
     }}
   ]
 }}
 
-Critical requirements:
-- Output must be valid JSON only — no commentary before or after
-- Default to "category": "" (2-level structure preferred)
-- Use "category": "Name" ONLY when it adds clear organizational value
-- In analysis, justify EVERY merge with semantic identity reasoning
-- In analysis, explain why related codes were kept separate
-- Report total: X original codes → Y refined codes (Z merged, Y-Z preserved)
-- Conduct analysis in {language}
+Critical Requirements:
+- **Output must be valid JSON only** — no commentary before or after
+- **Conduct analysis in the specified language**
+- **Naming:** Avoid abstract nouns alone; prefer "object + facet" or "action + object" patterns
+- **Granularity:** If two codes frequently co-occur in one segment, consider one as a Concept with both as child Codes rather than merging
+- **Polarity:** Opposite valences are separate codes unless your analysis never reports polarity
+- **Category field:** Use empty string "" for 2-level hierarchy (preferred), or category name for 3-level hierarchy
+
+Begin your analysis and provide the JSON output.
 """
 
-THEME_ORGANIZATION_REASONING_PROMPT = """
-You are a qualitative research specialist with expertise in thematic analysis. Your task is to organize a set of codes into atomic themes based on semantic similarity in the context of a research question.
 
-Here is the research question you should consider:
-<research_question>
-{research_question}
-</research_question>
+# CODEBOOK_REFINEMENT_PROMPT = """
+# You are a qualitative researcher and codebook methodologist.
+# Your task is to take a raw list of descriptive codes and transform it into a refined and structured codebook.
+# The descriptive codes are derived from survey responses.
 
-Here are the codes with their definitions that you need to organize:
-<codes_and_definitions>
-{codebook}
-</codes_and_definitions>
+# <inputs>
+# Language to use: {language}
 
-You should provide all labels and descriptions in this language:
-<language>
-{language}
-</language>
+# survey_question: {survey_question}
 
-## CORE TASK
-Organize the provided codes into **atomic themes** based on semantic similarity in light of the research question. An atomic theme label refers to one single idea that cannot be split into multiple, distinct concepts without losing clarity.
+# Raw descriptive codes to refine:
+# {raw_codes}
+# </inputs>
 
-## KEY REQUIREMENTS
+# <critical_requirement>
+# Preserve the *conceptual content* of ALL codes.
+# - Do NOT remove or lose any unique ideas.
+# - Do NOT collapse distinct concepts into a single code.
+# - You MAY merge true duplicates (semantically identical codes).
+# - You MUST preserve ALL meaningful distinctions between different ideas.
 
-**Atomic Theme Names:**
-- Must express only ONE clear concept
-- Do NOT use compound labels, slashes (/), conjunctions (like "and"/"en"), or lists of terms
-- ✅ Good: "Price", "Health", "Convenience" 
-- ❌ Bad: "Price and Quality", "Health/Nutrition", "Time and Convenience"
+# IMPORTANT DISTINCTION:
+# • MERGING = Combining semantic duplicates (reduces redundancy) ✓
+# • COLLAPSING = Combining distinct concepts (loses information) ✗
 
-**Grouping Rules:**
-- Each theme must contain 2 or more codes that express related ideas
-- Base groupings on meaning in the context of the research question
-- Every unique idea should be represented once. If two or more codes express the same or highly similar concept, you may merge them or remove the duplicates to maintain atomicity and avoid redundancy. Each remaining code should appear only once.
-- Group codes that address similar aspects or concerns related to the research question
+# Example of MERGING (correct):
+#   "Price transparency" + "Clear pricing information" → "Price transparency" (same concept, different words)
 
-## INSTRUCTIONS
+# Example of COLLAPSING (incorrect):
+#   "Salt concerns" + "Bitterness" + "Sweetness preferences" → "Taste preferences" (3 DIFFERENT concepts lost!)
 
-<scratchpad>
-Before providing your final answer, think through the following:
+# NEVER collapse codes just because they belong to the same category or theme.
+# </critical_requirement>
 
-1. **Analyze the codes:** What are the main conceptual areas represented in the codes?
-2. **Identify natural groupings:** Which codes seem to address similar aspects of the research question?
-3. **Create atomic theme names:** For each grouping, what single concept best captures what those codes are about?
-4. **Verify completeness:** Have you included every code exactly once?
-5. **Check atomicity:** Are all your theme names truly atomic (single concepts)?
-6. **Handle redundancy:** 
-   - If you encounter codes that are semantically identical (e.g., different phrasings of the same idea) or highly overlapping (e.g., small wording differences but no substantial conceptual distinction), you may:
-     - Keep only the clearest or most comprehensive version.
-     - Remove or merge the others.
-   
-</scratchpad>
+# <do_not_collapse_rules>
+# Keep codes SEPARATE when they represent:
+# 1. Different specific concepts (even if related)
+#    ✗ WRONG: "Fast delivery" + "Careful packaging" → "Delivery quality"
+#    ✓ RIGHT: Keep both as separate codes under "Delivery" category
 
-Now provide your analysis in the following JSON format. Return only valid JSON with no additional text:
+# 2. Different aspects of the same topic
+#    ✗ WRONG: "High price concern" + "Value for money" → "Pricing"
+#    ✓ RIGHT: Keep both (different evaluative perspectives on price)
 
-```json
-{{
-  "themes": [
-    {{
-      "theme_name": "[Atomic theme name in {language}]",
-      "theme_description": "[Detailed description of what this theme represents in {language}]",
-      "codes": [
-        {{
-          "code": "[Original code name]",
-          "definition": "[Original code definition]",
-        }}
-      ]
-    }}
-  ],
-  "methodology": "Single-prompt hierarchical theme organization using reasoning model",
-  "total_codes_organized": {codes_count},
-  "language": "{language}"
-}}    
-```
+# 3. Different levels of specificity with practical utility
+#    ✗ WRONG: "Salt level" + "Sugar amount" + "Spiciness" → "Seasoning"
+#    ✓ RIGHT: Keep all three (researchers may want to report these separately)
 
-## FINAL CHECKLIST
-Before submitting, verify that:
-- All theme names are atomic (no conjunctions, slashes, or multiple concepts)
-- Each code appears exactly once
-- Every theme contains at least 2 codes
-- All labels and descriptions are in the specified language
-- The JSON format is valid and complete
-"""
+# 4. Contrasting or opposing viewpoints
+#    ✗ WRONG: "Too expensive" + "Good value" → "Price perception"
+#    ✓ RIGHT: Keep both (opposite evaluations matter for analysis)
+
+# The ONLY time to merge codes:
+# • They express the EXACT SAME concept using different words (synonyms/paraphrases)
+# • Examples: "Reliable service" + "Trustworthy provider" → "Reliability"
+# • Test: Would a researcher ever want to distinguish between these? If yes → keep separate.
+# </do_not_collapse_rules>
+
+# <guidance>
+# A high-quality codebook must be:
+# - Non-redundant: No semantic duplicates (same idea in different words)
+# - Preserves distinctions: ALL meaningfully different codes retained
+# - Well-structured: Organize related codes in clear hierarchy (prefer 2-level)
+# - Each code has exactly one parent (no multi-parenting)
+# - Consistently labeled: Use short, uniform, action-oriented labels meaningful for: "{survey_question}"
+
+# Hierarchy guidelines:
+# • **PREFER 2-Level** (Theme → Codes) when possible
+#   Example:
+#   - Theme: "Pricing"
+#     - Code: "Price transparency"
+#     - Code: "Value for money perception"
+#     - Code: "Competitive pricing"
+
+# • **Use 3-Level** (Theme → Category → Codes) ONLY when:
+#   - Multiple codes naturally group under a clear intermediate concept
+#   - The category adds organizational clarity (not just abstraction)
+#   - Example:
+#     - Theme: "Product Quality"
+#       - Category: "Taste Attributes"
+#         - Code: "Saltiness level" (keep separate)
+#         - Code: "Bitterness perception" (keep separate)
+#         - Code: "Sweetness preferences" (keep separate)
+#       - Code: "Freshness" (directly under theme)
+
+# Remember: Categories GROUP codes, they don't REPLACE them!
+
+# Labeling:
+# - Prefer active, specific labels (e.g., "Seeks clearer instructions" over "Clarity")
+# - Include a short definition/decision rule (≤ 20 words)
+# </guidance>
+
+# <merge_decision_criteria>
+# For EVERY potential merge, ask:
+# 1. Are these the EXACT SAME concept? (semantic identity test)
+# 2. Would researchers want to distinguish these in analysis? (practical utility test)
+
+# If answer to #1 is NO → DO NOT MERGE (keep as separate codes)
+# If answer to #2 is YES → DO NOT MERGE (keep as separate codes)
+
+# Only merge when #1 is YES AND #2 is NO.
+
+# Examples:
+# • "ASN is reliable" + "Experiences reliable service"
+#   → #1: YES (same concept), #2: NO (no utility in separating)
+#   → ACTION: MERGE to "ASN reliability"
+
+# • "Salt concerns" + "Sweetness preferences"
+#   → #1: NO (different concepts), #2: YES (researchers want to distinguish)
+#   → ACTION: KEEP SEPARATE (group under "Additives" category if helpful)
+
+# • "High fees" + "Expensive pricing"
+#   → #1: YES (same concept), #2: NO (no utility in separating)
+#   → ACTION: MERGE to "High pricing concerns"
+
+# • "High fees" + "Good value for money"
+#   → #1: NO (contrasting perspectives), #2: YES (contrast is meaningful)
+#   → ACTION: KEEP SEPARATE
+# </merge_decision_criteria>
+
+# <analysis_steps>
+# 1. Review all raw codes and identify TRUE duplicates (semantic identity test)
+# 2. Merge ONLY semantically equivalent items (apply decision criteria)
+# 3. Construct main themes (2–5 per dataset, based on data)
+# 4. Assign ALL remaining codes to themes (prefer 2-level structure)
+# 5. Create categories (3-level) ONLY if they add clear organizational value
+# 6. Use concise, active phrasing for code labels
+# 7. Provide detailed analysis:
+#    - Which codes were merged (with IDs) and why
+#    - Which similar codes were kept separate and why
+#    - How hierarchy was structured
+#    - Total codes preserved vs. merged
+# </analysis_steps>
+
+# <examples>
+# Example 1 - Correct approach (keeping distinctions):
+# Raw codes: ["Salt content too high", "Bitter aftertaste", "Sweetness level perfect", "Fresh taste"]
+# Result:
+# - Theme: "Taste"
+#   - Code: "Salt content concerns" (id: 1)
+#   - Code: "Bitter aftertaste" (id: 2)
+#   - Code: "Sweetness satisfaction" (id: 3)
+#   - Code: "Freshness perception" (id: 4)
+# Analysis: "All four codes represent distinct taste perceptions. Kept separate despite shared theme."
+
+# Example 2 - Correct merging (semantic duplicates):
+# Raw codes: ["Price transparency", "Clear pricing info", "See prices clearly", "Value for money"]
+# Result:
+# - Theme: "Pricing"
+#   - Code: "Price transparency" (merged ids: 1,2,3)
+#   - Code: "Value for money perception" (id: 4)
+# Analysis: "Merged codes 1-3 as semantic duplicates. Kept code 4 separate (different concept: value vs. clarity)."
+# </examples>
+
+# Output strictly as JSON:
+# {{
+#   "analysis": "Provide detailed analysis in {language}: (1) Which codes were merged and why (include IDs), (2) Which similar codes were kept separate and why, (3) How hierarchy was structured, (4) Total codes preserved vs. merged count.",
+#   "refined_codebook": [
+#     {{
+#       "theme": "Main theme label",
+#       "codes": [
+#         {{
+#           "id": "original code_id (or comma-separated IDs if merged)",
+#           "code": "Code label",
+#           "description": "≤ 20 words explanation",
+#           "category": ""  // Empty string for 2-level (prefer this), or category name for 3-level
+#         }}
+#       ]
+#     }}
+#   ]
+# }}
+
+# Critical requirements:
+# - Output must be valid JSON only — no commentary before or after
+# - Default to "category": "" (2-level structure preferred)
+# - Use "category": "Name" ONLY when it adds clear organizational value
+# - In analysis, justify EVERY merge with semantic identity reasoning
+# - In analysis, explain why related codes were kept separate
+# - Report total: X original codes → Y refined codes (Z merged, Y-Z preserved)
+# - Conduct analysis in {language}
+# """
 
 # =============================================================================
 # STEP 8: CODE ASSIGNMENT
@@ -1552,61 +1566,53 @@ Before submitting, verify that:
 
 # Stage 1: Evaluate default code from cluster
 DEFAULT_CODE_EVALUATION_PROMPT = """
-You are a {language} qualitative coding specialist.
+You are a {language} qualitative coding specialist who assigns codes from a codebook to survey responses. 
+Your task is to determine if there is explicit or clearly paraphrased evidence that a specific code appears in a given response text.
 
-Goal
-Decide if the response expresses the SPECIFIC concept in the code definition. Do not assume or infer unstated links.
+The language you will be working in: {language}
 
-Decision rules
-- If the response is broader/more generic than the code → the code does NOT fit (confidence ≤ 0.49).
-- If the response only touches the same theme but not the specific concept → does NOT fit (confidence ≤ 0.49).
-- If no explicit or clearly paraphrased evidence of the code’s concept appears in the text → does NOT fit (confidence ≤ 0.39).
-
-Evidence requirement
-Extract the minimal supporting span from the response. If none exists, set "evidence": null.
-
-Anchors for confidence
-- 0.90–1.00: Specific concept is explicitly present (or an unambiguous paraphrase); supporting span exists; another trained coder would almost certainly agree.
-- 0.70–0.89: Strong overlap with minor nuance gaps; supporting span exists.
-- 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting span is weak or generic.
-- 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope.
-
-First, review the survey question:
+Here is the survey question for context:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Next, examine the response:
-<idea_to_analyze>
+Here is the response you need to analyze:
+<response>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
-</idea_to_analyze>
+</response>
 
-Default code:
-<default_code>
+Here is the code you need to evaluate:
+<code_details>
 Code: {default_code}
 Definition: {default_definition}
-</default_code>
 
-Assignment guidance:
-<assignment_examples>
-Include when:
-{inclusion_examples}
+Inclusion Examples (valid references for this code):
+    {inclusion_examples}
 
-Exclude when:
-{exclusion_examples}
+Exclusion Examples (invalid references for this code):
+    {exclusion_examples}
 
 Boundary: This code covers "{default_code}", which differs from "{near_neighbor_label}"
-Tell apart: {tell_apart_rule}
-</assignment_examples>
+How to tell them apart: {tell_apart_rule}
+</code_details>
 
-Anchors for confidence
-- 0.90–1.00: Specific concept is explicitly present (or an unambiguous paraphrase); supporting span exists; another trained coder would almost certainly agree.
-- 0.70–0.89: Strong overlap with minor nuance gaps; supporting span exists.
-- 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting span is weak or generic.
-- 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope.
+Follow these steps to complete your analysis:
 
-Provide your response in the following JSON format:
+1. First, carefully read the response text and identify any content that might relate to the code concept.
+2. Extract the minimal supporting span from the response that provides evidence for the code. If no supporting evidence exists, note this.
+3. Determine your confidence level using these anchors:
+   - 0.90–1.00: Specific concept is explicitly present (or unambiguous paraphrase); clear supporting span exists; another trained coder would almost certainly agree
+   - 0.70–0.89: Strong overlap with minor nuance gaps; supporting span exists
+   - 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting span is weak or generic
+   - 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope
+4. Apply these decision rules:
+   - If the response is broader/more generic than the code → the code does NOT fit (confidence ≤ 0.49)
+   - If the response only touches the same theme but not the specific concept → does NOT fit (confidence ≤ 0.49)
+   - If no explicit or clearly paraphrased evidence of the code's concept appears in the text → does NOT fit (confidence ≤ 0.39)
+
+
+Provide your response in this exact JSON format:
 {{
   "idea_id": "{idea_id}",
   "confidence": CONFIDENCE_SCORE,
@@ -1614,47 +1620,61 @@ Provide your response in the following JSON format:
 }}
 
 Critical requirements:
-- The confidence score must reflect semantic fit
-- The rationale must explain the conceptual match or mismatch
-- Return ONLY the JSON object
+- The confidence score must be a number between 0.00 and 1.00 that reflects semantic fit
+- The rationale must explain the conceptual match or mismatch between the code and response
+- Focus on whether the response contains the specific concept defined by the code, not just related themes
+- Return ONLY the JSON object, no additional text
 
-Begin the evaluation now.
+Begin your evaluation now.
 """
 
 # Stage 2: Fallback assignment from all codes
 FALLBACK_CODE_ASSIGNMENT_PROMPT = """
-You are a {language} qualitative coding specialist.
+You are a {language} qualitative coding specialist who assigns codes from a codebook to survey responses. 
+Your task is to assign exactly one existing code from the provided codebook to a response, but only if there is explicit or clearly paraphrased evidence that the specific code concept appears in the response text.
 
-Goal
-Select EXACTLY ONE code whose definition matches the response. Do not infer meaning that is not stated.
-
-Decision rules
-- If no code has clear evidence in the response, assign "ONBEKEND" (UNMATCHED) with low confidence.
-- A code only fits if the specific concept in its definition is explicitly stated or clearly paraphrased in the response.
-- If the response is more general than a code, that code does NOT fit.
-
-Survey question:
+Here is the survey question context:
 <survey_question>
 {var_lab}
 </survey_question>
 
-Response to analyze:
-<idea_to_analyze>
+Here is the response you need to analyze:
+<response>
 Idea ID: {idea_id}
 Idea Text: {idea_text}
-</idea_to_analyze>
+</response>
 
-Available codes in the codebook:
-<all_codes>
+Here are the available codes in the codebook:
+<codebook>
 {all_codes}
-</all_codes>
+</codebook>
 
-Important constraints:
-- Assign exactly one code (or "ONBEKEND" if none fit).
-- Use the exact code name as listed.
-- Extract a supporting evidence span from the response text. If none exists, use null and limit confidence to ≤ 0.49.
+**Decision Rules:**
+- You must assign EXACTLY ONE code from the codebook
+- A code only fits if the specific concept in its definition is explicitly stated or clearly paraphrased in the response
+- If the response is more general than a code's definition, that code does NOT fit
+- If no code has clear evidence in the response, assign "ONBEKEND" (UNMATCHED) with low confidence
+- Do not infer meaning that is not directly stated or clearly paraphrased
 
-Provide your response in the following JSON format:
+**Confidence Level Anchors:**
+- 0.90–1.00: Specific concept is explicitly present or unambiguously paraphrased; clear supporting evidence exists; another trained coder would almost certainly agree
+- 0.70–0.89: Strong conceptual overlap with only minor nuance gaps; solid supporting evidence exists
+- 0.50–0.69: Related theme but concept is incomplete, vague, or partly implied; supporting evidence is weak or generic
+- 0.00–0.49: Too general, tangential, no evidence, opposite meaning, or out of scope
+
+**Analysis Process:**
+Follow these steps in your analysis:
+
+1. **Evidence Identification**: Carefully read the response text and identify any content that might relate to specific code concepts from the codebook.
+2. **Supporting Span Extraction**: Extract the minimal supporting span from the response that provides evidence for potential codes. If no supporting evidence exists for any code, note this clearly.
+3. **Conceptual Matching**: For each potential code match, determine if the response contains the specific concept described in the code definition, not just a related theme.
+4. **Confidence Assessment**: Using the confidence anchors above, assess your confidence level. Remember:
+   - If the response is broader/more generic than the code → the code does NOT fit (confidence ≤ 0.49)
+   - If the response only touches the same theme but not the specific concept → does NOT fit (confidence ≤ 0.49)
+   - If no explicit or clearly paraphrased evidence appears → does NOT fit (confidence ≤ 0.39)
+5. **Final Assignment**: Select the single best-fitting code, or "ONBEKEND" if no code fits well.
+
+Provide your analysis and assignment in this exact JSON format:
 {{
   "idea_id": "{idea_id}",
   "assigned_codes": ["SINGLE_CODE_NAME"],
