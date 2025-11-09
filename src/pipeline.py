@@ -1411,7 +1411,9 @@ def step_7_refine_codebook(
 
         # Create mapping from code to assignment_examples from original codebook
         code_to_assignment_examples = {}
-        for entry in codebook_entries:
+        # Get codebook_entries from codebook_main (works regardless of how Step 6 ran)
+        entries_to_process = codebook_main.codes if 'codebook_main' in locals() and codebook_main else []
+        for entry in entries_to_process:
             code_to_assignment_examples[entry.code] = {
                 'inclusion_examples': entry.inclusion_examples,
                 'exclusion_examples': entry.exclusion_examples,
