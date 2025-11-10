@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 7
+RUN_UNTIL_STEP = 8
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1453,6 +1453,23 @@ def step_7_refine_codebook(
                             'tell_apart_rule': assignment_ex.get('near_neighbor', {}).get('tell_apart_rule')
                         }
 
+        # DIAGNOSTIC: Print extraction results
+        print(f"\n{'='*80}")
+        print(f"DIAGNOSTIC: Assignment Examples Extraction")
+        print(f"{'='*80}")
+        print(f"Has codebook_reasoning: {codebook_reasoning is not None}")
+        if codebook_reasoning:
+            print(f"Has validation_details attr: {hasattr(codebook_reasoning, 'validation_details')}")
+            if hasattr(codebook_reasoning, 'validation_details'):
+                print(f"validation_details type: {type(codebook_reasoning.validation_details)}")
+                print(f"validation_details keys: {list(codebook_reasoning.validation_details.keys())[:10]}")  # First 10
+        print(f"cluster_to_assignment_examples count: {len(cluster_to_assignment_examples)}")
+        if cluster_to_assignment_examples:
+            sample_key = list(cluster_to_assignment_examples.keys())[0]
+            print(f"Sample cluster_id: {sample_key}")
+            print(f"Sample data: {cluster_to_assignment_examples[sample_key]}")
+        print(f"{'='*80}\n")
+
         for category in refinement_results.refined_codebook.refined_codebook:
             theme_name = category.category
 
@@ -1471,13 +1488,31 @@ def step_7_refine_codebook(
                 near_neighbor = None
                 tell_apart = None
 
+                # DIAGNOSTIC: Track first few subcodes
+                if category.category == refinement_results.refined_codebook.refined_codebook[0].category and \
+                   subcode == category.subcodes[0]:
+                    print(f"\nDIAGNOSTIC: First subcode matching")
+                    print(f"  Code: {subcode.code}")
+                    print(f"  source_cluster: {subcode.source_cluster}")
+
                 if subcode.source_cluster:
                     # Parse comma-separated cluster IDs
                     cluster_ids = [cid.strip() for cid in subcode.source_cluster.split(',')]
 
+                    # DIAGNOSTIC: Track first subcode
+                    if category.category == refinement_results.refined_codebook.refined_codebook[0].category and \
+                       subcode == category.subcodes[0]:
+                        print(f"  cluster_ids: {cluster_ids}")
+
                     for cluster_id in cluster_ids:
                         # Handle sub-cluster notation (e.g., "16-2" → "16")
                         parent_cluster_id = cluster_id.split('-')[0] if '-' in cluster_id else cluster_id
+
+                        # DIAGNOSTIC: Track first subcode
+                        if category.category == refinement_results.refined_codebook.refined_codebook[0].category and \
+                           subcode == category.subcodes[0]:
+                            print(f"  Checking parent_cluster_id: {parent_cluster_id}")
+                            print(f"  Found in dict: {parent_cluster_id in cluster_to_assignment_examples}")
 
                         if parent_cluster_id in cluster_to_assignment_examples:
                             examples = cluster_to_assignment_examples[parent_cluster_id]
