@@ -39,9 +39,9 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 8
+RUN_UNTIL_STEP = 8   
 FORCE_RECALCULATE_ALL = False
-VERBOSE = True
+VERBOSE = True  
 PROMPT_PRINTER = False
 LANGUAGE = "nl"
 
@@ -1424,34 +1424,43 @@ def step_7_refine_codebook(
         cluster_to_assignment_examples = {}
         if codebook_reasoning and hasattr(codebook_reasoning, 'validation_details'):
             for cluster_id, validation_data in codebook_reasoning.validation_details.items():
+                # DIAGNOSTIC: Print structure of first item
+                if cluster_id == list(codebook_reasoning.validation_details.keys())[0]:
+                    print(f"\nDIAGNOSTIC: validation_data structure for cluster_id='{cluster_id}':")
+                    print(f"  Type: {type(validation_data)}")
+                    print(f"  Keys: {validation_data.keys() if hasattr(validation_data, 'keys') else 'N/A'}")
+                    print(f"  Content: {validation_data}\n")
+
                 # Extract assignment_examples from validation_details
                 if 'code_validation' in validation_data:
                     code_validation = validation_data['code_validation']
-                    if 'assignment_examples' in code_validation:
-                        assignment_ex = code_validation['assignment_examples']
-                        # Parse inclusion/exclusion if they are JSON strings, otherwise use as-is
-                        inclusion = assignment_ex.get('inclusion')
-                        exclusion = assignment_ex.get('exclusion')
+                    if 'validated_code' in code_validation:
+                        validated_code = code_validation['validated_code']
+                        if 'assignment_examples' in validated_code:
+                            assignment_ex = validated_code['assignment_examples']
+                            # Parse inclusion/exclusion if they are JSON strings, otherwise use as-is
+                            inclusion = assignment_ex.get('inclusion')
+                            exclusion = assignment_ex.get('exclusion')
 
-                        # Handle both JSON strings and lists
-                        if inclusion and isinstance(inclusion, str):
-                            try:
-                                inclusion = json.loads(inclusion)
-                            except (json.JSONDecodeError, TypeError):
-                                inclusion = None
+                            # Handle both JSON strings and lists
+                            if inclusion and isinstance(inclusion, str):
+                                try:
+                                    inclusion = json.loads(inclusion)
+                                except (json.JSONDecodeError, TypeError):
+                                    inclusion = None
 
-                        if exclusion and isinstance(exclusion, str):
-                            try:
-                                exclusion = json.loads(exclusion)
-                            except (json.JSONDecodeError, TypeError):
-                                exclusion = None
+                            if exclusion and isinstance(exclusion, str):
+                                try:
+                                    exclusion = json.loads(exclusion)
+                                except (json.JSONDecodeError, TypeError):
+                                    exclusion = None
 
-                        cluster_to_assignment_examples[cluster_id] = {
-                            'inclusion_examples': inclusion,
-                            'exclusion_examples': exclusion,
-                            'near_neighbor_label': assignment_ex.get('near_neighbor', {}).get('label'),
-                            'tell_apart_rule': assignment_ex.get('near_neighbor', {}).get('tell_apart_rule')
-                        }
+                            cluster_to_assignment_examples[cluster_id] = {
+                                'inclusion_examples': inclusion,
+                                'exclusion_examples': exclusion,
+                                'near_neighbor_label': assignment_ex.get('near_neighbor', {}).get('label'),
+                                'tell_apart_rule': assignment_ex.get('near_neighbor', {}).get('tell_apart_rule')
+                            }
 
         # DIAGNOSTIC: Print extraction results
         print(f"\n{'='*80}")
@@ -1505,17 +1514,14 @@ def step_7_refine_codebook(
                         print(f"  cluster_ids: {cluster_ids}")
 
                     for cluster_id in cluster_ids:
-                        # Handle sub-cluster notation (e.g., "16-2" → "16")
-                        parent_cluster_id = cluster_id.split('-')[0] if '-' in cluster_id else cluster_id
-
                         # DIAGNOSTIC: Track first subcode
                         if category.category == refinement_results.refined_codebook.refined_codebook[0].category and \
                            subcode == category.subcodes[0]:
-                            print(f"  Checking parent_cluster_id: {parent_cluster_id}")
-                            print(f"  Found in dict: {parent_cluster_id in cluster_to_assignment_examples}")
+                            print(f"  Checking cluster_id: {cluster_id}")
+                            print(f"  Found in dict: {cluster_id in cluster_to_assignment_examples}")
 
-                        if parent_cluster_id in cluster_to_assignment_examples:
-                            examples = cluster_to_assignment_examples[parent_cluster_id]
+                        if cluster_id in cluster_to_assignment_examples:
+                            examples = cluster_to_assignment_examples[cluster_id]
 
                             # Merge inclusion examples
                             if examples.get('inclusion_examples'):
@@ -2134,13 +2140,16 @@ if __name__ == '__main__':
     )
     check_execution_stop(7)
     
-    if False: #debug
+    if True: #debug - show refined codebook structure
         final_codebook = refinement_results.refined_codebook
+        print(f"\n{'='*80}")
+        print("REFINED CODEBOOK STRUCTURE (with source_clusters)")
+        print(f"{'='*80}")
         for entry in final_codebook.refined_codebook:
-            print(entry.category)
-            for x in  entry.subcodes:
-                print(f"- {x.code}")
-            print("\n")
+            print(f"\nTheme: {entry.category}")
+            for x in entry.subcodes:
+                print(f"  - {x.code} (source_cluster: {x.source_cluster})")
+        print(f"{'='*80}\n")
 
     if False: #debug - print step 7 prompts
         if step7_prompt_printer and step7_prompt_printer.prompts:
@@ -2170,8 +2179,22 @@ if __name__ == '__main__':
         verbose=VERBOSE,
         prompt_printer_enabled=True
     )
+
+    # DEBUG: Print sample prompt BEFORE check_execution_stop
+    if True:  # Enabled to check assignment examples
+        import random
+        if code_assigner_instance and code_assigner_instance.prompt_responses:
+            n_samples = 1
+            sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
+            for item in sampled:
+                print(f"\n{'='*80}")
+                print("SAMPLE PROMPT WITH ASSIGNMENT EXAMPLES:")
+                print(f"{'='*80}")
+                print(item['prompt'])
+                print(f"{'='*80}\n")
+
     check_execution_stop(8)
-    
+
     # initial_clusters
     # for initial in initial_cluster_results:
     #     for response in initial.response_ideas:
@@ -2183,16 +2206,20 @@ if __name__ == '__main__':
     for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
         print(f"{idx}) {entry.code}")
     
-    # assignment stats 
-    if False:
+    # assignment stats
+    if True: #debug - show assignment statistics
         from utils.pipelineSummarizer import PipelineSummarizer
         summarizer = PipelineSummarizer(verbose=True)
+        print(f"\n{'='*80}")
+        print("CODE ASSIGNMENT STATISTICS")
+        print(f"{'='*80}")
         summarizer.generate_summary(
             code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
             theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
+        print(f"{'='*80}\n")
         
     # random assignments with prompts
-    if False: #debug
+    if True: #debug - ENABLED TO CHECK ASSIGNMENT EXAMPLES
         import random
         # Sample directly from captured prompts
         if code_assigner_instance and code_assigner_instance.prompt_responses:
