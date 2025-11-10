@@ -58,7 +58,6 @@ STEP_NAMES = {
     9: "export"
 }
 
-
 # ===================================================================================================================
 # PROCESSING STEPS
 # ===================================================================================================================
@@ -1069,37 +1068,16 @@ def step_6_generate_codebook(
             codebook = []  # Legacy format for backward compatibility
 
             if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
-                # Build codebook from cluster_results to ensure all clusters are included
-                # Group clusters by their final code to handle duplicates
-                code_to_clusters = {}
-                code_to_definition = {}
-
-                for cluster_result in results.cluster_results:
-                    cluster_id = str(cluster_result.get('cluster_id', ''))
-                    final_code = cluster_result.get('final_code', '')
-                    final_definition = cluster_result.get('final_definition', '')
-
-                    if final_code and cluster_id:
-                        if final_code not in code_to_clusters:
-                            code_to_clusters[final_code] = []
-                            code_to_definition[final_code] = final_definition
-                        code_to_clusters[final_code].append(cluster_id)
-
-                # Build final codebook with merged cluster IDs
-                final_codebook = []
-                for code_text, cluster_ids in code_to_clusters.items():
-                    final_codebook.append({
-                        'code': code_text,
-                        'definition': code_to_definition[code_text],
-                        'source_cluster_id': ','.join(cluster_ids)
-                    })
+                # Use the codebook from results directly - it already has assignment_examples
+                final_codebook = results.codebook if results.codebook else []
 
                 # Display final codebook summary
                 if verbose and final_codebook:
                     verbose_reporter.empty_line()
                     print("[STATS] FINAL CODEBOOK SUMMARY")
                     verbose_reporter.stat_line(f"Total codes: {len(final_codebook)}")
-                    verbose_reporter.stat_line(f"Total clusters mapped: {sum(len(ids) for ids in code_to_clusters.values())}")
+                    total_clusters_mapped = sum(len(item['source_cluster_id'].split(',')) for item in final_codebook)
+                    verbose_reporter.stat_line(f"Total clusters mapped: {total_clusters_mapped}")
 
                     # Show sample codes
                     verbose_reporter.empty_line()
@@ -1137,7 +1115,12 @@ def step_6_generate_codebook(
                 # Validation: Ensure all clusters are mapped
                 if results and hasattr(results, 'cluster_results'):
                     total_clusters = len(results.cluster_results)
-                    mapped_clusters = sum(len(ids) for ids in code_to_clusters.values())
+                    # Extract mapped cluster IDs from final_codebook
+                    mapped_cluster_ids = set()
+                    for item in final_codebook:
+                        cluster_ids = item['source_cluster_id'].split(',')
+                        mapped_cluster_ids.update(cluster_ids)
+                    mapped_clusters = len(mapped_cluster_ids)
 
                     if verbose:
                         verbose_reporter.empty_line()
@@ -1149,9 +1132,6 @@ def step_6_generate_codebook(
                         verbose_reporter.warning(f"  WARNING: {total_clusters - mapped_clusters} clusters not mapped to codes!")
                         # Find missing clusters
                         all_cluster_ids = {str(cr.get('cluster_id', '')) for cr in results.cluster_results}
-                        mapped_cluster_ids = set()
-                        for ids in code_to_clusters.values():
-                            mapped_cluster_ids.update(ids)
                         missing = all_cluster_ids - mapped_cluster_ids
                         verbose_reporter.warning(f"  Missing cluster IDs: {sorted(missing)}")
                     else:
@@ -1419,41 +1399,17 @@ def step_7_refine_codebook(
         code_to_theme_mapping = {}
         themes_summary = []
 
-        # Create mapping from source_cluster to assignment_examples from codebook_reasoning
-        # This accesses the rich Chain 4 validation data with assignment_examples
-        cluster_to_assignment_examples = {}
-        if codebook_reasoning and hasattr(codebook_reasoning, 'validation_details'):
-            for cluster_id, validation_data in codebook_reasoning.validation_details.items():
-                # Extract assignment_examples from validation_details
-                if 'code_validation' in validation_data:
-                    code_validation = validation_data['code_validation']
-                    if 'validated_code' in code_validation:
-                        validated_code = code_validation['validated_code']
-                        if 'assignment_examples' in validated_code:
-                            assignment_ex = validated_code['assignment_examples']
-                            # Parse inclusion/exclusion if they are JSON strings, otherwise use as-is
-                            inclusion = assignment_ex.get('inclusion')
-                            exclusion = assignment_ex.get('exclusion')
-
-                            # Handle both JSON strings and lists
-                            if inclusion and isinstance(inclusion, str):
-                                try:
-                                    inclusion = json.loads(inclusion)
-                                except (json.JSONDecodeError, TypeError):
-                                    inclusion = None
-
-                            if exclusion and isinstance(exclusion, str):
-                                try:
-                                    exclusion = json.loads(exclusion)
-                                except (json.JSONDecodeError, TypeError):
-                                    exclusion = None
-
-                            cluster_to_assignment_examples[cluster_id] = {
-                                'inclusion_examples': inclusion,
-                                'exclusion_examples': exclusion,
-                                'near_neighbor_label': assignment_ex.get('near_neighbor', {}).get('label'),
-                                'tell_apart_rule': assignment_ex.get('near_neighbor', {}).get('tell_apart_rule')
-                            }
+        # Create mapping from code to assignment_examples from codebook_main
+        # codebook_main now has assignment_examples already populated from Step 6
+        code_to_assignment_examples = {}
+        if codebook_main and hasattr(codebook_main, 'codes'):
+            for entry in codebook_main.codes:
+                code_to_assignment_examples[entry.code] = {
+                    'inclusion_examples': entry.inclusion_examples,
+                    'exclusion_examples': entry.exclusion_examples,
+                    'near_neighbor_label': entry.near_neighbor_label,
+                    'tell_apart_rule': entry.tell_apart_rule
+                }
 
         for category in refinement_results.refined_codebook.refined_codebook:
             theme_name = category.category
@@ -1466,38 +1422,13 @@ def step_7_refine_codebook(
             })
 
             for subcode in category.subcodes:
-                # Get assignment_examples from source clusters
-                # Handle merged codes (e.g., source_cluster="13,14,9") by combining examples from all clusters
-                merged_inclusion = []
-                merged_exclusion = []
-                near_neighbor = None
-                tell_apart = None
+                # Get assignment_examples directly from code mapping
+                examples = code_to_assignment_examples.get(subcode.code, {})
 
-                if subcode.source_cluster:
-                    # Parse comma-separated cluster IDs
-                    cluster_ids = [cid.strip() for cid in subcode.source_cluster.split(',')]
-
-                    for cluster_id in cluster_ids:
-                        if cluster_id in cluster_to_assignment_examples:
-                            examples = cluster_to_assignment_examples[cluster_id]
-
-                            # Merge inclusion examples
-                            if examples.get('inclusion_examples'):
-                                merged_inclusion.extend(examples['inclusion_examples'])
-
-                            # Merge exclusion examples
-                            if examples.get('exclusion_examples'):
-                                merged_exclusion.extend(examples['exclusion_examples'])
-
-                            # Use first cluster's near_neighbor and tell_apart_rule
-                            if near_neighbor is None:
-                                near_neighbor = examples.get('near_neighbor_label')
-                            if tell_apart is None:
-                                tell_apart = examples.get('tell_apart_rule')
-
-                # Deduplicate examples while preserving order
-                final_inclusion = list(dict.fromkeys(merged_inclusion)) if merged_inclusion else None
-                final_exclusion = list(dict.fromkeys(merged_exclusion)) if merged_exclusion else None
+                final_inclusion = examples.get('inclusion_examples')
+                final_exclusion = examples.get('exclusion_examples')
+                near_neighbor = examples.get('near_neighbor_label')
+                tell_apart = examples.get('tell_apart_rule')
 
                 # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
                 enriched_entry = models.ThemeEnrichedCodebookEntry(
