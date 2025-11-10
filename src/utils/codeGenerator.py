@@ -3726,6 +3726,19 @@ class InductiveCodeGenerator:
                                     'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
                                     'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
                                 }
+
+                # Fallback: Extract from step3_recommendations if validation didn't provide assignment_examples
+                if final_code not in code_to_assignment_examples and cluster_id in self.step3_recommendations:
+                    recommendation = self.step3_recommendations[cluster_id]
+                    assignment_ex = recommendation.get('assignment_examples')
+                    if assignment_ex:
+                        code_to_assignment_examples[final_code] = {
+                            'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
+                            'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
+                            'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
+                            'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
+                        }
+
                 code_to_clusters[final_code].append(cluster_id)
 
         # Build final codebook with complete cluster mappings
