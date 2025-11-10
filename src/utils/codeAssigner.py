@@ -10,19 +10,20 @@ from dataclasses import dataclass
 from collections import deque
 import numpy as np
 
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
+from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
 from aiolimiter import AsyncLimiter
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS
 from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -186,6 +187,14 @@ class DefaultCodeEvaluationResponse(BaseModel):
     confidence: float
     rationale: str
 
+    @field_validator('confidence', mode='before')
+    @classmethod
+    def coerce_confidence(cls, v):
+        """Coerce string numbers to float (common with LLM JSON output)"""
+        if isinstance(v, str):
+            return float(v)
+        return v
+
 class FallbackCodeAssignmentResponse(BaseModel):
     """Stage 2: Selecting from all codes"""
     idea_id: str
@@ -193,11 +202,19 @@ class FallbackCodeAssignmentResponse(BaseModel):
     assignment_confidence: float
     assignment_rationale: str
 
+    @field_validator('assignment_confidence', mode='before')
+    @classmethod
+    def coerce_confidence(cls, v):
+        """Coerce string numbers to float (common with LLM JSON output)"""
+        if isinstance(v, str):
+            return float(v)
+        return v
+
 
 class CodeAssigner:
     """
-    Simplified code assignment with direct LLM processing.
-    LLM sees all codes in codebook instead of similarity-filtered subset.
+    Two-stage code assignment using embedding-based similarity filtering.
+    Stage 2 presents top-10 most similar codes instead of entire codebook.
     """
     
     def __init__(
@@ -234,6 +251,10 @@ class CodeAssigner:
         # Instructor-patched async OpenAI client for structured output (cached)
         self.client = get_openai_client(OPENAI_API_KEY)
 
+        # Embedding client for code similarity (plain OpenAI client)
+        self.embedding_client = OpenAI(api_key=OPENAI_API_KEY)
+        self.embedding_model = self.model_config.embedding_model
+
         # Rate limiting setup
         limits = get_openai_rate_limits(self.model)
 
@@ -268,7 +289,8 @@ class CodeAssigner:
             'tasks_failed': 0,
             'retries': 0,
             'rate_limits': 0,
-            'timeouts': 0
+            'timeouts': 0,
+            'error_types': {}  # Track error types: {error_type: count}
         }
 
         # Two-stage assignment stats
@@ -285,46 +307,8 @@ class CodeAssigner:
         # Build cluster→codes mapping
         self.cluster_to_codes = self._build_cluster_code_mapping()
 
-        # Debug: Show what codebook was received
-        # if self.verbose:
-        #     self.verbose_reporter.info(f"\n[DEBUG] CodeAssigner received {len(self.codebook)} codes")
-        #     for i, code in enumerate(self.codebook[:3]):
-        #         self.verbose_reporter.info(f"  Code {i+1}: {code.code}")
-        #         if hasattr(code, 'source_cluster'):
-        #             self.verbose_reporter.info(f"    source_cluster: '{code.source_cluster}'")
-        #         else:
-        #             self.verbose_reporter.info("    source_cluster: MISSING ATTRIBUTE")
-
-        #     # Debug: Sample ideas' expanded_cluster values
-        #     all_ideas = []
-        #     for cluster_model in self.cluster_models:
-        #         if hasattr(cluster_model, 'response_ideas') and cluster_model.response_ideas:
-        #             all_ideas.extend(cluster_model.response_ideas)
-
-        #     if all_ideas:
-        #         sample_ideas = all_ideas[:10]  # First 10 ideas
-        #         self.verbose_reporter.info(f"\n[DEBUG] Sample of {len(sample_ideas)} ideas' cluster assignments:")
-
-        #         cluster_types = {}  # Track different formats
-        #         for idea in sample_ideas:
-        #             exp_cluster = getattr(idea, 'expanded_cluster', None)
-        #             init_cluster = getattr(idea, 'initial_cluster', None)
-        #             cluster_type = type(exp_cluster).__name__
-        #             cluster_value = str(exp_cluster)
-
-        #             if cluster_type not in cluster_types:
-        #                 cluster_types[cluster_type] = []
-        #             cluster_types[cluster_type].append(cluster_value)
-
-        #             self.verbose_reporter.info(
-        #                 f"  Idea {idea.idea_id}: "
-        #                 f"initial_cluster={init_cluster}, "
-        #                 f"expanded_cluster={exp_cluster} (type: {cluster_type})"
-        #             )
-
-        #         self.verbose_reporter.info(f"\n[DEBUG] Cluster value types found:")
-        #         for ctype, values in cluster_types.items():
-        #             self.verbose_reporter.info(f"  {ctype}: {len(values)} ideas, examples: {values[:3]}")
+        # Code embeddings for similarity filtering (lazy-load on first use)
+        self._code_embeddings = None
 
         self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
@@ -392,12 +376,14 @@ class CodeAssigner:
         return cluster_dict
 
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
-        """Create worst-case prompt for token estimation (Stage 2 with all codes)"""
-        # Use Stage 2 prompt - largest prompt for conservative token estimation
+        """Create prompt for token estimation using top-k codes"""
+        top_k = self.config.top_k_similar_codes
         all_codes_text = "\n".join([
             f"Code: {code.code}\nDefinition: {code.definition}\n"
-            for code in self.codebook
+            for code in self.codebook[:top_k]
         ])
+
+        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
 
         return FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
@@ -405,7 +391,8 @@ class CodeAssigner:
             idea_id=idea_id,
             idea_text=idea_text,
             default_confidence=0.0,
-            all_codes=all_codes_text
+            all_codes=all_codes_text,
+            unknown_label=unknown_label
         )
 
 
@@ -455,6 +442,94 @@ class CodeAssigner:
                 themes.append(theme)
         return themes
 
+    def _build_general_codes(self) -> List[Dict[str, any]]:
+        """Build synthetic general codes for theme and category fallbacks"""
+        general_codes = []
+        general_label = GENERAL_CODE_LABELS.get(self.language, "overall")
+
+        # Theme-level general codes
+        unique_themes = set()
+        for code in self.codebook:
+            if hasattr(code, 'theme') and code.theme:
+                theme_desc = getattr(code, 'theme_description', code.theme)
+                unique_themes.add((code.theme, theme_desc))
+
+        for theme, theme_desc in unique_themes:
+            # Collect specific codes in this theme for exclusion examples
+            specific_codes_in_theme = [code.code for code in self.codebook
+                                      if hasattr(code, 'theme') and code.theme == theme]
+
+            general_codes.append({
+                'code': f"{theme} - {general_label}",
+                'definition': f"Algemene verwijzing naar thema '{theme}': {theme_desc}",
+                'inclusion_examples': [
+                    f"Algemene of vage verwijzing naar {theme}",
+                    f"Niet-specifieke uitspraak over {theme}",
+                    f"Vaag verband met {theme} zonder concrete details"
+                ],
+                'exclusion_examples': specific_codes_in_theme,
+                'near_neighbor_label': "Specifieke codes binnen dit thema",
+                'tell_apart_rule': f"Gebruik deze algemene code alleen als geen enkele specifieke code past. Specifieke codes in dit thema: {', '.join(specific_codes_in_theme[:3])}{'...' if len(specific_codes_in_theme) > 3 else ''}",
+                'type': 'theme_general'
+            })
+
+        # Category-level general codes (if 3-level hierarchy exists)
+        unique_categories = set()
+        for code in self.codebook:
+            if hasattr(code, 'category') and code.category:
+                cat_desc = getattr(code, 'category_description', code.category)
+                theme = getattr(code, 'theme', '')
+                unique_categories.add((code.category, cat_desc, theme))
+
+        for category, cat_desc, theme in unique_categories:
+            # Collect specific codes in this category for exclusion examples
+            specific_codes_in_category = [code.code for code in self.codebook
+                                         if hasattr(code, 'category') and code.category == category]
+
+            general_codes.append({
+                'code': f"{category} - {general_label}",
+                'definition': f"Algemene verwijzing naar categorie '{category}' binnen {theme}: {cat_desc}",
+                'inclusion_examples': [
+                    f"Algemene of vage verwijzing naar {category}",
+                    f"Niet-specifieke uitspraak over {category} binnen {theme}",
+                    f"Vaag verband met {category} zonder concrete details"
+                ],
+                'exclusion_examples': specific_codes_in_category,
+                'near_neighbor_label': "Specifieke codes binnen deze categorie",
+                'tell_apart_rule': f"Gebruik deze algemene code alleen als geen enkele specifieke code past. Specifieke codes in deze categorie: {', '.join(specific_codes_in_category[:3])}{'...' if len(specific_codes_in_category) > 3 else ''}",
+                'type': 'category_general'
+            })
+
+        return general_codes
+
+    def _generate_code_embeddings(self) -> np.ndarray:
+        """Generate embeddings for all codes (code + definition)"""
+        code_texts = [f"Code: {code.code}. Definition: {code.definition}"
+                      for code in self.codebook]
+
+        embeddings = []
+        for text in code_texts:
+            response = self.embedding_client.embeddings.create(
+                model=self.embedding_model,
+                input=text
+            )
+            embeddings.append(response.data[0].embedding)
+
+        return np.array(embeddings)
+
+    @property
+    def code_embeddings(self):
+        """Lazy-load code embeddings on first use"""
+        if self._code_embeddings is None:
+            self._code_embeddings = self._generate_code_embeddings()
+        return self._code_embeddings
+
+    def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 10) -> List[models.Codebook]:
+        """Find top-k most similar codes using cosine similarity"""
+        similarities = cosine_similarity([idea_embedding], self.code_embeddings)[0]
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        return [self.codebook[i] for i in top_indices]
+
     def _format_examples_list(self, examples: Optional[List[str]]) -> str:
         """Format examples list for prompt display"""
         if not examples:
@@ -495,13 +570,16 @@ class CodeAssigner:
             for code in self.codebook
         ])
 
+        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
+
         prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
             language=self.language,
             var_lab=self.var_lab,
             idea_id=idea_id,
             idea_text=idea_text,
             default_confidence=0.0,
-            all_codes=all_codes_text
+            all_codes=all_codes_text,
+            unknown_label=unknown_label
         )
 
         return prompt
@@ -546,33 +624,97 @@ class CodeAssigner:
 
         self.last_prompt = prompt  # Store for backward compatibility
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            response_model=DefaultCodeEvaluationResponse,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            seed=self.model_config.seed
-        )
+        # Estimate tokens and acquire from TPM bucket
+        est_tokens = self.estimate_tokens(prompt)
+        await self.tpm_bucket.wait_and_acquire(est_tokens)
+
+        # Calculate adaptive timeout
+        timeout = self.latency_tracker.get_timeout(est_tokens)
+
+        # Unified rate limiting with semaphore and rate limiter
+        async with self.semaphore:
+            async with self.rate_limiter:
+                start_time = time.perf_counter()
+
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        response_model=DefaultCodeEvaluationResponse,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        seed=self.model_config.seed
+                    ),
+                    timeout=timeout
+                )
+
+                # Track latency for adaptive timeout adjustment
+                latency = time.perf_counter() - start_time
+                self.latency_tracker.add(latency)
+
+                # Token reconciliation: reconcile actual vs estimated
+                if hasattr(response, '_raw_response'):
+                    usage = response._raw_response.usage
+                    if usage:
+                        actual_total_tokens = usage.total_tokens
+                        delta = actual_total_tokens - est_tokens
+                        await self.tpm_bucket.reconcile(delta)
 
         self.stage_1_calls += 1
         return response, prompt
 
-    async def assign_from_all_codes(self, idea_id: str, idea_text: str, default_confidence: float):
-        """Stage 2: Pick best code from all available codes when default fails
+    async def assign_from_all_codes(self, idea_id: str, idea_text: str,
+                                   idea_embedding: np.ndarray,
+                                   default_confidence: float):
+        """Stage 2: Pick best code from top-10 similar codes when default fails
+
+        Hierarchical fallback: top-10 similar codes → theme-general → category-general → unknown
 
         Returns:
             tuple: (FallbackCodeAssignmentResponse, str) - response and prompt used
         """
 
-        # Format all codes with assignment examples
+        # Build list of codes: top-10 similar + general + unknown
+        all_codes_list = []
+
+        # 1. Add top-10 most similar codes using embeddings
+        top_k = self.config.top_k_similar_codes
+        similar_codes = self._find_similar_codes(idea_embedding, top_k=top_k)
+
+        for code in similar_codes:
+            all_codes_list.append({
+                'code': code.code,
+                'definition': code.definition,
+                'inclusion_examples': code.inclusion_examples,
+                'exclusion_examples': code.exclusion_examples,
+                'near_neighbor_label': code.near_neighbor_label,
+                'tell_apart_rule': code.tell_apart_rule,
+                'type': 'specific'
+            })
+
+        # 2. Add general codes (theme/category level)
+        all_codes_list.extend(self._build_general_codes())
+
+        # 3. Add unknown fallback
+        unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
+        all_codes_list.append({
+            'code': unknown_label,
+            'definition': f"Geen duidelijke relatie met thema's in codebook",
+            'inclusion_examples': None,
+            'exclusion_examples': None,
+            'near_neighbor_label': None,
+            'tell_apart_rule': None,
+            'type': 'unknown'
+        })
+
+        # Format all codes for prompt
         all_codes_text = "\n".join([
-            f"Code: {code.code}\n"
-            f"Definition: {code.definition}\n"
-            f"Include when: {self._format_examples_list(code.inclusion_examples)}\n"
-            f"Exclude when: {self._format_examples_list(code.exclusion_examples)}\n"
-            f"Boundary: Differs from '{code.near_neighbor_label or 'Unknown'}' - {code.tell_apart_rule or 'N/A'}\n"
-            for code in self.codebook
+            f"Code: {c['code']}\n"
+            f"Definition: {c['definition']}\n"
+            f"Include when: {self._format_examples_list(c.get('inclusion_examples'))}\n"
+            f"Exclude when: {self._format_examples_list(c.get('exclusion_examples'))}\n"
+            f"Boundary: Differs from '{c.get('near_neighbor_label') or 'N/A'}' - {c.get('tell_apart_rule') or 'N/A'}\n"
+            for c in all_codes_list
         ])
 
         prompt = FALLBACK_CODE_ASSIGNMENT_PROMPT.format(
@@ -581,19 +723,47 @@ class CodeAssigner:
             idea_id=idea_id,
             idea_text=idea_text,
             default_confidence=default_confidence,
-            all_codes=all_codes_text
+            all_codes=all_codes_text,
+            unknown_label=unknown_label
         )
 
         self.last_prompt = prompt  # Store for backward compatibility
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            response_model=FallbackCodeAssignmentResponse,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            seed=self.model_config.seed
-        )
+        # Estimate tokens and acquire from TPM bucket
+        est_tokens = self.estimate_tokens(prompt)
+        await self.tpm_bucket.wait_and_acquire(est_tokens)
+
+        # Calculate adaptive timeout
+        timeout = self.latency_tracker.get_timeout(est_tokens)
+
+        # Unified rate limiting with semaphore and rate limiter
+        async with self.semaphore:
+            async with self.rate_limiter:
+                start_time = time.perf_counter()
+
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        response_model=FallbackCodeAssignmentResponse,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        seed=self.model_config.seed
+                    ),
+                    timeout=timeout
+                )
+
+                # Track latency for adaptive timeout adjustment
+                latency = time.perf_counter() - start_time
+                self.latency_tracker.add(latency)
+
+                # Token reconciliation: reconcile actual vs estimated
+                if hasattr(response, '_raw_response'):
+                    usage = response._raw_response.usage
+                    if usage:
+                        actual_total_tokens = usage.total_tokens
+                        delta = actual_total_tokens - est_tokens
+                        await self.tpm_bucket.reconcile(delta)
 
         self.stage_2_calls += 1
         return response, prompt
@@ -636,7 +806,7 @@ class CodeAssigner:
             if not default_codes:
                 # No codes from this cluster - go straight to fallback (Stage 2)
                 metadata['fallback_triggered'] = True
-                stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, default_confidence=0.0)
+                stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, default_confidence=0.0)
 
                 assigned_code = stage_2_result.assigned_codes[0]
                 confidence = stage_2_result.assignment_confidence
@@ -659,9 +829,9 @@ class CodeAssigner:
                     self.used_default_count += 1
 
                 else:
-                    # Stage 2: Fallback to all codes
+                    # Stage 2: Fallback to top-10 similar codes
                     metadata['fallback_triggered'] = True
-                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, stage_1_result.confidence)
+                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, stage_1_result.confidence)
 
                     assigned_code = stage_2_result.assigned_codes[0]
                     confidence = stage_2_result.assignment_confidence
@@ -751,7 +921,18 @@ class CodeAssigner:
                 except Exception as e:
                     # After all retries failed
                     #print(f"[DEBUG] Worker {worker_id} task {task_count} FAILED: {type(e).__name__}: {e}")
-                    logger.error(f"Task {task['task_id']} failed after retries: {type(e).__name__}: {e}")
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+
+                    # Track error types
+                    if error_type not in self.stats['error_types']:
+                        self.stats['error_types'][error_type] = {'count': 0, 'sample_messages': []}
+                    self.stats['error_types'][error_type]['count'] += 1
+                    # Store up to 3 sample error messages per type
+                    if len(self.stats['error_types'][error_type]['sample_messages']) < 3:
+                        self.stats['error_types'][error_type]['sample_messages'].append(error_msg[:200])
+
+                    logger.error(f"Task {task['task_id']} failed after retries: {error_type}: {e}")
                     import traceback
                     logger.error(f"Full traceback: {traceback.format_exc()}")
                     self.stats['tasks_failed'] += 1
@@ -1048,6 +1229,17 @@ class CodeAssigner:
             print(f"- Rate limits: {self.stats['rate_limits']}")
             print(f"- Timeouts: {self.stats['timeouts']}")
             print(f"- Average: {elapsed/len(tasks):.2f}s/task")
+
+            # Report error types if any failures occurred
+            if self.stats['error_types']:
+                print(f"\nError Types ({len(self.stats['error_types'])} unique):")
+                for error_type, error_data in sorted(self.stats['error_types'].items(),
+                                                     key=lambda x: x[1]['count'], reverse=True):
+                    print(f"  - {error_type}: {error_data['count']} occurrences")
+                    if error_data['sample_messages']:
+                        print(f"    Sample errors:")
+                        for i, msg in enumerate(error_data['sample_messages'], 1):
+                            print(f"      {i}. {msg}")
         
             return results
         

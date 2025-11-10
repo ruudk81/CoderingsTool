@@ -37,6 +37,15 @@ MISCELLANEOUS_CODE_LABELS = {
     "Spanish": "Otro",
 }
 
+# Language-specific labels for general/theme-level assignments
+GENERAL_CODE_LABELS = {
+    "Dutch": "algemeen",
+    "English": "overall",
+    "German": "allgemein",
+    "French": "général",
+    "Spanish": "general",
+}
+
 # =============================================================================
 # MODEL CONFIGURATION - CENTRALIZED
 # =============================================================================
@@ -61,6 +70,11 @@ class OpenAIRateLimits:
 OPENAI_RATE_LIMITS = {  
     "gpt-5": OpenAIRateLimits(
         tokens_per_minute=4_000_000,
+        requests_per_minute=10_000,
+        tokens_per_day=200_000_000
+    ),
+    "gpt-5-chat": OpenAIRateLimits(
+        tokens_per_minute=2_000_000,
         requests_per_minute=10_000,
         tokens_per_day=200_000_000
     ),
@@ -269,7 +283,8 @@ class ModelConfig:
             'candidate_selection': self.candidate_selection_model,
             'code_recommendation': self.code_generation_model,
             'recommendation_validation': self.validation_model,
-            'codebook_refinement': self.codebook_refinement_model
+            'codebook_refinement': self.codebook_refinement_model,
+            'code_assignment': self.code_assignment_model
             }
         return stage_models.get(stage, DEFAULT_MODEL)
     

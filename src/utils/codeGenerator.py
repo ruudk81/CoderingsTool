@@ -132,8 +132,8 @@ class CodingDecision(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class CodingDecisionOutput(BaseModel):
-    coding_decision: CodingDecision
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    coding_decision: CodingDecision = Field(validation_alias="coding_devision")
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
 
 """Prompt 3 : Code Generation"""
 class GeneratedCode(BaseModel):
@@ -1913,7 +1913,7 @@ class InductiveCodeGenerator:
                 theme = cluster_summary_items[0].extracted_themes[0]
                 if hasattr(theme, 'assignment_examples'):
                     examples = theme.assignment_examples.inclusion
-                    return "\n".join([f"  - {example}" for example in examples])
+                    return "\n".join([f"• {example}" for example in examples])
         return "No inclusion examples specified"
 
     def _get_exclusion_examples(self, theme_data) -> str:
@@ -1924,7 +1924,7 @@ class InductiveCodeGenerator:
                 theme = cluster_summary_items[0].extracted_themes[0]
                 if hasattr(theme, 'assignment_examples'):
                     examples = theme.assignment_examples.exclusion
-                    return "\n".join([f"  - {example}" for example in examples])
+                    return "\n".join([f"• {example}" for example in examples])
         return "No exclusion examples specified"
 
     def _get_near_neighbor(self, theme_data) -> str:
@@ -2795,8 +2795,12 @@ class InductiveCodeGenerator:
                 abstraction_level=self._get_abstraction_level(theme_data),
                 inclusion=self._get_inclusion_examples(theme_data),
                 exclusion=self._get_exclusion_examples(theme_data),
+                near_neighbor=self._get_near_neighbor(theme_data),
                 theme_id=theme_id,
-                cluster_summary=self._get_theme_name(theme_data)
+                cluster_summary=self._get_theme_name(theme_data),
+                coding_decision="CREATE",
+                source_code="null",
+                source_definition=None
             )
             code_gen_tokens = len(self.encoding.encode(code_gen_prompt)) + 150  # + completion estimate
             token_measurements['code_generation'].append(code_gen_tokens)
@@ -3279,12 +3283,24 @@ class InductiveCodeGenerator:
             if decision == "use":
                 if self.verbose_detailed:
                     self.verbose_reporter.stat_line(f"C{cluster_id}: USE decision detected in recovery - skipping code generation and validation")
-                
+
+                # Extract final code from candidate_selection for USE decisions
+                final_code = None
+                final_definition = None
+                if hasattr(candidate_selection, 'coding_decision'):
+                    decision_info = candidate_selection.coding_decision
+                    if decision_info.source_code:
+                        final_code = decision_info.source_code
+                        # For USE decisions, definition comes from existing codebook
+                        # We don't need to fetch it as the code already exists
+
                 # Return minimal result structure for USE decisions
                 return {
                     'cluster_id': cluster_id,
                     'candidate_selection': candidate_selection,
-                    'optimization': 'use_early_return'
+                    'optimization': 'use_early_return',
+                    'final_code': final_code,
+                    'final_definition': final_definition  # May be None for USE, but that's OK
                 }
             
             # Step 3: Code generation for CREATE/MODIFY decisions
@@ -3300,13 +3316,24 @@ class InductiveCodeGenerator:
             if not validation:
                 self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no validation result")
                 return None
-            
+
+            # Extract final code/definition from validation (matching regular pipeline)
+            final_code = None
+            final_definition = None
+            if validation and hasattr(validation, 'code_validation') and validation.code_validation:
+                code_validation = validation.code_validation
+                if code_validation.validated_code:
+                    final_code = code_validation.validated_code.code
+                    final_definition = code_validation.validated_code.definition
+
             # Return complete result structure
             return {
                 'cluster_id': cluster_id,
                 'candidate_selection': candidate_selection,
                 'code_generation': code_generation,
-                'validation': validation
+                'validation': validation,
+                'final_code': final_code,
+                'final_definition': final_definition
             }
             
         except Exception as e:
@@ -4258,15 +4285,15 @@ class InductiveCodeGenerator:
             # Default values if candidate_selection is invalid
             decision = "CREATE"
             source_code = "null"
+            source_code_definition = None
             CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
 
             if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
                 coding_decision_obj = candidate_selection.coding_decision
                 decision = coding_decision_obj.decision.upper()
                 source_code = coding_decision_obj.source_code
-                
+
                 #get definition
-                source_code_definition = None
                 if coding_decision_obj.matched_candidates: 
                     for candidate in coding_decision_obj.matched_candidates: 
                         if candidate.code == source_code: 
@@ -4304,10 +4331,10 @@ class InductiveCodeGenerator:
                 "cluster_summary": theme_name,
                 "source_code": source_code,
                 "source_definition": source_code_definition,
-                # Theme parameters (for both CREATE and MODIFY prompts)
                 "inclusion": self._get_inclusion_examples(theme_data),
                 "exclusion": self._get_exclusion_examples(theme_data),
                 "abstraction_level": self._get_abstraction_level(theme_data),
+                "near_neighbor": self._get_near_neighbor(theme_data),
             }
 
             # Add modify parameters only if we have valid candidate_selection
@@ -4376,9 +4403,48 @@ class InductiveCodeGenerator:
                 'coding_proposal': decision,
                 **({'source_code': response.generated_code.source_code} if decision.lower() in ("use", "modify") else {}),
                 'code_label_proposal': response.generated_code.code_label,
-                'code_definition_proposal': response.generated_code.code_definition
+                'code_definition_proposal': response.generated_code.code_definition,
+                'assignment_examples': response.generated_code.assignment_examples
             }
-            
+
+            # Debug: Log what Chain 3 actually returned
+            if self.verbose_detailed:
+                if response and hasattr(response, 'generated_code'):
+                    gen_code = response.generated_code
+
+                    # Check if assignment_examples exists and is populated
+                    if hasattr(gen_code, 'assignment_examples'):
+                        if gen_code.assignment_examples is None:
+                            self.verbose_reporter.warning(
+                                f"C{cluster_id}: STEP3 - assignment_examples is None (LLM didn't return it)"
+                            )
+                        else:
+                            # Log what we got
+                            ae = gen_code.assignment_examples
+                            inclusion_count = len(ae.inclusion) if hasattr(ae, 'inclusion') and ae.inclusion else 0
+                            exclusion_count = len(ae.exclusion) if hasattr(ae, 'exclusion') and ae.exclusion else 0
+                            has_neighbor = hasattr(ae, 'near_neighbor') and ae.near_neighbor is not None
+
+                            self.verbose_reporter.stat_line(
+                                f"C{cluster_id}: STEP3 - assignment_examples received: "
+                                f"inclusion={inclusion_count}, exclusion={exclusion_count}, "
+                                f"near_neighbor={'YES' if has_neighbor else 'NO'}"
+                            )
+
+                            # Log the actual content
+                            if inclusion_count > 0:
+                                self.verbose_reporter.stat_line(
+                                    f"C{cluster_id}: STEP3 - inclusion examples: {ae.inclusion}"
+                                )
+                    else:
+                        self.verbose_reporter.error(
+                            f"C{cluster_id}: STEP3 - assignment_examples field missing from schema!"
+                        )
+                else:
+                    self.verbose_reporter.error(
+                        f"C{cluster_id}: STEP3 - No valid response from code generation"
+                    )
+
             return response
             
         except Exception as e:
@@ -4431,6 +4497,15 @@ class InductiveCodeGenerator:
                 exclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.exclusion]) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else "No specific examples provided"
                 near_neighbor_label = assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else "Unknown"
                 tell_apart_rule = assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else "N/A"
+
+                # Debug: Log successful extraction from Chain 3
+                if self.verbose_detailed:
+                    self.verbose_reporter.stat_line(
+                        f"C{cluster_id}: STEP4 - Using assignment_examples from STEP3 (code_generation)"
+                    )
+                    self.verbose_reporter.stat_line(
+                        f"C{cluster_id}: STEP4 - inclusion count: {len(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else 0}"
+                    )
             else:
                 # Fallback to original theme_data
                 inclusion_examples = self._get_inclusion_examples(theme_data)
@@ -4438,6 +4513,13 @@ class InductiveCodeGenerator:
                 near_neighbor = self._get_near_neighbor(theme_data)
                 near_neighbor_label = near_neighbor.split(" (Tell apart: ")[0] if near_neighbor else "Unknown"
                 tell_apart_rule = near_neighbor.split(" (Tell apart: ")[1].rstrip(")") if " (Tell apart: " in near_neighbor else "N/A"
+
+                # Debug: Log fallback to Chain 1
+                if self.verbose_detailed:
+                    self.verbose_reporter.warning(
+                        f"C{cluster_id}: STEP4 - Falling back to STEP1 theme_data for assignment_examples "
+                        f"(STEP3 didn't provide them)"
+                    )
 
             # Prepare exact parameters for prompt
             params = {
@@ -4455,7 +4537,37 @@ class InductiveCodeGenerator:
                 "near_neighbor_label": near_neighbor_label,
                 "tell_apart_rule": tell_apart_rule
             }
-            
+
+            # Debug: Log Chain 4 prompt parameters
+            if self.verbose_detailed:
+                self.verbose_reporter.stat_line(
+                    f"C{cluster_id}: STEP4 - Validation prompt params:"
+                )
+                self.verbose_reporter.stat_line(
+                    f"  inclusion_examples: {inclusion_examples[:100]}..." if len(inclusion_examples) > 100 else f"  inclusion_examples: {inclusion_examples}"
+                )
+                self.verbose_reporter.stat_line(
+                    f"  exclusion_examples: {exclusion_examples[:100]}..." if len(exclusion_examples) > 100 else f"  exclusion_examples: {exclusion_examples}"
+                )
+                self.verbose_reporter.stat_line(
+                    f"  near_neighbor_label: {near_neighbor_label}"
+                )
+                self.verbose_reporter.stat_line(
+                    f"  tell_apart_rule: {tell_apart_rule}"
+                )
+
+                # Compare with step3_recommendations storage
+                if cluster_id in self.step3_recommendations:
+                    stored = self.step3_recommendations[cluster_id]
+                    if 'assignment_examples' in stored:
+                        self.verbose_reporter.stat_line(
+                            f"  ✓ step3_recommendations has assignment_examples stored"
+                        )
+                    else:
+                        self.verbose_reporter.warning(
+                            f"  ✗ step3_recommendations does NOT have assignment_examples stored"
+                        )
+
             prompt = VALIDATION_PROMPT.format(**params)
             
             # Capture exact parameters used in prompt construction

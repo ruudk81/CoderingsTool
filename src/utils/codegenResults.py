@@ -405,7 +405,8 @@ def _display_single_cluster(codebook_reasoning, cluster_id: Union[int, str], sho
             if validated_code:
                 print("\n")
                 for key, value in validated_code.items():
-                    print(f"Validated {key}: {value}")
+                    if key != 'Validated assignment_examples':
+                        print(f"Validated {key}: {value}")
         else:
             print("[No validation results found]")
     else:
