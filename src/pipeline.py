@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 6
+RUN_UNTIL_STEP = 7
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1285,6 +1285,7 @@ def step_7_refine_codebook(
     default_language=None,          # Use DEFAULT_LANGUAGE if None
     force_recalc=False,
     verbose=True,
+    prompt_printer_enabled=False,
     streamlit_container=None        # Optional progress updates
 ):
     """Step 7: Refine codebook into hierarchical themes
@@ -1300,13 +1301,14 @@ def step_7_refine_codebook(
         default_language: Language for refinement (uses DEFAULT_LANGUAGE if None)
         force_recalc: Force recalculation bypassing cache
         verbose: Enable verbose output
+        prompt_printer_enabled: Enable prompt printing
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel, refinement_report: dict)
+        tuple: (refinement_results: CodeRefinementResults, theme_enriched_codebook: ThemeEnrichedCodebookModel, refinement_report: dict, prompt_printer: PromptPrinter)
     """
     from utils.codebookRefinement import refine_codebook, print_refinement_report, get_refinement_report
-    from utils.verboseReporter import VerboseReporter
+    from utils import verboseReporter, promptPrinter
 
     step_name = "codebook_refinement"
 
@@ -1348,7 +1350,8 @@ def step_7_refine_codebook(
     # Optional Streamlit progress
     if streamlit_container:
         streamlit_container.text("🔄 Refining codebook into hierarchical themes...")
-    verbose_reporter = VerboseReporter(verbose)
+    verbose_reporter = verboseReporter.VerboseReporter(verbose)
+    prompt_printer = promptPrinter.PromptPrinter(enabled=True, print_realtime=prompt_printer_enabled)
     start_time = time.time()
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
@@ -1373,7 +1376,7 @@ def step_7_refine_codebook(
 
         # Check if we have codebook_reasoning from step 6
         if codebook_reasoning is not None:
-            verbose_reporter.step_start("GPT-5 Refinement", "Refining raw codes into hierarchical structure")
+            verbose_reporter.step_start("Refinement", "Refining raw codes into hierarchical structure")
 
             # Run refinement using simple sync call
             refinement_results = refine_codebook(
@@ -1381,7 +1384,8 @@ def step_7_refine_codebook(
                 reasoning_results=codebook_reasoning,
                 model_config=model_config,
                 language=default_language,
-                verbose=verbose
+                verbose=verbose,
+                prompt_printer=prompt_printer
             )
 
             # Cache results
@@ -1406,6 +1410,7 @@ def step_7_refine_codebook(
             streamlit_container.warning("⚠️ Codebook refinement had issues")
 
     # Create theme enriched codebook
+    import json
     if refinement_results and refinement_results.refined_codebook.refined_codebook:
         verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
 
@@ -1414,17 +1419,39 @@ def step_7_refine_codebook(
         code_to_theme_mapping = {}
         themes_summary = []
 
-        # Create mapping from code to assignment_examples from original codebook
-        code_to_assignment_examples = {}
-        # Get codebook_entries from codebook_main (works regardless of how Step 6 ran)
-        entries_to_process = codebook_main.codes if 'codebook_main' in locals() and codebook_main else []
-        for entry in entries_to_process:
-            code_to_assignment_examples[entry.code] = {
-                'inclusion_examples': entry.inclusion_examples,
-                'exclusion_examples': entry.exclusion_examples,
-                'near_neighbor_label': entry.near_neighbor_label,
-                'tell_apart_rule': entry.tell_apart_rule
-            }
+        # Create mapping from source_cluster to assignment_examples from codebook_reasoning
+        # This accesses the rich Chain 4 validation data with assignment_examples
+        cluster_to_assignment_examples = {}
+        if codebook_reasoning and hasattr(codebook_reasoning, 'validation_details'):
+            for cluster_id, validation_data in codebook_reasoning.validation_details.items():
+                # Extract assignment_examples from validation_details
+                if 'code_validation' in validation_data:
+                    code_validation = validation_data['code_validation']
+                    if 'assignment_examples' in code_validation:
+                        assignment_ex = code_validation['assignment_examples']
+                        # Parse inclusion/exclusion if they are JSON strings, otherwise use as-is
+                        inclusion = assignment_ex.get('inclusion')
+                        exclusion = assignment_ex.get('exclusion')
+
+                        # Handle both JSON strings and lists
+                        if inclusion and isinstance(inclusion, str):
+                            try:
+                                inclusion = json.loads(inclusion)
+                            except (json.JSONDecodeError, TypeError):
+                                inclusion = None
+
+                        if exclusion and isinstance(exclusion, str):
+                            try:
+                                exclusion = json.loads(exclusion)
+                            except (json.JSONDecodeError, TypeError):
+                                exclusion = None
+
+                        cluster_to_assignment_examples[cluster_id] = {
+                            'inclusion_examples': inclusion,
+                            'exclusion_examples': exclusion,
+                            'near_neighbor_label': assignment_ex.get('near_neighbor', {}).get('label'),
+                            'tell_apart_rule': assignment_ex.get('near_neighbor', {}).get('tell_apart_rule')
+                        }
 
         for category in refinement_results.refined_codebook.refined_codebook:
             theme_name = category.category
@@ -1437,8 +1464,41 @@ def step_7_refine_codebook(
             })
 
             for subcode in category.subcodes:
-                # Get assignment_examples from original codebook
-                assignment_ex = code_to_assignment_examples.get(subcode.code, {})
+                # Get assignment_examples from source clusters
+                # Handle merged codes (e.g., source_cluster="13,14,9") by combining examples from all clusters
+                merged_inclusion = []
+                merged_exclusion = []
+                near_neighbor = None
+                tell_apart = None
+
+                if subcode.source_cluster:
+                    # Parse comma-separated cluster IDs
+                    cluster_ids = [cid.strip() for cid in subcode.source_cluster.split(',')]
+
+                    for cluster_id in cluster_ids:
+                        # Handle sub-cluster notation (e.g., "16-2" → "16")
+                        parent_cluster_id = cluster_id.split('-')[0] if '-' in cluster_id else cluster_id
+
+                        if parent_cluster_id in cluster_to_assignment_examples:
+                            examples = cluster_to_assignment_examples[parent_cluster_id]
+
+                            # Merge inclusion examples
+                            if examples.get('inclusion_examples'):
+                                merged_inclusion.extend(examples['inclusion_examples'])
+
+                            # Merge exclusion examples
+                            if examples.get('exclusion_examples'):
+                                merged_exclusion.extend(examples['exclusion_examples'])
+
+                            # Use first cluster's near_neighbor and tell_apart_rule
+                            if near_neighbor is None:
+                                near_neighbor = examples.get('near_neighbor_label')
+                            if tell_apart is None:
+                                tell_apart = examples.get('tell_apart_rule')
+
+                # Deduplicate examples while preserving order
+                final_inclusion = list(dict.fromkeys(merged_inclusion)) if merged_inclusion else None
+                final_exclusion = list(dict.fromkeys(merged_exclusion)) if merged_exclusion else None
 
                 # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
                 enriched_entry = models.ThemeEnrichedCodebookEntry(
@@ -1449,10 +1509,10 @@ def step_7_refine_codebook(
                     category=subcode.category,  # Empty string for 2-level, category name for 3-level
                     category_description=subcode.category if subcode.category else "",  # Use category name as description
                     source_cluster=subcode.source_cluster,  # Use source_cluster directly from RefinedSubcode
-                    inclusion_examples=assignment_ex.get('inclusion_examples'),
-                    exclusion_examples=assignment_ex.get('exclusion_examples'),
-                    near_neighbor_label=assignment_ex.get('near_neighbor_label'),
-                    tell_apart_rule=assignment_ex.get('tell_apart_rule')
+                    inclusion_examples=final_inclusion,
+                    exclusion_examples=final_exclusion,
+                    near_neighbor_label=near_neighbor,
+                    tell_apart_rule=tell_apart
                 )
                 enriched_entries.append(enriched_entry)
 
@@ -1530,7 +1590,7 @@ def step_7_refine_codebook(
     if refinement_results:
         refinement_report = get_refinement_report(refinement_results)
 
-    return refinement_results, theme_enriched_codebook, refinement_report
+    return refinement_results, theme_enriched_codebook, refinement_report, prompt_printer
 
 
 def step_8_assign_codes(
@@ -2009,7 +2069,7 @@ if __name__ == '__main__':
         step3_recommendations = codebook_reasoning.step3_recommendations
         available_ids = list(step3_recommendations.keys())
         cluster_id = random.choice(available_ids)
-        cluster_id="33"
+        #cluster_id="33"
     
         from utils import codegenPromptTester
         tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
@@ -2027,14 +2087,15 @@ if __name__ == '__main__':
     # === STEP 7 ====
     """Codebook Refinement"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
-    refinement_results, theme_enriched_codebook, refinement_report = step_7_refine_codebook(
+    refinement_results, theme_enriched_codebook, refinement_report, step7_prompt_printer = step_7_refine_codebook(
         codebook_reasoning, filename, var_name, var_lab,
         variable_key=variable_key,
         cache_manager=cache_manager,
         model_config=model_config,
         default_language=DEFAULT_LANGUAGE,
         force_recalc=force_recalc,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        prompt_printer_enabled=False  # Set to True to print prompt with assignment_examples
     )
     check_execution_stop(7)
     
@@ -2045,7 +2106,21 @@ if __name__ == '__main__':
             for x in  entry.subcodes:
                 print(f"- {x.code}")
             print("\n")
-                    
+
+    if False: #debug - print step 7 prompts
+        if step7_prompt_printer and step7_prompt_printer.prompts:
+            print(f"\n{'='*80}")
+            print(f"STEP 7: {len(step7_prompt_printer.prompts)} PROMPTS CAPTURED")
+            print(f"{'='*80}\n")
+
+            for i, prompt in enumerate(step7_prompt_printer.prompts, 1):
+                print(f"{'='*80}")
+                print(f"PROMPT {i}/{len(step7_prompt_printer.prompts)}: {prompt.get('step_name', 'unknown')}")
+                print(f"Type: {prompt.get('prompt_type', 'unknown')}")
+                print(f"{'='*80}")
+                print(prompt['prompt_content'])
+                print(f"{'='*80}\n")
+
     # === STEP 8 ====
     """Assign codes (and themes)"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "code_assignment_direct"
@@ -2086,8 +2161,23 @@ if __name__ == '__main__':
         import random
         # Sample directly from captured prompts
         if code_assigner_instance and code_assigner_instance.prompt_responses:
-            n_samples = 1
-            sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
+            
+            #specifieke cluster
+            code = 'ONBEKEND'
+            selection = []
+            for dat in code_assigner_instance.prompt_responses:
+                for key, value in dat.items():
+                    if key == "assigned_codes":
+                        if value == [code]:
+                            selection.append(dat)
+           
+            if False: #selection
+                n_samples = 1
+                sampled = random.sample(selection, n_samples)
+            else:
+                n_samples = 1
+                sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
+
             #print(sampled)
 
             for item in sampled:
