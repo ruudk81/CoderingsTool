@@ -13,7 +13,7 @@ from openai import AsyncOpenAI, OpenAI
 import spacy
 
 from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY
-from prompts import STAGE_1_ATOMIC_ENFORCER_PROMPT, STAGE_2_BOUNDARY_EXTRACTOR_PROMPT, STAGE_3_CONSOLIDATOR_PROMPT
+from prompts import STAGE_1_ATOMIC_ENFORCER_PROMPT, STAGE_2_BOUNDARY_EXTRACTOR_PROMPT, STAGE_3_CONSOLIDATOR_PROMPT, get_conjunction_list
 from models import RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory
 from utils.codeGenerator import CodeGeneratorReasoningResults
 from utils.verboseReporter import VerboseReporter
@@ -462,11 +462,13 @@ class CodebookRefinementProcessor:
         # Format codes for prompt
         formatted_codes = '\n\n'.join([self._format_code_with_assignment_examples(code) for code in raw_codes])
 
-        # Create prompt
+        # Create prompt with language-specific conjunctions
+        conjunction_list = get_conjunction_list(self.config.language)
         prompt = STAGE_1_ATOMIC_ENFORCER_PROMPT.format(
             language=self.config.language,
             survey_question=survey_question,
-            raw_codes=formatted_codes
+            raw_codes=formatted_codes,
+            conjunction_list=conjunction_list
         )
 
         self.reporter.info(f"Calling Stage 1: Atomic Code Enforcer ({len(raw_codes)} codes)")
