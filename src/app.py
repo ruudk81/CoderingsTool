@@ -375,7 +375,7 @@ def invalidate_from_step(start_step: int):
         3: ['extracted_ideas', 'encoded_text'],
         4: ['embedded_text'],
         5: ['initial_cluster_results'],
-        6: ['codebook_main', 'reasoning_results'],
+        6: ['reasoning_results'],
         7: ['theme_enriched_codebook', 'refinement_results'],
         8: ['code_assigned_results'],
         9: ['excel_path']
@@ -2663,7 +2663,7 @@ def show_codebook_generation_page():
                                (st.session_state.get('force_recalculate_from_step', 99) <= 6)
 
                 # Call pipeline processing function
-                codebook_main, reasoning_results = pipeline.step_6_generate_codebook(
+                reasoning_results = pipeline.step_6_generate_codebook(
                     initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_codebook,
@@ -2685,13 +2685,14 @@ def show_codebook_generation_page():
                 ))
 
                 # Store results
-                st.session_state.pipeline_results['codebook_main'] = codebook_main
                 st.session_state.pipeline_results['reasoning_results'] = reasoning_results
 
-                # Calculate codebook statistics
+                # Calculate codebook statistics from reasoning_results.codebook
+                num_codes = len(reasoning_results.codebook) if reasoning_results and reasoning_results.codebook else 0
+                unique_clusters = len(set([entry.get('source_cluster_id', '').split(',') for entry in reasoning_results.codebook if entry.get('source_cluster_id')])) if reasoning_results and reasoning_results.codebook else 0
                 st.session_state['codebook_stats'] = {
-                    'num_codes': len(codebook_main.codes) if codebook_main and hasattr(codebook_main, 'codes') else 0,
-                    'unique_clusters': len(set([entry.source_cluster for entry in codebook_main.codes if entry.source_cluster])) if codebook_main and hasattr(codebook_main, 'codes') else 0
+                    'num_codes': num_codes,
+                    'unique_clusters': unique_clusters
                 }
 
                 # Mark step completed
@@ -2729,7 +2730,7 @@ def show_theme_identification_page():
     # skipped/not necesarry
   
     # ==================== BLOCK 4: DATA LOADING ====================
-    # Load reasoning_results and codebook_main if not already in pipeline_results
+    # Load reasoning_results if not already in pipeline_results
     if is_step_completed(6) and not is_step_completed(7):
         progress_container = st.empty()
         try:
@@ -2749,55 +2750,38 @@ def show_theme_identification_page():
                 cache_manager = _get_cache_manager()
 
                 # Try cache first (works for both upload and cache routes)
-                # Note: Step 6 caches two separate items:
-                # 1. "codebook_generation" - contains [codebook_main]
-                # 2. "codebook_generation_reasoning" - contains [reasoning_results]
-                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation", variable_key):
+                # Note: Step 6 caches "codebook_generation_reasoning" - contains reasoning_results
+                if cache_manager.is_cache_valid(st.session_state.filename, "codebook_generation_reasoning", variable_key):
                     progress_container.text("🔄 " + ("Codebook laden uit cache..." if lang == "nl" else "Loading codebook from cache..."))
 
-                    # Load codebook_main from main cache
-                    codebook_list = _load_or_recover(
+                    # Load reasoning_results from reasoning cache
+                    from utils import codeGenerator
+                    reasoning_list = _load_or_recover(
                         st.session_state.filename,
-                        "codebook_generation",
+                        "codebook_generation_reasoning",
                         variable_key,
-                        models.CodebookModel
+                        codeGenerator.CodeGeneratorReasoningResults
                     )
+                    if reasoning_list and len(reasoning_list) > 0:
+                        reasoning_results = reasoning_list[0]
+                        st.session_state.pipeline_results['reasoning_results'] = reasoning_results
 
-                    if codebook_list and len(codebook_list) > 0:
-                        codebook_main = codebook_list[0]
-                        st.session_state.pipeline_results['codebook_main'] = codebook_main
-
-                        # Populate codebook_stats if not already present (for cache route)
+                        # Calculate stats from reasoning_results.codebook
                         if 'codebook_stats' not in st.session_state:
+                            num_codes = len(reasoning_results.codebook) if reasoning_results and reasoning_results.codebook else 0
+                            unique_clusters = len(set([entry.get('source_cluster_id', '').split(',') for entry in reasoning_results.codebook if entry.get('source_cluster_id')])) if reasoning_results and reasoning_results.codebook else 0
                             st.session_state['codebook_stats'] = {
-                                'num_codes': len(codebook_main.codes) if codebook_main and hasattr(codebook_main, 'codes') else 0,
-                                'unique_clusters': len(set([entry.source_cluster for entry in codebook_main.codes if entry.source_cluster])) if codebook_main and hasattr(codebook_main, 'codes') else 0
+                                'num_codes': num_codes,
+                                'unique_clusters': unique_clusters
                             }
 
-                        # Load reasoning_results from separate reasoning cache
-                        try:
-                            from utils import codeGenerator
-                            reasoning_list = _load_or_recover(
-                                st.session_state.filename,
-                                "codebook_generation_reasoning",
-                                variable_key,
-                                codeGenerator.CodeGeneratorReasoningResults
-                            )
-                            if reasoning_list and len(reasoning_list) > 0:
-                                st.session_state.pipeline_results['reasoning_results'] = reasoning_list[0]
-                                progress_container.success("✅ " + ("Codebook en reasoning geladen uit cache" if lang == "nl" else "Codebook and reasoning loaded from cache"))
-                            else:
-                                st.error("⚠️ " + ("Reasoning resultaten niet gevonden in cache. Voer stap 6 opnieuw uit." if lang == "nl"
-                                               else "Reasoning results not found in cache. Please re-run step 6."))
-                        except Exception as e:
-                            st.error("⚠️ " + ("Reasoning resultaten laden mislukt: {str(e)}. Voer stap 6 opnieuw uit." if lang == "nl"
-                                              else f"Failed to load reasoning results: {str(e)}. Please re-run step 6."))
+                        progress_container.success("✅ " + ("Codebook geladen uit cache" if lang == "nl" else "Codebook loaded from cache"))
                     else:
-                        st.error("Ongeldige cache data voor codebook generatie. Voer stap 6 opnieuw uit." if lang == "nl"
-                               else "Invalid cache data for codebook generation. Please re-run step 6.")
+                        st.error("⚠️ " + ("Reasoning resultaten niet gevonden in cache. Voer stap 6 opnieuw uit." if lang == "nl"
+                                       else "Reasoning results not found in cache. Please re-run step 6."))
                 else:
-                    st.error("Invoer data niet gevonden. Voer eerst codebook generatie (stap 6) uit." if lang == "nl"
-                           else "Input data not found. Please run codebook generation (step 6) first.")
+                    st.error("⚠️ " + ("Cache niet geldig. Voer stap 6 opnieuw uit." if lang == "nl"
+                                   else "Cache not valid. Please re-run step 6."))
 
             # Populate metadata
             if 'var_lab' not in st.session_state.pipeline_results:
