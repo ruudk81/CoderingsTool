@@ -1113,6 +1113,18 @@ Critical remarks:
 # STEP 7 CODEBOOK REFINEMENT (THREE-STAGE ARCHITECTURE)
 # =============================================================================
 
+# Language-specific conjunction lists for atomicity validation
+CONJUNCTIONS = {
+    "dutch": ["en", "of", "&", "/", ",", ";", "–"],
+    "english": ["and", "or", "&", "/", ",", ";", "–"]
+}
+
+def get_conjunction_list(language: str) -> str:
+    """Returns formatted conjunction list for the language"""
+    lang_key = "dutch" if language.lower() == "dutch" else "english"
+    conj_list = CONJUNCTIONS[lang_key]
+    return ", ".join([f'"{c}"' for c in conj_list])
+
 # STAGE 1: Atomic Code Enforcer - Split multi-concept codes, merge only if truly redundant
 STAGE_1_ATOMIC_ENFORCER_PROMPT = """
 You are ensuring every code expresses exactly ONE concept.
@@ -1137,16 +1149,17 @@ You are ensuring every code expresses exactly ONE concept.
 - One target (e.g., "product range" not "product range and availability")
 
 **Label Grammar:**
-- Codes: ≤6 words, no conjunctions (and/or/&/,/;/–), max 1 main verb
-- Themes: ≤10 words, one domain, no conjunctions
-- No compound concepts joined by punctuation
+- Codes: ≤6 words, max 1 main verb
+- Themes: ≤10 words, one domain
+- **NO CONJUNCTIONS ALLOWED**: {conjunction_list}
+- If code/theme contains these conjunctions → SPLIT into separate codes
 
 ## Procedure
 
 **Step 1: SPLIT multi-concept codes**
-- If a code has "and/or/&/," → split into separate atomic codes
-- If a code has multiple verbs/targets → split into separate atomic codes
-- Keep split codes if they would guide different coding decisions
+- If code/theme has any conjunction → split into separate atomic codes
+- If code has multiple verbs/targets → split into separate atomic codes
+- Keep split codes if they guide different coding decisions
 
 **Step 2: MERGE only if truly redundant**
 **Merge Test:** Would a researcher assign the same responses to both codes AND report them as one finding?
@@ -1159,35 +1172,34 @@ Use assignment_examples to guide merge decisions:
 - Near_neighbor relationships → respect boundary unless purely linguistic
 
 **Step 3: Group into themes**
-- Each theme = one conceptual domain in relation to the survey question
-- Theme labels: ≤10 words, one domain, no conjunctions
+- Each theme = one conceptual domain
 - Prefer 2-level hierarchy (Theme → Code)
 - Use 3-level (Theme → Category → Code) only if ≥2 codes share narrower sub-concept AND improves coder reliability
 
 ## Examples
 
 **Example 1: SPLIT multi-concept code**
-Raw: "Improve layout and signage"
+Raw: "Increase speed [conjunction] efficiency"
 → Split because:
-  - "Improve layout" = spatial organization decisions
-  - "Improve signage" = information clarity decisions
-  - Different coding implications (a response about shelf arrangement wouldn't mention signage)
+  - "Increase speed" = one concept (temporal performance)
+  - "Improve efficiency" = different concept (resource optimization)
+  - Two distinct coding dimensions
 
 **Example 2: MERGE redundant codes**
-Raw Code A: "Lower prices"  (inclusion: "mentions reducing costs")
-Raw Code B: "Reduce costs for customers"  (inclusion: "references price reduction")
+Raw Code A: "Reduce wait time"
+Raw Code B: "Decrease waiting period"
 → Merge because:
-  - Same practical implication (price reduction)
-  - Would be reported as one finding
-  - Merged: "Lower product prices"
+  - Same concept (duration reduction)
+  - Synonymous phrasing
+  - Merged: "Reduce wait time"
 
 **Example 3: KEEP separate (near-synonyms with different boundaries)**
-Raw Code A: "Expand product range"  (inclusion: "requests more variety")
-Raw Code B: "Improve product availability"  (inclusion: "mentions out of stock")
+Raw Code A: "Improve quality"
+Raw Code B: "Increase quantity"
 → Keep separate because:
-  - Range = variety of products
-  - Availability = stock levels of existing products
-  - Different coding implications
+  - Quality = excellence/standards
+  - Quantity = volume/amount
+  - Different dimensions
 
 ## Output JSON only
 
@@ -1199,7 +1211,7 @@ Raw Code B: "Improve product availability"  (inclusion: "mentions out of stock")
       "codes": [
         {{
           "id": "raw_id or merged_id1,raw_id2",
-          "code": "Atomic code (≤6 words)",
+          "code": "Atomic code (≤8 words)",
           "definition": "What belongs in this code (≤20 words, observable)",
           "source_cluster_id": "cluster_id from raw codes"
         }}
@@ -1247,13 +1259,13 @@ For each code, extract:
 
 ## Examples
 
-**Code: "Lower product prices"**
-- Signals: ["mentions price reduction", "uses words like cheaper/lower cost"]
-- Boundary Rule: "Unlike 'Improve price transparency', 'Lower product prices' focuses on actual price reduction, not information clarity"
+**Code: "Reduce wait time"**
+- Signals: ["mentions duration", "uses words like faster/quicker"]
+- Boundary Rule: "Unlike 'Improve scheduling', 'Reduce wait time' focuses on time reduction, not appointment organization"
 
-**Code: "Expand product range"**
-- Signals: ["mentions variety/assortment", "requests more options"]
-- Boundary Rule: "Unlike 'Improve product availability', 'Expand product range' focuses on variety of products, not stock levels"
+**Code: "Increase staff"**
+- Signals: ["mentions headcount", "requests more employees"]
+- Boundary Rule: "Unlike 'Train staff', 'Increase staff' focuses on quantity, not skill development"
 
 ## Output JSON only
 
@@ -1309,6 +1321,7 @@ You are merging multiple codebooks from different batches into one unified codeb
 **Step 1: Deduplicate codes**
 - If code appears in multiple batches with same/similar name → merge, keep one version
 - If boundary_rules conflict → reconcile by choosing clearer rule
+- **CRITICAL**: Ensure merged code has EXACTLY 2 signals (not more, not less)
 
 **Step 2: Consolidate themes**
 - If themes have overlapping central_patterns → merge themes
@@ -1318,9 +1331,11 @@ You are merging multiple codebooks from different batches into one unified codeb
 - Prefer 2-level (Theme → Code)
 - Use 3-level (Theme → Category → Code) only if ≥2 codes share a narrower sub-concept AND this improves coder reliability
 
-**Step 4: Final atomicity check**
+**Step 4: Final validation**
 - Ensure no code has conjunctions or >1 concept
 - Ensure no theme spans multiple domains
+- **MANDATORY**: Every code must have EXACTLY 2 signals (trim or add as needed)
+- Signals must be observable cues, not definitions
 
 ## Output JSON only
 
