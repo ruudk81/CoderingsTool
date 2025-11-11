@@ -663,16 +663,7 @@ class CodeAssigner:
         self.stage_1_calls += 1
         return response, prompt
 
-    async def assign_from_all_codes(self, idea_id: str, idea_text: str,
-                                   idea_embedding: np.ndarray,
-                                   default_confidence: float):
-        """Stage 2: Pick best code from top-10 similar codes when default fails
-
-        Hierarchical fallback: top-10 similar codes → theme-general → category-general → unknown
-
-        Returns:
-            tuple: (FallbackCodeAssignmentResponse, str) - response and prompt used
-        """
+    async def assign_from_all_codes(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray, default_confidence: float):
 
         # Build list of codes: top-10 similar + general + unknown
         all_codes_list = []
@@ -699,7 +690,7 @@ class CodeAssigner:
         unknown_label = MISCELLANEOUS_CODE_LABELS.get(self.language, "Other")
         all_codes_list.append({
             'code': unknown_label,
-            'definition': f"Geen duidelijke relatie met thema's in codebook",
+            'definition': "Geen duidelijke relatie met thema's in codebook",
             'inclusion_examples': None,
             'exclusion_examples': None,
             'near_neighbor_label': None,
@@ -1237,7 +1228,7 @@ class CodeAssigner:
                                                      key=lambda x: x[1]['count'], reverse=True):
                     print(f"  - {error_type}: {error_data['count']} occurrences")
                     if error_data['sample_messages']:
-                        print(f"    Sample errors:")
+                        print("    Sample errors:")
                         for i, msg in enumerate(error_data['sample_messages'], 1):
                             print(f"      {i}. {msg}")
         

@@ -1351,20 +1351,28 @@ def step_7_refine_codebook(
         themes_summary = []
 
         # Extract assignment_examples from codebook_reasoning.codebook
+        # Map by expanded cluster IDs to handle code merging/renaming
         import json
-        code_to_assignment_examples = {}
+        cluster_to_assignment_examples = {}
         if codebook_reasoning and hasattr(codebook_reasoning, 'codebook'):
             for entry in codebook_reasoning.codebook:
                 # Parse JSON strings to lists
                 inclusion = entry.get('inclusion_examples')
                 exclusion = entry.get('exclusion_examples')
 
-                code_to_assignment_examples[entry['code']] = {
+                examples_data = {
                     'inclusion_examples': json.loads(inclusion) if inclusion and isinstance(inclusion, str) else inclusion,
                     'exclusion_examples': json.loads(exclusion) if exclusion and isinstance(exclusion, str) else exclusion,
                     'near_neighbor_label': entry.get('near_neighbor_label'),
                     'tell_apart_rule': entry.get('tell_apart_rule')
                 }
+
+                # Map each expanded cluster ID to these examples
+                source_clusters = entry.get('source_cluster_id', '').split(',')
+                for cluster_id in source_clusters:
+                    cluster_id = cluster_id.strip()
+                    if cluster_id:
+                        cluster_to_assignment_examples[cluster_id] = examples_data
 
         for category in refinement_results.refined_codebook.refined_codebook:
             theme_name = category.category
@@ -1377,8 +1385,10 @@ def step_7_refine_codebook(
             })
 
             for subcode in category.subcodes:
-                # Get assignment_examples directly from code mapping
-                examples = code_to_assignment_examples.get(subcode.code, {})
+                # Get assignment_examples by expanded cluster ID (handles code merging)
+                source_clusters = subcode.source_cluster.split(',') if subcode.source_cluster else []
+                first_cluster = source_clusters[0].strip() if source_clusters else None
+                examples = cluster_to_assignment_examples.get(first_cluster, {}) if first_cluster else {}
 
                 final_inclusion = examples.get('inclusion_examples')
                 final_exclusion = examples.get('exclusion_examples')
