@@ -1395,7 +1395,7 @@ def step_7_refine_codebook(
                 near_neighbor = examples.get('near_neighbor_label')
                 tell_apart = examples.get('tell_apart_rule')
 
-                # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy)
+                # Create ThemeEnrichedCodebookEntry with category support (3-level hierarchy) and new refinement fields
                 enriched_entry = models.ThemeEnrichedCodebookEntry(
                     code=subcode.code,
                     definition=subcode.description,
@@ -1407,7 +1407,10 @@ def step_7_refine_codebook(
                     inclusion_examples=final_inclusion,
                     exclusion_examples=final_exclusion,
                     near_neighbor_label=near_neighbor,
-                    tell_apart_rule=tell_apart
+                    tell_apart_rule=tell_apart,
+                    signals=subcode.signals if hasattr(subcode, 'signals') else None,  # New: 2 observable cues from Stage 2
+                    boundary_rule=subcode.boundary_rule if hasattr(subcode, 'boundary_rule') else None,  # New: comparative boundary from Stage 2
+                    central_pattern=theme.central_pattern if hasattr(theme, 'central_pattern') else None  # New: unifying theme idea from Stage 2
                 )
                 enriched_entries.append(enriched_entry)
 
