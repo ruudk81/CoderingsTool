@@ -57,7 +57,6 @@ class CodeAssignedModel(ClusterModel):
 
 
 # === CODEBOOK  MODELS ========================================================================================================
-"""codebook_main"""
 class CodebookEntry(BaseModel):
     code: str
     definition: str

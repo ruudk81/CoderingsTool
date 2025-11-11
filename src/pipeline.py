@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 8   
+RUN_UNTIL_STEP = 7   
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True  
 PROMPT_PRINTER = False
@@ -942,7 +942,7 @@ def step_6_generate_codebook(
         streamlit_container: Optional Streamlit container for progress updates
 
     Returns:
-        tuple: (codebook_main: CodebookModel, codebook_reasoning: CodeGeneratorReasoningResults or None)
+        CodeGeneratorReasoningResults: Complete reasoning results with codebook and tracking data
     """
     from utils import speculativeStarterCodes, codeGenerator, clusterer, verboseReporter, promptPrinter
     
@@ -985,41 +985,27 @@ def step_6_generate_codebook(
     prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
     codebook_reasoning = None
 
-    if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
-        codebook_models = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodebookModel)
-        if codebook_models and len(codebook_models) > 0:
-            codebook_main = codebook_models[0]
-            codebook_entries = list(codebook_main.codes)  # Populate for Step 7
+    if not force_recalc and cache_manager.is_cache_valid(filename, f"{step_name}_reasoning", variable_key):
+        # Load codebook_reasoning from cache
+        reasoning_models = cache_manager.load_from_cache(
+            filename, f"{step_name}_reasoning", variable_key, codeGenerator.CodeGeneratorReasoningResults
+        )
+        if reasoning_models and len(reasoning_models) > 0:
+            codebook_reasoning = reasoning_models[0]
+            num_codes = len(codebook_reasoning.codebook) if codebook_reasoning.codebook else 0
             verbose_reporter.summary("CODEBOOK FROM CACHE", {
-                "Total codes": len(codebook_main.codes),
-                "Source variable": codebook_main.source_variable
+                "Total codes": num_codes,
+                "Source variable": var_name
             })
 
             # Optional Streamlit success message
             if streamlit_container:
-                streamlit_container.success(f"✅ Codebook generation completed (from cache): {len(codebook_main.codes)} codes")
+                streamlit_container.success(f"✅ Codebook generation completed (from cache): {num_codes} codes")
 
-            # Extract legacy codebook list for backward compatibility
-            codebook = [models.Codebook(code=entry.code, definition=entry.definition)
-                        for entry in codebook_main.codes]
-
-            # Load reasoning cache if flag is enabled
-            if cache_reasoning:
-                try:
-                    reasoning_models = cache_manager.load_from_cache(
-                        filename, f"{step_name}_reasoning", variable_key, codeGenerator.CodeGeneratorReasoningResults
-                    )
-                    if reasoning_models and len(reasoning_models) > 0:
-                        codebook_reasoning = reasoning_models[0]
-                        print("[OK] Loaded codebook reasoning from cache")
-                    else:
-                        print("Note: Reasoning cache not found (run with CACHE_CODEGENERATOR_REASONING=True to create)")
-                except Exception as e:
-                    print(f"Warning: Failed to load reasoning cache: {e}")
+            print("[OK] Loaded codebook reasoning from cache")
         else:
-            print("ERROR: Failed to load codebook from cache")
-            codebook_main = models.CodebookModel(codes=[], source_variable=var_name)
-            codebook = []
+            print("ERROR: Failed to load codebook reasoning from cache")
+            codebook_reasoning = None
     else:
         verbose_reporter.section_header("CODEBOOK GENERATION PHASE")
         start_time = time.time()
@@ -1039,13 +1025,7 @@ def step_6_generate_codebook(
 
         if not starter_codes and use_speculative_starter_codes:
             print("Error: Failed to generate starter codes. Cannot proceed with codebook generation.")
-            codebook_main = models.CodebookModel(
-                codes=[],
-                generation_metadata={"error": "Failed to generate starter codes"},
-                source_variable=var_name
-            )
-            codebook = []
-            results = {}  # Empty results for caching check
+            codebook_reasoning = None
         else:
             # Clean ideas before code generation (remove brackets, normalize whitespace)
             if verbose:
@@ -1064,9 +1044,6 @@ def step_6_generate_codebook(
             )
             results = generator.generate()
 
-            codebook_entries = []
-            codebook = []  # Legacy format for backward compatibility
-
             if results and isinstance(results, codeGenerator.CodeGeneratorReasoningResults):
                 # Use the codebook from results directly - it already has assignment_examples
                 final_codebook = results.codebook if results.codebook else []
@@ -1084,7 +1061,7 @@ def step_6_generate_codebook(
                     print("[LIST] Complete codebook:")
 
                 idx = 1
-                # Process the extracted final codebook
+                # Display the extracted final codebook
                 for item in final_codebook:
                     if verbose:
                         definition = item['definition']
@@ -1093,23 +1070,6 @@ def step_6_generate_codebook(
                         cluster_count = len(item['source_cluster_id'].split(','))
                         cluster_info = f" (→ {cluster_count} clusters)" if cluster_count > 1 else ""
                         print(f"  {idx}. {item['code']}{cluster_info}")
-
-                    # Parse JSON strings back to Lists for assignment_examples
-                    import json
-                    inclusion_ex = item.get('inclusion_examples')
-                    exclusion_ex = item.get('exclusion_examples')
-
-                    codebook_entry = models.CodebookEntry(
-                        code=item['code'],
-                        definition=item['definition'],
-                        source_cluster=item['source_cluster_id'],
-                        inclusion_examples=json.loads(inclusion_ex) if inclusion_ex and isinstance(inclusion_ex, str) else inclusion_ex,
-                        exclusion_examples=json.loads(exclusion_ex) if exclusion_ex and isinstance(exclusion_ex, str) else exclusion_ex,
-                        near_neighbor_label=item.get('near_neighbor_label'),
-                        tell_apart_rule=item.get('tell_apart_rule')
-                    )
-                    codebook_entries.append(codebook_entry)
-
                     idx += 1
 
                 # Validation: Ensure all clusters are mapped
@@ -1137,31 +1097,8 @@ def step_6_generate_codebook(
                     else:
                         verbose_reporter.stat_line("  ✓ All clusters successfully mapped")
 
-            else:
-                print("Warning: Codebook generator returned no results")
-
-            codebook_main = models.CodebookModel(
-                codes=codebook_entries,
-                generation_metadata={
-                    "methodology": "Inductive codebook generation from clusters",
-                    "starter_codes_count": len(starter_codes) if starter_codes else 0,
-                    "total_codes_generated": len(codebook_entries),
-                },
-                source_variable=var_name
-            )
-
         end_time = time.time()
         elapsed_time = end_time - start_time
-
-        if 'codebook_main' not in locals():
-            print("ERROR: codebook_main was not created!")
-            codebook_main = models.CodebookModel(
-                codes=[],
-                generation_metadata={"error": "Failed to create codebook model"},
-                source_variable=var_name
-            )
-
-        cache_manager.save_to_cache([codebook_main], filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
         # Pass reasoning results if available (either from cache or newly generated)
         reasoning_for_display = None
@@ -1248,10 +1185,10 @@ def step_6_generate_codebook(
 
         # Optional Streamlit success message
         if streamlit_container:
-            num_codes = len(codebook_main.codes) if codebook_main else 0
+            num_codes = len(codebook_reasoning.codebook) if codebook_reasoning and codebook_reasoning.codebook else 0
             streamlit_container.success(f"✅ Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
 
-    return codebook_main, codebook_reasoning
+    return codebook_reasoning
 
 
 def step_7_refine_codebook(
@@ -1390,25 +1327,43 @@ def step_7_refine_codebook(
             streamlit_container.warning("⚠️ Codebook refinement had issues")
 
     # Create theme enriched codebook
-    import json
     if refinement_results and refinement_results.refined_codebook.refined_codebook:
         verbose_reporter.step_start("Creating theme enriched codebook", "Converting refined results for step 9")
+
+        # Load codebook_reasoning from cache if not provided (for cache-only runs)
+        if not codebook_reasoning:
+            from utils import codeGenerator
+            try:
+                reasoning_models = cache_manager.load_from_cache(
+                    filename, "codebook_generation_reasoning", variable_key,
+                    codeGenerator.CodeGeneratorReasoningResults
+                )
+                if reasoning_models and len(reasoning_models) > 0:
+                    codebook_reasoning = reasoning_models[0]
+                    verbose_reporter.stat_line("Loaded codebook_reasoning from cache for examples extraction")
+            except Exception as e:
+                verbose_reporter.warning(f"Failed to load codebook_reasoning from cache: {e}")
+                codebook_reasoning = None
 
         # Create ThemeEnrichedCodebookEntry objects from refined codebook
         enriched_entries = []
         code_to_theme_mapping = {}
         themes_summary = []
 
-        # Create mapping from code to assignment_examples from codebook_main
-        # codebook_main now has assignment_examples already populated from Step 6
+        # Extract assignment_examples from codebook_reasoning.codebook
+        import json
         code_to_assignment_examples = {}
-        if codebook_main and hasattr(codebook_main, 'codes'):
-            for entry in codebook_main.codes:
-                code_to_assignment_examples[entry.code] = {
-                    'inclusion_examples': entry.inclusion_examples,
-                    'exclusion_examples': entry.exclusion_examples,
-                    'near_neighbor_label': entry.near_neighbor_label,
-                    'tell_apart_rule': entry.tell_apart_rule
+        if codebook_reasoning and hasattr(codebook_reasoning, 'codebook'):
+            for entry in codebook_reasoning.codebook:
+                # Parse JSON strings to lists
+                inclusion = entry.get('inclusion_examples')
+                exclusion = entry.get('exclusion_examples')
+
+                code_to_assignment_examples[entry['code']] = {
+                    'inclusion_examples': json.loads(inclusion) if inclusion and isinstance(inclusion, str) else inclusion,
+                    'exclusion_examples': json.loads(exclusion) if exclusion and isinstance(exclusion, str) else exclusion,
+                    'near_neighbor_label': entry.get('near_neighbor_label'),
+                    'tell_apart_rule': entry.get('tell_apart_rule')
                 }
 
         for category in refinement_results.refined_codebook.refined_codebook:
@@ -1978,7 +1933,7 @@ if __name__ == '__main__':
     # === STEP 6 ====
     """Generate codes"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
-    codebook_main, codebook_reasoning = step_6_generate_codebook(
+    codebook_reasoning = step_6_generate_codebook(
         initial_cluster_results, filename, var_name, var_lab, variable_key, cache_manager, model_config,
         use_speculative_starter_codes=USE_SPECULATIVE_STARTER_CODES,
         force_recalc=force_recalc, verbose=VERBOSE, verbose_detailed=False,
