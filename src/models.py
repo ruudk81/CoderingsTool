@@ -80,11 +80,14 @@ class RefinedSubcode(BaseModel):
     description: str
     category: str = ""  # Empty string when code is directly under theme; category name for 3-level hierarchy
     source_cluster: str = ""  # Cluster ID(s) from Step 6 - may be comma-separated for merged codes (e.g., "8,11,23")
+    signals: List[str] = []  # 2 observable cues for code assignment (from Stage 2)
+    boundary_rule: str = ""  # Comparative rule vs nearest confusable code (from Stage 2)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookCategory(BaseModel):
     category: str
     subcodes: List[RefinedSubcode]
+    central_pattern: str = ""  # One-sentence unifying idea for the theme (from Stage 2)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookModel(BaseModel):
