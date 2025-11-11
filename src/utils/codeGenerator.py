@@ -4089,6 +4089,20 @@ class InductiveCodeGenerator:
             self.verbose_reporter.stat_line(f"Batch adding {len(create_codes)} new codes to SharedCodebook")
             await self.shared_codebook.batch_update(create_codes, current_version)
             updates_made = True
+
+            # SYNC: Update result dicts to match what was added to SharedCodebook
+            # This ensures codebook builder can properly map all clusters including recovered ones
+            for create_code in create_codes:
+                cluster_id = create_code['cluster_id']
+                final_code = create_code['code']
+                final_definition = create_code['definition']
+
+                # Find and update the corresponding result dict
+                for result_item in results:
+                    if str(result_item.get('cluster_id', '')) == str(cluster_id):
+                        result_item['final_code'] = final_code
+                        result_item['final_definition'] = final_definition
+                        break
         
         # Process MODIFY operations individually with validation
         for modify_op in modify_operations:
@@ -4112,6 +4126,12 @@ class InductiveCodeGenerator:
                     if result_item.get('final_code') == modify_op['original_code']:
                         result_item['final_code'] = modify_op['new_code']
                         updates_count += 1
+
+                # Also update the current batch results parameter
+                for result_item in results:
+                    if result_item.get('final_code') == modify_op['original_code']:
+                        result_item['final_code'] = modify_op['new_code']
+                        result_item['final_definition'] = modify_op['new_definition']
 
                 if updates_count > 0 and self.verbose_detailed:
                     self.verbose_reporter.stat_line(f"  Updated {updates_count} cluster(s) to use new code name")
