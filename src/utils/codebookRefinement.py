@@ -3,15 +3,18 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 # === MODULES ========================================================================================================
 import logging
 import math
+import re
+import json
 from datetime import datetime
 from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI, OpenAI
+import spacy
 
 from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY
-from prompts import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
-from models import RefinedCodebookModel, CodeRefinementResults #RefinedCodebookCategory
+from prompts import STAGE_1_ATOMIC_ENFORCER_PROMPT, STAGE_2_BOUNDARY_EXTRACTOR_PROMPT, STAGE_3_CONSOLIDATOR_PROMPT
+from models import RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory
 from utils.codeGenerator import CodeGeneratorReasoningResults
 from utils.verboseReporter import VerboseReporter
 
@@ -39,10 +42,10 @@ class CodebookRefinementProcessor:
         self.config = config
         self.model_config = config.model_config
         self.api_key = OPENAI_API_KEY
-        
+
         if not self.api_key:
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
-        
+
         # Initialize OpenAI client
         self.client = AsyncOpenAI(api_key=self.api_key)
 
@@ -52,8 +55,126 @@ class CodebookRefinementProcessor:
         # Setup prompt printer
         self.prompt_printer = config.prompt_printer
 
+        # Initialize spaCy for validation (language-dependent)
+        self.nlp = self._load_spacy_model(config.language)
+
         logger.info(f"Initialized CodebookRefinementProcessor with model: {self.model_config.codebook_refinement_model}")
-    
+
+    def _load_spacy_model(self, language: str):
+        """Load appropriate spaCy model for language"""
+        try:
+            if language.lower() == "dutch":
+                return spacy.load("nl_core_news_lg")
+            else:  # Default to English
+                return spacy.load("en_core_web_sm")
+        except OSError:
+            self.reporter.warning(f"spaCy model not found for {language}, validation will be limited")
+            return None
+
+    # === VALIDATION METHODS (MICRO-GUARDRAILS) ===
+
+    def validate_code_atomicity(self, code: str, language: str) -> List[str]:
+        """Returns list of atomicity violations for a code"""
+        violations = []
+
+        # Regex check for conjunctions (Dutch and English)
+        conjunction_pattern = r'\b(and|or|en|of|&|/|,|;|–)\b'
+        if re.search(conjunction_pattern, code, re.IGNORECASE):
+            violations.append(f"Code contains conjunction: '{code}'")
+
+        # Length check (≤6 words)
+        word_count = len(code.split())
+        if word_count > 6:
+            violations.append(f"Code exceeds 6 words: '{code}' ({word_count} words)")
+
+        # POS tagging for verb count (≤1 main verb)
+        if self.nlp:
+            doc = self.nlp(code)
+            verbs = [token for token in doc if token.pos_ == 'VERB']
+            if len(verbs) > 1:
+                violations.append(f"Code has {len(verbs)} verbs (expected ≤1): '{code}'")
+
+        return violations
+
+    def validate_theme_atomicity(self, theme: str, language: str) -> List[str]:
+        """Returns list of atomicity violations for a theme"""
+        violations = []
+
+        # Regex check for conjunctions
+        conjunction_pattern = r'\b(and|or|en|of|&|/|,|;|–)\b'
+        if re.search(conjunction_pattern, theme, re.IGNORECASE):
+            violations.append(f"Theme contains conjunction: '{theme}'")
+
+        # Length check (≤10 words)
+        word_count = len(theme.split())
+        if word_count > 10:
+            violations.append(f"Theme exceeds 10 words: '{theme}' ({word_count} words)")
+
+        return violations
+
+    def validate_metadata_fields(self, code_data: dict) -> List[str]:
+        """Check required metadata fields are present and valid"""
+        violations = []
+
+        # Check signals exists and has 2 items
+        signals = code_data.get('signals', [])
+        if not signals:
+            violations.append(f"Code '{code_data.get('code', 'unknown')}' missing signals field")
+        elif len(signals) != 2:
+            violations.append(f"Code '{code_data.get('code', 'unknown')}' has {len(signals)} signals (expected 2)")
+
+        # Check boundary_rule exists and mentions another code
+        boundary_rule = code_data.get('boundary_rule', '')
+        if not boundary_rule:
+            violations.append(f"Code '{code_data.get('code', 'unknown')}' missing boundary_rule field")
+        elif 'Unlike' not in boundary_rule and 'unlike' not in boundary_rule.lower():
+            violations.append(f"Code '{code_data.get('code', 'unknown')}' boundary_rule doesn't follow 'Unlike [X]' format")
+
+        return violations
+
+    def validate_stage_output(self, stage_name: str, output_data: dict, language: str) -> List[str]:
+        """Validate output from any stage"""
+        all_violations = []
+
+        if stage_name == "stage1":
+            # Validate atomic_codes structure
+            atomic_codes = output_data.get('atomic_codes', [])
+            for theme_data in atomic_codes:
+                theme = theme_data.get('theme', '')
+                theme_violations = self.validate_theme_atomicity(theme, language)
+                all_violations.extend(theme_violations)
+
+                for code_data in theme_data.get('codes', []):
+                    code = code_data.get('code', '')
+                    code_violations = self.validate_code_atomicity(code, language)
+                    all_violations.extend(code_violations)
+
+        elif stage_name in ["stage2", "stage3"]:
+            # Validate enriched_codebook or final_codebook structure
+            codebook_key = 'enriched_codebook' if stage_name == "stage2" else 'final_codebook'
+            codebook = output_data.get(codebook_key, [])
+
+            for theme_data in codebook:
+                theme = theme_data.get('theme', '')
+                theme_violations = self.validate_theme_atomicity(theme, language)
+                all_violations.extend(theme_violations)
+
+                # Check central_pattern exists
+                if not theme_data.get('central_pattern'):
+                    all_violations.append(f"Theme '{theme}' missing central_pattern")
+
+                for code_data in theme_data.get('codes', []):
+                    code = code_data.get('code', '')
+                    code_violations = self.validate_code_atomicity(code, language)
+                    all_violations.extend(code_violations)
+
+                    metadata_violations = self.validate_metadata_fields(code_data)
+                    all_violations.extend(metadata_violations)
+
+        return all_violations
+
+    # === MAIN PROCESSING METHODS ===
+
     def refine_codebook(self, survey_question: str, reasoning_results: CodeGeneratorReasoningResults) -> CodeRefinementResults:
         """Main entry point - decides between single-batch or MAP-REDUCE"""
 
@@ -81,12 +202,27 @@ class CodebookRefinementProcessor:
             return self._create_error_results(reasoning_results, datetime.now(), str(e))
 
     def _refine_single_batch(self, survey_question: str, raw_codes: List[dict]) -> CodeRefinementResults:
-        """Single-batch refinement (for <= threshold codes)"""
+        """Single-batch refinement using two-stage processing (Stage 1 → Stage 2)"""
 
         start_time = datetime.now()
 
-        # Use MAP method for single batch (same prompt, no REDUCE needed)
-        refined_model = self._refine_batch_map(survey_question, raw_codes, batch_id=0)
+        # STAGE 1: Atomic Code Enforcement
+        stage1_output = self._call_stage1_atomic_enforcer(survey_question, raw_codes)
+
+        # Build ID mapping for Stage 2
+        id_to_cluster_map = {}
+        for theme_data in stage1_output.get('atomic_codes', []):
+            for code_data in theme_data.get('codes', []):
+                seq_id = code_data.get('id', '')
+                cluster_id = code_data.get('source_cluster_id', '')
+                if seq_id:
+                    id_to_cluster_map[seq_id] = cluster_id
+
+        # STAGE 2: Boundary & Signal Extraction
+        stage2_output = self._call_stage2_boundary_extractor(survey_question, stage1_output)
+
+        # Convert to RefinedCodebookModel
+        refined_model = self._convert_to_refined_model(stage2_output, id_to_cluster_map)
 
         # Build results
         processing_time = (datetime.now() - start_time).total_seconds()
@@ -102,7 +238,8 @@ class CodebookRefinementProcessor:
                 'model_used': self.model_config.codebook_refinement_model,
                 'language': self.config.language,
                 'reasoning_effort': 'minimal',
-                'text_verbosity': 'low'
+                'text_verbosity': 'low',
+                'stages': 'stage1+stage2'
             },
             timestamp=start_time.isoformat()
         )
@@ -234,20 +371,23 @@ class CodebookRefinementProcessor:
         return json.loads(response_text)
 
     def _convert_to_refined_model(self, response_data: dict, id_to_cluster_map: dict) -> RefinedCodebookModel:
-        """Convert parsed JSON to RefinedCodebookModel with ID mapping"""
-        from models import RefinedSubcode, RefinedCodebookCategory
+        """Convert parsed JSON to RefinedCodebookModel with ID mapping
 
+        Handles outputs from Stage 2 (enriched_codebook) and Stage 3 (final_codebook)
+        """
         categories = []
-        refined_codebook_data = response_data.get('refined_codebook', [])
 
-        for cat_data in refined_codebook_data:
+        # Handle both Stage 2 (enriched_codebook) and Stage 3 (final_codebook) outputs
+        codebook_data = response_data.get('enriched_codebook') or response_data.get('final_codebook', [])
+
+        for cat_data in codebook_data:
             try:
-                # Convert codes defensively (changed from 'subcodes' to 'codes')
+                # Convert codes with new fields (signals, boundary_rule)
                 subcodes = []
                 subcodes_data = cat_data.get('codes', [])
 
                 for subcode_data in subcodes_data:
-                    if isinstance(subcode_data, dict) and 'code' in subcode_data and 'description' in subcode_data:
+                    if isinstance(subcode_data, dict) and 'code' in subcode_data:
                         # Map sequential ID back to source_cluster_id
                         # Handle merged IDs from GPT-5 (e.g., "2,3" → "8,12")
                         sequential_id = subcode_data.get('id', '')
@@ -261,34 +401,34 @@ class CodebookRefinementProcessor:
                             cluster_parts = [id_to_cluster_map.get(id, '') for id in id_parts]
                             # Filter out empty values and join
                             source_cluster = ','.join([c for c in cluster_parts if c])
-                            if False: #debug
-                                self.reporter.debug(f"    Merged ID '{sequential_id}' → clusters '{source_cluster}'")
                             if not source_cluster:
                                 self.reporter.warning(f"    Failed to map IDs '{sequential_id}' to any clusters")
                         else:
                             # Single ID, direct lookup
                             source_cluster = id_to_cluster_map.get(sequential_id, '')
-                            if False: #debug 
-                                self.reporter.debug(f"    Single ID '{sequential_id}' → cluster '{source_cluster}'")
                             if not source_cluster:
                                 self.reporter.warning(f"    ID '{sequential_id}' not found in id_to_cluster_map")
 
+                        # Create RefinedSubcode with new fields
                         subcode = RefinedSubcode(
-                            id=sequential_id,  # Keep sequential ID for traceability
+                            id=sequential_id,
                             code=subcode_data['code'],
-                            description=subcode_data['description'],
-                            category=subcode_data.get('category', ''),  # Parse category field for 3-level hierarchy
-                            source_cluster=source_cluster  # Map back to original cluster IDs
+                            description=subcode_data.get('definition') or subcode_data.get('description', ''),  # Stage 1 uses 'definition', old format used 'description'
+                            category=subcode_data.get('category', ''),
+                            source_cluster=source_cluster,
+                            signals=subcode_data.get('signals', []),  # New field from Stage 2
+                            boundary_rule=subcode_data.get('boundary_rule', '')  # New field from Stage 2
                         )
                         subcodes.append(subcode)
                     else:
                         self.reporter.warning(f"Skipping malformed subcode: {subcode_data}")
 
-                # Convert category defensively (changed from 'category' to 'theme')
+                # Convert category with central_pattern
                 if 'theme' in cat_data:
                     category = RefinedCodebookCategory(
                         category=cat_data['theme'],
-                        subcodes=subcodes
+                        subcodes=subcodes,
+                        central_pattern=cat_data.get('central_pattern', '')  # New field from Stage 2
                     )
                     categories.append(category)
                 else:
@@ -299,8 +439,7 @@ class CodebookRefinementProcessor:
                 self.reporter.error(f"Category data: {cat_data}")
                 continue
 
-        # Convert to our model with properly structured data
-        # Use .model_dump() to convert Pydantic objects to dicts for proper validation
+        # Convert to our model
         refined_model = RefinedCodebookModel(
             analysis=response_data.get('analysis', 'No analysis provided'),
             refined_codebook=[cat.model_dump() for cat in categories],
@@ -314,31 +453,31 @@ class CodebookRefinementProcessor:
 
         return refined_model
 
-    def _call_refinement_llm(self, survey_question: str, raw_codes: List[dict]) -> RefinedCodebookModel:
-        """Call GPT-5 for codebook refinement using simple sync call"""
+    # === THREE-STAGE LLM CALL METHODS ===
+
+    def _call_stage1_atomic_enforcer(self, survey_question: str, raw_codes: List[dict], max_retries: int = 2) -> dict:
+        """Call GPT-5 for Stage 1: Atomic Code Enforcement with retry logic"""
         from openai import OpenAI
 
-        # Build mapping from sequential ID to source_cluster_id
-        id_to_cluster_map = {code['id']: code.get('source_cluster_id', '') for code in raw_codes}
-
-        # Format codes for prompt with IDs and assignment_examples
+        # Format codes for prompt
         formatted_codes = '\n\n'.join([self._format_code_with_assignment_examples(code) for code in raw_codes])
 
         # Create prompt
-        prompt = CODEBOOK_REFINEMENT_PROMPT.format(
+        prompt = STAGE_1_ATOMIC_ENFORCER_PROMPT.format(
             language=self.config.language,
             survey_question=survey_question,
-            raw_codes=formatted_codes)
+            raw_codes=formatted_codes
+        )
 
-        self.reporter.info(f"Calling {self.model_config.codebook_refinement_model} for refinement")
+        self.reporter.info(f"Calling Stage 1: Atomic Code Enforcer ({len(raw_codes)} codes)")
 
         # Capture prompt if enabled
         if self.prompt_printer:
             self.prompt_printer.capture_prompt(
-                step_name="step_7_codebook_refinement",
-                utility_name="codebookRefinement",
+                step_name="step_7_stage1_atomic_enforcer",
+                utility_name="codebookRefinement_Stage1",
                 prompt_content=prompt,
-                prompt_type="gpt5_refinement",
+                prompt_type="stage1_atomic_enforcer",
                 metadata={
                     'model': self.model_config.codebook_refinement_model,
                     'raw_code_count': len(raw_codes),
@@ -346,29 +485,185 @@ class CodebookRefinementProcessor:
                 }
             )
 
-        # Simple sync client
         client = OpenAI(api_key=self.api_key)
 
-        try:
-            # Ultra-simple API call
-            response = client.responses.create(
-                model="gpt-5",
-                input=prompt,
-                reasoning={"effort": "minimal"},
-                text={"verbosity": "low"}
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.responses.create(
+                    model="gpt-5",
+                    input=prompt,
+                    reasoning={"effort": "minimal"},
+                    text={"verbosity": "low"}
+                )
+
+                # Parse JSON response
+                response_data = self._parse_response_json(response)
+
+                # Validate output
+                violations = self.validate_stage_output("stage1", response_data, self.config.language)
+
+                if violations:
+                    self.reporter.warning(f"Stage 1 validation found {len(violations)} violations:")
+                    for v in violations[:5]:  # Show first 5
+                        self.reporter.warning(f"  - {v}")
+
+                    if attempt < max_retries:
+                        self.reporter.info(f"Retrying Stage 1 (attempt {attempt + 2}/{max_retries + 1})")
+                        # Add violations to prompt for retry
+                        retry_prompt = prompt + f"\n\n**VALIDATION ERRORS FROM PREVIOUS ATTEMPT:**\n" + "\n".join(violations[:10])
+                        prompt = retry_prompt
+                        continue
+                    else:
+                        self.reporter.warning("Max retries reached, proceeding with violations")
+
+                self.reporter.info(f"Stage 1 complete: {len(response_data.get('atomic_codes', []))} themes generated")
+                return response_data
+
+            except Exception as e:
+                if attempt < max_retries:
+                    self.reporter.warning(f"Stage 1 failed (attempt {attempt + 1}), retrying: {str(e)}")
+                    continue
+                else:
+                    self.reporter.error(f"Stage 1 failed after {max_retries + 1} attempts: {str(e)}")
+                    raise
+
+    def _call_stage2_boundary_extractor(self, survey_question: str, atomic_codes_data: dict, max_retries: int = 2) -> dict:
+        """Call GPT-5 for Stage 2: Boundary & Signal Extraction with retry logic"""
+        from openai import OpenAI
+
+        # Format atomic codes as JSON string for prompt
+        atomic_codes_json = json.dumps(atomic_codes_data.get('atomic_codes', []), indent=2, ensure_ascii=False)
+
+        # Create prompt
+        prompt = STAGE_2_BOUNDARY_EXTRACTOR_PROMPT.format(
+            language=self.config.language,
+            survey_question=survey_question,
+            atomic_codes_from_stage1=atomic_codes_json
+        )
+
+        self.reporter.info(f"Calling Stage 2: Boundary & Signal Extractor")
+
+        # Capture prompt if enabled
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name="step_7_stage2_boundary_extractor",
+                utility_name="codebookRefinement_Stage2",
+                prompt_content=prompt,
+                prompt_type="stage2_boundary_extractor",
+                metadata={
+                    'model': self.model_config.codebook_refinement_model,
+                    'theme_count': len(atomic_codes_data.get('atomic_codes', [])),
+                    'language': self.config.language
+                }
             )
 
-            # Parse response and convert to model
-            response_data = self._parse_response_json(response)
-            refined_model = self._convert_to_refined_model(response_data, id_to_cluster_map)
-            
-            self.reporter.info(f"LLM call successful: {len(refined_model.refined_codebook)} categories generated")
-            
-            return refined_model
-            
-        except Exception as e:
-            self.reporter.error(f"LLM call failed: {str(e)}")
-            raise
+        client = OpenAI(api_key=self.api_key)
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.responses.create(
+                    model="gpt-5",
+                    input=prompt,
+                    reasoning={"effort": "minimal"},
+                    text={"verbosity": "low"}
+                )
+
+                # Parse JSON response
+                response_data = self._parse_response_json(response)
+
+                # Validate output
+                violations = self.validate_stage_output("stage2", response_data, self.config.language)
+
+                if violations:
+                    self.reporter.warning(f"Stage 2 validation found {len(violations)} violations:")
+                    for v in violations[:5]:
+                        self.reporter.warning(f"  - {v}")
+
+                    if attempt < max_retries:
+                        self.reporter.info(f"Retrying Stage 2 (attempt {attempt + 2}/{max_retries + 1})")
+                        retry_prompt = prompt + f"\n\n**VALIDATION ERRORS FROM PREVIOUS ATTEMPT:**\n" + "\n".join(violations[:10])
+                        prompt = retry_prompt
+                        continue
+                    else:
+                        self.reporter.warning("Max retries reached, proceeding with violations")
+
+                self.reporter.info(f"Stage 2 complete: enriched codebook with metadata")
+                return response_data
+
+            except Exception as e:
+                if attempt < max_retries:
+                    self.reporter.warning(f"Stage 2 failed (attempt {attempt + 1}), retrying: {str(e)}")
+                    continue
+                else:
+                    self.reporter.error(f"Stage 2 failed after {max_retries + 1} attempts: {str(e)}")
+                    raise
+
+    def _call_stage3_consolidator(self, survey_question: str, codebooks_summary: str, combined_id_map: dict, max_retries: int = 2) -> dict:
+        """Call GPT-5 for Stage 3: Hierarchical Consolidation with retry logic"""
+        from openai import OpenAI
+
+        # Create prompt
+        prompt = STAGE_3_CONSOLIDATOR_PROMPT.format(
+            language=self.config.language,
+            survey_question=survey_question,
+            codebooks_from_stage2_batches=codebooks_summary
+        )
+
+        self.reporter.info(f"Calling Stage 3: Hierarchical Consolidator")
+
+        # Capture prompt if enabled
+        if self.prompt_printer:
+            self.prompt_printer.capture_prompt(
+                step_name="step_7_stage3_consolidator",
+                utility_name="codebookRefinement_Stage3",
+                prompt_content=prompt,
+                prompt_type="stage3_consolidator",
+                metadata={
+                    'model': self.model_config.codebook_refinement_model,
+                    'language': self.config.language
+                }
+            )
+
+        client = OpenAI(api_key=self.api_key)
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.responses.create(
+                    model="gpt-5",
+                    input=prompt,
+                    reasoning={"effort": "minimal"},
+                    text={"verbosity": "low"}
+                )
+
+                # Parse JSON response
+                response_data = self._parse_response_json(response)
+
+                # Validate output
+                violations = self.validate_stage_output("stage3", response_data, self.config.language)
+
+                if violations:
+                    self.reporter.warning(f"Stage 3 validation found {len(violations)} violations:")
+                    for v in violations[:5]:
+                        self.reporter.warning(f"  - {v}")
+
+                    if attempt < max_retries:
+                        self.reporter.info(f"Retrying Stage 3 (attempt {attempt + 2}/{max_retries + 1})")
+                        retry_prompt = prompt + f"\n\n**VALIDATION ERRORS FROM PREVIOUS ATTEMPT:**\n" + "\n".join(violations[:10])
+                        prompt = retry_prompt
+                        continue
+                    else:
+                        self.reporter.warning("Max retries reached, proceeding with violations")
+
+                self.reporter.info(f"Stage 3 complete: final consolidated codebook")
+                return response_data
+
+            except Exception as e:
+                if attempt < max_retries:
+                    self.reporter.warning(f"Stage 3 failed (attempt {attempt + 1}), retrying: {str(e)}")
+                    continue
+                else:
+                    self.reporter.error(f"Stage 3 failed after {max_retries + 1} attempts: {str(e)}")
+                    raise
 
     def _create_overlapping_batches(self, raw_codes: List[dict]) -> List[List[dict]]:
         """Split codes into sequential batches with 10% overlap at boundaries"""
@@ -400,56 +695,32 @@ class CodebookRefinementProcessor:
         return batches
 
     def _refine_batch_map(self, survey_question: str, batch: List[dict], batch_id: int) -> RefinedCodebookModel:
-        """MAP: Refine single batch using existing CODEBOOK_REFINEMENT_PROMPT"""
-
-        # Build ID mapping
-        id_to_cluster_map = {code['id']: code.get('source_cluster_id', '') for code in batch}
-
-        # Format codes
-        formatted_codes = '\n\n'.join([
-            self._format_code_with_assignment_examples(code)
-            for code in batch
-        ])
-
-        # Use existing CODEBOOK_REFINEMENT_PROMPT with optional subset note
-        prompt = CODEBOOK_REFINEMENT_PROMPT.format(
-            language=self.config.language,
-            survey_question=survey_question,
-            raw_codes=formatted_codes
-        )
-
-        # Add subset context note
-        subset_note = "\n\n**NOTE**: This is a subset of the full dataset. Some codes from adjacent subsets may relate to themes here."
-        prompt = prompt.replace("Begin now.", subset_note + "\n\nBegin now.")
+        """MAP: Refine single batch using two-stage processing (Stage 1 → Stage 2)"""
 
         self.reporter.stat_line(f"MAP: Refining batch {batch_id} ({len(batch)} codes)")
 
-        # Capture prompt if enabled
-        if self.prompt_printer:
-            self.prompt_printer.capture_prompt(
-                step_name=f"step_7_map_batch_{batch_id}",
-                utility_name="codebookRefinement_MAP",
-                prompt_content=prompt,
-                prompt_type="map_refinement",
-                metadata={'batch_id': batch_id, 'batch_size': len(batch)}
-            )
+        # STAGE 1: Atomic Code Enforcement for this batch
+        stage1_output = self._call_stage1_atomic_enforcer(survey_question, batch)
 
-        # Call GPT-5
-        client = OpenAI(api_key=self.api_key)
+        # Build ID mapping for Stage 2
+        id_to_cluster_map = {}
+        for theme_data in stage1_output.get('atomic_codes', []):
+            for code_data in theme_data.get('codes', []):
+                seq_id = code_data.get('id', '')
+                cluster_id = code_data.get('source_cluster_id', '')
+                if seq_id:
+                    id_to_cluster_map[seq_id] = cluster_id
 
-        response = client.responses.create(
-            model="gpt-5",
-            input=prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}
-        )
+        # STAGE 2: Boundary & Signal Extraction for this batch
+        stage2_output = self._call_stage2_boundary_extractor(survey_question, stage1_output)
 
-        # Parse response (use existing parse logic)
-        parsed_json = self._parse_response_json(response)
-        return self._convert_to_refined_model(parsed_json, id_to_cluster_map)
+        # Convert to RefinedCodebookModel
+        refined_model = self._convert_to_refined_model(stage2_output, id_to_cluster_map)
 
-    def _format_codebooks_for_reduce(self, map_results: List[Dict]) -> str:
-        """Format multiple codebooks from MAP phase for REDUCE prompt"""
+        return refined_model
+
+    def _format_codebooks_for_stage3(self, map_results: List[Dict]) -> str:
+        """Format multiple enriched codebooks from MAP phase (Stage 1+2) for Stage 3 consolidation"""
 
         formatted_codebooks = []
 
@@ -463,9 +734,16 @@ class CodebookRefinementProcessor:
 
             for theme in result.refined_codebook:
                 parts.append(f"Theme: {theme.category}")
+                parts.append(f"  Central Pattern: {theme.central_pattern}")
                 parts.append("  Codes under this theme:")
+
                 for subcode in theme.subcodes:
-                    parts.append(f"    - [{subcode.id}] {subcode.code}: {subcode.description}")
+                    parts.append(f"    - [{subcode.id}] {subcode.code}")
+                    parts.append(f"      Definition: {subcode.description}")
+                    if subcode.signals:
+                        parts.append(f"      Signals: {', '.join(subcode.signals)}")
+                    if subcode.boundary_rule:
+                        parts.append(f"      Boundary Rule: {subcode.boundary_rule}")
 
                     # Mark boundary codes
                     code_ids = subcode.id.split(',')
@@ -483,39 +761,7 @@ class CodebookRefinementProcessor:
         return '\n\n'.join(formatted_codebooks)
 
     def _merge_codebooks_reduce(self, survey_question: str, map_results: List[Dict]) -> RefinedCodebookModel:
-        """REDUCE: Merge multiple codebooks into final unified codebook"""
-
-        # Format codebooks for prompt
-        codebooks_summary = self._format_codebooks_for_reduce(map_results)
-
-        # Create REDUCE prompt
-        prompt = CODEBOOK_MERGE_PROMPT.format(
-            language=self.config.language,
-            survey_question=survey_question,
-            codebooks_summary=codebooks_summary,
-            n_codebooks=len(map_results)
-        )
-
-        self.reporter.stat_line(f"REDUCE: Merging {len(map_results)} codebooks")
-
-        # Capture prompt if enabled
-        if self.prompt_printer:
-            self.prompt_printer.capture_prompt(
-                step_name="step_7_reduce",
-                utility_name="codebookRefinement_REDUCE",
-                prompt_content=prompt,
-                prompt_type="reduce_codebook_merge",
-                metadata={'codebook_count': len(map_results)}
-            )
-
-        # Call GPT-5
-        client = OpenAI(api_key=self.api_key)
-        response = client.responses.create(
-            model="gpt-5",
-            input=prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}
-        )
+        """REDUCE: Merge multiple enriched codebooks using Stage 3 consolidation"""
 
         # Build comprehensive ID mapping from all batches
         combined_id_map = {}
@@ -524,15 +770,19 @@ class CodebookRefinementProcessor:
                 seq_id = code['id']
                 cluster_id = code.get('source_cluster_id', '')
                 combined_id_map[seq_id] = cluster_id
-                if False: #debug  
-                    self.reporter.debug(f"  ID map: {seq_id} → {cluster_id}")
 
-        if False: #debug  
-             self.reporter.debug(f"Built combined_id_map with {len(combined_id_map)} entries")
+        # Format enriched codebooks for Stage 3
+        codebooks_summary = self._format_codebooks_for_stage3(map_results)
 
-        # Parse response
-        parsed_json = self._parse_response_json(response)
-        return self._convert_to_refined_model(parsed_json, combined_id_map)
+        self.reporter.stat_line(f"REDUCE: Consolidating {len(map_results)} enriched codebooks using Stage 3")
+
+        # STAGE 3: Consolidation
+        stage3_output = self._call_stage3_consolidator(survey_question, codebooks_summary, combined_id_map)
+
+        # Convert to RefinedCodebookModel
+        final_model = self._convert_to_refined_model(stage3_output, combined_id_map)
+
+        return final_model
 
     def _refine_hierarchically(self, survey_question: str, raw_codes: List[dict]) -> CodeRefinementResults:
         """Hierarchical MAP-REDUCE refinement orchestrator"""
