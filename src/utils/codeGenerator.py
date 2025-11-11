@@ -106,6 +106,7 @@ class ClusterSummaryOutput(RootModel[Dict[str, ClusterSummaryItem]]):
 class MatchedCandidate(BaseModel):
     code: str
     definition: str
+    assignment_examples: Optional[AssignmentExamples] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ModifyParameters(BaseModel):
@@ -709,7 +710,23 @@ class SharedCodebook:
                 'total_codes': len(self._codes),
                 'recent_updates': self._update_log[-5:] if self._update_log else []
             }
-    
+
+    async def get_code_with_examples(self, code_name: str) -> Optional[Dict[str, Any]]:
+        """Get a code entry including its assignment_examples
+
+        Args:
+            code_name: The code label to search for
+
+        Returns:
+            Full code dict with assignment_examples if found, None otherwise
+        """
+        async with self._lock:
+            for code in self._codes:
+                if self._is_duplicate(code['code'], code_name):
+                    # Return a copy to prevent external modification
+                    return code.copy()
+            return None
+
     async def get_embeddings_for_version(self, version: int) -> Optional[List[np.ndarray]]:
         """Get cached embeddings for a specific version"""
         async with self._lock:
@@ -791,7 +808,8 @@ class SharedCodebook:
                 code = code_dict['code']
                 definition = code_dict['definition']
                 cluster_id = code_dict.get('cluster_id', 'unknown')
-                
+                assignment_examples = code_dict.get('assignment_examples', None)
+
                 # Enhanced duplicate check - normalize and compare
                 is_duplicate = False
                 duplicate_of = None
@@ -815,6 +833,10 @@ class SharedCodebook:
                             # First cluster ID for this code
                             duplicate_entry['source_cluster_id'] = str(cluster_id)
 
+                    # Store assignment_examples if provided (will be updated by MODIFY path)
+                    if assignment_examples is not None:
+                        duplicate_entry['assignment_examples'] = assignment_examples
+
                     duplicates_merged += 1
                     self._update_log.append({
                         'version': self._version,
@@ -829,6 +851,8 @@ class SharedCodebook:
                     code_entry = {'code': code, 'definition': definition}
                     if cluster_id and cluster_id != 'unknown':
                         code_entry['source_cluster_id'] = str(cluster_id)
+                    if assignment_examples is not None:
+                        code_entry['assignment_examples'] = assignment_examples
 
                     self._codes.append(code_entry)
                     added_count += 1
@@ -4031,7 +4055,8 @@ class InductiveCodeGenerator:
                     create_codes.append({
                         'code': validated_code.code,
                         'definition': validated_code.definition,
-                        'cluster_id': cluster_id
+                        'cluster_id': cluster_id,
+                        'assignment_examples': validated_code.assignment_examples
                     })
                     decision_stats['create'] += 1
                     self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision - will add '{validated_code.code}'")
@@ -4063,7 +4088,8 @@ class InductiveCodeGenerator:
                         create_codes.append({
                             'code': validated_code.code,
                             'definition': validated_code.definition,
-                            'cluster_id': cluster_id
+                            'cluster_id': cluster_id,
+                            'assignment_examples': validated_code.assignment_examples
                         })
                         decision_stats['create'] += 1
                         self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision (corrected) - will add '{validated_code.code}'")
@@ -4271,7 +4297,28 @@ class InductiveCodeGenerator:
                         )
                     # Update the response object
                     response.coding_decision.source_code = corrected_source
-            
+
+            # ENRICH matched_candidates with assignment_examples from SharedCodebook
+            if response and response.coding_decision.matched_candidates:
+                enriched_candidates = []
+                for candidate in response.coding_decision.matched_candidates:
+                    # Retrieve assignment_examples for this candidate
+                    code_entry = await self.shared_codebook.get_code_with_examples(candidate.code)
+                    if code_entry and 'assignment_examples' in code_entry:
+                        # Create enriched MatchedCandidate with assignment_examples
+                        enriched_candidate = MatchedCandidate(
+                            code=candidate.code,
+                            definition=candidate.definition,
+                            assignment_examples=code_entry['assignment_examples']
+                        )
+                        enriched_candidates.append(enriched_candidate)
+                    else:
+                        # Keep original candidate without assignment_examples
+                        enriched_candidates.append(candidate)
+
+                # Replace matched_candidates with enriched version
+                response.coding_decision.matched_candidates = enriched_candidates
+
             # # Capture step2_analysis - the actual coding decisions used in pipeline
             if response:
                 self.step2_analysis[cluster_id] = {
@@ -4383,13 +4430,56 @@ class InductiveCodeGenerator:
                 else:
                     modification_instructions = ""  # Fallback for "none"
 
+                # Retrieve existing code's assignment_examples from SharedCodebook for MODIFY path
+                existing_code_entry = await self.shared_codebook.get_code_with_examples(source_code) if source_code else None
+                if existing_code_entry and 'assignment_examples' in existing_code_entry:
+                    existing_examples = existing_code_entry['assignment_examples']
+                    # Extract fields from AssignmentExamples object or dict
+                    if hasattr(existing_examples, 'inclusion'):
+                        current_inclusion_list = existing_examples.inclusion
+                    elif isinstance(existing_examples, dict) and 'inclusion' in existing_examples:
+                        current_inclusion_list = existing_examples['inclusion']
+                    else:
+                        current_inclusion_list = []
+
+                    if hasattr(existing_examples, 'exclusion'):
+                        current_exclusion_list = existing_examples.exclusion
+                    elif isinstance(existing_examples, dict) and 'exclusion' in existing_examples:
+                        current_exclusion_list = existing_examples['exclusion']
+                    else:
+                        current_exclusion_list = []
+
+                    if hasattr(existing_examples, 'near_neighbor'):
+                        near_neighbor_obj = existing_examples.near_neighbor
+                        if hasattr(near_neighbor_obj, 'label') and hasattr(near_neighbor_obj, 'tell_apart_rule'):
+                            current_near_neighbor_str = f"{near_neighbor_obj.label}: {near_neighbor_obj.tell_apart_rule}"
+                        else:
+                            current_near_neighbor_str = ""
+                    elif isinstance(existing_examples, dict) and 'near_neighbor' in existing_examples:
+                        nn = existing_examples['near_neighbor']
+                        if isinstance(nn, dict) and 'label' in nn and 'tell_apart_rule' in nn:
+                            current_near_neighbor_str = f"{nn['label']}: {nn['tell_apart_rule']}"
+                        else:
+                            current_near_neighbor_str = ""
+                    else:
+                        current_near_neighbor_str = ""
+
+                    current_inclusion = '\n'.join(f"  • {ex}" for ex in current_inclusion_list) if current_inclusion_list else ""
+                    current_exclusion = '\n'.join(f"  • {ex}" for ex in current_exclusion_list) if current_exclusion_list else ""
+                    current_near_neighbor = current_near_neighbor_str
+                else:
+                    # Fallback: use NEW cluster's theme_data if existing code not found
+                    current_inclusion = self._get_inclusion_examples(theme_data)
+                    current_exclusion = self._get_exclusion_examples(theme_data)
+                    current_near_neighbor = self._get_near_neighbor(theme_data)
+
                 params.update({
                     "modification_instructions": modification_instructions,
                     "inclusion_update": coding_decision_obj.modify_parameters.inclusion_update or "",
                     "exclusion_update": coding_decision_obj.modify_parameters.exclusion_update or "",
-                    "current_inclusion": self._get_inclusion_examples(theme_data),
-                    "current_exclusion": self._get_exclusion_examples(theme_data),
-                    "current_near_neighbor": self._get_near_neighbor(theme_data)
+                    "current_inclusion": current_inclusion,
+                    "current_exclusion": current_exclusion,
+                    "current_near_neighbor": current_near_neighbor
                 })
             else:
                 # Fallback values for when candidate_selection is invalid
