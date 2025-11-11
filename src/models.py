@@ -128,7 +128,10 @@ class ThemeEnrichedCodebookEntry(CodebookEntry):
     theme_description: Optional[str] = None
     category: str = ""  # Empty string for 2-level hierarchy; category name for 3-level hierarchy
     category_description: str = ""  # Category description (empty for 2-level)
-    source_cluster: Optional[Union[int, str]] = None  
+    source_cluster: Optional[Union[int, str]] = None
+    signals: Optional[List[str]] = None  # 2 observable cues from Step 7 refinement
+    boundary_rule: Optional[str] = None  # Comparative boundary rule from Step 7 refinement
+    central_pattern: Optional[str] = None  # Unifying theme idea from Step 7 refinement (stored at theme level but accessible here)  
     
 class ThemeEnrichedCodebookModel(CodebookModel):
     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
