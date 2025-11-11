@@ -1410,7 +1410,7 @@ def step_7_refine_codebook(
                     tell_apart_rule=tell_apart,
                     signals=subcode.signals if hasattr(subcode, 'signals') else None,  # New: 2 observable cues from Stage 2
                     boundary_rule=subcode.boundary_rule if hasattr(subcode, 'boundary_rule') else None,  # New: comparative boundary from Stage 2
-                    central_pattern=theme.central_pattern if hasattr(theme, 'central_pattern') else None  # New: unifying theme idea from Stage 2
+                    central_pattern=category.central_pattern if hasattr(category, 'central_pattern') else None  # New: unifying theme idea from Stage 2
                 )
                 enriched_entries.append(enriched_entry)
 
