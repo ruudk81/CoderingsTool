@@ -301,12 +301,24 @@ class CacheManager:
             self.cleanup_old_cache()
 
     def _calculate_file_hash(self, file_path: Path) -> str:
-        """Calculate MD5 hash of a file"""
-        hash_md5 = hashlib.md5()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+        """Calculate MD5 hash of a file with retry for Windows file handle issues"""
+        import gc
+        import time
+
+        for attempt in range(3):  # Try up to 3 times
+            try:
+                hash_md5 = hashlib.md5()
+                with open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
+                return hash_md5.hexdigest()
+            except Exception as e:
+                if "closed file" in str(e).lower() and attempt < 2:
+                    # Windows file handle not released yet, retry with backoff
+                    gc.collect()
+                    time.sleep(0.05 * (attempt + 1))  # Increasing backoff: 50ms, 100ms
+                    continue
+                raise
     
     def get_cache_path(self, filename: str, step: str, variable_key: str) -> Path:
         """Get the cache file path for a given step and variable"""
