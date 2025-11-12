@@ -80,14 +80,11 @@ class RefinedSubcode(BaseModel):
     description: str
     category: str = ""  # Empty string when code is directly under theme; category name for 3-level hierarchy
     source_cluster: str = ""  # Cluster ID(s) from Step 6 - may be comma-separated for merged codes (e.g., "8,11,23")
-    signals: List[str] = []  # 2 observable cues for code assignment (from Stage 2)
-    boundary_rule: str = ""  # Comparative rule vs nearest confusable code (from Stage 2)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookCategory(BaseModel):
     category: str
     subcodes: List[RefinedSubcode]
-    central_pattern: str = ""  # One-sentence unifying idea for the theme (from Stage 2)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class RefinedCodebookModel(BaseModel):
@@ -128,10 +125,7 @@ class ThemeEnrichedCodebookEntry(CodebookEntry):
     theme_description: Optional[str] = None
     category: str = ""  # Empty string for 2-level hierarchy; category name for 3-level hierarchy
     category_description: str = ""  # Category description (empty for 2-level)
-    source_cluster: Optional[Union[int, str]] = None
-    signals: Optional[List[str]] = None  # 2 observable cues from Step 7 refinement
-    boundary_rule: Optional[str] = None  # Comparative boundary rule from Step 7 refinement
-    central_pattern: Optional[str] = None  # Unifying theme idea from Step 7 refinement (stored at theme level but accessible here)  
+    source_cluster: Optional[Union[int, str]] = None  
     
 class ThemeEnrichedCodebookModel(CodebookModel):
     codes: List[ThemeEnrichedCodebookEntry]  # Override with enriched version
