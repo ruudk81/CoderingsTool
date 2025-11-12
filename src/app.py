@@ -1890,12 +1890,24 @@ def show_filtering_page():
                         variable_key,
                         models.PreprocessedModel
                     )
-                    st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
-                    # Also populate var_lab if not already in pipeline_results
-                    if 'var_lab' not in st.session_state.pipeline_results:
-                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                    progress_container.success("✅ Data geladen uit cache" if lang == "nl" else "✅ Data loaded from cache")
-                else:
+
+                    # Check if cache load was successful
+                    if preprocessed_text is not None:
+                        st.session_state.pipeline_results['preprocessed_text'] = preprocessed_text
+
+                        # Populate var_lab if not already in pipeline_results
+                        if 'var_lab' not in st.session_state.pipeline_results:
+                            # Try to get from cache metadata first
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "preprocessed", variable_key)
+                            if cache_info and cache_info.get('var_lab'):
+                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                            else:
+                                # Fallback to session state
+                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                        progress_container.success("✅ Data geladen uit cache" if lang == "nl" else "✅ Data loaded from cache")
+
+                # If cache was invalid or corrupted, fall through to reprocessing
+                if 'preprocessed_text' not in st.session_state.pipeline_results:
                     # Upload route: process from raw_text_list
                     progress_container.text("🔄 Voorbewerkte data verwerken..." if lang == "nl" else "🔄 Processing preprocessed data...")
                     preprocessed_text, _ = pipeline.step_1_preprocess(
@@ -2076,12 +2088,24 @@ def show_idea_extraction_page():
                         variable_key,
                         models.QualityFilteredModel
                     )
-                    st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
-                    # Also populate var_lab if not already in pipeline_results
-                    if 'var_lab' not in st.session_state.pipeline_results:
-                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
-                else:
+
+                    # Check if cache load was successful
+                    if quality_filtered_text is not None:
+                        st.session_state.pipeline_results['quality_filtered_text'] = quality_filtered_text
+
+                        # Populate var_lab if not already in pipeline_results
+                        if 'var_lab' not in st.session_state.pipeline_results:
+                            # Try to get from cache metadata first
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "quality_filter", variable_key)
+                            if cache_info and cache_info.get('var_lab'):
+                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                            else:
+                                # Fallback to session state
+                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+
+                # If cache was invalid or corrupted, fall through to reprocessing
+                if 'quality_filtered_text' not in st.session_state.pipeline_results:
                     # Upload route: process from preprocessed_text
                     progress_container.text("🔄 " + ("Gefilterde data verwerken..." if lang == "nl" else "Processing filtered data..."))
                     quality_filtered_text = pipeline.step_2_quality_filter(
@@ -2251,11 +2275,23 @@ def show_embedding_page():
                         variable_key,
                         models.IdeasExtractedModel
                     )
-                    st.session_state.pipeline_results['encoded_text'] = encoded_text
-                    # Also populate var_lab if not already in pipeline_results
-                    if 'var_lab' not in st.session_state.pipeline_results:
-                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+
+                    # Check if cache load was successful
+                    if encoded_text is not None:
+                        st.session_state.pipeline_results['encoded_text'] = encoded_text
+
+                        # Populate var_lab if not already in pipeline_results
+                        if 'var_lab' not in st.session_state.pipeline_results:
+                            # Try to get from cache metadata first
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "extracted_ideas", variable_key)
+                            if cache_info and cache_info.get('var_lab'):
+                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                            else:
+                                # Fallback to session state
+                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                    else:
+                        progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 3 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 3."))
                 else:
                     progress_container.error("❌ " + ("Geen geëxtraheerde ideeën gevonden. Voer eerst stap 3 uit." if lang == "nl" else "No extracted ideas found. Please run step 3 first."))
         except Exception as e:
@@ -2408,11 +2444,23 @@ def show_clustering_page():
                         variable_key,
                         models.EmbeddingsModel
                     )
-                    st.session_state.pipeline_results['embedded_text'] = embedded_text
-                    # Also populate var_lab if not already in pipeline_results
-                    if 'var_lab' not in st.session_state.pipeline_results:
-                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+
+                    # Check if cache load was successful
+                    if embedded_text is not None:
+                        st.session_state.pipeline_results['embedded_text'] = embedded_text
+
+                        # Populate var_lab if not already in pipeline_results
+                        if 'var_lab' not in st.session_state.pipeline_results:
+                            # Try to get from cache metadata first
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "embeddings", variable_key)
+                            if cache_info and cache_info.get('var_lab'):
+                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                            else:
+                                # Fallback to session state
+                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                    else:
+                        progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 4 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 4."))
                 else:
                     progress_container.error("❌ " + ("Geen embeddings gevonden. Voer eerst stap 4 uit." if lang == "nl" else "No embeddings found. Please run step 4 first."))
         except Exception as e:
@@ -2571,34 +2619,45 @@ def show_codebook_generation_page():
                         variable_key,
                         models.ClusterModel
                     )
-                    st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
 
-                    # Populate clustering_stats if not already present (for cache route)
-                    if 'clustering_stats' not in st.session_state:
-                        cluster_ids = set(
-                            segment.initial_cluster
-                            for result in initial_cluster_results
-                            for segment in result.response_ideas
-                            if segment.initial_cluster != -1
-                        )
-                        outliers = sum(
-                            1 for result in initial_cluster_results
-                            for segment in result.response_ideas
-                            if segment.initial_cluster == -1
-                        )
-                        total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
+                    # Check if cache load was successful
+                    if initial_cluster_results is not None:
+                        st.session_state.pipeline_results['initial_cluster_results'] = initial_cluster_results
 
-                        st.session_state['clustering_stats'] = {
-                            'num_clusters': len(cluster_ids),
-                            'total_segments': total_segments,
-                            'outliers': outliers,
-                            'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
-                        }
+                        # Populate clustering_stats if not already present (for cache route)
+                        if 'clustering_stats' not in st.session_state:
+                            cluster_ids = set(
+                                segment.initial_cluster
+                                for result in initial_cluster_results
+                                for segment in result.response_ideas
+                                if segment.initial_cluster != -1
+                            )
+                            outliers = sum(
+                                1 for result in initial_cluster_results
+                                for segment in result.response_ideas
+                                if segment.initial_cluster == -1
+                            )
+                            total_segments = sum(len(result.response_ideas) for result in initial_cluster_results)
 
-                    # Also populate var_lab if not already in pipeline_results
-                    if 'var_lab' not in st.session_state.pipeline_results:
-                        st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
-                    progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                            st.session_state['clustering_stats'] = {
+                                'num_clusters': len(cluster_ids),
+                                'total_segments': total_segments,
+                                'outliers': outliers,
+                                'outlier_percentage': (outliers / total_segments * 100) if total_segments > 0 else 0
+                            }
+
+                        # Populate var_lab if not already in pipeline_results
+                        if 'var_lab' not in st.session_state.pipeline_results:
+                            # Try to get from cache metadata first
+                            cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "initial_clusters", variable_key)
+                            if cache_info and cache_info.get('var_lab'):
+                                st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                            else:
+                                # Fallback to session state
+                                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                        progress_container.success("✅ " + ("Data geladen uit cache" if lang == "nl" else "Data loaded from cache"))
+                    else:
+                        progress_container.error("❌ " + ("Cache beschadigd. Voer eerst stap 5 opnieuw uit." if lang == "nl" else "Cache corrupted. Please re-run step 5."))
                 else:
                     progress_container.error("❌ " + ("Geen cluster resultaten gevonden. Voer eerst stap 5 uit." if lang == "nl" else "No cluster results found. Please run step 5 first."))
         except Exception as e:
@@ -2785,7 +2844,13 @@ def show_theme_identification_page():
 
             # Populate metadata
             if 'var_lab' not in st.session_state.pipeline_results:
-                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                # Try to get from cache metadata first
+                cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "codebook_generation_reasoning", variable_key)
+                if cache_info and cache_info.get('var_lab'):
+                    st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                else:
+                    # Fallback to session state
+                    st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
 
         except Exception as e:
             st.error(f"Data laad fout: {str(e)}" if lang == "nl" else f"Data loading error: {str(e)}")
@@ -3164,7 +3229,13 @@ def show_code_assignment_page():
 
             # Populate var_lab if not present
             if 'var_lab' not in st.session_state.pipeline_results:
-                st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
+                # Try to get from cache metadata first
+                cache_info = cache_manager.db.get_cache_info(st.session_state.filename, "codebook_refinement_enriched", variable_key)
+                if cache_info and cache_info.get('var_lab'):
+                    st.session_state.pipeline_results['var_lab'] = cache_info['var_lab']
+                else:
+                    # Fallback to session state
+                    st.session_state.pipeline_results['var_lab'] = st.session_state.get('var_lab', '')
 
             # Clear progress container after successful loading
             progress_container.empty()
