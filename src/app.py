@@ -2915,7 +2915,7 @@ def show_theme_identification_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or \
                               (st.session_state.get('force_recalculate_from_step', 99) <= 7)
 
-                refinement_results, theme_enriched_codebook, refinement_report = pipeline.step_7_refine_codebook(
+                refinement_results, theme_enriched_codebook, refinement_report, _ = pipeline.step_7_refine_codebook(
                     codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_themes,
