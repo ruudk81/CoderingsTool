@@ -361,7 +361,7 @@ class CodebookRefinementProcessor:
         try:
             # Ultra-simple API call
             response = client.responses.create(
-                model="gpt-5",
+                model=self.model_config.codebook_refinement_model,
                 input=prompt,
                 reasoning={"effort": "minimal"},
                 text={"verbosity": "low"}
@@ -524,7 +524,7 @@ class CodebookRefinementProcessor:
         client = OpenAI(api_key=self.api_key)
 
         response = client.responses.create(
-            model="gpt-5",
+            model=self.model_config.codebook_refinement_model,
             input=prompt,
             reasoning={"effort": "minimal"},
             text={"verbosity": "low"}
@@ -597,7 +597,7 @@ class CodebookRefinementProcessor:
         # Call GPT-5
         client = OpenAI(api_key=self.api_key)
         response = client.responses.create(
-            model="gpt-5",
+            model=self.model_config.codebook_refinement_model,
             input=prompt,
             reasoning={"effort": "minimal"},
             text={"verbosity": "low"}
