@@ -1114,7 +1114,7 @@ Critical remarks:
 # =============================================================================
 
 CODEBOOK_REFINEMENT_PROMPT = """
-You are a qualitative research methodologist and codebook architect. 
+You are a qualitative research methodologist and codebook architect.
 Your task is to transform a raw list of descriptive codes into a MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
 
 Here is the survey question:
@@ -1132,75 +1132,79 @@ Output your response in this language:
 {language}
 </language>
 
-## Core Rules
+# Core Definitions (read carefully)
+- Atomic label = a single, irreducible evaluative idea (no conjunctions like "en/and/&", "of/or", no slashes "/", no hypen "-", no bundled meanings). Example: “Waarde”, “Gezondheid”.
+- Meta-theme = a higher-order organizational container for multiple distinct atomic themes within the same analytic domain. A meta-theme is NOT atomic, but its label must still be a single, clean concept word/phrase (e.g., “Productverwachtingen”).
+- Theme = either (a) an atomic evaluative construct, or (b) a meta-theme that groups multiple atomic subthemes (use only when it improves coder clarity or reporting).
 
-### 1. Enforce MECE (Mutually Exclusive, Collectively Exhaustive)
+# Core Rules
 
-You must preserve all *distinct conceptual meanings*. However, if two codes differ only in wording, phrasing, tone, or linguistic surface form, and a trained human coder would treat them as the same action or recommendation → you must MERGE them into a single code.
+## 1) Enforce MECE (Mutually Exclusive, Collectively Exhaustive)
+Preserve all distinct conceptual meanings. If two codes differ only in wording, phrasing, tone, or surface form—and a trained coder would treat them as the same action or recommendation—MERGE them into a single code.
 
-**Key Merge Criteria:**
-- If the **operational intervention** (what would be done in response) is the same → MERGE
-- If the **insight a researcher would report separately** is the same → MERGE
+**Key Merge Criteria**
+- Operational Action: If the recommended intervention would be the same → MERGE
+- Reporting Test: If results would be reported as one insight → MERGE
 
-**Decision Tests:**
-- Action Test: "Is the practical implication the same in light of the survey question?" If yes → merge
-- Reporting Test: "Would a researcher distinguish these when writing the results section?" If no → merge
-- **Assignment Examples Test**: "Do the inclusion examples describe the same types of expressions?" If yes AND exclusion examples don't reveal meaningful boundaries → merge
+**Decision Tests**
+- Action Test (ACT): “Is the practical implication the same given the survey question?” If yes → merge
+- Reporting Test (RT): “Would a researcher distinguish them in the results?” If no → merge
+- Examples Test (XT): If inclusion examples point to the same expression types AND exclusion examples do not reveal boundaries → merge
 
-**Using Assignment Examples to Guide Decisions:**
+## 2) Use Assignment Examples (if present)
+Raw codes may include:
+- inclusion examples
+- exclusion examples
+- near_neighbor (with tell-apart rules)
 
-Each code includes assignment_examples with inclusion examples, exclusion examples, and near_neighbor relationships. Use these to guide your merge/separate decisions:
+Apply them as follows:
+a) Inclusion overlap → candidate merge
+b) Exclusion conflicts → keep separate (boundaries exist)
+c) Near neighbors with tell-apart rules → respect separation unless the difference is purely linguistic (then merge)
 
-a) **Check inclusion examples**: If codes have overlapping inclusion examples describing the same concept → likely candidates for merging
-b) **Check exclusion examples**: If codes have exclusion examples that rule out each other's inclusion examples → they must stay separate (different boundaries)
-c) **Check near_neighbor relationships**: If Code A lists Code B as its near_neighbor with a tell-apart rule → they were deliberately separated. Respect this boundary unless the distinction is purely linguistic
+If examples are missing, infer cautiously from code labels and context; prefer precision over over-merging.
 
-**Examples:**
-- MERGE: Code A inclusion "mentions high price", Code B inclusion "references expensive cost" → Same concept, different wording
-- KEEP SEPARATE: Code A inclusion "mentions salt content is too high", Code B inclusion "mentions bitter aftertaste" → Different specific concepts despite both being taste-related
+## 3) Structure and Hierarchy
+- Every code must belong to exactly one parent theme.
+- Themes must be conceptually non-overlapping.
+- Use a **3-level hierarchy (Theme → Subtheme/Category → Code)** whenever it improves coder decisions or reporting clarity.
+  - Use a subtheme/category only when ≥2 codes clearly share a specific sub-idea that aids assignment.
+- A **2-level hierarchy (Theme → Code)** is acceptable if all themes are atomic and subthemes would not add clarity.
 
-### 2. MECE Structure
-- All codes must belong to exactly one parent theme
-- Themes must be conceptually non-overlapping
+## 4) Theme Naming and Descriptions
 
-### 3. Hierarchy
-- Default: Use a 2-level hierarchy (Theme → Code)
-- Use a 3-level hierarchy (Theme → Subtheme → Code) **only when**:
-  - A group of at least **2 codes** clearly share a more specific sub-idea
-  - AND the sub-idea makes coder choice easier
-- If unsure, prefer **2-level** (keep it simple and coder-reliable)
-
-### 4. Theme Naming and Descriptions
-
-**Theme Labels:**
+**Theme Labels**
 - ≤ 10 words
-- Describe *what is being talked about* in terms specific to the survey context
-- Avoid generic category labels (e.g., "Quality", "General Feedback")
-- Active/actionable formulation of ONE ATOMIC theme in relation to the survey question
-- If verb is used → one main verb (present tense)
-- **Never** include reasons (no "to", "so that", "because")
-- Avoid punctuation: "/", "&", ",", "–", ":" (unless lexicalized)
-- Maintain **one polarity** (either increase/strengthen OR reduce/avoid)
+- Describe what is being evaluated in terms specific to the survey question
+- Atomic (single idea; one polarity: either increase/strengthen OR reduce/avoid)
+- Prefer noun phrases; avoid generic labels (e.g., “Quality”)
+- No reasons or purposes (avoid “to…”, “so that…”, “because…”)
+- Avoid punctuation: “/”, “&”, “,”, “–”, “:” (unless lexicalized)
+- Avoid synonym duplication across themes; choose one canonical term
 
-**Code Descriptions:**
+**Code Descriptions**
 - ≤ 20 words
-- Must describe **what belongs in this code**, not why it happens
-- Must align directly with the survey question
-- Use a **clear, observable assignment cue** (e.g., behaviors, expressions, judgments)
-- Do not explain causes, conditions, or interpretations
-- Good patterns: "References to…", "Mentions of…", "Expressions of…", "Concerns about…"
+- Define what belongs in this code (observable assignment cues); not causes or interpretations
+- Align directly with the survey question
+- Use patterns like: “Mentions of…”, “References to…”, “Expressions of…”, “Concerns about…”
 
-## Required Output Format
+## 5) Atomicity & Label Hygiene Checks
+Before finalizing:
+- Atomicity Test (AT): Can each label be expressed as one evaluative lens? If not, split or reassign under a meta-theme.
+- Boundary Test (BT): Are differences between themes/subthemes clear and stable?
+- Wording Test (WT): Labels and codes must avoid conjunctions/slashes/comma lists; keep concise and specific.
+
+# Required Output Format
 
 First, think through the structure step-by-step in <analysis_thinking> tags. Consider:
-- Which codes should be merged and why (reference assignment_examples)
+- Which codes should be merged and why (reference assignment_examples where available)
 - Which similar codes should be kept separate and why
-- How to structure the hierarchy
+- How to structure the hierarchy (2-level vs. 3-level; where categories help)
 - Total codes preserved vs. merged count
 
-Then provide your response as valid JSON only, structured exactly as follows:
-
-    {{
+Then provide your response as valid JSON only, structured exactly as follows: 
+    
+{{
   "analysis": "Provide detailed analysis in {language}: (1) Which codes were merged and why (include IDs and reference assignment_examples to justify), (2) Which similar codes were kept separate and why (reference inclusion/exclusion examples or near_neighbor boundaries), (3) How hierarchy was structured, (4) Total codes preserved vs. merged count.",
   "refined_codebook": [
     {{
@@ -1218,88 +1222,102 @@ Then provide your response as valid JSON only, structured exactly as follows:
 }}
 
 Notes:
-- Use empty string for "category" field in 2-level hierarchy, or category name for 3-level hierarchy
-- No commentary before or after JSON
-- No markdown formatting outside of code blocks
-- All text must be in the specified output language
+- Use empty string for "category" in 2-level hierarchy; otherwise use a category name for 3-level (subtheme).
+- No commentary before or after JSON.
+- No markdown formatting outside of code blocks.
+- All text must be in the specified output language.
 
 Begin your analysis and provide the refined codebook.
 """
 
+
 CODEBOOK_MERGE_PROMPT = """
 You are a qualitative research methodologist performing final codebook consolidation.
-You will be given multiple independent codebooks that were created from different subsets of survey responses, and your task is to consolidate them into one unified MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
+You will be given multiple independent codebooks from different subsets of survey responses. Your task is to produce one unified, MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
 
-Here is the survey question that the codebooks relate to:
+Here is the survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Here are the codebooks you need to consolidate:
+Here are the codebooks to consolidate:
 <codebooks>
 {codebooks_summary}
 </codebooks>
 
-All output should be in this language:
+All output must be in this language:
 <language>
 {language}
 </language>
 
-## Your Task
-You have multiple codebooks representing different subsets of responses. Some themes may:
-1. Appear in multiple codebooks (duplicates) → MERGE into a single theme
-2. Be unique to one codebook (distinct concepts) → KEEP as separate themes
-3. Overlap partially (related but not identical) → Evaluate whether to merge or keep separate
+# Core Definitions (read carefully)
+- Atomic label = a single, irreducible evaluative idea (no conjunctions like "en/and/&", "of/or", no slashes "/", no hypen "-", no bundled meanings). Example: “Waarde”, “Gezondheid”.
+- Meta-theme = a higher-order organizational container for multiple distinct atomic themes that belong to the same analytic domain. A meta-theme is NOT atomic, but its LABEL must still be a single, clean concept word/phrase (e.g., “Productverwachtingen”).
+- Theme = either (a) an atomic evaluative construct, or (b) a meta-theme that groups multiple atomic subthemes (use only when it truly improves clarity).
 
-## Consolidation Decision Rules
+# Your Task
+You have multiple codebooks. Some themes will:
+1) Appear in multiple codebooks (duplicates) → MERGE
+2) Be unique (distinct) → KEEP
+3) Overlap partially → Decide merge vs keep
 
-**Apply these principles:**
-- **Parsimony**: Keep the structure as simple as possible while preserving conceptual clarity (avoid unnecessary themes).
-- **Non-redundancy**: No two themes or codes should convey the same meaning.
-- **Mutual Exclusivity**: Each code or response segment should logically belong to only one theme.
-- **Collectively Exhaustive**: The set of themes should cover all meaningful responses — no important concepts should be left uncoded.
-- **Atomicity**: Each code should represent one clear idea (no multi-concept codes).
-- **Conceptual Coherence**: All codes grouped under a theme should express variations of the same underlying concept.
-- **Action/Reporting Alignment**: If two themes would be reported together or lead to the same recommendation, they should be merged.
-- **Clarity of Boundaries**: The differences between themes should be obvious and justifiable to another researcher.
+# Consolidation Principles
+- Parsimony: Keep as simple as possible while preserving conceptual clarity.
+- Non-redundancy: No two themes/codes state the same meaning.
+- Mutual Exclusivity (ME): Each code should logically belong to only one theme.
+- Collective Exhaustiveness (CE): Themes jointly cover all meaningful responses.
+- Conceptual Coherence: Codes under a theme are variations of the same underlying idea.
+- Atomicity: Labels at the atomic level express one clear idea (no multi-concepts).
+- Action/Reporting Alignment: Merge if they would be reported together or lead to the same recommendation.
+- Boundary Clarity: Differences between themes are obvious and justifiable to another researcher.
 
-**Apply these instructions:**
-- MERGE themes when:
-  • **Semantic identity**: Themes describe the SAME concept (even if worded differently)
-  • **Action test**: Would lead to the same course of action in light of the survey question
-  • **Reporting test**: Would be reported as one finding in research results
+# Decision Tests (apply explicitly)
+- Atomicity Test (AT): Can the theme be expressed as ONE evaluative lens? If any subparts require different “whys”, it’s NOT atomic.
+- Action Test (ACT): Would two candidate themes lead to the same action/recommendation? If yes, merge.
+- Boundary Test (BT): Are differences between two themes clear and stable? If yes, keep separate.
+- Wording Test (WT): Labels must be ≤10 words, contain no “and/&/ /” or comma lists, and preferably be noun phrases.
+  (Note: WT applies to both themes and codes; use concise, atomic wording.)
 
-- KEEP SEPARATE when:
-  • **Distinct concepts**: Themes address different aspects (even if in related domain)
-  • **Clear boundaries**: Codes show distinct meanings that researchers would analyze separately
-  • **Practical utility**: Keeping separate provides more actionable insights
+# Handling Composite Labels
+If an input theme label is composite (fails AT or WT), do one of:
+- Preferred option A (Group): Create a META-THEME with a single, clean label that expresses their shared domain (not a conjunction), and place the atomic subthemes beneath it; or
+- Option B (Split): Convert it into multiple atomic themes.
+Schema note: When you use a meta-theme in the final JSON, put the meta label in "theme" and use the "category" field on each code to name the atomic subtheme/category beneath that meta-theme.
 
-## Handling Duplicate Codes
+Choose the option that best improves MECE and reporting clarity.
 
-If the same code appears in multiple themes across codebooks:
-1. Evaluate which theme is the BEST semantic fit
-2. Assign the code to that theme only (to ensure MECE)
-3. Explain your reasoning in the analysis
+# Handling Duplicate Codes
+If the same/very similar code appears in multiple themes:
+1) Choose the BEST semantic fit (use ACT, BT, and AT).
+2) Assign it to ONLY that theme (ensuring mutual exclusivity).
+3) Note the reassignment in the analysis log.
 
-## Output Requirements
+# Hierarchy Preference
+- Use a **3-level structure (Meta-theme → Atomic Theme/Category → Code)** whenever it improves conceptual or reporting clarity.
+  - The meta-theme groups multiple distinct but related atomic themes under one analytic domain.
+  - In the JSON output, represent the meta-theme as the "theme" and use the "category" field on each code to indicate the atomic subtheme/category.
+- A **2-level structure (Theme → Code)** may be used only if all themes are atomic and no meta-themes are needed.
 
-**Hierarchy preference:**
-- Use 2-level structure (Theme → Code) by default
-- Use 3-level structure (Theme → Category → Code) only if it significantly improves clarity
 
-## Output
+# Label Rules (strict)
+- No conjunctions (“en/and/&”), no slashes (“/”), no comma-joined lists.
+- Prefer ≤3-word noun phrases where possible; never exceed WT’s ≤10-word limit.
+- Avoid synonyms across labels; pick one canonical term per concept.
+- Each code needs a crisp ≤30-word definition focused on when to use the code.
 
-Before providing your final answer, use the scratchpad to work through your consolidation logic:
-    
+# Scratchpad (required, hidden in final)
 <scratchpad>
-Think through:
-1. Which themes appear across multiple codebooks and could be merged?
-2. Which themes are unique and should be kept separate?
-3. How will you resolve any duplicate codes?
-4. What will be your final theme count compared to the input?
-5. Should you use 2-level or 3-level hierarchy?
+Think through, step by step, in {language}:
+1) Which themes are duplicates across codebooks? State merges and the reason (ACT + AT).
+2) Which themes are distinct and should remain separate? Justify (BT).
+3) Which input labels are composite? For each, choose Option A (Split to atomic themes) or Option B (Create meta-theme) and justify.
+4) How were duplicate or cross-assigned codes resolved (final placements)?
+5) Final theme count vs. input theme count; why this is more parsimonious and still CE.
+6) Whether 2-level or 3-level hierarchy is used and why.
+7) Run the Wording Test on ALL final labels; rewrite any violations.
 </scratchpad>
 
+# Output (JSON only; no commentary before or after)
 Provide your final answer as valid JSON only, with no commentary before or after:
 
 {{
@@ -1312,14 +1330,20 @@ Provide your final answer as valid JSON only, with no commentary before or after
           "id": "original code ID(s) from input codebooks",
           "code": "Code label",
           "description": "Code definition (≤30 words)",
-          "category": ""  // Empty for 2-level, category name for 3-level
+          "category": ""  // Empty for 2-level, category name for 3-level (atomic subtheme when using a meta-theme)
         }}
       ]
     }}
   ]
 }}
 
+## ID Format Rules (CRITICAL)
+**Single code**: `"id": "1"` (string, no brackets)
+**Merged codes**: `"id": "7,13"` (comma-separated, no spaces)
+**Split codes**: `"id": "29a"` or `"id": "29b"` (letter suffix allowed)
+**NEVER use**: `"id": "[1]"` or `"id": ["1"]` (no brackets/arrays)
 """
+
 
 # =============================================================================
 # STEP 8: CODE ASSIGNMENT
