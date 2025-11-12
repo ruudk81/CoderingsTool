@@ -2748,7 +2748,17 @@ def show_codebook_generation_page():
 
                 # Calculate codebook statistics from reasoning_results.codebook
                 num_codes = len(reasoning_results.codebook) if reasoning_results and reasoning_results.codebook else 0
-                unique_clusters = len(set([entry.get('source_cluster_id', '').split(',') for entry in reasoning_results.codebook if entry.get('source_cluster_id')])) if reasoning_results and reasoning_results.codebook else 0
+
+                # Calculate unique clusters - use set.update() to handle comma-separated cluster IDs
+                if reasoning_results and reasoning_results.codebook:
+                    cluster_ids = set()
+                    for entry in reasoning_results.codebook:
+                        if entry.get('source_cluster_id'):
+                            cluster_ids.update(entry['source_cluster_id'].split(','))
+                    unique_clusters = len(cluster_ids)
+                else:
+                    unique_clusters = 0
+
                 st.session_state['codebook_stats'] = {
                     'num_codes': num_codes,
                     'unique_clusters': unique_clusters
@@ -2828,7 +2838,17 @@ def show_theme_identification_page():
                         # Calculate stats from reasoning_results.codebook
                         if 'codebook_stats' not in st.session_state:
                             num_codes = len(reasoning_results.codebook) if reasoning_results and reasoning_results.codebook else 0
-                            unique_clusters = len(set([entry.get('source_cluster_id', '').split(',') for entry in reasoning_results.codebook if entry.get('source_cluster_id')])) if reasoning_results and reasoning_results.codebook else 0
+
+                            # Calculate unique clusters - use set.update() to handle comma-separated cluster IDs
+                            if reasoning_results and reasoning_results.codebook:
+                                cluster_ids = set()
+                                for entry in reasoning_results.codebook:
+                                    if entry.get('source_cluster_id'):
+                                        cluster_ids.update(entry['source_cluster_id'].split(','))
+                                unique_clusters = len(cluster_ids)
+                            else:
+                                unique_clusters = 0
+
                             st.session_state['codebook_stats'] = {
                                 'num_codes': num_codes,
                                 'unique_clusters': unique_clusters
