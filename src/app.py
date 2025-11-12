@@ -4418,10 +4418,11 @@ def show_theme_samples(refinement_report):
                         st.markdown("")  # Spacing between codes
 
                 # Display categorized codes (3-level hierarchy: Theme → Category → Code)
+                # Use tabs instead of nested expanders to avoid Streamlit nesting limitation
                 if categorized_codes:
-                    for cat_name, cat_codes in categorized_codes.items():
-                        # Category expander (expanded by default when theme is opened)
-                        with st.expander(f"📁 {cat_name} ({len(cat_codes)} {t_codes})", expanded=True):
+                    category_tabs = st.tabs([f"📁 {cat_name}" for cat_name in categorized_codes.keys()])
+                    for tab_idx, (cat_name, cat_codes) in enumerate(categorized_codes.items()):
+                        with category_tabs[tab_idx]:
                             for sc in cat_codes:
                                 st.markdown(f"**{sc.get('code', 'N/A')}**")
                                 st.caption(sc.get('description', 'N/A'))
