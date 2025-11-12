@@ -3,9 +3,11 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 # === MODULES ========================================================================================================
 import logging
 import math
+import numpy as np
 from datetime import datetime
 from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
+from scipy.cluster.hierarchy import linkage, fcluster
 
 from openai import AsyncOpenAI, OpenAI
 
@@ -26,8 +28,8 @@ class CodebookRefinementConfig:
     verbose: bool = True
     prompt_printer: Optional[Any] = None
     hierarchical_threshold: int = 20
-    target_batch_size: int = 20
-    overlap_percentage: float = 0.10
+    target_batch_size: int = 10
+    overlap_size: int = 1
 
 class CodebookRefinementProcessor:
     """
@@ -56,6 +58,9 @@ class CodebookRefinementProcessor:
     
     def refine_codebook(self, survey_question: str, reasoning_results: CodeGeneratorReasoningResults) -> CodeRefinementResults:
         """Main entry point - decides between single-batch or MAP-REDUCE"""
+
+        # Store reasoning_results for access in batching methods
+        self.reasoning_results = reasoning_results
 
         try:
             # Extract raw codes
@@ -370,34 +375,98 @@ class CodebookRefinementProcessor:
             self.reporter.error(f"LLM call failed: {str(e)}")
             raise
 
-    def _create_overlapping_batches(self, raw_codes: List[dict]) -> List[List[dict]]:
-        """Split codes into sequential batches with 10% overlap at boundaries"""
+    def _extract_code_embeddings(self, raw_codes: List[dict]) -> np.ndarray:
+        """Extract and average embeddings for each code from their source clusters"""
+        code_embeddings = []
+
+        for code in raw_codes:
+            cluster_id = code.get('source_cluster_id', '')
+            if not cluster_id:
+                # Fallback: zero vector if no cluster ID
+                code_embeddings.append(np.zeros(1536))  # OpenAI embedding dim
+                continue
+
+            # Find cluster in reasoning_results
+            cluster_found = False
+            for cluster_result in self.reasoning_results.cluster_results:
+                # Match by expanded_cluster or initial_cluster
+                if cluster_result.response_ideas:
+                    first_idea = cluster_result.response_ideas[0]
+                    result_cluster_id = (first_idea.expanded_cluster
+                                       if first_idea.expanded_cluster
+                                       else str(first_idea.initial_cluster))
+
+                    if str(result_cluster_id) == str(cluster_id):
+                        # Extract all embeddings from this cluster
+                        embeddings = [idea.idea_embedding for idea in cluster_result.response_ideas
+                                     if idea.idea_embedding is not None]
+
+                        if embeddings:
+                            # Average embeddings
+                            avg_embedding = np.mean(embeddings, axis=0)
+                            code_embeddings.append(avg_embedding)
+                            cluster_found = True
+                            break
+
+            if not cluster_found:
+                # Fallback: zero vector
+                code_embeddings.append(np.zeros(1536))
+
+        return np.array(code_embeddings)
+
+    def _create_similarity_batches(self, raw_codes: List[dict]) -> List[List[dict]]:
+        """Create batches by clustering codes using cosine similarity of embeddings"""
 
         batch_size = self.config.target_batch_size
-        overlap_size = math.ceil(batch_size * self.config.overlap_percentage)
-        stride = batch_size - overlap_size
+        overlap_size = self.config.overlap_size
 
+        # Extract embeddings for all codes
+        embeddings = self._extract_code_embeddings(raw_codes)
+
+        # Normalize embeddings for cosine similarity
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # Avoid division by zero
+        normalized_embeddings = embeddings / norms
+
+        # Hierarchical clustering
+        n_batches = math.ceil(len(raw_codes) / batch_size)
+        linkage_matrix = linkage(normalized_embeddings, method='ward')
+        cluster_labels = fcluster(linkage_matrix, n_batches, criterion='maxclust')
+
+        # Group codes by cluster label
+        clusters = {}
+        for code, label in zip(raw_codes, cluster_labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(code)
+
+        # Split large clusters and create final batches with overlap
         batches = []
-        start_idx = 0
+        for cluster_codes in clusters.values():
+            # Split cluster if larger than batch_size
+            for i in range(0, len(cluster_codes), batch_size):
+                batch = cluster_codes[i:i + batch_size]
+                batches.append(batch)
 
-        while start_idx < len(raw_codes):
-            end_idx = min(start_idx + batch_size, len(raw_codes))
-            batch = raw_codes[start_idx:end_idx].copy()
+        # Add 1-code overlap between consecutive batches
+        final_batches = []
+        for i, batch in enumerate(batches):
+            if i > 0:
+                # Add last code from previous batch as first code (boundary)
+                overlap_code = {**batches[i-1][-1], 'is_boundary': True}
+                final_batch = [overlap_code] + batch
+            else:
+                final_batch = batch
+            final_batches.append(final_batch)
 
-            # Mark overlap codes (codes that were in previous batch)
-            if start_idx > 0:
-                for i in range(min(overlap_size, len(batch))):
-                    batch[i] = {**batch[i], 'is_boundary': True}
-
-            batches.append(batch)
-            start_idx += stride
-
-        self.reporter.stat_line(f"Created {len(batches)} batches with {overlap_size}-code overlap")
-        for i, b in enumerate(batches):
+        # Log batch creation
+        self.reporter.stat_line(f"Created {len(final_batches)} similarity-based batches with {overlap_size}-code overlap")
+        for i, b in enumerate(final_batches):
             boundary_count = sum(1 for c in b if c.get('is_boundary', False))
-            self.reporter.stat_line(f"  Batch {i}: {len(b)} codes ({boundary_count} boundary)")
+            cluster_ids = set(c.get('source_cluster_id', '') for c in b if c.get('source_cluster_id'))
+            self.reporter.stat_line(f"  Batch {i}: {len(b)} codes ({boundary_count} boundary, {len(cluster_ids)} clusters)")
 
-        return batches
+        return final_batches
 
     def _refine_batch_map(self, survey_question: str, batch: List[dict], batch_id: int) -> RefinedCodebookModel:
         """MAP: Refine single batch using existing CODEBOOK_REFINEMENT_PROMPT"""
@@ -419,7 +488,7 @@ class CodebookRefinementProcessor:
         )
 
         # Add subset context note
-        subset_note = "\n\n**NOTE**: This is a subset of the full dataset. Some codes from adjacent subsets may relate to themes here."
+        subset_note = "\n\n**NOTE**: This batch contains semantically similar codes clustered by cosine similarity. Adjacent batches may contain related themes."
         prompt = prompt.replace("Begin now.", subset_note + "\n\nBegin now.")
 
         self.reporter.stat_line(f"MAP: Refining batch {batch_id} ({len(batch)} codes)")
@@ -539,9 +608,9 @@ class CodebookRefinementProcessor:
 
         start_time = datetime.now()
 
-        # STEP 1: Create overlapping batches
-        self.reporter.stat_line("=== Creating overlapping batches ===")
-        batches = self._create_overlapping_batches(raw_codes)
+        # STEP 1: Create similarity-based batches
+        self.reporter.stat_line("=== Creating similarity-based batches ===")
+        batches = self._create_similarity_batches(raw_codes)
 
         # STEP 2: MAP Phase - Refine each batch
         self.reporter.stat_line(f"=== MAP Phase: Processing {len(batches)} batches ===")
