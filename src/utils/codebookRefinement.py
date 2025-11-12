@@ -386,20 +386,33 @@ class CodebookRefinementProcessor:
                 code_embeddings.append(np.zeros(1536))  # OpenAI embedding dim
                 continue
 
-            # Find cluster in reasoning_results
+            # Find cluster in reasoning_results (cluster_results is List[Dict])
             cluster_found = False
             for cluster_result in self.reasoning_results.cluster_results:
-                # Match by expanded_cluster or initial_cluster
-                if cluster_result.response_ideas:
-                    first_idea = cluster_result.response_ideas[0]
-                    result_cluster_id = (first_idea.expanded_cluster
-                                       if first_idea.expanded_cluster
-                                       else str(first_idea.initial_cluster))
+                # cluster_result is a dict with 'response_ideas' key
+                response_ideas = cluster_result.get('response_ideas', [])
+                if response_ideas:
+                    first_idea = response_ideas[0]
+                    # first_idea might be dict or ClusterSubmodel, handle both
+                    if isinstance(first_idea, dict):
+                        result_cluster_id = (first_idea.get('expanded_cluster')
+                                           if first_idea.get('expanded_cluster')
+                                           else str(first_idea.get('initial_cluster', '')))
+                    else:
+                        result_cluster_id = (first_idea.expanded_cluster
+                                           if first_idea.expanded_cluster
+                                           else str(first_idea.initial_cluster))
 
                     if str(result_cluster_id) == str(cluster_id):
                         # Extract all embeddings from this cluster
-                        embeddings = [idea.idea_embedding for idea in cluster_result.response_ideas
-                                     if idea.idea_embedding is not None]
+                        embeddings = []
+                        for idea in response_ideas:
+                            if isinstance(idea, dict):
+                                emb = idea.get('idea_embedding')
+                            else:
+                                emb = idea.idea_embedding
+                            if emb is not None:
+                                embeddings.append(emb)
 
                         if embeddings:
                             # Average embeddings
