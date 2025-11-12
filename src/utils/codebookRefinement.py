@@ -257,6 +257,10 @@ class CodebookRefinementProcessor:
                         # Handle merged IDs from GPT-5 (e.g., "2,3" → "8,12")
                         sequential_id = subcode_data.get('id', '')
 
+                        # Sanitize ID: strip brackets, whitespace (defensive against GPT-5 formatting)
+                        if sequential_id:
+                            sequential_id = sequential_id.strip().strip('[]')
+
                         if not sequential_id:
                             self.reporter.warning(f"    Code '{subcode_data.get('code')}' has no ID - cannot map to source_cluster")
                             source_cluster = ''
