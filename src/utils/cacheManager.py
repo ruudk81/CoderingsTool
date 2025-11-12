@@ -334,6 +334,8 @@ class CacheManager:
             # Save using pickle
             with open(cache_path, 'wb') as f:
                 pickle.dump(serializable_data, f)
+                f.flush()
+                os.fsync(f.fileno())  # Force Windows to flush file handle
 
             # Calculate file hash and size
             file_hash = self._calculate_file_hash(cache_path)
