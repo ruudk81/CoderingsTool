@@ -232,11 +232,43 @@ class CodebookRefinementProcessor:
 
         return '\n'.join(parts)
 
+    def _extract_json_from_markdown(self, text: str) -> str:
+        """Extract JSON from markdown code blocks if present"""
+        text = text.strip()
+
+        # Check for ```json...``` or ```...``` wrappers
+        if text.startswith('```'):
+            lines = text.split('\n')
+            if len(lines) >= 3 and lines[-1].strip() == '```':
+                # Remove first and last line (code block markers)
+                return '\n'.join(lines[1:-1])
+
+        return text
+
     def _parse_response_json(self, response) -> dict:
-        """Extract and parse JSON from GPT-5 response"""
+        """Extract and parse JSON from response.output array"""
         import json
-        response_text = response.output_text
-        return json.loads(response_text)
+
+        # Access response.output array (works for both chat and reasoning models)
+        for item in response.output:
+            if item.type == "message":
+                response_text = item.content[0].text
+
+                # Strip markdown wrappers
+                clean_text = self._extract_json_from_markdown(response_text)
+
+                try:
+                    return json.loads(clean_text)
+                except json.JSONDecodeError as e:
+                    # Enhanced error logging for debugging
+                    self.reporter.error(f"JSON parse error: {str(e)}")
+                    self.reporter.error(f"Response length: {len(response_text)} characters")
+                    if len(response_text) > 1000:
+                        self.reporter.error(f"First 300 chars: {response_text[:300]}")
+                        self.reporter.error(f"Last 300 chars: {response_text[-300:]}")
+                    raise
+
+        raise ValueError("No message content found in response.output")
 
     def _convert_to_refined_model(self, response_data: dict, id_to_cluster_map: dict) -> RefinedCodebookModel:
         """Convert parsed JSON to RefinedCodebookModel with ID mapping"""
@@ -314,7 +346,7 @@ class CodebookRefinementProcessor:
             analysis=response_data.get('analysis', 'No analysis provided'),
             refined_codebook=[cat.model_dump() for cat in categories],
             generation_metadata={
-                'model': "gpt-5",
+                'model': self.model_config.codebook_refinement_model,
                 'reasoning_effort': "minimal",
                 'text_verbosity': "low",
                 'timestamp': datetime.now().isoformat()
@@ -359,13 +391,27 @@ class CodebookRefinementProcessor:
         client = OpenAI(api_key=self.api_key)
 
         try:
-            # Ultra-simple API call
-            response = client.responses.create(
-                model=self.model_config.codebook_refinement_model,
-                input=prompt,
-                reasoning={"effort": "minimal"},
-                text={"verbosity": "low"}
-            )
+            # Detect model type for dynamic parameter selection
+            model_name = self.model_config.codebook_refinement_model
+            model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+
+            # Build request parameters
+            request_params = {
+                "model": model_name,
+                "input": prompt,
+                "max_output_tokens": self.model_config.default_max_tokens
+            }
+
+            # Add model-specific parameters
+            if model_type == "reasoning":
+                # Reasoning models: only reasoning and text parameters
+                request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
+                request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
+            else:
+                # Chat models: only temperature
+                request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
+
+            response = client.responses.create(**request_params)
 
             # Parse response and convert to model
             response_data = self._parse_response_json(response)
@@ -465,23 +511,34 @@ class CodebookRefinementProcessor:
                 batch = cluster_codes[i:i + batch_size]
                 batches.append(batch)
 
-        # Add 1-code overlap between consecutive batches
+        # Add 1-code overlap between consecutive batches (left boundaries)
         final_batches = []
         for i, batch in enumerate(batches):
             if i > 0:
-                # Add last code from previous batch as first code (boundary)
-                overlap_code = {**batches[i-1][-1], 'is_boundary': True}
+                # Add last code from previous batch as first code (left boundary)
+                overlap_code = {**batches[i-1][-1], 'is_boundary': True, 'boundary_type': 'left'}
                 final_batch = [overlap_code] + batch
             else:
                 final_batch = batch
             final_batches.append(final_batch)
 
+        # Add right boundaries
+        for i in range(len(final_batches) - 1):
+            # Add first non-boundary code from next batch as last code (right boundary)
+            next_batch = final_batches[i+1]
+            # Get first non-boundary code from next batch
+            first_code_idx = 1 if i < len(final_batches) - 2 else 0
+            if first_code_idx < len(next_batch):
+                right_boundary = {**next_batch[first_code_idx], 'is_boundary': True, 'boundary_type': 'right'}
+                final_batches[i].append(right_boundary)
+
         # Log batch creation
-        self.reporter.stat_line(f"Created {len(final_batches)} similarity-based batches with {overlap_size}-code overlap")
+        self.reporter.stat_line(f"Created {len(final_batches)} similarity-based batches with {overlap_size}-code overlap (two-sided)")
         for i, b in enumerate(final_batches):
-            boundary_count = sum(1 for c in b if c.get('is_boundary', False))
+            left_boundaries = sum(1 for c in b if c.get('is_boundary', False) and c.get('boundary_type') == 'left')
+            right_boundaries = sum(1 for c in b if c.get('is_boundary', False) and c.get('boundary_type') == 'right')
             cluster_ids = set(c.get('source_cluster_id', '') for c in b if c.get('source_cluster_id'))
-            self.reporter.stat_line(f"  Batch {i}: {len(b)} codes ({boundary_count} boundary, {len(cluster_ids)} clusters)")
+            self.reporter.stat_line(f"  Batch {i}: {len(b)} codes ({left_boundaries}L+{right_boundaries}R boundary, {len(cluster_ids)} clusters)")
 
         return final_batches
 
@@ -520,15 +577,30 @@ class CodebookRefinementProcessor:
                 metadata={'batch_id': batch_id, 'batch_size': len(batch)}
             )
 
-        # Call GPT-5
+        # Call LLM with dynamic model type detection
         client = OpenAI(api_key=self.api_key)
 
-        response = client.responses.create(
-            model=self.model_config.codebook_refinement_model,
-            input=prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}
-        )
+        # Detect model type
+        model_name = self.model_config.codebook_refinement_model
+        model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
+
+        # Build request parameters
+        request_params = {
+            "model": model_name,
+            "input": prompt,
+            "max_output_tokens": self.model_config.default_max_tokens
+        }
+
+        # Add model-specific parameters
+        if model_type == "reasoning":
+            # Reasoning models: only reasoning and text parameters
+            request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
+            request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
+        else:
+            # Chat models: only temperature
+            request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
+
+        response = client.responses.create(**request_params)
 
         # Parse response (use existing parse logic)
         parsed_json = self._parse_response_json(response)
@@ -568,7 +640,7 @@ class CodebookRefinementProcessor:
 
         return '\n\n'.join(formatted_codebooks)
 
-    def _merge_codebooks_reduce(self, survey_question: str, map_results: List[Dict]) -> RefinedCodebookModel:
+    def _merge_codebooks_reduce(self, survey_question: str, map_results: List[Dict], id_to_cluster_map: dict) -> RefinedCodebookModel:
         """REDUCE: Merge multiple codebooks into final unified codebook"""
 
         # Format codebooks for prompt
@@ -594,36 +666,49 @@ class CodebookRefinementProcessor:
                 metadata={'codebook_count': len(map_results)}
             )
 
-        # Call GPT-5
+        # Call LLM with dynamic model type detection
         client = OpenAI(api_key=self.api_key)
-        response = client.responses.create(
-            model=self.model_config.codebook_refinement_model,
-            input=prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}
-        )
 
-        # Build comprehensive ID mapping from all batches
-        combined_id_map = {}
-        for mr in map_results:
-            for code in mr['original_codes']:
-                seq_id = code['id']
-                cluster_id = code.get('source_cluster_id', '')
-                combined_id_map[seq_id] = cluster_id
-                if False: #debug  
-                    self.reporter.debug(f"  ID map: {seq_id} → {cluster_id}")
+        # Detect model type
+        model_name = self.model_config.codebook_refinement_model
+        model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
 
-        if False: #debug  
-             self.reporter.debug(f"Built combined_id_map with {len(combined_id_map)} entries")
+        # Build request parameters
+        request_params = {
+            "model": model_name,
+            "input": prompt,
+            "max_output_tokens": self.model_config.default_max_tokens
+        }
+
+        # Add model-specific parameters
+        if model_type == "reasoning":
+            # Reasoning models: only reasoning and text parameters
+            request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
+            request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
+        else:
+            # Chat models: only temperature
+            request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
+
+        response = client.responses.create(**request_params)
+
+        # Use id_to_cluster_map passed from caller (built from original raw_codes)
+        # This preserves ALL cluster IDs, including those dropped/merged in MAP phase
 
         # Parse response
         parsed_json = self._parse_response_json(response)
-        return self._convert_to_refined_model(parsed_json, combined_id_map)
+        return self._convert_to_refined_model(parsed_json, id_to_cluster_map)
 
     def _refine_hierarchically(self, survey_question: str, raw_codes: List[dict]) -> CodeRefinementResults:
         """Hierarchical MAP-REDUCE refinement orchestrator"""
 
         start_time = datetime.now()
+
+        # Build master ID map from original raw_codes (before batching)
+        # This preserves ALL cluster IDs, including those that may be merged/dropped in MAP phase
+        master_id_map = {
+            code['id']: code.get('source_cluster_id', '')
+            for code in raw_codes
+        }
 
         # STEP 1: Create similarity-based batches
         self.reporter.stat_line("=== Creating similarity-based batches ===")
@@ -649,7 +734,7 @@ class CodebookRefinementProcessor:
 
         # STEP 3: REDUCE Phase - Merge codebooks
         self.reporter.stat_line(f"=== REDUCE Phase: Merging {len(map_results)} codebooks ===")
-        final_result = self._merge_codebooks_reduce(survey_question, map_results)
+        final_result = self._merge_codebooks_reduce(survey_question, map_results, master_id_map)
 
         final_theme_count = len(final_result.refined_codebook)
         final_code_count = sum(len(theme.subcodes) for theme in final_result.refined_codebook)

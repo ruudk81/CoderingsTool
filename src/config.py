@@ -174,13 +174,13 @@ class ModelConfig:
         "gpt-4.1": "chat",
         "gpt-4.1-mini": "chat",
         "gpt-4.1-nano": "chat",
-        #"gpt-5-chat": "chat",
         "gpt-5-chat-latest": "chat",
         
         # GPT-5 family (reasoning models)
         "gpt-5": "reasoning",
         "gpt-5-mini": "reasoning",
-        "gpt-5-nano": "reasoning"
+        "gpt-5-nano": "reasoning",
+
     }
     
     # =============================================================================
@@ -211,15 +211,16 @@ class ModelConfig:
     validation_model: str = "gpt-5-chat-latest"
     
     # Codebook refinement
-    codebook_refinement_model: str = "gpt-5" 
+    codebook_refinement_model: str = "gpt-5-mini" 
 
-    # theme identification
-    thematic_organizer_model : str = "gpt-5-mini"   
-    theme_extraction_reasoning_effort: str = "low"       
-    theme_extraction_text_verbosity: str = "medium"      
+    # # theme identification
+    # thematic_organizer_model : str = "gpt-5-mini"   
+    # theme_extraction_reasoning_effort: str = "low"       
+    # theme_extraction_text_verbosity: str = "medium"      
 
     # Code assignment
     code_assignment_model: str = "gpt-5-chat-latest"
+  
 
     # =============================================================================
     # GLOBAL PARAMETERS
@@ -235,6 +236,7 @@ class ModelConfig:
     
     spell_check_temperature: float = 0.0
     quality_filter_temperature: float = 0.0
+    refinement_temperature: float = 0.2 
     
     # =============================================================================
     # GPT-5 SPECIFIC PARAMETERS - STAGE-SPECIFIC
@@ -256,9 +258,9 @@ class ModelConfig:
     validation_reasoning_effort: str = "minimal"         
     validation_text_verbosity: str = "medium"         
     
-    # Codebook Refinement (Step 7b - Refinement)
-    refinement_reasoning_effort: str = "medium"
-    refinement_text_verbosity: str = "high"
+    # Codebook Refinement  
+    refinement_reasoning_effort: str = "minimal"
+    refinement_text_verbosity: str = "medium"
 
     # Keep global defaults as fallback
     gpt5_reasoning_effort: str = "minimal"  # Global default
@@ -289,12 +291,25 @@ class ModelConfig:
         return stage_models.get(stage, DEFAULT_MODEL)
     
     def get_temperature_for_stage(self, stage: str) -> float:
-        """Get the appropriate temperature for a pipeline stage"""
+        
         stage_temperatures = {
             'spell_check': self.spell_check_temperature,
             'quality_filter': self.quality_filter_temperature,
-        }
-        return stage_temperatures.get(stage, self.default_temperature)
+            'refinement': self.refinement_temperature}
+    
+        if stage in stage_temperatures:
+            return stage_temperatures[stage]
+    
+        model_name = self.get_model_for_stage(stage)
+        model_type = self.MODEL_TYPES.get(model_name, "chat")
+    
+        if model_type == "chat":
+            return 0.0
+        elif model_type == "reasoning":
+            return 1.0
+        else:
+            return self.default_temperature
+
     
     def get_reasoning_effort_for_stage(self, stage: str) -> str:
         """Get GPT-5 reasoning effort for specific stage"""
@@ -319,27 +334,23 @@ class ModelConfig:
         return stage_verbosities.get(stage, self.gpt5_text_verbosity)
     
     def get_langchain_config_for_stage(self, stage: str) -> Dict[str, Any]:
-        """Get complete LangChain configuration for a stage"""
+        """Get complete LangChain configuration for a stage."""
         model_name = self.get_model_for_stage(stage)
         model_type = self.MODEL_TYPES.get(model_name, "chat")
-        
-        config = {
+    
+        temperature = (
+            0.0 if model_type == "chat"
+            else self.refinement_temperature if model_name == "gpt-5-chat-latest"
+            else 1.0
+        )
+    
+        return {
             "api_key": OPENAI_API_KEY,
             "model": model_name,
+            "temperature": temperature,
         }
-        
-        if model_type == "chat":
-            # GPT-4 models: temperature = 0.0
-            config["temperature"] = 0.0
-        else:
-            # GPT-5 models: temperature = 1.0 + reasoning/text params
-            config["temperature"] = 1.0
-            # config["model_kwargs"] = {
-            #     "reasoning": {"effort": self.gpt5_reasoning_effort},
-            #     "text": {"verbosity": self.gpt5_text_verbosity}
-            #}
-        
-        return config
+    
+  
     
 # =============================================================================
 # PROCESSING CONFIGURATION
