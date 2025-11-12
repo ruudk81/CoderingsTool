@@ -3,6 +3,7 @@ import sys
 import pandas as pd
 from pathlib import Path
 import html, random
+import re
 
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root / "src"))
@@ -3956,35 +3957,25 @@ def show_cluster_samples(initial_cluster_results):
     active_cid = cluster_ids[st.session_state.cluster_idx]
     ideas = cluster_dict[active_cid]
 
-    # Build HTML list of ideas
+    # Build HTML list of ideas (strip metadata)
     li_items = []
     for idea in ideas:
-        li_items.append(f"<li style='margin:4px 0;'>{html.escape(idea)}</li>")
+        # Remove all [key=value] metadata brackets
+        cleaned_idea = re.sub(r'\[.*?=.*?\]', '', idea).strip()
+        li_items.append(f"<li style='margin:4px 0;'>{html.escape(cleaned_idea)}</li>")
     ideas_html = "".join(li_items)
 
-    # Render nicely styled card (HTML only)
+    # Render clean idea list
     st.markdown(f"""
     <div style="
-        border: 1px solid #dce1eb;
-        border-radius: 10px;
+        border: 1px solid #e6eaf2;
+        border-radius: 8px;
         padding: 16px 20px;
-        background-color: #F8F9FB;
-        margin-top: 8px;
-        line-height: 1.6;">
-      
-      <div style="
-          border: 1px solid #e6eaf2;
-          border-radius: 8px;
-          padding: 12px 14px;
-          background-color: #ffffff;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <div><b>{t_cluster_label} {html.escape(str(active_cid))}</b></div>
-          <div style="font-size:12px;opacity:0.8;">{len(ideas)} {t_items}</div>
-        </div>
-        <ul style="margin:8px 0 0 1.2em; padding:0;">
-          {ideas_html}
-        </ul>
-      </div>
+        background-color: #ffffff;
+        margin-top: 8px;">
+      <ul style="margin:0; padding:0 0 0 1.2em;">
+        {ideas_html}
+      </ul>
     </div>
     """, unsafe_allow_html=True)
     
