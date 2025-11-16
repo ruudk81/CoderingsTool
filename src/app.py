@@ -191,24 +191,6 @@ def _get_cache_manager():
     return st.session_state.cache_manager
 
 def _load_or_recover(filename: str, step_name: str, variable_key: str, model_cls):
-    """
-    Safely load from cache with automatic recovery from file handle errors.
-
-    This wrapper handles the "I/O operation on closed file" error that can occur
-    when loading cached pickle files on Windows. If this error occurs, it:
-    1. Warns the user that the cache file appears corrupted
-    2. Invalidates the cache entry
-    3. Returns None to trigger reprocessing
-
-    Args:
-        filename: SPSS filename
-        step_name: Pipeline step name (e.g., "preprocessed", "embeddings")
-        variable_key: Cache key for the variable
-        model_cls: Pydantic model class for reconstruction
-
-    Returns:
-        List of models or None if cache is invalid/corrupted
-    """
     cm = _get_cache_manager()
     lang = st.session_state.get('language', 'en')
 
@@ -395,8 +377,8 @@ def invalidate_from_step(start_step: int):
     step_mapping = {
         0: "data", 1: "preprocessed", 2: "quality_filter",
         3: "extracted_ideas", 4: "embeddings", 5: "initial_clusters",
-        6: "codebook_generation", 7: "theme_identification",
-        8: "code_assignment", 9: "export"
+        6: "codebook_generation", 7: "codebook_refinement",
+        8: "code_assignment_direct", 9: "export"
     }
 
     # Get current dataset info
@@ -991,7 +973,7 @@ def load_from_cache(dataset_info: dict) -> tuple[DatasetConfig, list, int, int]:
                 var_lab = data_loader.get_varlab(filename, first_var)
                 last_bracket = var_lab.rfind("]")
                 var_lab = var_lab[last_bracket + 1:].strip()
-            except Exception as e:
+            except :
                 pass
         
         # Build config
@@ -1087,55 +1069,8 @@ def build_config_from_ui(filename: str, id_var: str, selected_vars: list[str],
     return config
 
 
-# def preview_dataset(config: DatasetConfig) -> pd.DataFrame:
-#     """ Load and preview dataset based on configuration """
-#     data_loader = _get_data_loader()
-
-#     # Determine encoding
-#     encoding = config.encoding
-#     if encoding == 'auto':
-#         encoding = None
-
-#     # Load data based on mode
-#     if config.variable_mode == "single" or len(config.selected_variables) == 1:
-#         # Single variable
-#         preview_data = data_loader.get_variable_with_IDs(
-#             config.filename,
-#             config.id_column,
-#             config.selected_variables[0],
-#             encoding=encoding
-#         )
-#     else:
-#         # Multiple variables - merge
-#         merge_config = config.merge_config or {}
-#         preview_data = data_loader.get_multiple_variables_with_IDs(
-#             filename=config.filename,
-#             id_column=config.id_column,
-#             var_names=config.selected_variables,
-#             merge_strategy=merge_config.get('strategy', 'concatenate'),
-#             separator=merge_config.get('separator', ' '),
-#             skip_empty=merge_config.get('skip_empty', True),
-#             encoding=encoding
-#         )
-
-#     # Apply sampling if specified
-#     if config.sample_size and len(preview_data) > config.sample_size:
-#         preview_data = preview_data.head(config.sample_size)
-
-#     return preview_data
-
-
 def convert_response_models_to_preview_df(response_models: list, id_column: str, text_column: str) -> pd.DataFrame:
-    """Convert list of ResponseModel objects to a DataFrame suitable for preview display
 
-    Args:
-        response_models: List of ResponseModel objects from step_0_load_data
-        id_column: Name for the ID column in the DataFrame
-        text_column: Name for the text/response column in the DataFrame
-
-    Returns:
-        pd.DataFrame with columns [id_column, text_column]
-    """
     import pandas as pd
 
     # Extract data from ResponseModel objects
@@ -2734,7 +2669,7 @@ def show_codebook_generation_page():
                     use_speculative_starter_codes=use_speculative,
                     force_recalc=force_recalc,
                     verbose=True,
-                    verbose_detailed=True,
+                    verbose_detailed=False,
                     prompt_printer_enabled=False,
                     cache_reasoning=True
                 )
@@ -2771,6 +2706,11 @@ def show_codebook_generation_page():
 
             except Exception as e:
                 st.error(f"Codebook fout: {str(e)}" if lang == "nl" else f"Codebook error: {str(e)}")
+
+    # ==================== BLOCK 6: DISPLAY RESULTS ====================
+    if is_step_completed(6):
+        if 'reasoning_results' in st.session_state.pipeline_results:
+            show_step6_codebook_display()
 
 def show_theme_identification_page():
     """ Step 7: Thematic codebook (Thematisch codeboek)"""
@@ -2982,7 +2922,7 @@ def show_theme_identification_page():
 
                 if codebook_list and len(codebook_list) > 0:
                     st.session_state.pipeline_results['theme_enriched_codebook'] = codebook_list[0]
-        except Exception as e:
+        except:
             # Silent fail - not critical if we can't load for editing
             pass
 
@@ -3131,7 +3071,7 @@ def show_theme_identification_page():
                             st.rerun()
 
                         except Exception as e:
-                            st.error(f"❌ " + ("Fout bij opslaan van wijzigingen:" if lang == "nl" else "Error saving changes:") + f" {str(e)}")
+                            st.error("❌ " + ("Fout bij opslaan van wijzigingen:" if lang == "nl" else "Error saving changes:") + f" {str(e)}")
 
             with col2:
                 if st.button("🔄 " + ("Reset naar Origineel" if lang == "nl" else "Reset to Original"),
@@ -3374,9 +3314,9 @@ def show_export_page():
                 st.session_state.filename, "code_assignment_direct", models.CodeAssignedModel
             )
             
-            # Load theme enriched codebook from cache  
+            # Load theme enriched codebook from cache
             theme_enriched_codebooks = st.session_state.cache_manager.load_from_cache(
-                st.session_state.filename, "theme_identification", models.ThemeEnrichedCodebookModel
+                st.session_state.filename, "codebook_refinement_enriched", models.ThemeEnrichedCodebookModel
             )
             
             if theme_enriched_codebooks and len(theme_enriched_codebooks) > 0:
@@ -3885,8 +3825,8 @@ def show_cluster_samples(initial_cluster_results):
     t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
     t_next = "➡️ Volgende" if NL else "➡️ Next"
     t_of = "van" if NL else "of"
-    t_cluster_label = "Cluster" if NL else "Cluster"
-    t_items = "items" if NL else "items"
+    #t_cluster_label = "Cluster" if NL else "Cluster"
+    #t_items = "items" if NL else "items"
 
     if not initial_cluster_results:
         st.markdown(f"""
@@ -3982,394 +3922,240 @@ def show_cluster_samples(initial_cluster_results):
     #save number of clusters
     st.session_state.num_clusters = len(cluster_ids)
 
-def show_codebook_samples(codebook_reasoning):
-    import re
+def parse_cluster_id(cluster_id: str) -> tuple:
+    """Parse cluster ID like '27-1' → (27, 1) or '12' → (12, 0) for sorting"""
+    parts = cluster_id.split('-')
+    main = int(parts[0])
+    sub = int(parts[1]) if len(parts) > 1 else 0
+    return (main, sub)
 
-    NL = st.session_state.get("language", "en") == "nl"
-    t_no_data = "Geen codebook-data beschikbaar" if NL else "No codebook data available"
-    #t_header = "Codebook-analyse" if NL else "Codebook analysis"
-    t_error = "Fout bij weergeven van codebook-analyse" if NL else "Error displaying codebook analysis"
+def build_code_to_clusters_map(reasoning_results):
+    """Map each code to list of cluster IDs that use it"""
+    code_map = {}
 
-    # Translations for sections
-    t_ideas = "Cluster Ideeën" if NL else "Cluster Ideas"
-    t_code_in_codebook = "Code in Codebook" if NL else "Code in Codebook"
-    t_analysis = "Cluster Analyse" if NL else "Cluster Analysis"
-    t_theme = "Cluster Thema & Beschrijving" if NL else "Cluster Theme & Description"
-    t_candidates = "Kandidaat Codes" if NL else "Candidate Codes"
-    t_recommendations = "Aanbeveling" if NL else "Recommendation"
-    t_decision = "Beslissing" if NL else "Decision"
-    t_motivation = "Motivering" if NL else "Motivation"
-    t_verdict = "Verdict" if NL else "Verdict"
-    t_validated_decision = "Gevalideerde Beslissing" if NL else "Validated Decision"
-    t_code = "Code" if NL else "Code"
-    t_definition = "Definitie" if NL else "Definition"
-    t_theme_label = "Thema Label" if NL else "Theme Label"
-    t_theme_desc = "Thema Beschrijving" if NL else "Theme Description"
-    t_decision_type = "Beslissingstype" if NL else "Decision Type"
-    t_source_code = "Broncode" if NL else "Source Code"
-    t_justification = "Rechtvaardiging" if NL else "Justification"
-    t_final_code = "Finale Code" if NL else "Final Code"
-    t_found = "gevonden" if NL else "found"
-    t_responses = "reacties" if NL else "responses"
-    t_existing = "(Bestaand)" if NL else "(Existing)"
+    for entry in reasoning_results.codebook:
+        code_name = entry['code']
+        cluster_ids = entry['source_cluster_id'].split(',')
 
-    # Navigation translations
-    t_prev = "⬅️ Vorige" if NL else "⬅️ Previous"
-    t_next = "➡️ Volgende" if NL else "➡️ Next"
-    t_of = "van" if NL else "of"
-    # t_cluster = "Cluster" if NL else "Cluster"
-    # t_ideas_count = "ideeën" if NL else "ideas"
-    # t_coded = "✅ Gecodeerd" if NL else "✅ Coded"
-    # t_not_coded = "⚠️ Niet gecodeerd" if NL else "⚠️ Not coded"
+        if code_name not in code_map:
+            code_map[code_name] = {
+                "code": code_name,
+                "definition": entry.get('definition', ''),
+                "cluster_ids": [],
+                "cluster_count": 0,
+                "min_cluster_id": None
+            }
 
-    if not codebook_reasoning:
-        st.markdown(f"""
-        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
-          <span style="display:block;">{t_no_data}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        return
+        code_map[code_name]['cluster_ids'].extend(cluster_ids)
+        code_map[code_name]['cluster_count'] = len(code_map[code_name]['cluster_ids'])
+        code_map[code_name]['min_cluster_id'] = min(code_map[code_name]['cluster_ids'], key=parse_cluster_id)
 
-    # Get available cluster ids
-    step3_recs = getattr(codebook_reasoning, "step3_recommendations", {}) or {}
-    if not step3_recs:
-        st.markdown(f"""
-        <div style="border:1px solid #dce1eb;border-radius:10px;padding:16px 20px;background:#F8F9FB;margin-top:8px;">
-          <span style="display:block;">{t_no_data}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-    
-    
-    # Calculate cluster sizes and sort by size (largest first)
-    step1_inputs = getattr(codebook_reasoning, "step1_inputs", {}) or {}
-    cluster_sizes = {}
-    for cid in step3_recs.keys():
-        if cid in step1_inputs:
-            cluster_text = step1_inputs[cid].get('cluster_text', '')
-            # Count ideas (newline-separated items)
-            ideas = [idea.strip() for idea in cluster_text.split('\n') if idea.strip()]
-            cluster_sizes[cid] = len(ideas)
+    return code_map
+
+def sort_codes_by_min_cluster(code_map):
+    """Sort codes by their lowest cluster ID"""
+    return sorted(code_map.keys(), key=lambda code: parse_cluster_id(code_map[code]['min_cluster_id']))
+
+def get_cluster_info(cluster_id, reasoning_results):
+    """Extract all relevant data for a specific cluster"""
+    cluster_data = {}
+
+    step1_inputs = reasoning_results.step1_inputs.get(cluster_id, {})
+    cluster_data['ideas'] = [idea.strip() for idea in step1_inputs.get('cluster_text', '').split('\n') if idea.strip()]
+
+    step1_summaries = reasoning_results.step1_summaries.get(cluster_id, {})
+    cluster_data['analysis'] = step1_summaries.get('analysis', '')
+    cluster_data['cluster_summary'] = step1_summaries.get('cluster_summary', '')
+
+    themes = step1_summaries.get('themes', [])
+    if themes and len(themes) > 0:
+        first_theme = themes[0]
+        if isinstance(first_theme, dict):
+            cluster_data['theme_label'] = first_theme.get('theme_label', '')
+            cluster_data['theme_description'] = first_theme.get('theme_description', '')
         else:
-            cluster_sizes[cid] = 0
+            cluster_data['theme_label'] = getattr(first_theme, 'theme_label', '')
+            cluster_data['theme_description'] = getattr(first_theme, 'theme_description', '')
+    else:
+        cluster_data['theme_label'] = ''
+        cluster_data['theme_description'] = ''
 
-    # Sort clusters by size (largest first)
-    available_ids = sorted(step3_recs.keys(), key=lambda cid: cluster_sizes.get(cid, 0), reverse=True)
-    total_clusters = len(available_ids)
+    step2_analysis = reasoning_results.step2_analysis.get(cluster_id, {})
+    coding_decision = step2_analysis.get('coding_decision', {})
+    cluster_data['matched_candidates'] = coding_decision.get('matched_candidates', [])
 
-    # Initialize session state for cluster navigation
-    if "codebook_cluster_idx" not in st.session_state:
-        st.session_state.codebook_cluster_idx = 0
+    step3_recommendations = reasoning_results.step3_recommendations.get(cluster_id, {})
+    cluster_data['recommendation'] = {
+        'decision': step3_recommendations.get('coding_proposal', ''),
+        'code_label': step3_recommendations.get('code_label_proposal', ''),
+        'code_definition': step3_recommendations.get('code_definition_proposal', '')
+    }
 
-    # Boundary check (handles cache invalidation changing cluster count)
-    if st.session_state.codebook_cluster_idx >= total_clusters:
-        st.session_state.codebook_cluster_idx = 0
+    step4_validations = reasoning_results.step4_validations.get(cluster_id, {})
+    code_validation = step4_validations.get('code_validation', {})
+    cluster_data['validation'] = {
+        'verdict': code_validation.get('verdict', ''),
+        'validated_code': code_validation.get('validated_code', {}).get('code', '') if isinstance(code_validation.get('validated_code'), dict) else '',
+        'rationale': code_validation.get('decision_rationale', '')
+    }
 
-    # Select cluster based on current index
-    idx = st.session_state.codebook_cluster_idx
-    cluster_id = available_ids[idx]
+    return cluster_data
 
-    # Get structured cluster data using new function
-    try:
-        from utils.codegenResults import get_cluster_analysis
-        cluster_data = get_cluster_analysis(codebook_reasoning, cluster_id=cluster_id)
+def display_code_description_tab(code_definition):
+    """Display code definition in first tab"""
+    lang = st.session_state.get("language", "en")
+    st.markdown(code_definition if code_definition else ("*Geen definitie beschikbaar*" if lang == "nl" else "*No definition available*"))
 
-        if 'error' in cluster_data:
-            st.markdown(f"""
-            <div style="border:1px solid #ffd2d2;border-radius:10px;padding:16px 20px;background:#fff5f5;margin-top:8px;">
-              <span style="display:block;">{t_error}: {html.escape(cluster_data['error'])}</span>
-            </div>
-            """, unsafe_allow_html=True)
-            return
-    except Exception as e:
-        st.markdown(f"""
-        <div style="border:1px solid #ffd2d2;border-radius:10px;padding:16px 20px;background:#fff5f5;margin-top:8px;">
-          <span style="display:block;">{t_error}: {html.escape(str(e))}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        return
+def display_cluster_ideas_tab(cluster_ids, reasoning_results):
+    """Display Cluster Ideas tab with multi-cluster support"""
+    lang = st.session_state.get("language", "en")
 
-    # # Header with cluster ID
-    # cluster_size = cluster_sizes.get(cluster_id, 0)
-    # has_code = cluster_data['validation']['verdict']
-    # code_status = t_coded if has_code else t_not_coded
+    for cluster_id in cluster_ids:
+        cluster_info = get_cluster_info(cluster_id, reasoning_results)
 
-    # st.markdown(f"""
-    # <div style="margin-bottom:16px;">
-    #   <b style="display:block; font-size:1.1em; margin-bottom:4px;">{t_header} - {t_cluster} {cluster_id}</b>
-    #   <span style="display:block; font-style:italic; color:#666;">{idx + 1} {t_of} {total_clusters}</span>
-    # </div>
-    # """, unsafe_allow_html=True)
+        st.markdown(f"**💡 Cluster {cluster_id}**")
 
-    # Cluster metadata info panel
-    #st.info(f"{t_cluster} {cluster_id} • {cluster_size} {t_ideas_count} • {code_status}")
+        ideas = cluster_info.get('ideas', [])
+        if ideas:
+            for idea in ideas:
+                # Remove markdown bullet prefix as ideas may already contain bullets
+                st.markdown(idea)
+        else:
+            st.markdown("*" + ("Geen ideeën beschikbaar" if lang == "nl" else "No ideas available") + "*")
 
-    # Navigation controls (4-column layout)
-    nav1, nav2, nav3, nav4 = st.columns([1, 2, 2, 2])
+        st.write("")
 
-    # Previous button
-    with nav1:
-        if st.button(t_prev, use_container_width=True, disabled=(idx <= 0), key="codebook_prev"):
-            st.session_state.codebook_cluster_idx = max(0, idx - 1)
-            st.rerun()
+def display_cluster_analysis_tab(cluster_ids, reasoning_results):
+    """Display Cluster Analysis tab with multi-cluster support"""
+    lang = st.session_state.get("language", "en")
 
-    # Position indicator
-    with nav2:
-        st.markdown(
-            f"<div style='margin-top:6px;text-align:center;'>"
-            f"{idx + 1} {t_of} {total_clusters}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+    for cluster_id in cluster_ids:
+        cluster_info = get_cluster_info(cluster_id, reasoning_results)
 
-    # Jump to cluster
-    with nav3:
-        new_idx = st.number_input(
-            label="X",
-            min_value=1, max_value=total_clusters, value=idx + 1,
-            step=1, key="codebook_jump_number", label_visibility="collapsed"
-        )
-        if new_idx - 1 != idx:
-            st.session_state.codebook_cluster_idx = new_idx - 1
-            st.rerun()
+        st.markdown(f"**🧠 Cluster {cluster_id}**")
 
-    # Next button
-    with nav4:
-        if st.button(t_next, use_container_width=True, disabled=(idx >= total_clusters - 1), key="codebook_next"):
-            st.session_state.codebook_cluster_idx = min(total_clusters - 1, idx + 1)
-            st.rerun()
+        analysis = cluster_info.get('analysis', '')
+        if analysis:
+            st.markdown(analysis)
+        else:
+            st.markdown("*" + ("Geen analyse beschikbaar" if lang == "nl" else "No analysis available") + "*")
 
-    # Visual separator
-    st.markdown("<div style='margin:12px 0;'></div>", unsafe_allow_html=True)
+        st.write("")
 
-    # Section 1: Code in Codebook (expanded by default, yellow content background)
-    validation = cluster_data['validation']
-    if validation['verdict']:
-        validated_code = validation.get('validated_code', {}) or {}
-        code_val = validated_code.get('code', '')
-        def_val = validated_code.get('definition', '')
+def display_cluster_theme_tab(cluster_ids, reasoning_results):
+    """Display Cluster Theme tab with multi-cluster support"""
+    lang = st.session_state.get("language", "en")
 
-        if code_val or def_val:
-            st.markdown(f"""
-            <details open style="margin-bottom:12px;">
-              <summary style="
-                cursor: pointer;
-                padding: 12px 16px;
-                background: #f0f2f6;
-                border-radius: 8px;
-                font-weight: 600;
-                margin-bottom: 8px;
-                user-select: none;">
-                📋 {t_code_in_codebook}
-              </summary>
-              <div style="
-                padding: 16px;
-                background: #fffbe6;
-                border: 1px solid #ffe58f;
-                border-radius: 8px;
-                margin-top: 8px;
-                line-height: 1.6;">
-                {f'<div style="margin-bottom:8px;"><b>{t_code}:</b> {html.escape(str(code_val))}</div>' if code_val else ''}
-                {f'<div><b>{t_definition}:</b> {html.escape(str(def_val))}</div>' if def_val else ''}
-              </div>
-            </details>
-            """, unsafe_allow_html=True)
+    for cluster_id in cluster_ids:
+        cluster_info = get_cluster_info(cluster_id, reasoning_results)
 
-    # Section 2: Cluster Ideas (expanded by default)
-    ideas = cluster_data['ideas']
-    if ideas['count'] > 0:
-        ideas_html = ''.join([f'<li style="margin-bottom:8px;">{html.escape(idea)}</li>'
-                              for idea in ideas['ideas_list']])
-        st.markdown(f"""
-        <details open style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            💡 {t_ideas} ({ideas['count']} {t_responses})
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;">
-            <ol style="line-height: 1.6; margin: 0; padding-left: 20px;">
-              {ideas_html}
-            </ol>
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+        st.markdown(f"**🔍 Cluster {cluster_id}**")
 
-    # Section 3: Cluster Analysis (collapsed by default)
-    analysis = cluster_data['analysis']
-    if analysis['text']:
-        # Format analysis text with line breaks before numbered list items (1. 2. 3. etc.)
-        analysis_text = html.escape(str(analysis['text']))
-        analysis_formatted = re.sub(r' (\d+\.)', r'<br>\1', analysis_text)
+        theme_label = cluster_info.get('theme_label', '')
+        theme_description = cluster_info.get('theme_description', '')
 
-        st.markdown(f"""
-        <details style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            🧠 {t_analysis}
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            {analysis_formatted}
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+        if theme_label:
+            st.markdown(f"**{'Label' if lang == 'en' else 'Label'}:** {theme_label}")
+        if theme_description:
+            st.markdown(f"**{'Beschrijving' if lang == 'nl' else 'Description'}:** {theme_description}")
 
-    # Section 3: Cluster Theme & Description (collapsed by default)
-    theme = cluster_data['theme']
-    if theme['theme_label'] or theme['theme_description']:
-        st.markdown(f"""
-        <details style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            🏷️ {t_theme}
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            {f'<div style="margin-bottom:8px;"><b>{t_theme_label}:</b> {html.escape(str(theme["theme_label"]))}</div>' if theme['theme_label'] else ''}
-            {f'<div><b>{t_theme_desc}:</b> {html.escape(str(theme["theme_description"]))}</div>' if theme['theme_description'] else ''}
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+        if not theme_label and not theme_description:
+            st.markdown("*" + ("Geen thema informatie beschikbaar" if lang == "nl" else "No theme information available") + "*")
 
-    # Section 4: Candidate Codes (collapsed by default)
-    candidates = cluster_data['candidate_codes']
-    if candidates:
-        candidates_html = ''.join([
-            f'''<div style="margin-bottom:12px;">
-              <b>{html.escape(str(c.get('code', 'N/A')))}</b><br>
-              <span style="color:#666;">{html.escape(str(c.get('definition', 'N/A')))}</span>
-            </div>'''
-            for c in candidates
-        ])
-        st.markdown(f"""
-        <details style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            🔍 {t_candidates} {t_existing} ({len(candidates)} {t_found})
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            {candidates_html}
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+        st.write("")
 
-    # Section 5: Recommendation (collapsed by default)
-    recommendations = cluster_data['recommendations']
-    if recommendations['decision_type']:
-        st.markdown(f"""
-        <details style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            🎯 {t_recommendations}
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            <div style="margin-bottom:12px;">
-              <b>{t_decision_type}:</b> {html.escape(str(recommendations['decision_type']))}
-            </div>
-            <div style="margin-bottom:12px;">
-              <b>{t_source_code}:</b> {html.escape(str(recommendations.get('source_code', 'N/A')))}
-            </div>
-            <div style="margin-bottom:12px;">
-              <b>{t_justification}:</b> {html.escape(str(recommendations['justification'] or 'N/A'))}
-            </div>
-            <div>
-              <b>{t_final_code}:</b> {html.escape(str(recommendations.get('final_code_label', 'N/A')))}
-            </div>
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+def display_code_assignment_tab(cluster_ids, reasoning_results):
+    """Display Code Assignment tab with conditional template based on decision and verdict"""
+    lang = st.session_state.get("language", "en")
 
-    # Section 7: Decision (collapsed by default, includes motivation)
-    validation = cluster_data['validation']
-    if validation['verdict']:
-        rationale = validation.get('rationale')
-        st.markdown(f"""
-        <details style="margin-bottom:12px;">
-          <summary style="
-            cursor: pointer;
-            padding: 12px 16px;
-            background: #f0f2f6;
-            border-radius: 8px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            user-select: none;">
-            ✅ {t_decision}
-          </summary>
-          <div style="
-            padding: 16px;
-            background: white;
-            border: 1px solid #e6e6e6;
-            border-radius: 8px;
-            margin-top: 8px;
-            line-height: 1.6;">
-            <div style="margin-bottom:12px;">
-              <b>{t_verdict}:</b> {html.escape(str(validation['verdict']))}
-            </div>
-            <div style="margin-bottom:12px;">
-              <b>{t_validated_decision}:</b> {html.escape(str(validation['validated_decision']))}
-            </div>
-            {f'<div><b>{t_motivation}:</b> {html.escape(str(rationale))}</div>' if rationale else ''}
-          </div>
-        </details>
-        """, unsafe_allow_html=True)
+    for cluster_id in cluster_ids:
+        cluster_info = get_cluster_info(cluster_id, reasoning_results)
 
+        st.markdown(f"**✅ Cluster {cluster_id}**")
+
+        recommendation = cluster_info.get('recommendation', {})
+        validation = cluster_info.get('validation', {})
+
+        decision = recommendation.get('decision', '').upper()
+        verdict = validation.get('verdict', '').upper()
+
+        # Template logic based on decision and verdict
+        if decision == 'USE':
+            # USE decision: Show recommendation details only
+            st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
+            st.markdown(f"**{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}:** {recommendation.get('code_label', 'N/A')}")
+            st.markdown(f"**{'Aanbevolen Definitie' if lang == 'nl' else 'Recommended Definition'}:** {recommendation.get('code_definition', 'N/A')}")
+
+        elif decision in ['MODIFY', 'CREATE']:
+            # MODIFY/CREATE decision: Show based on verdict
+            if verdict == 'REJECT':
+                # REJECT: Show recommendation + validation details
+                st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
+                st.markdown(f"**{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}:** {recommendation.get('code_label', 'N/A')}")
+                st.markdown(f"**{'Verdict' if lang == 'nl' else 'Verdict'}:** {validation.get('verdict', 'N/A')}")
+                st.markdown(f"**{'Finale Code' if lang == 'nl' else 'Final Code'}:** {validation.get('validated_code', 'N/A')}")
+                st.markdown(f"**{'Finale Definitie' if lang == 'nl' else 'Final Definition'}:** {recommendation.get('code_definition', 'N/A')}")
+                st.markdown(f"**{'Motivering' if lang == 'nl' else 'Motivation'}:** {validation.get('rationale', 'N/A')}")
+
+            else:  # APPROVE or other
+                # APPROVE: Show decision + final code details (skip recommended)
+                st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
+                st.markdown(f"**{'Code' if lang == 'en' else 'Code'}:** {validation.get('validated_code', 'N/A')}")
+                st.markdown(f"**{'Definitie' if lang == 'nl' else 'Definition'}:** {recommendation.get('code_definition', 'N/A')}")
+                st.markdown(f"**{'Motivering' if lang == 'nl' else 'Motivation'}:** {validation.get('rationale', 'N/A')}")
+
+        st.write("")
+
+def show_step6_codebook_display():
+    """Display Step 6 codebook in code-centric view"""
+    reasoning_results = st.session_state.pipeline_results['reasoning_results']
+    lang = st.session_state.get("language", "en")
+
+    code_map = build_code_to_clusters_map(reasoning_results)
+    sorted_codes = sort_codes_by_min_cluster(code_map)
+
+    st.subheader(
+        f"Gegenereerd Codebook ({len(sorted_codes)} codes)" if lang == "nl"
+        else f"Generated Codebook ({len(sorted_codes)} codes)"
+    )
+
+    for code_name in sorted_codes:
+        code_info = code_map[code_name]
+
+        # Preserve original processing/coding order
+        cluster_ids = code_info['cluster_ids']
+
+        # Display code name with folder icon and cluster count above expander (capitalized, 13pt, not bold)
+        cluster_text = "clusters" if lang == "en" else "clusters"
+        st.markdown(f"<p style='font-size: 13pt; margin-bottom: 5px;'>📁 {code_name.capitalize()} ({code_info['cluster_count']} {cluster_text})</p>", unsafe_allow_html=True)
+
+        # Expander with language-specific label (no icon)
+        expander_label = "Analyse" if lang == "nl" else "Analysis"
+
+        with st.expander(expander_label, expanded=False):
+            # Original tab order
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "Code Beschrijving" if lang == "nl" else "Code Description",
+                "Cluster Ideeën" if lang == "nl" else "Cluster Ideas",
+                "Cluster Thema" if lang == "nl" else "Cluster Theme",
+                "Cluster Analyse" if lang == "nl" else "Cluster Analysis",
+                "Code Toewijzing" if lang == "nl" else "Code Assignment"
+            ])
+
+            with tab1:
+                display_code_description_tab(code_info['definition'])
+
+            with tab2:
+                display_cluster_ideas_tab(cluster_ids, reasoning_results)
+
+            with tab3:
+                display_cluster_theme_tab(cluster_ids, reasoning_results)
+
+            with tab4:
+                display_cluster_analysis_tab(cluster_ids, reasoning_results)
+
+            with tab5:
+                display_code_assignment_tab(cluster_ids, reasoning_results)
 def show_theme_samples(refinement_report):
     import streamlit as st
 
@@ -4381,7 +4167,7 @@ def show_theme_samples(refinement_report):
     t_analysis = "LLM Analyse" if lang == "nl" else "LLM Analysis"
     t_categories = "Codeboek" if lang == "nl" else "Codebook"
     t_subcodes = "subcodes" if lang == "nl" else "subcodes"
-    t_codes = "codes" if lang == "nl" else "codes"
+    #t_codes = "codes" if lang == "nl" else "codes"
 
     # --- Codebook first (expanded) ---
     categories = refinement_report.get('categories', [])
@@ -5082,7 +4868,13 @@ def show_step_samples(step_number):
                 data = cache_manager.load_from_cache(filename, "codebook_generation_reasoning", variable_key, CodeGeneratorReasoningResults)
                 
                 if data and len(data) > 0:
-                    show_codebook_samples(data[0])
+                    # Set session state for display function
+                    if 'pipeline_results' not in st.session_state:
+                        st.session_state.pipeline_results = {}
+                    st.session_state.pipeline_results['reasoning_results'] = data[0]
+
+                    # Removed duplicate call - codebook displays in main page only
+                    # show_step6_codebook_display()
 
                     col1, col2, col3 = st.columns([1, 2, 1])
                     with col2:

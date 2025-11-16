@@ -39,7 +39,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 7   
+RUN_UNTIL_STEP = 6  
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True  
 PROMPT_PRINTER = False
@@ -1075,12 +1075,19 @@ def step_6_generate_codebook(
                 # Validation: Ensure all clusters are mapped
                 if results and hasattr(results, 'cluster_results'):
                     total_clusters = len(results.cluster_results)
+
+                    # Extract all cluster IDs from results
+                    all_cluster_ids = {str(cr.get('cluster_id', '')) for cr in results.cluster_results}
+
                     # Extract mapped cluster IDs from final_codebook
                     mapped_cluster_ids = set()
                     for item in final_codebook:
                         cluster_ids = item['source_cluster_id'].split(',')
                         mapped_cluster_ids.update(cluster_ids)
                     mapped_clusters = len(mapped_cluster_ids)
+
+                    # Calculate missing
+                    missing = all_cluster_ids - mapped_cluster_ids
 
                     if verbose:
                         verbose_reporter.empty_line()
@@ -1090,9 +1097,6 @@ def step_6_generate_codebook(
 
                     if mapped_clusters != total_clusters:
                         verbose_reporter.warning(f"  WARNING: {total_clusters - mapped_clusters} clusters not mapped to codes!")
-                        # Find missing clusters
-                        all_cluster_ids = {str(cr.get('cluster_id', '')) for cr in results.cluster_results}
-                        missing = all_cluster_ids - mapped_cluster_ids
                         verbose_reporter.warning(f"  Missing cluster IDs: {sorted(missing)}")
                     else:
                         verbose_reporter.stat_line("  ✓ All clusters successfully mapped")
@@ -2007,14 +2011,17 @@ if __name__ == '__main__':
             print(f"\n{'='*80}")
             print(f"STEP 7: {len(step7_prompt_printer.prompts)} PROMPTS CAPTURED")
             print(f"{'='*80}\n")
-
+            
+            prompt_idx = 5 #promt nr / x out of y
             for i, prompt in enumerate(step7_prompt_printer.prompts, 1):
-                print(f"{'='*80}")
-                print(f"PROMPT {i}/{len(step7_prompt_printer.prompts)}: {prompt.get('step_name', 'unknown')}")
-                print(f"Type: {prompt.get('prompt_type', 'unknown')}")
-                print(f"{'='*80}")
-                print(prompt['prompt_content'])
-                print(f"{'='*80}\n")
+                #if i > 0 # show all
+                if i == prompt_idx:
+                    print(f"{'='*80}")
+                    print(f"PROMPT {i}/{len(step7_prompt_printer.prompts)}: {prompt.get('step_name', 'unknown')}")
+                    print(f"Type: {prompt.get('prompt_type', 'unknown')}")
+                    print(f"{'='*80}")
+                    print(prompt['prompt_content'])
+                    print(f"{'='*80}\n")
 
     # === STEP 8 ====
     """Assign codes (and themes)"""
