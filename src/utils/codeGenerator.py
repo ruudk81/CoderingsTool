@@ -62,7 +62,7 @@ warnings.filterwarnings(
 """Prompt 1 : Theme Extraction"""
 class NearNeighbor(BaseModel):
     label: str = Field(..., min_length=1)
-    tell_apart_rule: str = Field(..., min_length=1)
+    tell_apart_rule: str = Field(default="", min_length=0)  # Optional - prevent validation errors
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class AssignmentExamples(BaseModel):
@@ -1500,7 +1500,8 @@ class InductiveCodeGenerator:
         
         # Initialize modification leak collection for race condition recovery
         self.modification_leaks = []      # Failed MODIFY operations for retry
-        
+        self.error_leaks = []             # Failed operations with retryable errors for retry
+
         # Initialize redistribution statistics
         self._redistribution_stats = {
             'clusters_redistributed': [],
@@ -2865,7 +2866,64 @@ class InductiveCodeGenerator:
         
         self.verbose_reporter.step_complete("Code Generation Token Measurement")
         return measured_averages
-    
+
+    async def _process_error_leaks_batch_concurrent(self, clusters: Dict, themes: Dict, theme_embeddings: Dict) -> List[Dict[str, Any]]:
+        """Process error leaks using re-processing of failed clusters
+
+        Similar to modification leak recovery but handles validation/generation failures
+        """
+        if not self.error_leaks:
+            return []
+
+        self.verbose_reporter.step_start("Error Leak Recovery")
+        self.verbose_reporter.stat_line(f"Processing {len(self.error_leaks)} error leaks")
+
+        all_recovery_results = []
+
+        # Process each error leak
+        for error_leak in self.error_leaks:
+            cluster_id = error_leak['cluster_id']
+            error_type = error_leak['error_type']
+
+            try:
+                self.verbose_reporter.stat_line(f"C{cluster_id}: Retrying after {error_type}")
+
+                # Get fresh cluster and theme data
+                cluster_data = clusters.get(str(cluster_id), {})
+                theme_data = themes.get(str(cluster_id))
+
+                if not cluster_data or not theme_data:
+                    self.verbose_reporter.error(f"C{cluster_id}: Missing cluster/theme data for retry")
+                    continue
+
+                # Get fresh codebook snapshot
+                codebook_snapshot, base_version = await self.shared_codebook.get_current_snapshot()
+
+                # Re-run full processing with fresh data
+                result = await self._process_single_cluster_comprehensive(
+                    cluster_id, cluster_data, theme_data, codebook_snapshot, base_version
+                )
+
+                if result:
+                    all_recovery_results.append(result)
+                    self.verbose_reporter.stat_line(f"C{cluster_id}: Successfully recovered")
+                else:
+                    self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no result")
+
+            except Exception as e:
+                self.verbose_reporter.error(f"C{cluster_id}: Recovery exception: {e}")
+
+        # Apply successful recovery results to codebook
+        if all_recovery_results:
+            self.verbose_reporter.stat_line(f"Applying {len(all_recovery_results)} error recovery results to codebook")
+            await self._merge_codebook_updates(all_recovery_results, None)
+
+        # Clear error leaks after processing
+        self.error_leaks.clear()
+
+        self.verbose_reporter.step_complete(f"Error Leak Recovery ({len(all_recovery_results)}/{len(self.error_leaks)} recovered)")
+        return all_recovery_results
+
     async def process_batches_sequentially(self, dissimilarity_batches: List[List[str]],
                                          clusters: Dict, themes: Dict,
                                          theme_embeddings: Dict) -> List[Dict[str, Any]]:
@@ -2936,8 +2994,64 @@ class InductiveCodeGenerator:
                 recovery_results = await self._process_modification_leaks_batch_concurrent(clusters, themes, theme_embeddings)
             else:
                 recovery_results = await self._process_modification_leak_recovery(clusters, themes, theme_embeddings)
-            all_results.extend(recovery_results)
-            self.all_results.extend(recovery_results)  # Keep instance variable in sync
+
+            # REPLACE failed results instead of adding duplicates
+            replaced_count = 0
+            appended_count = 0
+            for recovery_result in recovery_results:
+                recovered_cluster_id = str(recovery_result.get('cluster_id', ''))
+
+                # Find the original failed result
+                original_idx = None
+                for idx, result in enumerate(all_results):
+                    if str(result.get('cluster_id', '')) == recovered_cluster_id:
+                        original_idx = idx
+                        break
+
+                if original_idx is not None:
+                    # Replace failed result with successful recovery
+                    all_results[original_idx] = recovery_result
+                    replaced_count += 1
+                    self.verbose_reporter.stat_line(f"[FIX] C{recovered_cluster_id}: Replaced failed result with recovery result")
+                else:
+                    # No original found (shouldn't happen, but handle gracefully)
+                    all_results.append(recovery_result)
+                    appended_count += 1
+                    self.verbose_reporter.warning(f"[FIX] C{recovered_cluster_id}: No original result found, appending recovery result")
+
+            # Sync instance variable
+            self.all_results = all_results.copy()
+
+        # Process error leaks recovery if any were collected
+        if self.error_leaks:
+            error_recovery_results = await self._process_error_leaks_batch_concurrent(clusters, themes, theme_embeddings)
+
+            # REPLACE failed results instead of adding duplicates
+            replaced_count = 0
+            appended_count = 0
+            for recovery_result in error_recovery_results:
+                recovered_cluster_id = str(recovery_result.get('cluster_id', ''))
+
+                # Find the original failed result
+                original_idx = None
+                for idx, result in enumerate(all_results):
+                    if str(result.get('cluster_id', '')) == recovered_cluster_id:
+                        original_idx = idx
+                        break
+
+                if original_idx is not None:
+                    # Replace failed result with successful recovery
+                    all_results[original_idx] = recovery_result
+                    replaced_count += 1
+                    self.verbose_reporter.stat_line(f"[FIX] C{recovered_cluster_id}: Replaced failed error result with recovery result")
+                else:
+                    # No original found (shouldn't happen, but handle gracefully)
+                    all_results.append(recovery_result)
+                    appended_count += 1
+                    self.verbose_reporter.warning(f"[FIX] C{recovered_cluster_id}: No original error result found, appending recovery result")
+
+            # Sync instance variable
+            self.all_results = all_results.copy()
 
         return all_results
     
@@ -3341,14 +3455,35 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"C{cluster_id}: Recovery failed - no validation result")
                 return None
 
-            # Extract final code/definition from validation (matching regular pipeline)
+            # Extract final code/definition from validation with fallback logic
             final_code = None
             final_definition = None
+
+            # Primary: Try validation.code_validation.validated_code
             if validation and hasattr(validation, 'code_validation') and validation.code_validation:
                 code_validation = validation.code_validation
                 if code_validation.validated_code:
                     final_code = code_validation.validated_code.code
                     final_definition = code_validation.validated_code.definition
+
+            # Fallback 1: Try code_generation.generated_code
+            if not final_code and code_generation and hasattr(code_generation, 'generated_code'):
+                generated_code = code_generation.generated_code
+                if generated_code and hasattr(generated_code, 'code_label'):
+                    final_code = generated_code.code_label
+                    final_definition = generated_code.code_definition if hasattr(generated_code, 'code_definition') else None
+                    self.verbose_reporter.warning(f"C{cluster_id}: Using code_generation fallback for final_code")
+
+            # Fallback 2: Try candidate_selection.coding_decision.source_code (for USE decisions)
+            if not final_code and candidate_selection and hasattr(candidate_selection, 'coding_decision'):
+                coding_decision = candidate_selection.coding_decision
+                if coding_decision and hasattr(coding_decision, 'source_code') and coding_decision.source_code:
+                    final_code = coding_decision.source_code
+                    self.verbose_reporter.warning(f"C{cluster_id}: Using candidate_selection fallback for final_code")
+
+            # Log error if all fallbacks failed
+            if not final_code:
+                self.verbose_reporter.error(f"C{cluster_id}: All fallbacks failed - final_code remains None")
 
             # Return complete result structure
             return {
@@ -3764,6 +3899,19 @@ class InductiveCodeGenerator:
                         }
 
                 code_to_clusters[final_code].append(cluster_id)
+            elif cluster_id and not final_code:
+                # Defensive logging: cluster has ID but no final_code
+                self.verbose_reporter.warning(f"C{cluster_id}: Has cluster_id but missing final_code - not mapped to codebook")
+
+        # Build cluster_assignments (inverse mapping: cluster_id → code info)
+        # This ensures all processed clusters are tracked for validation
+        for code_text, cluster_ids in code_to_clusters.items():
+            for cluster_id in cluster_ids:
+                self.cluster_assignments[cluster_id] = {
+                    'code': code_text,
+                    'definition': code_to_definition[code_text],
+                    'cluster_id': cluster_id
+                }
 
         # Build final codebook with complete cluster mappings
         final_codes = []
@@ -3967,7 +4115,21 @@ class InductiveCodeGenerator:
             self.verbose_reporter.error(f"Pipeline failed for cluster {cluster_id}: {e}")
             self.verbose_reporter.error(f"Full traceback: {traceback.format_exc()}")
             return None
-    
+
+    def _is_retryable_error(self, error_type: str) -> bool:
+        """Determine if error should be retried or is a permanent failure
+
+        Retryable errors: Validation failures, incomplete prompt chains (Steps 3-4)
+        Permanent errors: Empty results, Step 1 complete failures
+        """
+        # DON'T retry: Empty results or Step 1 complete failures
+        non_retryable = ['empty_result', 'missing_candidate_selection', 'missing_coding_decision']
+
+        # DO retry: Step 3/4 failures (validation, incomplete chains)
+        retryable = ['missing_validation_or_generation', 'missing_attributes', 'unknown_decision']
+
+        return error_type in retryable
+
     async def _merge_codebook_updates(self, results: List[Dict[str, Any]], base_version: int):
         """Merge all codebook updates from sub-batch atomically - respects USE/MODIFY/CREATE decisions"""
         
@@ -3983,12 +4145,14 @@ class InductiveCodeGenerator:
             # Debug: Check result structure
             if not result:
                 self.verbose_reporter.error(f"C{cluster_id}: Empty result in merge_codebook_updates")
+                # Empty result is permanent failure - don't retry
                 decision_stats['errors'] += 1
                 continue
             
             # Must have candidate_selection for all decisions
             if not result.get('candidate_selection'):
                 self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection in result")
+                # Step 1 complete failure - permanent error, don't retry
                 decision_stats['errors'] += 1
                 continue
             
@@ -4000,6 +4164,7 @@ class InductiveCodeGenerator:
                 decision_info = candidate_selection.coding_decision
             else:
                 self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection coding_decision")
+                # Step 1 failure - permanent error, don't retry
                 decision_stats['errors'] += 1
                 continue
             
@@ -4017,7 +4182,20 @@ class InductiveCodeGenerator:
             # For CREATE and MODIFY decisions, we need validation and code_generation
             if not result.get('validation') or not result.get('code_generation'):
                 self.verbose_reporter.error(f"C{cluster_id}: {decision.upper()} decision missing validation or code_generation")
-                decision_stats['errors'] += 1
+
+                # This is retryable - Step 3/4 can be re-run
+                if self._is_retryable_error('missing_validation_or_generation'):
+                    error_leak = {
+                        'cluster_id': cluster_id,
+                        'full_result': result,  # Save partial result for recovery
+                        'error_type': 'missing_validation_or_generation',
+                        'reason': 'incomplete_prompt_chain',
+                        'timestamp': time.time()
+                    }
+                    self.error_leaks.append(error_leak)
+                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                else:
+                    decision_stats['errors'] += 1
                 continue
                 
             validation = result['validation']
@@ -4025,7 +4203,20 @@ class InductiveCodeGenerator:
             
             if not hasattr(validation, 'code_validation') or not hasattr(code_generation, 'generated_code'):
                 self.verbose_reporter.error(f"C{cluster_id}: Missing code_validation or generated_code for {decision.upper()} decision")
-                decision_stats['errors'] += 1
+
+                # This is retryable - validation/generation can be re-run
+                if self._is_retryable_error('missing_attributes'):
+                    error_leak = {
+                        'cluster_id': cluster_id,
+                        'full_result': result,
+                        'error_type': 'missing_attributes',
+                        'reason': 'incomplete_prompt_chain_attributes',
+                        'timestamp': time.time()
+                    }
+                    self.error_leaks.append(error_leak)
+                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                else:
+                    decision_stats['errors'] += 1
                 continue
             
             # Process the single validation with its corresponding decision
@@ -4100,10 +4291,36 @@ class InductiveCodeGenerator:
                 
                 else:
                     self.verbose_reporter.error(f"C{cluster_id}: Unknown decision '{final_decision}' or missing source_code for modify")
-                    decision_stats['errors'] += 1
+
+                    # Unknown decision is retryable - likely prompt issue
+                    if self._is_retryable_error('unknown_decision'):
+                        error_leak = {
+                            'cluster_id': cluster_id,
+                            'full_result': result,
+                            'error_type': 'unknown_decision',
+                            'reason': f"unknown_decision_{final_decision}",
+                            'timestamp': time.time()
+                        }
+                        self.error_leaks.append(error_leak)
+                        decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                    else:
+                        decision_stats['errors'] += 1
             else:
                 self.verbose_reporter.error(f"C{cluster_id}: Missing validated_code, generated_code, or decision_info for {decision.upper()} decision")
-                decision_stats['errors'] += 1
+
+                # Missing critical data - retryable
+                if self._is_retryable_error('unknown_decision'):
+                    error_leak = {
+                        'cluster_id': cluster_id,
+                        'full_result': result,
+                        'error_type': 'unknown_decision',
+                        'reason': 'missing_validated_code_or_generated_code',
+                        'timestamp': time.time()
+                    }
+                    self.error_leaks.append(error_leak)
+                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                else:
+                    decision_stats['errors'] += 1
         
         # Execute batch operations with fresh version checking
         updates_made = False

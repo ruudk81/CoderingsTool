@@ -1298,10 +1298,9 @@ If the same/very similar code appears in multiple themes:
   - In the JSON output, represent the meta-theme as the "theme" and use the "category" field on each code to indicate the atomic subtheme/category.
 - A **2-level structure (Theme → Code)** may be used only if all themes are atomic and no meta-themes are needed.
 
-
 # Label Rules (strict)
-- No conjunctions (“en/and/&”), no slashes (“/”), no comma-joined lists.
-- Prefer ≤3-word noun phrases where possible; never exceed WT’s ≤10-word limit.
+- No conjunctions (“en/of/and/or/&/-”), no slashes (“/”), no comma-joined lists.
+- Prefer ≤6-word noun phrases where possible; never exceed WT’s ≤10-word limit.
 - Avoid synonyms across labels; pick one canonical term per concept.
 - Each code needs a crisp ≤30-word definition focused on when to use the code.
 
@@ -1336,12 +1335,6 @@ Provide your final answer as valid JSON only, with no commentary before or after
     }}
   ]
 }}
-
-## ID Format Rules (CRITICAL)
-**Single code**: `"id": "1"` (string, no brackets)
-**Merged codes**: `"id": "7,13"` (comma-separated, no spaces)
-**Split codes**: `"id": "29a"` or `"id": "29b"` (letter suffix allowed)
-**NEVER use**: `"id": "[1]"` or `"id": ["1"]` (no brackets/arrays)
 """
 
 
