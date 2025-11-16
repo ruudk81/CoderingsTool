@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sys
 import pandas as pd
 from pathlib import Path
@@ -4001,77 +4002,197 @@ def get_cluster_info(cluster_id, reasoning_results):
 
     return cluster_data
 
-def display_code_description_tab(code_definition):
-    """Display code definition in first tab"""
-    lang = st.session_state.get("language", "en")
-    st.markdown(code_definition if code_definition else ("*Geen definitie beschikbaar*" if lang == "nl" else "*No definition available*"))
+# ==================== HTML-BASED CODEBOOK DISPLAY ====================
 
-def display_cluster_ideas_tab(cluster_ids, reasoning_results):
-    """Display Cluster Ideas tab with multi-cluster support"""
-    lang = st.session_state.get("language", "en")
+CSS_STYLES = """
+<style>
+/* Base font styling to match Streamlit */
+body, html {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color: #262730;
+}
 
+/* Collapsible details - no borders */
+details {
+    border: none;
+    margin-bottom: 1.5rem;
+    background: transparent;
+}
+
+details summary {
+    cursor: pointer;
+    font-size: 13pt;
+    padding: 0.5rem 0;
+    list-style: none;
+    user-select: none;
+}
+
+details summary::-webkit-details-marker {
+    display: none;
+}
+
+details[open] summary {
+    border-bottom: 1px solid #e6e6e6;
+    margin-bottom: 1rem;
+}
+
+/* Pure CSS Tab system using radio buttons */
+.tab-container {
+    margin-top: 1rem;
+}
+
+/* Hide radio inputs */
+.tab-container input[type="radio"] {
+    display: none;
+}
+
+.tab-buttons {
+    display: flex;
+    gap: 0.5rem;
+    border-bottom: 1px solid #e6e6e6;
+    margin-bottom: 1rem;
+}
+
+/* Style labels as tab buttons */
+.tab-buttons label {
+    background: #f0f2f6;
+    border: 1px solid #e6e6e6;
+    border-bottom: none;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-radius: 4px 4px 0 0;
+    transition: background 0.2s;
+    user-select: none;
+}
+
+.tab-buttons label:hover {
+    background: #e6e9f0;
+}
+
+/* Active tab styling based on checked radio button (4 tabs) */
+.tab-container input[data-tab="0"]:checked ~ .tab-buttons label:nth-of-type(1),
+.tab-container input[data-tab="1"]:checked ~ .tab-buttons label:nth-of-type(2),
+.tab-container input[data-tab="2"]:checked ~ .tab-buttons label:nth-of-type(3),
+.tab-container input[data-tab="3"]:checked ~ .tab-buttons label:nth-of-type(4) {
+    background: white;
+    border-bottom: 2px solid white;
+    margin-bottom: -1px;
+    font-weight: 500;
+}
+
+/* Hide all content by default */
+.tab-content {
+    display: none;
+    padding: 1rem 0;
+}
+
+/* Show content based on checked radio button (4 tabs) */
+.tab-container input[data-tab="0"]:checked ~ .tab-content[data-tab="0"],
+.tab-container input[data-tab="1"]:checked ~ .tab-content[data-tab="1"],
+.tab-container input[data-tab="2"]:checked ~ .tab-content[data-tab="2"],
+.tab-container input[data-tab="3"]:checked ~ .tab-content[data-tab="3"] {
+    display: block;
+}
+
+/* Cluster sections */
+.cluster-section {
+    margin-bottom: 1.5rem;
+}
+
+.cluster-section h4 {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    font-size: 1rem;
+}
+
+.cluster-section p {
+    margin: 0.5rem 0;
+}
+
+.cluster-section ul {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+}
+
+.cluster-section li {
+    margin: 0.25rem 0;
+}
+</style>
+"""
+
+def generate_code_description_html(code_definition, lang):
+    """Generate HTML for Code Description tab"""
+    if not code_definition:
+        return f"<p><em>{'Geen definitie beschikbaar' if lang == 'nl' else 'No definition available'}</em></p>"
+    return f"<p>{code_definition}</p>"
+
+def generate_cluster_ideas_html(cluster_ids, reasoning_results, lang):
+    """Generate HTML for Cluster Ideas tab with bulb icons"""
+    html_parts = []
     for cluster_id in cluster_ids:
         cluster_info = get_cluster_info(cluster_id, reasoning_results)
-
-        st.markdown(f"**💡 Cluster {cluster_id}**")
+        html_parts.append(f'<div class="cluster-section">')
+        html_parts.append(f'<h4>💡 Cluster {cluster_id}</h4>')
 
         ideas = cluster_info.get('ideas', [])
         if ideas:
+            html_parts.append('<ul>')
             for idea in ideas:
-                # Remove markdown bullet prefix as ideas may already contain bullets
-                st.markdown(idea)
+                # Remove leading dash and whitespace from idea text
+                clean_idea = idea.lstrip('- ').strip()
+                html_parts.append(f'<li>{clean_idea}</li>')
+            html_parts.append('</ul>')
         else:
-            st.markdown("*" + ("Geen ideeën beschikbaar" if lang == "nl" else "No ideas available") + "*")
+            html_parts.append(f"<p><em>{'Geen ideeën beschikbaar' if lang == 'nl' else 'No ideas available'}</em></p>")
 
-        st.write("")
+        html_parts.append('</div>')
 
-def display_cluster_analysis_tab(cluster_ids, reasoning_results):
-    """Display Cluster Analysis tab with multi-cluster support"""
-    lang = st.session_state.get("language", "en")
+    return '\n'.join(html_parts)
 
+def generate_cluster_theme_html(cluster_ids, reasoning_results, lang):
+    """Generate HTML for Cluster Theme tab with magnifying glass icons"""
+    html_parts = []
     for cluster_id in cluster_ids:
         cluster_info = get_cluster_info(cluster_id, reasoning_results)
+        theme_label = cluster_info.get('theme_label', '')
 
-        st.markdown(f"**🧠 Cluster {cluster_id}**")
+        if theme_label:
+            # Format: 🔍 **Cluster {id}**: {label}
+            html_parts.append(f'<p>🔍 <strong>Cluster {cluster_id}</strong>: {theme_label}</p>')
+        else:
+            no_theme_text = 'Geen thema beschikbaar' if lang == 'nl' else 'No theme available'
+            html_parts.append(f'<p>🔍 <strong>Cluster {cluster_id}</strong>: <em>{no_theme_text}</em></p>')
+
+    return '\n'.join(html_parts)
+
+def generate_cluster_analysis_html(cluster_ids, reasoning_results, lang):
+    """Generate HTML for Cluster Analysis tab with brain icons"""
+    html_parts = []
+    for cluster_id in cluster_ids:
+        cluster_info = get_cluster_info(cluster_id, reasoning_results)
+        html_parts.append(f'<div class="cluster-section">')
+        html_parts.append(f'<h4>🧠 Cluster {cluster_id}</h4>')
 
         analysis = cluster_info.get('analysis', '')
         if analysis:
-            st.markdown(analysis)
+            html_parts.append(f'<p>{analysis}</p>')
         else:
-            st.markdown("*" + ("Geen analyse beschikbaar" if lang == "nl" else "No analysis available") + "*")
+            html_parts.append(f"<p><em>{'Geen analyse beschikbaar' if lang == 'nl' else 'No analysis available'}</em></p>")
 
-        st.write("")
+        html_parts.append('</div>')
 
-def display_cluster_theme_tab(cluster_ids, reasoning_results):
-    """Display Cluster Theme tab with multi-cluster support"""
-    lang = st.session_state.get("language", "en")
+    return '\n'.join(html_parts)
 
+def generate_code_assignment_html(cluster_ids, reasoning_results, lang):
+    """Generate HTML for Code Assignment tab with checkmark icons and conditional logic"""
+    html_parts = []
     for cluster_id in cluster_ids:
         cluster_info = get_cluster_info(cluster_id, reasoning_results)
-
-        st.markdown(f"**🔍 Cluster {cluster_id}**")
-
-        theme_label = cluster_info.get('theme_label', '')
-        theme_description = cluster_info.get('theme_description', '')
-
-        if theme_label:
-            st.markdown(f"**{'Label' if lang == 'en' else 'Label'}:** {theme_label}")
-        if theme_description:
-            st.markdown(f"**{'Beschrijving' if lang == 'nl' else 'Description'}:** {theme_description}")
-
-        if not theme_label and not theme_description:
-            st.markdown("*" + ("Geen thema informatie beschikbaar" if lang == "nl" else "No theme information available") + "*")
-
-        st.write("")
-
-def display_code_assignment_tab(cluster_ids, reasoning_results):
-    """Display Code Assignment tab with conditional template based on decision and verdict"""
-    lang = st.session_state.get("language", "en")
-
-    for cluster_id in cluster_ids:
-        cluster_info = get_cluster_info(cluster_id, reasoning_results)
-
-        st.markdown(f"**✅ Cluster {cluster_id}**")
+        html_parts.append(f'<div class="cluster-section">')
+        html_parts.append(f'<h4>✅ Cluster {cluster_id}</h4>')
 
         recommendation = cluster_info.get('recommendation', {})
         validation = cluster_info.get('validation', {})
@@ -4079,35 +4200,87 @@ def display_code_assignment_tab(cluster_ids, reasoning_results):
         decision = recommendation.get('decision', '').upper()
         verdict = validation.get('verdict', '').upper()
 
-        # Template logic based on decision and verdict
+        # Start bulleted list
+        html_parts.append('<ul>')
+
+        # Conditional template based on decision and verdict
         if decision == 'USE':
-            # USE decision: Show recommendation details only
-            st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
-            st.markdown(f"**{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}:** {recommendation.get('code_label', 'N/A')}")
-            st.markdown(f"**{'Aanbevolen Definitie' if lang == 'nl' else 'Recommended Definition'}:** {recommendation.get('code_definition', 'N/A')}")
+            html_parts.append(f"<li>{'Beslissing' if lang == 'nl' else 'Coding Decision'}: {recommendation.get('decision', 'N/A')}</li>")
+            html_parts.append(f"<li>{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}: {recommendation.get('code_label', 'N/A')}</li>")
+            html_parts.append(f"<li>{'Aanbevolen Definitie' if lang == 'nl' else 'Recommended Definition'}: {recommendation.get('code_definition', 'N/A')}</li>")
 
         elif decision in ['MODIFY', 'CREATE']:
-            # MODIFY/CREATE decision: Show based on verdict
             if verdict == 'REJECT':
-                # REJECT: Show recommendation + validation details
-                st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
-                st.markdown(f"**{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}:** {recommendation.get('code_label', 'N/A')}")
-                st.markdown(f"**{'Verdict' if lang == 'nl' else 'Verdict'}:** {validation.get('verdict', 'N/A')}")
-                st.markdown(f"**{'Finale Code' if lang == 'nl' else 'Final Code'}:** {validation.get('validated_code', 'N/A')}")
-                st.markdown(f"**{'Finale Definitie' if lang == 'nl' else 'Final Definition'}:** {recommendation.get('code_definition', 'N/A')}")
-                st.markdown(f"**{'Motivering' if lang == 'nl' else 'Motivation'}:** {validation.get('rationale', 'N/A')}")
+                html_parts.append(f"<li>{'Beslissing' if lang == 'nl' else 'Coding Decision'}: {recommendation.get('decision', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Aanbevolen Code' if lang == 'nl' else 'Recommended Code'}: {recommendation.get('code_label', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Verdict' if lang == 'nl' else 'Verdict'}: {validation.get('verdict', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Finale Code' if lang == 'nl' else 'Final Code'}: {validation.get('validated_code', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Finale Definitie' if lang == 'nl' else 'Final Definition'}: {recommendation.get('code_definition', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Motivering' if lang == 'nl' else 'Motivation'}: {validation.get('rationale', 'N/A')}</li>")
+            else:  # APPROVE
+                html_parts.append(f"<li>{'Beslissing' if lang == 'nl' else 'Coding Decision'}: {recommendation.get('decision', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Code' if lang == 'en' else 'Code'}: {validation.get('validated_code', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Definitie' if lang == 'nl' else 'Definition'}: {recommendation.get('code_definition', 'N/A')}</li>")
+                html_parts.append(f"<li>{'Motivering' if lang == 'nl' else 'Motivation'}: {validation.get('rationale', 'N/A')}</li>")
 
-            else:  # APPROVE or other
-                # APPROVE: Show decision + final code details (skip recommended)
-                st.markdown(f"**{'Beslissing' if lang == 'nl' else 'Coding Decision'}:** {recommendation.get('decision', 'N/A')}")
-                st.markdown(f"**{'Code' if lang == 'en' else 'Code'}:** {validation.get('validated_code', 'N/A')}")
-                st.markdown(f"**{'Definitie' if lang == 'nl' else 'Definition'}:** {recommendation.get('code_definition', 'N/A')}")
-                st.markdown(f"**{'Motivering' if lang == 'nl' else 'Motivation'}:** {validation.get('rationale', 'N/A')}")
+        # Close bulleted list
+        html_parts.append('</ul>')
+        html_parts.append('</div>')
 
-        st.write("")
+    return '\n'.join(html_parts)
+
+def generate_code_html(code_index, code_name, code_info, cluster_ids, reasoning_results, lang):
+    """Generate complete HTML for one code section"""
+    # Tab labels (removed Code Description tab)
+    tab_labels = [
+        "Cluster Ideeën" if lang == "nl" else "Cluster Ideas",
+        "Cluster Thema" if lang == "nl" else "Cluster Theme",
+        "Cluster Analyse" if lang == "nl" else "Cluster Analysis",
+        "Code Toewijzing" if lang == "nl" else "Code Assignment"
+    ]
+
+    # Generate content for each tab (removed Code Description)
+    tab_contents = [
+        generate_cluster_ideas_html(cluster_ids, reasoning_results, lang),
+        generate_cluster_theme_html(cluster_ids, reasoning_results, lang),
+        generate_cluster_analysis_html(cluster_ids, reasoning_results, lang),
+        generate_code_assignment_html(cluster_ids, reasoning_results, lang)
+    ]
+
+    # Build HTML
+    html_parts = []
+
+    # Details element
+    html_parts.append(f'<details id="code-{code_index}">')
+    html_parts.append(f'<summary>📁 {code_name.capitalize()} ({code_info["cluster_count"]} {"clusters" if lang == "en" else "clusters"})</summary>')
+
+    # Tab container
+    html_parts.append('<div class="tab-container">')
+
+    # Hidden radio inputs (4 tabs total, tab 3 = Code Assignment is checked by default)
+    for i in range(4):
+        checked_attr = ' checked' if i == 3 else ''  # Tab 4 (index 3) is default
+        html_parts.append(f'<input type="radio" name="tabs-code-{code_index}" id="tab-{code_index}-{i}" data-tab="{i}"{checked_attr}>')
+
+    # Tab button labels
+    html_parts.append('<div class="tab-buttons">')
+    for i, label in enumerate(tab_labels):
+        html_parts.append(f'<label for="tab-{code_index}-{i}">{label}</label>')
+    html_parts.append('</div>')
+
+    # Tab content panels (CSS handles visibility based on checked radio)
+    for i, content in enumerate(tab_contents):
+        html_parts.append(f'<div class="tab-content" data-tab="{i}">')
+        html_parts.append(content)
+        html_parts.append('</div>')
+
+    html_parts.append('</div>')  # Close tab-container
+    html_parts.append('</details>')
+
+    return '\n'.join(html_parts)
 
 def show_step6_codebook_display():
-    """Display Step 6 codebook in code-centric view"""
+    """Display Step 6 codebook using HTML with custom tabs and collapsible sections"""
     reasoning_results = st.session_state.pipeline_results['reasoning_results']
     lang = st.session_state.get("language", "en")
 
@@ -4119,43 +4292,19 @@ def show_step6_codebook_display():
         else f"Generated Codebook ({len(sorted_codes)} codes)"
     )
 
-    for code_name in sorted_codes:
+    # Build complete HTML
+    html_parts = [CSS_STYLES]
+
+    for i, code_name in enumerate(sorted_codes):
         code_info = code_map[code_name]
+        cluster_ids = code_info['cluster_ids']  # Already in processing order
 
-        # Preserve original processing/coding order
-        cluster_ids = code_info['cluster_ids']
+        code_html = generate_code_html(i, code_name, code_info, cluster_ids, reasoning_results, lang)
+        html_parts.append(code_html)
 
-        # Display code name with folder icon and cluster count above expander (capitalized, 13pt, not bold)
-        cluster_text = "clusters" if lang == "en" else "clusters"
-        st.markdown(f"<p style='font-size: 13pt; margin-bottom: 5px;'>📁 {code_name.capitalize()} ({code_info['cluster_count']} {cluster_text})</p>", unsafe_allow_html=True)
-
-        # Expander with language-specific label (no icon)
-        expander_label = "Analyse" if lang == "nl" else "Analysis"
-
-        with st.expander(expander_label, expanded=False):
-            # Original tab order
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "Code Beschrijving" if lang == "nl" else "Code Description",
-                "Cluster Ideeën" if lang == "nl" else "Cluster Ideas",
-                "Cluster Thema" if lang == "nl" else "Cluster Theme",
-                "Cluster Analyse" if lang == "nl" else "Cluster Analysis",
-                "Code Toewijzing" if lang == "nl" else "Code Assignment"
-            ])
-
-            with tab1:
-                display_code_description_tab(code_info['definition'])
-
-            with tab2:
-                display_cluster_ideas_tab(cluster_ids, reasoning_results)
-
-            with tab3:
-                display_cluster_theme_tab(cluster_ids, reasoning_results)
-
-            with tab4:
-                display_cluster_analysis_tab(cluster_ids, reasoning_results)
-
-            with tab5:
-                display_code_assignment_tab(cluster_ids, reasoning_results)
+    # Render all HTML at once using components.html for proper radio button interaction
+    full_html = '\n'.join(html_parts)
+    components.html(full_html, height=800, scrolling=True)
 def show_theme_samples(refinement_report):
     import streamlit as st
 
