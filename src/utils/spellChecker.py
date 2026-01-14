@@ -35,7 +35,7 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, create_instructor_client
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -400,12 +400,7 @@ class SpellChecker:
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0
 
-        self.client = instructor.from_provider(
-            f"openai/{self.model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=True,
-            api_key=self.openai_api_key
-        )
+        self.client = create_instructor_client(self.model, async_mode=True)
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
