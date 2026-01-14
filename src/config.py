@@ -133,6 +133,34 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
 
+# Azure ARM access (for dynamic limit fetching - optional)
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
+
+# =============================================================================
+# MODEL LIMITS (context window + max output tokens)
+# Adjust based on your subscription tier if needed
+# =============================================================================
+OPENAI_MODEL_LIMITS = {
+    # GPT-4.1 family - 1M context window
+    "gpt-4.1": {"context_window": 1_000_000, "max_output": 32_000},
+    "gpt-4.1-mini": {"context_window": 1_000_000, "max_output": 32_000},
+    "gpt-4.1-nano": {"context_window": 1_000_000, "max_output": 32_000},
+    # GPT-5 family - 400K total (272K input + 128K output)
+    "gpt-5": {"context_window": 272_000, "max_output": 128_000},
+    "gpt-5.1": {"context_window": 272_000, "max_output": 128_000},
+    "gpt-5.2": {"context_window": 272_000, "max_output": 128_000},
+    "gpt-5-mini": {"context_window": 272_000, "max_output": 128_000},
+    "gpt-5-nano": {"context_window": 128_000, "max_output": 32_000},
+    "gpt-5-chat-latest": {"context_window": 272_000, "max_output": 128_000},
+    # GPT-4o family (legacy)
+    "gpt-4o": {"context_window": 128_000, "max_output": 16_000},
+    "gpt-4o-mini": {"context_window": 128_000, "max_output": 16_000},
+    # Embeddings
+    "text-embedding-3-large": {"context_window": 8_191, "max_output": 0},
+    "text-embedding-3-small": {"context_window": 8_191, "max_output": 0},
+}
+
 # Default models (used for both providers)
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
@@ -154,20 +182,21 @@ def create_instructor_client(model: str, async_mode: bool = True) -> Any:
         Instructor-wrapped client for structured outputs
     """
     import instructor
-    from openai import OpenAI, AsyncOpenAI, AzureOpenAI, AsyncAzureOpenAI
+    from openai import OpenAI, AsyncOpenAI
 
     if API_PROVIDER == "azure":
-        # For Azure, use deployment name instead of model name
-        base_client = AsyncAzureOpenAI(
+        # Azure v1 API: use standard OpenAI client with custom base_url
+        # This gives access to the Responses API (responses.create)
+        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/"
+        base_client = AsyncOpenAI(
             api_key=AZURE_OPENAI_API_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_version=AZURE_OPENAI_API_VERSION
-        ) if async_mode else AzureOpenAI(
+            base_url=azure_base_url
+        ) if async_mode else OpenAI(
             api_key=AZURE_OPENAI_API_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_version=AZURE_OPENAI_API_VERSION
+            base_url=azure_base_url
         )
-        return instructor.from_openai(base_client, mode=instructor.Mode.TOOLS)
+        # Use RESPONSES_TOOLS mode since v1 API supports Responses API
+        return instructor.from_openai(base_client, mode=instructor.Mode.RESPONSES_TOOLS)
     else:
         # OpenAI uses the Responses API
         return instructor.from_provider(
@@ -186,22 +215,16 @@ def create_embedding_client(async_mode: bool = True) -> Any:
         async_mode: Whether to create async client (default True)
 
     Returns:
-        OpenAI or AzureOpenAI client for embeddings
+        OpenAI client for embeddings (with custom base_url for Azure)
     """
-    from openai import OpenAI, AsyncOpenAI, AzureOpenAI, AsyncAzureOpenAI
+    from openai import OpenAI, AsyncOpenAI
 
     if API_PROVIDER == "azure":
+        # Azure v1 API: use standard OpenAI client with custom base_url
+        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/"
         if async_mode:
-            return AsyncAzureOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                api_version=AZURE_OPENAI_API_VERSION
-            )
-        return AzureOpenAI(
-            api_key=AZURE_OPENAI_API_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_version=AZURE_OPENAI_API_VERSION
-        )
+            return AsyncOpenAI(api_key=AZURE_OPENAI_API_KEY, base_url=azure_base_url)
+        return OpenAI(api_key=AZURE_OPENAI_API_KEY, base_url=azure_base_url)
     else:
         if async_mode:
             return AsyncOpenAI(api_key=OPENAI_API_KEY)
