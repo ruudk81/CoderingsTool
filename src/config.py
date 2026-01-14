@@ -3,6 +3,28 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
+# Load .env file if it exists (simple loader, no dependencies)
+def _load_dotenv():
+    """Load environment variables from .env file in project root."""
+    env_paths = [
+        Path(__file__).parent.parent / '.env',  # src/../.env
+        Path.cwd() / '.env',
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, value = line.partition('=')
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and not os.environ.get(key):
+                            os.environ[key] = value
+            break
+
+_load_dotenv()
+
 # File handling (only keep what's used)
 ALLOWED_EXTENSIONS = ['.sav']
 

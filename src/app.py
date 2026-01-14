@@ -1,6 +1,19 @@
+#%%
+import sys
+
+# Suppress SystemExit in IPython/Jupyter environments
+if 'IPython' in sys.modules:
+    import IPython
+    _original_showtraceback = IPython.core.interactiveshell.InteractiveShell.showtraceback
+    def _custom_showtraceback(self, *args, **kwargs):
+        etype, value, tb = sys.exc_info()
+        if etype == SystemExit and str(value) == '0':
+            return  # Suppress clean exits
+        _original_showtraceback(self, *args, **kwargs)
+    IPython.core.interactiveshell.InteractiveShell.showtraceback = _custom_showtraceback
+
 import streamlit as st
 import streamlit.components.v1 as components
-import sys
 import pandas as pd
 from pathlib import Path
 import html, random
@@ -183,7 +196,8 @@ class DatasetConfig:
 
 def _get_data_loader():
     if st.session_state.data_loader is None:
-        st.session_state.data_loader = DataLoader(verbose=False)
+        data_dir = str(project_root / "data")
+        st.session_state.data_loader = DataLoader(data_dir=data_dir, verbose=False)
     return st.session_state.data_loader
 
 def _get_cache_manager():
@@ -1292,6 +1306,7 @@ def show_upload_page():
                         )
 
                         # Call step_0_load_data to load data as ResponseModel list
+                        data_dir = str(project_root / "data")
                         if is_multiple_mode:
                             raw_text_list = pipeline.step_0_load_data(
                                 filename=config.filename,
@@ -1303,7 +1318,8 @@ def show_upload_page():
                                 merge_config=merge_config,
                                 encoding=encoding if encoding != 'auto' else None,
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True
+                                verbose=True,
+                                data_dir=data_dir
                             )
                             text_column = 'merged_text'
                         else:
@@ -1316,7 +1332,8 @@ def show_upload_page():
                                 sample_size=sample_size,
                                 encoding=encoding if encoding != 'auto' else None,
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True
+                                verbose=True,
+                                data_dir=data_dir
                             )
                             text_column = config.selected_variables[0]
 
@@ -1577,7 +1594,8 @@ def show_preprocessing_page():
                                 sample_size=sample_size,
                                 merge_config=merge_config,
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True)
+                                verbose=True,
+                                data_dir=str(project_root / "data"))
                         progress_container.success("✅ Data laden voltooid")
                             
                     else: #single vars
@@ -1609,7 +1627,8 @@ def show_preprocessing_page():
                                 sample_size=sample_size,
                                 merge_config=merge_config,
                                 force_recalc=st.session_state.get('force_recalculate_all', False),
-                                verbose=True)
+                                verbose=True,
+                                data_dir=str(project_root / "data"))
                         progress_container.success("✅ Data laden voltooid")
 
                     st.session_state.pipeline_results['raw_text_list'] = raw_text_list
@@ -3592,7 +3611,8 @@ def load_preview_raw_data(n_samples=5):
                 sample_size=sample_size,
                 merge_config=merge_config,
                 force_recalc=True,  # Always force recalc for preview
-                verbose=False
+                verbose=False,
+                data_dir=str(project_root / "data")
             )
             # Take first n_samples for preview
             preview_data = preview_data[:n_samples] if len(preview_data) > n_samples else preview_data
@@ -3617,7 +3637,8 @@ def load_preview_raw_data(n_samples=5):
                 sample_size=sample_size,
                 merge_config=merge_config,
                 force_recalc=True,  # Always force recalc for preview
-                verbose=False
+                verbose=False,
+                data_dir=str(project_root / "data")
             )
             # Take first n_samples for preview
             preview_data = preview_data[:n_samples] if len(preview_data) > n_samples else preview_data
