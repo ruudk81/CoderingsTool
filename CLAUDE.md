@@ -95,8 +95,9 @@ mark_step_completed(N)     # Mark step N as complete
 
 ## Custom Agents
 
-Three specialized subagents available in `.claude/agents/`:
+Four specialized subagents available in `.claude/agents/`:
 
 - **utils-dependency-auditor** - Analyze `/src/utils` for unused/redundant utilities
 - **config-parameter-curator** - Migrate hardcoded values to `config.py`
-- **responses-api-migrator** - Migrate OpenAI chat.completions to responses API
+- **responses-api-migrator** - Migrate OpenAI chat.completions to responses API (COMPLETED)
+- **azure-client-migrator** - Migrate to provider-agnostic client factories for Azure support (PENDING)

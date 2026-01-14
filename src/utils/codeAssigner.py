@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from collections import deque
 import numpy as np
 
-import instructor
-from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
+from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
 from aiolimiter import AsyncLimiter
@@ -24,7 +23,8 @@ from pydantic import BaseModel, field_validator
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER
+from utils.llm import create_client, llm_create_async, create_embedding_client
 from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -249,16 +249,11 @@ class CodeAssigner:
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Instructor-patched async OpenAI client for structured output with Responses API
-        self.client = instructor.from_provider(
-            f"openai/{self.model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=True,
-            api_key=OPENAI_API_KEY
-        )
+        # Instructor-patched async client for structured output (Azure/OpenAI abstracted)
+        self.client = create_client(model=self.model, async_mode=True)
 
         # Embedding client for code similarity (plain OpenAI client)
-        self.embedding_client = OpenAI(api_key=OPENAI_API_KEY)
+        self.embedding_client = create_embedding_client(async_mode=False)
         self.embedding_model = self.model_config.embedding_model
 
         # Rate limiting setup
@@ -598,14 +593,22 @@ class CodeAssigner:
         prompt = self._create_prompt(idea_id, idea_text)
 
         # For probes: avoid response_model so we can read .usage
-        resp = await self.client.responses.create(
+        resp = await llm_create_async(
+            client=self.client,
             model=self.model,
-            input=prompt,
-            temperature=self.config.temperature
+            prompt=prompt,
+            temperature=self.config.temperature,
+            track_usage=False  # We're extracting usage manually for bootstrap
         )
 
+        # Handle both Azure (prompt_tokens) and OpenAI (input_tokens) response formats
         u = getattr(resp, "usage", None)
-        return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
+        if u:
+            # Try Azure format first, then OpenAI format
+            prompt_tokens = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", 0)
+            completion_tokens = getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", 0)
+            return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
+        return {"prompt_tokens": 0, "completion_tokens": 0}
 
     async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook):
         """Stage 1: Evaluate how well the default code from cluster fits the idea
@@ -642,12 +645,14 @@ class CodeAssigner:
                 start_time = time.perf_counter()
 
                 response = await asyncio.wait_for(
-                    self.client.responses.create(
+                    llm_create_async(
+                        client=self.client,
                         model=self.model,
+                        prompt=prompt,
                         response_model=DefaultCodeEvaluationResponse,
-                        input=prompt,
                         temperature=self.config.temperature,
-                        max_output_tokens=self.config.max_tokens
+                        max_tokens=self.config.max_tokens,
+                        track_usage=True
                     ),
                     timeout=timeout
                 )
@@ -660,7 +665,7 @@ class CodeAssigner:
                 if hasattr(response, '_raw_response'):
                     usage = response._raw_response.usage
                     if usage:
-                        actual_total_tokens = usage.total_tokens
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0)
                         delta = actual_total_tokens - est_tokens
                         await self.tpm_bucket.reconcile(delta)
 
@@ -737,12 +742,14 @@ class CodeAssigner:
                 start_time = time.perf_counter()
 
                 response = await asyncio.wait_for(
-                    self.client.responses.create(
+                    llm_create_async(
+                        client=self.client,
                         model=self.model,
+                        prompt=prompt,
                         response_model=FallbackCodeAssignmentResponse,
-                        input=prompt,
                         temperature=self.config.temperature,
-                        max_output_tokens=self.config.max_tokens
+                        max_tokens=self.config.max_tokens,
+                        track_usage=True
                     ),
                     timeout=timeout
                 )
@@ -755,7 +762,7 @@ class CodeAssigner:
                 if hasattr(response, '_raw_response'):
                     usage = response._raw_response.usage
                     if usage:
-                        actual_total_tokens = usage.total_tokens
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0)
                         delta = actual_total_tokens - est_tokens
                         await self.tpm_bucket.reconcile(delta)
 

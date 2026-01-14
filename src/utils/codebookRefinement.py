@@ -10,12 +10,13 @@ from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
 from scipy.cluster.hierarchy import linkage, fcluster
 
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI
 
 # === CONSTANTS ========================================================================================================
 OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
 
-from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY
+from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
+from utils.llm import create_client, llm_create_sync
 from prompts import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
 from models import RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory
 from utils.codeGenerator import CodeGeneratorReasoningResults
@@ -48,9 +49,13 @@ class CodebookRefinementProcessor:
         
         if not self.api_key:
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
-        
-        # Initialize OpenAI client
-        self.client = AsyncOpenAI(api_key=self.api_key)
+
+        # Initialize centralized client for Azure/OpenAI abstraction
+        self.client = create_client(
+            model=self.model_config.codebook_refinement_model,
+            async_mode=False,
+            azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
+        )
 
         # Setup verbose reporter
         self.reporter = VerboseReporter(enabled=config.verbose)
@@ -249,27 +254,36 @@ class CodebookRefinementProcessor:
         return text
 
     def _parse_response_json(self, response) -> dict:
-        """Extract and parse JSON from response.output array"""
-        # Access response.output array (works for both chat and reasoning models)
-        for item in response.output:
-            if item.type == "message":
-                response_text = item.content[0].text
+        """Extract and parse JSON from response (handles both OpenAI and Azure formats)"""
+        response_text = None
 
-                # Strip markdown wrappers
-                clean_text = self._extract_json_from_markdown(response_text)
+        # Try OpenAI Responses API format first (response.output array)
+        if hasattr(response, 'output') and response.output:
+            for item in response.output:
+                if hasattr(item, 'type') and item.type == "message":
+                    response_text = item.content[0].text
+                    break
 
-                try:
-                    return json.loads(clean_text)
-                except json.JSONDecodeError as e:
-                    # Enhanced error logging for debugging
-                    self.reporter.error(f"JSON parse error: {str(e)}")
-                    self.reporter.error(f"Response length: {len(response_text)} characters")
-                    if len(response_text) > 1000:
-                        self.reporter.error(f"First 300 chars: {response_text[:300]}")
-                        self.reporter.error(f"Last 300 chars: {response_text[-300:]}")
-                    raise
+        # Try Azure Chat Completions format (response.choices[0].message.content)
+        if response_text is None and hasattr(response, 'choices') and response.choices:
+            response_text = response.choices[0].message.content
 
-        raise ValueError("No message content found in response.output")
+        if response_text is None:
+            raise ValueError("No message content found in response")
+
+        # Strip markdown wrappers
+        clean_text = self._extract_json_from_markdown(response_text)
+
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError as e:
+            # Enhanced error logging for debugging
+            self.reporter.error(f"JSON parse error: {str(e)}")
+            self.reporter.error(f"Response length: {len(response_text)} characters")
+            if len(response_text) > 1000:
+                self.reporter.error(f"First 300 chars: {response_text[:300]}")
+                self.reporter.error(f"Last 300 chars: {response_text[-300:]}")
+            raise
 
     def _convert_to_refined_model(self, response_data: dict, id_to_cluster_map: dict) -> RefinedCodebookModel:
         """Convert parsed JSON to RefinedCodebookModel with ID mapping"""
@@ -382,31 +396,21 @@ class CodebookRefinementProcessor:
                 }
             )
 
-        # Simple sync client
-        client = OpenAI(api_key=self.api_key)
-
         try:
-            # Detect model type for dynamic parameter selection
             model_name = self.model_config.codebook_refinement_model
             model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
 
-            # Build request parameters
-            request_params = {
-                "model": model_name,
-                "input": prompt,
-                "max_output_tokens": self.model_config.default_max_tokens
-            }
+            # Get temperature for chat models (reasoning models use defaults in llm.py)
+            temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
 
-            # Add model-specific parameters
-            if model_type == "reasoning":
-                # Reasoning models: only reasoning and text parameters
-                request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
-                request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
-            else:
-                # Chat models: only temperature
-                request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
-
-            response = client.responses.create(**request_params)
+            response = llm_create_sync(
+                client=self.client,
+                model=model_name,
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=self.model_config.default_max_tokens,
+                track_usage=True
+            )
 
             # Parse response and convert to model
             response_data = self._parse_response_json(response)
@@ -572,30 +576,21 @@ class CodebookRefinementProcessor:
                 metadata={'batch_id': batch_id, 'batch_size': len(batch)}
             )
 
-        # Call LLM with dynamic model type detection
-        client = OpenAI(api_key=self.api_key)
-
-        # Detect model type
+        # Call LLM with centralized client
         model_name = self.model_config.codebook_refinement_model
         model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
 
-        # Build request parameters
-        request_params = {
-            "model": model_name,
-            "input": prompt,
-            "max_output_tokens": self.model_config.default_max_tokens
-        }
+        # Get temperature for chat models
+        temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
 
-        # Add model-specific parameters
-        if model_type == "reasoning":
-            # Reasoning models: only reasoning and text parameters
-            request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
-            request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
-        else:
-            # Chat models: only temperature
-            request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
-
-        response = client.responses.create(**request_params)
+        response = llm_create_sync(
+            client=self.client,
+            model=model_name,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=self.model_config.default_max_tokens,
+            track_usage=True
+        )
 
         # Parse response (use existing parse logic)
         parsed_json = self._parse_response_json(response)
@@ -661,30 +656,21 @@ class CodebookRefinementProcessor:
                 metadata={'codebook_count': len(map_results)}
             )
 
-        # Call LLM with dynamic model type detection
-        client = OpenAI(api_key=self.api_key)
-
-        # Detect model type
+        # Call LLM with centralized client
         model_name = self.model_config.codebook_refinement_model
         model_type = self.model_config.MODEL_TYPES.get(model_name, "chat")
 
-        # Build request parameters
-        request_params = {
-            "model": model_name,
-            "input": prompt,
-            "max_output_tokens": self.model_config.default_max_tokens
-        }
+        # Get temperature for chat models
+        temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
 
-        # Add model-specific parameters
-        if model_type == "reasoning":
-            # Reasoning models: only reasoning and text parameters
-            request_params["reasoning"] = {"effort": self.model_config.get_reasoning_effort_for_stage('codebook_refinement')}
-            request_params["text"] = {"verbosity": self.model_config.get_text_verbosity_for_stage('codebook_refinement')}
-        else:
-            # Chat models: only temperature
-            request_params["temperature"] = self.model_config.get_temperature_for_stage('refinement')
-
-        response = client.responses.create(**request_params)
+        response = llm_create_sync(
+            client=self.client,
+            model=model_name,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=self.model_config.default_max_tokens,
+            track_usage=True
+        )
 
         # Use id_to_cluster_map passed from caller (built from original raw_codes)
         # This preserves ALL cluster IDs, including those dropped/merged in MAP phase

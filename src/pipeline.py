@@ -14,6 +14,7 @@ nest_asyncio.apply()
 import models
 from utils import dataLoader
 from utils.cacheManager import CacheManager
+from utils.llm import token_tracker
 from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
 cache_config = CacheConfig()
 cache_manager = CacheManager(cache_config)
@@ -44,7 +45,7 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 3  
+RUN_UNTIL_STEP = 3
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True  
 PROMPT_PRINTER = False
@@ -1741,6 +1742,9 @@ if __name__ == '__main__':
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
     
+    # Reset token tracker at start of pipeline run
+    token_tracker.reset()
+
     print("=" * 80)
     print("CODERINGSTOOL PIPELINE")
     print("=" * 80)
@@ -1778,6 +1782,9 @@ if __name__ == '__main__':
             print(f"EXECUTION STOPPED: RUN_UNTIL_STEP set to {RUN_UNTIL_STEP}")
             print(f"Completed steps 0-{current_step}")
             print(f"{'='*80}\n")
+            # Print LLM usage summary before exiting
+            if token_tracker.call_count > 0:
+                print(token_tracker.get_summary())
             sys.exit(0)
     
     # === STEP 0 ====
@@ -2119,6 +2126,10 @@ if __name__ == '__main__':
     print("All steps (0-9) executed")
     print(f"Results exported to: {excel_path}")
     print(f"{'='*80}\n")
+
+    # Print LLM usage summary
+    if token_tracker.call_count > 0:
+        print(token_tracker.get_summary())
     
     
 if False: #debug

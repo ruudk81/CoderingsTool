@@ -5,15 +5,13 @@ import asyncio
 import time
 from typing import List, Dict
 
-# Third-party imports
-import instructor
-
 # === MODELS ========================================================================================================
 import models
 
 # === CONFIG ========================================================================================================
 from prompts import INITIAL_CODEBOOK_CREATION_PROMPT
-from config import ModelConfig, DEFAULT_LANGUAGE, OPENAI_API_KEY
+from config import ModelConfig, DEFAULT_LANGUAGE
+from utils.llm import create_client, llm_create_async
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter
@@ -39,12 +37,7 @@ class SpeculativeStarterCodes:
         self.language = DEFAULT_LANGUAGE
         self.model_config = ModelConfig()
         self.model = self.model_config.get_model_for_stage("speculative_codes")
-        self.client = instructor.from_provider(
-            f"openai/{self.model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=True,
-            api_key=OPENAI_API_KEY
-        )
+        self.client = create_client(model=self.model, async_mode=True)
         
     async def _generate_codes_async(self) -> List[models.CodeDefinition]:
         code_template = "\n".join([f"{i+1}. Code {i+1}" for i in range(self.n_codes)])
@@ -63,12 +56,14 @@ class SpeculativeStarterCodes:
             )
             
         try:
-            response = await self.client.responses.create(
+            response = await llm_create_async(
+                client=self.client,
                 model=self.model,
-                input=prompt,
+                prompt=prompt,
                 response_model=List[models.CodeDefinition],
-                temperature=1,
-                max_retries=3)
+                temperature=1.0,
+                track_usage=True
+            )
 
             return response
             
