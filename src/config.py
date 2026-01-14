@@ -138,6 +138,98 @@ DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 # =============================================================================
+# CLIENT FACTORY FUNCTIONS
+# =============================================================================
+# These create the appropriate client based on API_PROVIDER setting
+
+def create_instructor_client(model: str, async_mode: bool = True) -> Any:
+    """
+    Create instructor client based on API_PROVIDER setting.
+
+    Args:
+        model: Model name (e.g., 'gpt-4.1-mini')
+        async_mode: Whether to create async client (default True)
+
+    Returns:
+        Instructor-wrapped client for structured outputs
+    """
+    import instructor
+    from openai import OpenAI, AsyncOpenAI, AzureOpenAI, AsyncAzureOpenAI
+
+    if API_PROVIDER == "azure":
+        # For Azure, use deployment name instead of model name
+        base_client = AsyncAzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_version=AZURE_OPENAI_API_VERSION
+        ) if async_mode else AzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_version=AZURE_OPENAI_API_VERSION
+        )
+        return instructor.from_openai(base_client, mode=instructor.Mode.TOOLS)
+    else:
+        # OpenAI uses the Responses API
+        return instructor.from_provider(
+            f"openai/{model}",
+            mode=instructor.Mode.RESPONSES_TOOLS,
+            async_client=async_mode,
+            api_key=OPENAI_API_KEY
+        )
+
+
+def create_embedding_client(async_mode: bool = True) -> Any:
+    """
+    Create embedding client based on API_PROVIDER setting.
+
+    Args:
+        async_mode: Whether to create async client (default True)
+
+    Returns:
+        OpenAI or AzureOpenAI client for embeddings
+    """
+    from openai import OpenAI, AsyncOpenAI, AzureOpenAI, AsyncAzureOpenAI
+
+    if API_PROVIDER == "azure":
+        if async_mode:
+            return AsyncAzureOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                api_version=AZURE_OPENAI_API_VERSION
+            )
+        return AzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_version=AZURE_OPENAI_API_VERSION
+        )
+    else:
+        if async_mode:
+            return AsyncOpenAI(api_key=OPENAI_API_KEY)
+        return OpenAI(api_key=OPENAI_API_KEY)
+
+
+def get_model_for_api(model: str) -> str:
+    """
+    Get the appropriate model/deployment name for the current API provider.
+
+    For Azure, maps model names to deployment names.
+    For OpenAI, returns the model name as-is.
+    """
+    if API_PROVIDER == "azure":
+        # Azure uses deployment names - map common models
+        # For now, use the configured deployment name
+        return AZURE_OPENAI_DEPLOYMENT_NAME
+    return model
+
+
+def get_embedding_model_for_api() -> str:
+    """Get the appropriate embedding model/deployment for the current API provider."""
+    if API_PROVIDER == "azure":
+        return AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING
+    return DEFAULT_EMBEDDING_MODEL
+
+
+# =============================================================================
 # OPENAI RATE LIMITS (Official limits as of 2025)
 # =============================================================================
 
