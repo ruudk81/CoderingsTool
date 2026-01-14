@@ -15,8 +15,7 @@ from collections import deque
 import numpy as np
 
 import nest_asyncio
-import instructor
-from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError #AsyncOpenAI
+from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 #import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
@@ -30,6 +29,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from utils.llm import create_client, llm_create_async
 from prompts import (IDEA_EXTRACTION_PROMPT, EXTRACT_SUBJECT,
                      CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
                      CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2)
@@ -273,13 +273,8 @@ class IdeaExtractor:
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Initialize OpenAI client with Responses API support
-        self.client = instructor.from_provider(
-            f"openai/{self.model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=True,
-            api_key=OPENAI_API_KEY
-        )
+        # Initialize OpenAI client with instructor (supports OpenAI and Azure)
+        self.client = create_client(self.model, async_mode=True)
 
         # Rate limiting setup
         limits = get_openai_rate_limits(self.model)
@@ -362,10 +357,11 @@ class IdeaExtractor:
             
             prompt = EXTRACT_SUBJECT.format(language=self.language, survey_question=survey_question)
             
-            response = await self.client.responses.create(
+            response = await llm_create_async(
+                client=self.client,
                 model=self.model,
                 response_model=SubjectExtractionResponse,
-                input=prompt,
+                prompt=prompt,
                 temperature=0.0  # Use deterministic temperature for consistency
             )
 
@@ -461,10 +457,11 @@ class IdeaExtractor:
             await self.tpm_bucket.acquire(2000)  # Conservative estimate
             await self.rate_limiter.acquire()
 
-            response = await self.client.responses.create(
+            response = await llm_create_async(
+                client=self.client,
                 model=self.model,
                 response_model=response_model,
-                input=prompt,
+                prompt=prompt,
                 temperature=0.0
             )
 
@@ -663,10 +660,11 @@ class IdeaExtractor:
                         response_model = GenericSpecifierGroup2Response
 
                     # API call with structured output
-                    response = await self.client.responses.create(
+                    response = await llm_create_async(
+                        client=self.client,
                         model=self.model,
                         response_model=response_model,
-                        input=prompt,
+                        prompt=prompt,
                         temperature=0.0
                     )
 
@@ -813,17 +811,25 @@ class IdeaExtractor:
         
         # For probes: avoid response_model so we can read .usage
         resp = await asyncio.wait_for(
-            self.client.responses.create(
+            llm_create_async(
+                client=self.client,
                 model=self.model,
-                input=prompt,
-                temperature=self.config.temperature
+                prompt=prompt,
+                temperature=self.config.temperature,
+                track_usage=False,  # Manual tracking for probes
             ),
             timeout=BOOTSTRAP_TIMEOUT_SECONDS  # Conservative timeout for bootstrap
         )
 
-        usage = getattr(resp, "usage", None)
-        # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
-        return {"prompt_tokens": usage.input_tokens, "completion_tokens": usage.output_tokens}
+        u = getattr(resp, "_raw_response", None)
+        if u:
+            u = getattr(u, "usage", None)
+        if not u:
+            u = getattr(resp, "usage", None)
+        # Handle both Responses API (input_tokens) and Chat API (prompt_tokens)
+        input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
+        output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
+        return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
     @retry(
         retry=retry_if_exception_type((
@@ -898,12 +904,13 @@ class IdeaExtractor:
                     
                     # Make API call with Pydantic validation and retries
                     response = await asyncio.wait_for(
-                        self.client.responses.create(
+                        llm_create_async(
+                            client=self.client,
                             model=self.model,
                             response_model=List[IdeaResponse],
-                            input=prompt,
+                            prompt=prompt,
                             temperature=self.config.temperature,
-                            max_output_tokens=self.config.max_tokens,
+                            max_tokens=self.config.max_tokens,
                             max_retries=3  # Instructor will retry on ValidationError
                         ),
                         timeout=timeout
@@ -914,32 +921,36 @@ class IdeaExtractor:
                     self.latency_tracker.add(latency)
                     
                     # Track actual token usage for learning and reconciliation (matching qualityFilter)
-                    if hasattr(response, '_raw_response'):
-                        usage = response._raw_response.usage
-                        if usage:
-                            actual_total_tokens = usage.total_tokens
-                            # Responses API uses output_tokens/input_tokens instead of completion_tokens/prompt_tokens
-                            actual_output_tokens = usage.output_tokens
-                            actual_input_tokens = usage.input_tokens
-                            
-                            # Update token histories for estimation learning (following qualityFilter pattern)
-                            if len(self.input_token_history) < 3:
-                                self.input_token_history.append(actual_input_tokens)
-                            if len(self.output_token_history) < 5:
-                                self.output_token_history.append(actual_output_tokens)
-                            
-                            # Track actual total tokens for rolling average
-                            self.actual_total_tokens.append(actual_total_tokens)
-                            
-                            # Track estimation accuracy
-                            estimation_error = abs(actual_total_tokens - est_tokens)
-                            self.estimation_errors.append(estimation_error)
-                            
-                            # Reconcile token difference with bucket
-                            delta = actual_total_tokens - est_tokens
-                            if task.get('task_index', 0) < 5:
-                                print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
-                            await self.tpm_bucket.reconcile(delta)
+                    usage = getattr(response, '_raw_response', None)
+                    if usage:
+                        usage = getattr(usage, 'usage', None)
+                    if not usage:
+                        usage = getattr(response, 'usage', None)
+
+                    if usage:
+                        # Handle both Responses API (input_tokens/output_tokens) and Chat API (prompt_tokens/completion_tokens)
+                        actual_input_tokens = getattr(usage, 'input_tokens', 0) or getattr(usage, 'prompt_tokens', 0)
+                        actual_output_tokens = getattr(usage, 'output_tokens', 0) or getattr(usage, 'completion_tokens', 0)
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
+
+                        # Update token histories for estimation learning (following qualityFilter pattern)
+                        if len(self.input_token_history) < 3:
+                            self.input_token_history.append(actual_input_tokens)
+                        if len(self.output_token_history) < 5:
+                            self.output_token_history.append(actual_output_tokens)
+
+                        # Track actual total tokens for rolling average
+                        self.actual_total_tokens.append(actual_total_tokens)
+
+                        # Track estimation accuracy
+                        estimation_error = abs(actual_total_tokens - est_tokens)
+                        self.estimation_errors.append(estimation_error)
+
+                        # Reconcile token difference with bucket
+                        delta = actual_total_tokens - est_tokens
+                        if task.get('task_index', 0) < 5:
+                            print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
+                        await self.tpm_bucket.reconcile(delta)
                     
                     # Process response - array of IdeaResponse objects
                     ideas = []
