@@ -42,6 +42,7 @@ from config import (
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT_NAME,
     AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
+    AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER,
 )
 
 
@@ -286,7 +287,12 @@ token_tracker = TokenTracker()
 DEFAULT_MAX_RETRIES = 3
 
 
-def create_client(model: str, async_mode: bool = True, max_retries: int = DEFAULT_MAX_RETRIES) -> Any:
+def create_client(
+    model: str,
+    async_mode: bool = True,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    azure_deployment: Optional[str] = None
+) -> Any:
     """
     Create an instructor-wrapped client for the configured provider.
 
@@ -294,6 +300,7 @@ def create_client(model: str, async_mode: bool = True, max_retries: int = DEFAUL
         model: Model name (used for OpenAI, ignored for Azure which uses deployment)
         async_mode: Whether to create async client
         max_retries: Number of retries for failed requests (default: 3)
+        azure_deployment: Optional Azure deployment name override (e.g., for codeGenerator)
 
     Returns:
         Instructor-wrapped client with automatic retries
@@ -301,7 +308,8 @@ def create_client(model: str, async_mode: bool = True, max_retries: int = DEFAUL
     if API_PROVIDER == "azure":
         # Azure: use TOOLS mode with chat.completions.create
         # (West Europe doesn't support Responses API yet)
-        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/"
+        deployment = azure_deployment or AZURE_OPENAI_DEPLOYMENT_NAME
+        azure_base_url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{deployment}/"
 
         if async_mode:
             base_client = AsyncOpenAI(

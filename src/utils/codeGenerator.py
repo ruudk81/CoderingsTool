@@ -26,9 +26,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, API_PROVIDER
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
 from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 from .verboseReporter import VerboseReporter
+from utils.llm import create_client, llm_create_sync
 
 try:
     import nest_asyncio
@@ -36,16 +37,14 @@ try:
 except ImportError:
     pass
 
-# Create OpenAI client for raw responses.create API
-# Note: This module uses OpenAI's native responses API with GPT-5 reasoning features
-# Azure does NOT support responses API - codeGenerator requires OpenAI provider
-if API_PROVIDER == "azure":
-    raise RuntimeError(
-        "codeGenerator.py requires OpenAI provider (responses API with GPT-5 reasoning features). "
-        "Azure OpenAI does not support the responses API. "
-        "Please set API_PROVIDER='openai' in config.py for code generation."
-    )
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Create sync client for codeGenerator (supports both OpenAI and Azure)
+# For Azure: uses AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER (e.g., gpt-5.2-chatcomplete)
+# For OpenAI: uses the model name directly with responses API
+client = create_client(
+    model=ModelConfig().CODEDESIGNER_MODEL if hasattr(ModelConfig(), 'CODEDESIGNER_MODEL') else "gpt-5.2",
+    async_mode=False,
+    azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
+)
 
 logger = logging.getLogger(__name__)
 
@@ -576,28 +575,26 @@ async def async_responses_create_with_json_retry(
     retry=retry_if_exception_type(RetryableError)
 )
 def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
-    """Sync wrapper for responses.create with retry logic and adaptive timeout"""
+    """Sync wrapper for LLM calls with retry logic and adaptive timeout.
+
+    Uses llm_create_sync() which handles provider differences:
+    - OpenAI: uses responses.create() with input= parameter
+    - Azure: uses chat.completions.create() with messages= parameter
+
+    Note: reasoning_effort and text_verbosity are only used for OpenAI GPT-5 reasoning models.
+    Azure uses chat completion without reasoning features.
+    """
     try:
-        # Import ModelConfig here to avoid circular imports
-        from config import ModelConfig
-        
-        # Check if this is a GPT-5 reasoning model
-        model_config = ModelConfig()
-        model_type = model_config.MODEL_TYPES.get(model, "chat")
-        
-        # Build request parameters based on model type
-        request_params = {
-            "model": model,
-            "input": prompt if raw_input else [{"role": "user", "content": prompt}],
-            "timeout": timeout  # Add adaptive timeout
-        }
-        
-        # Only add reasoning parameters for GPT-5 models
-        if model_type == "reasoning":
-            request_params["text"] = {"verbosity": text_verbosity}
-            request_params["reasoning"] = {"effort": reasoning_effort}
-        
-        return client.responses.create(**request_params)
+        # Use llm_create_sync which handles OpenAI vs Azure differences
+        # Note: reasoning parameters are only for OpenAI GPT-5 reasoning models
+        # For Azure, these are ignored as it uses chat.completions.create
+        return llm_create_sync(
+            client=client,
+            model=model,
+            prompt=prompt,
+            temperature=0.0,  # Use deterministic output for code generation
+            track_usage=True
+        )
     except asyncio.TimeoutError as e:
         logger.error(f"[API TIMEOUT] Request timed out after {timeout:.1f}s - {str(e)}")
         raise RetryableError(str(e)) from e
