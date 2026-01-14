@@ -29,25 +29,69 @@ _load_dotenv()
 ALLOWED_EXTENSIONS = ['.sav']
 
 # =============================================================================
-# HUNSPELL CONFIGURATION
+# HUNSPELL CONFIGURATION (Cross-platform)
 # =============================================================================
+import platform
+import shutil
 
-current_dir = os.getcwd()
-if os.path.basename(current_dir) == 'utils':
-    hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'hunspell'))
-elif os.path.basename(current_dir) == 'modules':
-    hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', 'hunspell'))
-elif os.path.basename(current_dir) == 'src':
-    hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', 'hunspell'))
-elif os.path.basename(current_dir) == 'Coderingstool':
-    hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
-else:
-    # Default fallback for other directories
-    hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+def _get_hunspell_paths() -> Tuple[str, str]:
+    """
+    Get Hunspell executable and dictionary directory paths.
+    Supports Windows (bundled .exe) and macOS/Linux (system install via brew/apt).
 
-HUNSPELL_PATH = os.path.join(hunspell_dir, "hunspell.exe")
-DUTCH_DICT_PATH = os.path.join(hunspell_dir, "dict", "nl_NL")
-ENGLISH_DICT_PATH = os.path.join(hunspell_dir, "dict", "en_GB")
+    Returns:
+        Tuple of (hunspell_executable_path, hunspell_dict_directory)
+    """
+    # Determine project hunspell directory (for dictionaries and Windows exe)
+    current_dir = os.getcwd()
+    if os.path.basename(current_dir) == 'utils':
+        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'hunspell'))
+    elif os.path.basename(current_dir) == 'modules':
+        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', 'hunspell'))
+    elif os.path.basename(current_dir) == 'src':
+        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', 'hunspell'))
+    elif os.path.basename(current_dir) == 'Coderingstool':
+        hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+    else:
+        hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+
+    system = platform.system()
+
+    if system == "Windows":
+        # Use bundled Windows executable
+        hunspell_exe = os.path.join(hunspell_dir, "hunspell.exe")
+    else:
+        # macOS or Linux: try system-installed hunspell
+        # Check common locations in order of preference
+        system_hunspell = shutil.which("hunspell")
+
+        if system_hunspell:
+            hunspell_exe = system_hunspell
+        elif system == "Darwin":  # macOS
+            # Homebrew paths (Apple Silicon and Intel)
+            brew_paths = [
+                "/opt/homebrew/bin/hunspell",  # Apple Silicon
+                "/usr/local/bin/hunspell",      # Intel Mac
+            ]
+            hunspell_exe = next((p for p in brew_paths if os.path.exists(p)), None)
+            if not hunspell_exe:
+                # Fallback to bundled (won't work but provides clear error)
+                hunspell_exe = os.path.join(hunspell_dir, "hunspell")
+        else:  # Linux
+            linux_paths = [
+                "/usr/bin/hunspell",
+                "/usr/local/bin/hunspell",
+            ]
+            hunspell_exe = next((p for p in linux_paths if os.path.exists(p)), None)
+            if not hunspell_exe:
+                hunspell_exe = os.path.join(hunspell_dir, "hunspell")
+
+    return hunspell_exe, hunspell_dir
+
+# Initialize cross-platform paths
+HUNSPELL_PATH, _hunspell_dir = _get_hunspell_paths()
+DUTCH_DICT_PATH = os.path.join(_hunspell_dir, "dict", "nl_NL")
+ENGLISH_DICT_PATH = os.path.join(_hunspell_dir, "dict", "en_GB")
 DEFAULT_LANGUAGE = "Dutch"
 
 # Language-specific labels for miscellaneous/catch-all code
