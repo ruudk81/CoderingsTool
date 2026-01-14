@@ -6,10 +6,9 @@ import asyncio
 import subprocess
 import logging
 import time
-#import statistics
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Tuple
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 import itertools
 from dataclasses import dataclass
 import numpy as np
@@ -18,7 +17,17 @@ from pydantic import BaseModel
 import instructor
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
-#from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter #wait_exponential
+
+# === CONSTANTS (extracted magic numbers) ========================================================================================================
+MAX_HUNSPELL_PROCESSES = 20          # Max parallel Hunspell processes to prevent resource exhaustion
+MAX_SAFE_BATCH_SIZE = 1000           # Maximum batch size for Hunspell word checking
+SUGGESTION_BATCH_SIZE = 50           # Words per batch for suggestion generation
+MAX_CONCURRENT_SUGGESTION_BATCHES = 6  # Concurrent batches for suggestion processing
+MIN_CONCURRENCY = 100                # Minimum concurrent API requests
+MAX_WORKERS = 200                    # Maximum worker coroutines
+MIN_WORKERS = 50                     # Minimum worker coroutines
+OUTPUT_TOKEN_RATIO = 0.15            # Estimated output/input token ratio for spell correction
+SPACY_VECTOR_NORM_THRESHOLD = 5      # Minimum vector norm for valid SpaCy tokens
 
 
 # === UTILS ========================================================================================================
@@ -46,13 +55,6 @@ class SpellCheckModel(BaseModel):
     respondent_id: Any
     original_response: str
     corrected_response: Optional[str] = None
-
-# class SpellCorrectionTask(BaseModel):
-#     respondent_id: Any 
-#     original_response: str 
-#     response_with_oov_placeholders: str 
-#     oov_words: str 
-#     suggestions: str
 
 class CorrectionItem(BaseModel):
     respondent_id: Any 
@@ -89,6 +91,8 @@ class TokenBucket:
                 return wait_seconds
     
     async def wait_and_acquire(self, tokens_needed):
+        """Wait if necessary and acquire tokens incrementally."""
+        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
         remaining = float(tokens_needed)
         while remaining > 0:
             async with self.lock:
@@ -96,28 +100,17 @@ class TokenBucket:
                 elapsed = now - self.last_update
                 self.available = min(self.tpm, self.available + (self.tpm * elapsed / 60))
                 self.last_update = now
-     
+
                 take = min(self.available, remaining)
                 if take > 0:
                     self.available -= take
                     remaining -= take
-     
+
             if remaining > 0:
                 # accrue more tokens; 1 token's worth (or a small floor)
-                await asyncio.sleep(max(0.01, 60.0 / self.tpm))   
-        
-        """Wait if necessary and acquire tokens"""
-        logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
-        
-        while True:
-            result = await self.acquire(tokens_needed)
-            if result is True:
-                logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
-                return
-            else:
-                # result is wait_seconds
-                logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
-                await asyncio.sleep(result)
+                await asyncio.sleep(max(0.01, 60.0 / self.tpm))
+
+        logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
     
     async def reconcile(self, delta_tokens):
         """Reconcile actual vs estimated tokens"""
@@ -236,8 +229,8 @@ class HunspellSession:
             # Try force kill as last resort
             try:
                 self.process.kill()
-            except:
-                pass
+            except Exception:
+                pass  # Ignore errors during force kill
 
 class HunspellPool:
     """Pool of persistent Hunspell processes to avoid subprocess creation overhead (only for OOV identification)"""
@@ -247,7 +240,7 @@ class HunspellPool:
         self.dict_path = dict_path
         # Auto-tune pool size based on CPU count with more conservative limits
         if pool_size is None:
-            pool_size = min(os.cpu_count(), 20)  # Max 20 processes to prevent resource exhaustion
+            pool_size = min(os.cpu_count(), MAX_HUNSPELL_PROCESSES)
         self.pool_size = pool_size
         self.sessions = []
         self.session_locks = []
@@ -301,8 +294,7 @@ class HunspellPool:
         if not words:
             return []
         
-        max_safe_batch_size = 1000  
-        optimal_batch_size = min(max_safe_batch_size, max(100, batch_size))
+        optimal_batch_size = min(MAX_SAFE_BATCH_SIZE, max(100, batch_size))
         
         # Build batches with start indices to preserve order
         batches = [(i, words[i:i+optimal_batch_size]) for i in range(0, len(words), optimal_batch_size)]
@@ -333,8 +325,8 @@ class HunspellPool:
                     # Recreate the session if it failed
                     try:
                         self.sessions[session_idx].close()
-                    except:
-                        pass
+                    except Exception:
+                        pass  # Ignore close errors during recovery
                     self.sessions[session_idx] = HunspellSession(self.hunspell_path, self.dict_path)
                     # Return empty results for failed batch
                     return idx, [""] * len(batch)
@@ -369,8 +361,9 @@ class HunspellPool:
                     eta = remaining_words / max(rate, 0.001)
                     print(f"    Parallel batch progress: {completed_batches}/{len(batches)} ({progress_percent:.1f}%) [{rate:.0f} words/sec, ETA: {eta:.1f}s]")
                 
-            except Exception :
+            except Exception as e:
                 # Count failed batches
+                logger.error(f"Batch processing failed: {e}")
                 failed_batches += 1
                 completed_batches += 1
         
@@ -615,8 +608,8 @@ Suggested corrections: {task['suggestions']}
         best_suggestions = defaultdict(list)
         
         # Batch configuration for optimal performance
-        batch_size = 50  # Process 100 words per batch sequentially 
-        max_concurrent_batches = 6  # Run max 6 batches concurrently (stable concurrency)
+        batch_size = SUGGESTION_BATCH_SIZE
+        max_concurrent_batches = MAX_CONCURRENT_SUGGESTION_BATCHES
         semaphore = asyncio.Semaphore(max_concurrent_batches)
         
         # Create batches
@@ -709,7 +702,7 @@ Suggested corrections: {task['suggestions']}
 
         valid_splits = [
             (split, tag) for (split, tag), doc in zip(all_splits, processed_splits)
-            if len(split) > 2 and all(token.pos_ not in excluded_tags and token.vector_norm > 5 for token in doc) ]
+            if len(split) > 2 and all(token.pos_ not in excluded_tags and token.vector_norm > SPACY_VECTOR_NORM_THRESHOLD for token in doc) ]
 
         left_parts = [split for split, tag in valid_splits if tag == "left"]
         right_parts = [split for split, tag in valid_splits if tag == "right"]
@@ -750,7 +743,7 @@ Suggested corrections: {task['suggestions']}
         processed_suggestions = list(self.get_nlp().pipe(all_suggestions, batch_size=self.config.spacy_batch_size))
 
         filtered_suggestions = {
-            candidate: [suggestion for suggestion, doc in zip(normalized_hunspell_results[candidate], processed_suggestions) if doc.vector_norm > 5]
+            candidate: [suggestion for suggestion, doc in zip(normalized_hunspell_results[candidate], processed_suggestions) if doc.vector_norm > SPACY_VECTOR_NORM_THRESHOLD]
             for candidate in batch_candidates}
 
         if left_part:
@@ -812,10 +805,11 @@ Suggested corrections: {task['suggestions']}
     
         # Pre-validation tracking
         pre_validation_filtered = 0
-        
+        enable_pre_validation = False  # Flag for pre-validation (currently disabled)
+
         # Performance tracking for task creation
         task_creation_start = time.time()
-        
+
         # Use inverted index if available, otherwise fall back to regex search
         if word_to_responses is not None:
             print("  • Creating correction tasks using optimized inverted index...")
@@ -823,8 +817,6 @@ Suggested corrections: {task['suggestions']}
             # Pre-compute suggestion strings for all OOV words to avoid redundant processing
             word_to_suggestion_str = {}
             validation_cache = {}  # Cache validation results
-            
-            enable_pre_validation = False
          
             # Process suggestions with cached validation results
             for word in oov_words:
@@ -1071,7 +1063,7 @@ Suggested corrections: {task_dict['suggestions']}
                 self.latency_tracker.add(avg_latency_s)
 
             Little = compute_optimal_concurrency(ApiLimits(limits.tokens_per_minute, limits.requests_per_minute), avg_latency_s, avg_tokens, self.processing_config)
-            optimal = max(Little,100)
+            optimal = max(Little, MIN_CONCURRENCY)
             semaphore = asyncio.Semaphore(min(nr_tasks,optimal))
 
             if self.verbose_reporter.enabled:
@@ -1082,8 +1074,8 @@ Suggested corrections: {task_dict['suggestions']}
             print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
             print(f"- TPM limit: {limits.tokens_per_minute:,} ({limits.tokens_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
 
-            avg_tokens = self._estimate_avg_tokens_for_tasks(filtered_tasks)
             self.avg_tokens = self._estimate_avg_tokens_for_tasks(filtered_tasks)
+            avg_tokens = self.avg_tokens  # Use the instance variable
 
             logger.info(f"- Calculated avg_tokens: {self.avg_tokens} (from {min(10, len(responses))} sample prompts)")
 
@@ -1118,7 +1110,7 @@ Suggested corrections: {task_dict['suggestions']}
                 limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
             )
             
-            num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+            num_workers = min(MAX_WORKERS, max(MIN_WORKERS, int(expected_throughput * avg_latency_s * 2.0)))
            
             print(f"- Concurrent subroutines (workers): {num_workers}")
             print(f"- Concurrent ceiling (semaphore): {min(nr_tasks,optimal)}")
@@ -1370,7 +1362,7 @@ Suggested corrections: {task_dict['suggestions']}
         
         encoding = get_tiktoken_encoding(self.model)
         input_tokens = len(encoding.encode(full_prompt))
-        estimated_output_tokens = int(input_tokens * 0.15)  # 15% output ratio
+        estimated_output_tokens = int(input_tokens * OUTPUT_TOKEN_RATIO)
         
         return input_tokens + estimated_output_tokens
 
@@ -1485,9 +1477,8 @@ Suggested corrections: {task_dict['suggestions']}
         if len(unique_oov_words) > self.config.max_unique_oov_words:
             print(f"⚠️  Too many unique OOV words found ({len(unique_oov_words):,})")
             print(f"⚠️  Limiting to first {self.config.max_unique_oov_words:,} most frequent OOV words")
-            
+
             # Count frequency of each OOV word and keep most common ones
-            from collections import Counter
             oov_counter = Counter(oov_words)
             most_common_oov = [word for word, count in oov_counter.most_common(self.config.max_unique_oov_words)]
             unique_oov_words = most_common_oov
