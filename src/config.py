@@ -116,9 +116,24 @@ GENERAL_CODE_LABELS = {
 # MODEL CONFIGURATION - CENTRALIZED
 # =============================================================================
 
-# LLM settings (core settings)
+# =============================================================================
+# API PROVIDER CONFIGURATION
+# =============================================================================
+# Toggle between "openai" and "azure" here
+API_PROVIDER = "openai"  # Options: "openai" or "azure"
+
+# OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Azure OpenAI settings
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
+AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING", "text-embedding-3-large")
+
+# Default models (used for both providers)
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
