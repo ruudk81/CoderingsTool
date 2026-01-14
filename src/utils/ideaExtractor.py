@@ -12,7 +12,7 @@ from collections import deque
 import numpy as np
 
 import nest_asyncio
-#import instructor
+import instructor
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError #AsyncOpenAI
 #import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
@@ -237,8 +237,13 @@ class IdeaExtractor:
         # Initialize tokenizer for token estimation (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Initialize OpenAI client (cached)
-        self.client = get_openai_client(OPENAI_API_KEY)
+        # Initialize OpenAI client with Responses API support
+        self.client = instructor.from_provider(
+            f"openai/{self.model}",
+            mode=instructor.Mode.RESPONSES_TOOLS,
+            async_client=True,
+            api_key=OPENAI_API_KEY
+        )
 
         # Rate limiting setup
         limits = get_openai_rate_limits(self.model)
@@ -321,12 +326,12 @@ class IdeaExtractor:
             
             prompt = EXTRACT_SUBJECT.format(language=self.language, survey_question=survey_question)
             
-            response = await self.client.chat.completions.create(
+            response = await self.client.responses.create(
                 model=self.model,
                 response_model=SubjectExtractionResponse,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,  # Use deterministic temperature for consistency
-                seed=self.model_config.seed)
+                input=prompt,
+                temperature=0.0  # Use deterministic temperature for consistency
+            )
 
             # Capture subject extraction prompt if prompt_printer enabled
             if self.prompt_printer:
@@ -419,12 +424,11 @@ class IdeaExtractor:
             await self.tpm_bucket.acquire(2000)  # Conservative estimate
             await self.rate_limiter.acquire()
 
-            response = await self.client.chat.completions.create(
+            response = await self.client.responses.create(
                 model=self.model,
                 response_model=response_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                seed=self.model_config.seed
+                input=prompt,
+                temperature=0.0
             )
 
             await self.tpm_bucket.reconcile(0)
@@ -631,12 +635,11 @@ class IdeaExtractor:
                         response_model = GenericSpecifierGroup2Response
 
                     # API call with structured output
-                    response = await self.client.chat.completions.create(
+                    response = await self.client.responses.create(
                         model=self.model,
                         response_model=response_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.0,
-                        seed=self.model_config.seed
+                        input=prompt,
+                        temperature=0.0
                     )
 
                     # Track tokens (conservative estimate if usage not available)
@@ -778,17 +781,17 @@ class IdeaExtractor:
         
         # For probes: avoid response_model so we can read .usage
         resp = await asyncio.wait_for(
-            self.client.chat.completions.create(
+            self.client.responses.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
-                seed=self.model_config.seed
+                input=prompt,
+                temperature=self.config.temperature
             ),
             timeout=30.0  # Conservative timeout for bootstrap
         )
 
         u = getattr(resp, "usage", None)
-        return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+        # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
+        return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
 
     @retry(
         retry=retry_if_exception_type((
@@ -863,13 +866,12 @@ class IdeaExtractor:
                     
                     # Make API call with Pydantic validation and retries
                     response = await asyncio.wait_for(
-                        self.client.chat.completions.create(
+                        self.client.responses.create(
                             model=self.model,
                             response_model=List[IdeaResponse],
-                            messages=[{"role": "user", "content": prompt}],
+                            input=prompt,
                             temperature=self.config.temperature,
-                            max_tokens=self.config.max_tokens,
-                            seed=self.model_config.seed,
+                            max_output_tokens=self.config.max_tokens,
                             max_retries=3  # Instructor will retry on ValidationError
                         ),
                         timeout=timeout
@@ -884,8 +886,9 @@ class IdeaExtractor:
                         usage = response._raw_response.usage
                         if usage:
                             actual_total_tokens = usage.total_tokens
-                            actual_output_tokens = usage.completion_tokens
-                            actual_input_tokens = usage.prompt_tokens
+                            # Responses API uses output_tokens/input_tokens instead of completion_tokens/prompt_tokens
+                            actual_output_tokens = usage.output_tokens
+                            actual_input_tokens = usage.input_tokens
                             
                             # Update token histories for estimation learning (following qualityFilter pattern)
                             if len(self.input_token_history) < 3:
