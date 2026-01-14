@@ -1,8 +1,13 @@
+#%%
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
-# ===  IMPORTS ======================================================================================================== 
+# ===  IMPORTS ========================================================================================================
 import time
+import warnings
 import pandas as pd
+
+# Suppress IPython exit warning when running in Streamlit
+warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-D.")
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -23,7 +28,7 @@ model_config = ModelConfig()
 filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
 var_name = "Q20"
-sample_size = 500 
+sample_size = 50
 
 # filename = "M000000 Associatiemonitor Merk X net databestand.sav"
 # id_column = "DLNMID"
@@ -39,7 +44,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 6  
+RUN_UNTIL_STEP = 3  
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True  
 PROMPT_PRINTER = False
@@ -74,7 +79,8 @@ def step_0_load_data(
     merge_config=None,                # How to merge multiple vars
     force_recalc=False,
     verbose=True,
-    streamlit_container=None          # NEW: Optional progress updates
+    streamlit_container=None,         # Optional progress updates
+    data_dir=None                     # Data directory path (uses cwd-based default if None)
 ):
     """Step 0: Load data from SPSS file (single or multiple variables)
 
@@ -135,7 +141,7 @@ def step_0_load_data(
         start_time = time.time()
 
         # Determine loading mode: single or multiple variables
-        data_loader_inst = dataLoader.DataLoader(verbose=verbose)
+        data_loader_inst = dataLoader.DataLoader(data_dir=data_dir, verbose=verbose)
 
         if var_names and len(var_names) > 1:
             # Multiple variables mode - merge them
@@ -1968,7 +1974,7 @@ if __name__ == '__main__':
         step3_recommendations = codebook_reasoning.step3_recommendations
         available_ids = list(step3_recommendations.keys())
         cluster_id = random.choice(available_ids)
-        #cluster_id="33"
+        #cluster_id="30"
     
         from utils import codegenPromptTester
         tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
@@ -2181,3 +2187,4 @@ if False: #debug
               for k, v in val.items():
                   if k == "source_cluster_id":  # or "cluster_id"
                       print(v)
+# %%
