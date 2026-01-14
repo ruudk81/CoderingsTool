@@ -1039,7 +1039,8 @@ Suggested corrections: {task_dict['suggestions']}
                 )
 
                 u = getattr(resp, "usage", None)
-                return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+                # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
+                return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
 
             limits = get_openai_rate_limits(self.model)
             
@@ -1297,8 +1298,7 @@ Suggested corrections: {task_dict['suggestions']}
                             model=self.model,
                             input=full_prompt,
                             response_model=LLMCorrectionResponse,
-                            temperature=self.config.temperature,
-                            seed=self.model_config.seed
+                            temperature=self.config.temperature
                         ),
                         timeout=timeout_seconds
                     )
