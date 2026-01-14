@@ -1,9 +1,8 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
-import os
 import asyncio
-from typing import List, Tuple, Dict
+from typing import Any, Dict, List, Tuple
 from dataclasses import dataclass
 
 # Third-party imports
@@ -27,6 +26,11 @@ from config import OPENAI_API_KEY, GEMINI_API_KEY, EmbeddingConfig, DEFAULT_EMBE
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 
+# === CONSTANTS ========================================================================================================
+GEMINI_REQUEST_STAGGER_DELAY = 0.05   # Seconds between Gemini requests to avoid rate limits
+RETRY_BACKOFF_BASE = 0.8              # Base multiplier for exponential backoff
+DEFAULT_RETRIES = 3                   # Default retry attempts for API calls
+
 
 @dataclass
 class ResponseData:
@@ -36,14 +40,29 @@ class ResponseData:
     array_index: int  
 
 class Embedder:
-    """Embedder with ID tracking through async operations"""
-    
+    """Generate embeddings for survey response ideas with ID tracking.
+
+    Supports OpenAI and Gemini embedding providers with:
+    - Batch processing with configurable concurrency
+    - Text deduplication for efficiency
+    - Optional question-aware embedding transformation
+    - Full ID tracking through async operations
+
+    Args:
+        config: EmbeddingConfig with batch sizes and concurrency settings
+        model_config: ModelConfig specifying embedding model
+        provider: "openai" or "gemini"
+        client: Optional pre-configured API client
+        var_lab: Survey question label for question-aware embeddings
+        verbose: Enable verbose progress reporting
+    """
+
     def __init__(
         self, 
         config: EmbeddingConfig = None,
         model_config: ModelConfig = None,
         provider: str = "openai",
-        client: any = None, 
+        client: Any = None, 
         var_lab: str = None,
         verbose: bool = False):
         
@@ -90,8 +109,7 @@ class Embedder:
     async def _generate_question_aware_embeddings(self, response_embeddings: np.ndarray, question: str) -> np.ndarray:
         """Generate question-aware embeddings by combining response and question embeddings"""
         # Generate question embedding
-        #question_response = await self.client.embeddings.create(input=[question], model=self.embedding_model)
-        question_embedding = await self._embed_single(question) #was: question_embedding = np.array(question_response.data[0].embedding, dtype=np.float32)
+        question_embedding = await self._embed_single(question)
         
         # Create domain anchor (average of all response embeddings)
         domain_anchor = np.mean(response_embeddings, axis=0)
@@ -107,8 +125,15 @@ class Embedder:
         return np.array(question_aware_embeddings)
     
     
-    async def _embed_openai_batch(self, batch_texts: List[str]):
-        # OpenAI is already async-friendly
+    async def _embed_openai_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
+        """Generate embeddings for a batch of texts using OpenAI API.
+
+        Args:
+            batch_texts: List of text strings to embed
+
+        Returns:
+            List of numpy arrays containing embeddings
+        """
         response = await self.client.embeddings.create(
             input=batch_texts,
             model=self.embedding_model
@@ -116,40 +141,40 @@ class Embedder:
         return [np.array(item.embedding, dtype=np.float32) for item in response.data]
     
     
-    def _gemini_values(self, res) -> np.ndarray:
+    def _gemini_values(self, response: Any) -> np.ndarray:
         """Normalize google-generativeai embed_content response to a float32 numpy array."""
         # Case 1: dict form: {"embedding": {"values": [...]}} or {"embedding": [...]}
-        if isinstance(res, dict):
-            emb = res.get("embedding")
+        if isinstance(response, dict):
+            emb = response.get("embedding")
             if isinstance(emb, dict) and "values" in emb:
                 return np.array(emb["values"], dtype=np.float32)
             elif isinstance(emb, (list, tuple)):
-                # NEW: Handle direct embedding array in dict: {"embedding": [...]}
+                # Handle direct embedding array in dict: {"embedding": [...]}
                 return np.array(emb, dtype=np.float32)
             # Sometimes a list under "data"
-            data = res.get("data")
+            data = response.get("data")
             if isinstance(data, list) and data and isinstance(data[0], dict):
                 emb = data[0].get("embedding")
                 if isinstance(emb, dict) and "values" in emb:
                     return np.array(emb["values"], dtype=np.float32)
-    
+
         # Case 2: object with .embedding.values
-        emb = getattr(res, "embedding", None)
+        emb = getattr(response, "embedding", None)
         if emb is not None:
             vals = getattr(emb, "values", None)
             if isinstance(vals, (list, tuple)):
                 return np.array(vals, dtype=np.float32)
-    
+
         # Case 3: list of one
-        if isinstance(res, list) and res:
-            first = res[0]
+        if isinstance(response, list) and response:
+            first = response[0]
             # Recurse once to handle dict/object inside
             arr = self._gemini_values(first)
             if arr is not None:
                 return arr
-    
+
         # If we reach here, shape is unexpected
-        raise TypeError(f"Unexpected Gemini embed_content return type: {type(res)} -> {res!r}")
+        raise TypeError(f"Unexpected Gemini embed_content return type: {type(response)} -> {response!r}")
         
     async def _embed_gemini_batch(self, batch_texts: List[str]):
         """
@@ -162,32 +187,34 @@ class Embedder:
         return await self._embed_gemini_concurrent(batch_texts)
     
     
-    async def _embed_gemini_concurrent(self, batch_texts: List[str]):
+    async def _embed_gemini_concurrent(self, batch_texts: List[str]) -> List[np.ndarray]:
         """Optimized concurrent Gemini embeddings processing"""
-        import google.generativeai as genai
-        
+        genai = _ensure_gemini()
+
         # Use provider-specific concurrency from config
         gemini_concurrency = min(self.config.gemini_max_concurrent, len(batch_texts))
         semaphore = asyncio.Semaphore(gemini_concurrency)
-        
+
         async def embed_single_text(text: str, index: int):
             async with semaphore:
                 # Stagger requests slightly to avoid rate limit spikes
                 if index > 0:
-                    await asyncio.sleep(0.05)  # Reduced from 0.1 for better performance
-                
+                    await asyncio.sleep(GEMINI_REQUEST_STAGGER_DELAY)
+
                 def _embed_single():
                     return genai.embed_content(
                         model=self.embedding_model,
                         content=text
                     )
-                
+
                 try:
                     result = await asyncio.to_thread(_embed_single)
                     return self._gemini_values(result)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     raise RuntimeError(f"Failed to embed text at index {index}: {str(e)[:100]}...") from e
-        
+
         tasks = [embed_single_text(text, i) for i, text in enumerate(batch_texts)]
         embeddings = await asyncio.gather(*tasks)
         return embeddings
@@ -201,26 +228,44 @@ class Embedder:
             raise ValueError(f"Unknown provider: {self.provider}")
     
     async def _embed_single(self, text_to_embed: str) -> np.ndarray:
+        """Generate embedding for a single text using configured provider.
+
+        Args:
+            text_to_embed: Text string to embed
+
+        Returns:
+            numpy array of embedding values (float32)
+        """
         if self.provider == "openai":
-            r = await self.client.embeddings.create(input=[text_to_embed], model=self.embedding_model)
-            return np.array(r.data[0].embedding, dtype=np.float32)
+            response = await self.client.embeddings.create(input=[text_to_embed], model=self.embedding_model)
+            return np.array(response.data[0].embedding, dtype=np.float32)
         else:
             genai = _ensure_gemini()
             def _call():
                 return genai.embed_content(model=self.embedding_model, content=text_to_embed)
-            r = await asyncio.to_thread(_call)
-            return self._gemini_values(r)
-        
-    async def _with_retries(self, fn, *, retries=3, base=0.8):
+            response = await asyncio.to_thread(_call)
+            return self._gemini_values(response)
+
+    async def _with_retries(self, fn, *, retries: int = DEFAULT_RETRIES, base: float = RETRY_BACKOFF_BASE):
+        """Retry async function with exponential backoff.
+
+        Args:
+            fn: Async callable to retry
+            retries: Maximum retry attempts
+            base: Base multiplier for exponential backoff
+        """
         for i in range(retries):
             try:
                 return await fn()
-            except:
+            except asyncio.CancelledError:
+                # Don't retry on cancellation - propagate immediately
+                raise
+            except Exception:
                 if i == retries - 1:
                     raise
                 await asyncio.sleep(base * (2 ** i))
 
-    def _deduplicate_texts(self, response_data: List[ResponseData]) -> tuple:
+    def _deduplicate_texts(self, response_data: List[ResponseData]) -> Tuple[List[str], Dict[str, List[int]], float]:
         """Extract unique texts and create replication mapping"""
         unique_texts_dict = {}
         text_to_indices = {}
@@ -239,8 +284,8 @@ class Embedder:
         return unique_texts, text_to_indices, compression_ratio
 
     def _replicate_embeddings(self, response_data: List[ResponseData],
-                             unique_texts: List[str], unique_embeddings: List,
-                             text_to_indices: Dict[str, List[int]]) -> List:
+                             unique_texts: List[str], unique_embeddings: List[np.ndarray],
+                             text_to_indices: Dict[str, List[int]]) -> List[np.ndarray]:
         """Replicate unique embeddings to all instances"""
         all_embeddings = [None] * len(response_data)
 
