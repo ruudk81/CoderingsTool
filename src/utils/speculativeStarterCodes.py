@@ -7,7 +7,6 @@ from typing import List, Dict
 
 # Third-party imports
 import instructor
-from openai import AsyncOpenAI
 
 # === MODELS ========================================================================================================
 import models
@@ -39,7 +38,13 @@ class SpeculativeStarterCodes:
         self.prompt_printer = prompt_printer
         self.language = DEFAULT_LANGUAGE
         self.model_config = ModelConfig()
-        self.client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY))
+        self.model = self.model_config.get_model_for_stage("speculative_codes")
+        self.client = instructor.from_provider(
+            f"openai/{self.model}",
+            mode=instructor.Mode.RESPONSES_TOOLS,
+            async_client=True,
+            api_key=OPENAI_API_KEY
+        )
         
     async def _generate_codes_async(self) -> List[models.CodeDefinition]:
         code_template = "\n".join([f"{i+1}. Code {i+1}" for i in range(self.n_codes)])
@@ -58,13 +63,13 @@ class SpeculativeStarterCodes:
             )
             
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model_config.get_model_for_stage("speculative_codes"),
-                messages=[{"role": "user", "content": prompt}],
+            response = await self.client.responses.create(
+                model=self.model,
+                input=prompt,
                 response_model=List[models.CodeDefinition],
                 temperature=1,
                 max_retries=3)
-            
+
             return response
             
         except Exception as e:
@@ -77,7 +82,7 @@ class SpeculativeStarterCodes:
         # Display configuration
         self.verbose_reporter.step_start("Generating starter codes", emoji="🔄")
         self.verbose_reporter.stat_line(f"Survey question: \"{self.var_lab}\"")
-        self.verbose_reporter.stat_line(f"Model: {self.model_config.get_model_for_stage('speculative_codes')}")
+        self.verbose_reporter.stat_line(f"Model: {self.model}")
         self.verbose_reporter.stat_line(f"Requested codes: {self.n_codes}")
         self.verbose_reporter.stat_line(f"Language: {self.language}")
         
