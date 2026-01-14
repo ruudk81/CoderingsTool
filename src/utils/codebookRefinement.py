@@ -1,6 +1,7 @@
 import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[0] + suffix for suffix in ['', 'coderingsTool', 'coderingsTool/src', 'coderingsTool/src/utils']] if p not in sys.path]) if 'coderingsTool' in os.getcwd() else None
 
 # === MODULES ========================================================================================================
+import json
 import logging
 import math
 import numpy as np
@@ -11,9 +12,12 @@ from scipy.cluster.hierarchy import linkage, fcluster
 
 from openai import AsyncOpenAI, OpenAI
 
+# === CONSTANTS ========================================================================================================
+OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
+
 from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY
 from prompts import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
-from models import RefinedCodebookModel, CodeRefinementResults #RefinedCodebookCategory
+from models import RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory
 from utils.codeGenerator import CodeGeneratorReasoningResults
 from utils.verboseReporter import VerboseReporter
 
@@ -119,7 +123,6 @@ class CodebookRefinementProcessor:
             List of dicts with 'id', 'code', 'definition', 'source_cluster_id',
             'inclusion_examples', 'exclusion_examples', 'near_neighbor_label', 'tell_apart_rule' fields
         """
-        import json
         raw_codes = []
         code_id_counter = 1
 
@@ -247,8 +250,6 @@ class CodebookRefinementProcessor:
 
     def _parse_response_json(self, response) -> dict:
         """Extract and parse JSON from response.output array"""
-        import json
-
         # Access response.output array (works for both chat and reasoning models)
         for item in response.output:
             if item.type == "message":
@@ -272,8 +273,6 @@ class CodebookRefinementProcessor:
 
     def _convert_to_refined_model(self, response_data: dict, id_to_cluster_map: dict) -> RefinedCodebookModel:
         """Convert parsed JSON to RefinedCodebookModel with ID mapping"""
-        from models import RefinedSubcode, RefinedCodebookCategory
-
         categories = []
         refined_codebook_data = response_data.get('refined_codebook', [])
 
@@ -302,15 +301,13 @@ class CodebookRefinementProcessor:
                             cluster_parts = [id_to_cluster_map.get(id, '') for id in id_parts]
                             # Filter out empty values and join
                             source_cluster = ','.join([c for c in cluster_parts if c])
-                            if False: #debug
-                                self.reporter.debug(f"    Merged ID '{sequential_id}' → clusters '{source_cluster}'")
+                            logger.debug(f"Merged ID '{sequential_id}' → clusters '{source_cluster}'")
                             if not source_cluster:
                                 self.reporter.warning(f"    Failed to map IDs '{sequential_id}' to any clusters")
                         else:
                             # Single ID, direct lookup
                             source_cluster = id_to_cluster_map.get(sequential_id, '')
-                            if False: #debug 
-                                self.reporter.debug(f"    Single ID '{sequential_id}' → cluster '{source_cluster}'")
+                            logger.debug(f"Single ID '{sequential_id}' → cluster '{source_cluster}'")
                             if not source_cluster:
                                 self.reporter.warning(f"    ID '{sequential_id}' not found in id_to_cluster_map")
 
@@ -357,8 +354,6 @@ class CodebookRefinementProcessor:
 
     def _call_refinement_llm(self, survey_question: str, raw_codes: List[dict]) -> RefinedCodebookModel:
         """Call GPT-5 for codebook refinement using simple sync call"""
-        from openai import OpenAI
-
         # Build mapping from sequential ID to source_cluster_id
         id_to_cluster_map = {code['id']: code.get('source_cluster_id', '') for code in raw_codes}
 
@@ -433,7 +428,7 @@ class CodebookRefinementProcessor:
             cluster_id = code.get('source_cluster_id', '')
             if not cluster_id:
                 # Fallback: zero vector if no cluster ID
-                code_embeddings.append(np.zeros(1536))  # OpenAI embedding dim
+                code_embeddings.append(np.zeros(OPENAI_EMBEDDING_DIMENSION))  # OpenAI embedding dim
                 continue
 
             # Find cluster in reasoning_results (cluster_results is List[Dict])
@@ -473,7 +468,7 @@ class CodebookRefinementProcessor:
 
             if not cluster_found:
                 # Fallback: zero vector
-                code_embeddings.append(np.zeros(1536))
+                code_embeddings.append(np.zeros(OPENAI_EMBEDDING_DIMENSION))
 
         return np.array(code_embeddings)
 
@@ -799,9 +794,24 @@ def refine_codebook(
     model_config: Optional[ModelConfig] = None,
     language: str = DEFAULT_LANGUAGE,
     verbose: bool = True,
-    prompt_printer=None
+    prompt_printer: Optional[Any] = None
 ) -> CodeRefinementResults:
+    """Refine a raw codebook using LLM processing.
 
+    Decides between single-batch refinement (for small codebooks) or
+    MAP-REDUCE hierarchical refinement (for larger codebooks exceeding threshold).
+
+    Args:
+        survey_question: The survey question text for context
+        reasoning_results: CodeGenerator results containing raw codes
+        model_config: Model configuration (uses default if None)
+        language: Output language code
+        verbose: Enable verbose progress reporting
+        prompt_printer: Optional prompt capture utility
+
+    Returns:
+        CodeRefinementResults with refined codebook structure
+    """
     if model_config is None:
         model_config = DEFAULT_MODEL_CONFIG
 
