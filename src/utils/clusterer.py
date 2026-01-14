@@ -23,6 +23,12 @@ import re
 
 from config import UMAPConfig, ClusteringConfig, HDBSCANConfig
 
+# === CONSTANTS ========================================================================================================
+SILHOUETTE_LOW_THRESHOLD = 0.30       # Threshold for "low quality" silhouette score
+TOP_K_CLUSTERS_DEFAULT = 5            # Default number of top clusters for centroid analysis
+PCA_SIZE_THRESHOLD = 10_000           # Apply PCA when embeddings exceed this count
+POLISH_ROUNDS = 3                     # Number of polish iterations in auto-HDBSCAN
+
 # === MODELS ========================================================================================================
 from pydantic import BaseModel
 from models import EmbeddingsModel, ClusterModel, ClusterSubmodel
@@ -745,7 +751,7 @@ class Clusterer:
    
         # mean distance to cluster centroid embedding
         if self.centroid_distance and n_clusters >= 1:
-            topk = min(5, n_clusters)   
+            topk = min(TOP_K_CLUSTERS_DEFAULT, n_clusters)
             cdist, cdist5 = self._centroid_distance_topk(U, labels, topk_clusters=topk)
         else:
             cdist, cdist5 = None, None
@@ -762,7 +768,7 @@ class Clusterer:
         if X.shape[0] and n_clusters >= 2:
             sil_samples = silhouette_samples(X, y, metric=self.CLUSTER_METRIC)
             y_sample = y
-            frac_low_points = float((sil_samples < 0.30).mean())
+            frac_low_points = float((sil_samples < SILHOUETTE_LOW_THRESHOLD).mean())
             clusters, counts = np.unique(y_sample, return_counts=True)
             cluster_means = []
             for c in clusters:
@@ -770,7 +776,7 @@ class Clusterer:
                 cluster_sil = sil_samples[cluster_mask]
                 cluster_means.append(cluster_sil.mean())
             cluster_means = np.array(cluster_means)
-            frac_low_clusters = float((cluster_means < 0.30).mean())
+            frac_low_clusters = float((cluster_means < SILHOUETTE_LOW_THRESHOLD).mean())
         
         # CH / DB on U (non-noise)
         geom = self._geom_indices(U, labels)
@@ -980,8 +986,15 @@ class Clusterer:
         return ms, mcs, "no change", False
     
 
-    def _auto_hdbscan_grid(self, U: np.ndarray):
+    def _auto_hdbscan_grid(self, U: np.ndarray) -> Tuple[HDBSCAN, np.ndarray, ClusterSummary]:
+        """Auto-tune HDBSCAN parameters using grid search with polish refinement.
 
+        Args:
+            U: UMAP-reduced embeddings array
+
+        Returns:
+            Tuple of (fitted HDBSCAN model, cluster labels, ClusterSummary)
+        """
         # Get structure-scaled baseline
         ms, mcs, notes_a, notes_b = self._suggest_params(U)
         self.verbose_reporter.stat_line("Param suggestion:")
@@ -1086,7 +1099,7 @@ class Clusterer:
         dbcv0 = best["metrics"].get("dbcv", None)
         hard_noise_best = best["metrics"].get("hard_noise_rate", np.nan)
 
-        rounds = 3
+        rounds = POLISH_ROUNDS
         changed = True
         note_all = []
         while rounds > 0 and changed:
@@ -1331,7 +1344,7 @@ class Clusterer:
         # PCA Reduction, if applicable
         self.verbose_reporter.empty_line()
        
-        if embeddings.shape[0] > 10_000:
+        if embeddings.shape[0] > PCA_SIZE_THRESHOLD:
             self.verbose_reporter.stat_line("Step 1: PCA dimensionality reduction...")
             start_time = time.time()
             pca_embeddings = self._pca_reduce(embeddings)
@@ -1548,10 +1561,15 @@ class Clusterer:
         return cluster_models
 
 
-def clean_cluster_ideas(cluster_results: List,) -> List:
-   
-    import re
-   
+def clean_cluster_ideas(cluster_results: List[ClusterModel]) -> List[ClusterModel]:
+    """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.
+
+    Args:
+        cluster_results: List of ClusterModel objects with idea texts to clean
+
+    Returns:
+        List of ClusterModel objects with cleaned idea texts
+    """
     cleaned_results = []
 
     for result in cluster_results:
