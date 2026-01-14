@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from collections import deque
 import numpy as np
 
+import instructor
 from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from instructor.exceptions import InstructorRetryException
@@ -248,8 +249,13 @@ class CodeAssigner:
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Instructor-patched async OpenAI client for structured output (cached)
-        self.client = get_openai_client(OPENAI_API_KEY)
+        # Instructor-patched async OpenAI client for structured output with Responses API
+        self.client = instructor.from_provider(
+            f"openai/{self.model}",
+            mode=instructor.Mode.RESPONSES_TOOLS,
+            async_client=True,
+            api_key=OPENAI_API_KEY
+        )
 
         # Embedding client for code similarity (plain OpenAI client)
         self.embedding_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -590,17 +596,16 @@ class CodeAssigner:
         respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
 
         prompt = self._create_prompt(idea_id, idea_text)
-        
+
         # For probes: avoid response_model so we can read .usage
-        resp = await self.client.chat.completions.create(
+        resp = await self.client.responses.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self.config.temperature,
-            seed=self.model_config.seed
+            input=prompt,
+            temperature=self.config.temperature
         )
 
         u = getattr(resp, "usage", None)
-        return {"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+        return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
 
     async def evaluate_default_code(self, idea_id: str, idea_text: str, default_code: models.Codebook):
         """Stage 1: Evaluate how well the default code from cluster fits the idea
@@ -637,13 +642,12 @@ class CodeAssigner:
                 start_time = time.perf_counter()
 
                 response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
+                    self.client.responses.create(
                         model=self.model,
                         response_model=DefaultCodeEvaluationResponse,
-                        messages=[{"role": "user", "content": prompt}],
+                        input=prompt,
                         temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed
+                        max_output_tokens=self.config.max_tokens
                     ),
                     timeout=timeout
                 )
@@ -733,13 +737,12 @@ class CodeAssigner:
                 start_time = time.perf_counter()
 
                 response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
+                    self.client.responses.create(
                         model=self.model,
                         response_model=FallbackCodeAssignmentResponse,
-                        messages=[{"role": "user", "content": prompt}],
+                        input=prompt,
                         temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens,
-                        seed=self.model_config.seed
+                        max_output_tokens=self.config.max_tokens
                     ),
                     timeout=timeout
                 )
