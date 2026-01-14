@@ -55,6 +55,34 @@ warnings.filterwarnings(
     category=UserWarning,
     module=r"umap\.umap_" )
 
+# === CONSTANTS ========================================================================================================
+DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
+DEFAULT_LATENCY_SECONDS = 0.5         # Default latency estimate
+MIN_LATENCY_SECONDS = 0.05            # Minimum latency bound
+TOKENS_FOR_BASELINE_LATENCY = 1000    # Token count for baseline latency calculation
+TIMEOUT_PER_1000_TOKENS = 0.1         # Additional timeout per 1000 tokens
+OUTPUT_TOKEN_ESTIMATE_MARGIN = 1.2    # 20% margin for output token estimation
+FALLBACK_TOKEN_ESTIMATE = 400         # Fallback when tiktoken fails
+DEFAULT_SIMILARITY_THRESHOLD = 0.7    # Default similarity threshold for theme embeddings
+EMBEDDING_BATCH_SIZE = 100            # Batch size for embedding generation
+OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
+EXPONENTIAL_BACKOFF_BASE = 0.8        # Base for exponential backoff in retries
+PROGRESSIVE_SIMILARITY_THRESHOLDS = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8]  # Progressive batching thresholds
+FINAL_SIMILARITY_THRESHOLD = 0.85     # Final fallback similarity threshold
+SIMILARITY_ANALYSIS_THRESHOLDS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]  # Distribution analysis
+CONFLICT_THRESHOLD = 0.9              # Threshold for batch conflict detection
+DEFAULT_SUB_BATCH_MAX_SIZE = 10       # Default max size for sub-batches
+MIN_WORKER_CONCURRENCY = 50           # Minimum worker concurrency
+MAX_WORKER_CONCURRENCY = 200          # Maximum worker concurrency
+INPUT_TOKEN_ESTIMATE_MARGIN = 1.15    # 15% margin for input token estimation
+OUTPUT_ESTIMATE_PCT_OF_INPUT = 0.20   # Output estimate as % of input
+FIRST_PROMPT_ALLOCATION_PCT = 0.85    # First prompt token allocation
+ASSUMED_LATENCY_PER_REQUEST = 2.0     # Assumed latency for rate calculation
+BUCKET_STATUS_RECENT_SAMPLES = 10     # Samples for recent average calculation
+LOW_TOKEN_THRESHOLD_PCT = 0.2         # Low token threshold (20% of capacity)
+PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
+DIAGNOSTIC_REPORT_INTERVAL = 30       # Seconds between diagnostic reports
+
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
@@ -288,22 +316,22 @@ class LatencyTracker:
         """Calculate timeout based on EMA and token count with configurable bounds"""
         config = self.processing_config
         if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 30.0)
+            return max(config.adaptive_timeout_min_seconds, DEFAULT_TIMEOUT_SECONDS)
 
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
         # Simple linear scaling with token count
-        # Assume ~100ms per 1000 tokens as baseline
-        token_factor = est_tokens / 1000
-        timeout = p95 + (token_factor * 0.1)
+        # Assume additional timeout per 1000 tokens as baseline
+        token_factor = est_tokens / TOKENS_FOR_BASELINE_LATENCY
+        timeout = p95 + (token_factor * TIMEOUT_PER_1000_TOKENS)
         # Apply margin and configurable bounds
         return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
     
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
         if not self.values:
-            return 2.0  # Default 2s
-        return self.ema if self.ema is not None else 2.0
+            return ASSUMED_LATENCY_PER_REQUEST
+        return self.ema if self.ema is not None else ASSUMED_LATENCY_PER_REQUEST
 
 
 # ============================================================================
@@ -597,12 +625,11 @@ async def async_responses_create_with_unified_limits(
 ):
     """Async wrapper with unified rate limiting (following qualityFilter.py patterns)"""
     # Estimate tokens for this request
-    import tiktoken
     try:
         encoding = tiktoken.encoding_for_model(model)
-        tokens_needed = int(len(encoding.encode(prompt)) * 1.2)  # Add 20% for output
-    except:
-        tokens_needed = 400  # Fallback estimate
+        tokens_needed = int(len(encoding.encode(prompt)) * OUTPUT_TOKEN_ESTIMATE_MARGIN)
+    except Exception:
+        tokens_needed = FALLBACK_TOKEN_ESTIMATE
     
     # Calculate adaptive timeout before rate limiting
     timeout_seconds = latency_tracker.get_timeout(tokens_needed)
@@ -914,7 +941,7 @@ class SimilarityEngine:
                 theme_names.append("Unknown")   
                       
         # Process in batches (OpenAI supports up to 2048 inputs per call, but use smaller batches for reliability)
-        batch_size = 100
+        batch_size = EMBEDDING_BATCH_SIZE
         theme_embeddings = {}
         
         try:
@@ -972,7 +999,7 @@ class SimilarityEngine:
                 if attempt == 2:  # Last attempt
                     raise
                 # Exponential backoff
-                wait_time = 0.8 * (2 ** attempt)
+                wait_time = EXPONENTIAL_BACKOFF_BASE * (2 ** attempt)
                 self.verbose_reporter.warning(f"Embedding batch failed (attempt {attempt + 1}), retrying in {wait_time}s: {str(e)[:100]}")
                 await asyncio.sleep(wait_time)
 
@@ -999,8 +1026,8 @@ class SimilarityEngine:
         # Report similarity distribution (keep for comparison)
         self._report_similarity_distribution(similarity_matrix)
         
-        # Report hierarchical dissimilarity batching strategy  
-        progressive_thresholds = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8]
+        # Report hierarchical dissimilarity batching strategy
+        progressive_thresholds = PROGRESSIVE_SIMILARITY_THRESHOLDS
         self.verbose_reporter.stat_line(f"Using hierarchical dissimilarity batching with max 0.80 similarity: {' → '.join(map(str, progressive_thresholds))}")
         
         # Hierarchical Dissimilarity Batching
@@ -1034,9 +1061,9 @@ class SimilarityEngine:
             # Try to create final batches still respecting max 0.85 similarity
             remaining_themes = list(unassigned_indices)
             while remaining_themes:
-                # Extract one more batch at 0.85 threshold
+                # Extract one more batch at final threshold
                 final_batch_indices = self._extract_similarity_constrained_batch(
-                    similarity_matrix, remaining_themes, 0.85
+                    similarity_matrix, remaining_themes, FINAL_SIMILARITY_THRESHOLD
                 )
                 if final_batch_indices:
                     final_batch_cluster_ids = [cluster_ids[i] for i in final_batch_indices]
@@ -1111,7 +1138,7 @@ class SimilarityEngine:
         
         self.verbose_reporter.stat_line(f"Analyzing similarity distribution for {n_clusters} themes:")
         
-        thresholds = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+        thresholds = SIMILARITY_ANALYSIS_THRESHOLDS
         for threshold in thresholds:
             count = np.sum(similarities < threshold)
             percentage = count / len(similarities) * 100 if len(similarities) > 0 else 0
@@ -1127,7 +1154,7 @@ class SimilarityEngine:
         
         # Check if any high-similarity pairs ended up in same batch
         violations = 0
-        conflict_threshold = 0.9
+        conflict_threshold = CONFLICT_THRESHOLD
         
         for batch_idx, batch in enumerate(batches):
             batch_indices = [cluster_ids.index(cid) for cid in batch]
@@ -1268,8 +1295,7 @@ class SimilarityEngine:
         
         for from_idx in range(len(batches) - 1):  # Don't check last batch
             to_idx = from_idx + 1
-            #from_threshold = progressive_thresholds[from_idx] if from_idx < len(progressive_thresholds) else 0.85
-            to_threshold = progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else 0.85
+            to_threshold = progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else FINAL_SIMILARITY_THRESHOLD
             
             # Find clusters in from_batch that could move to to_batch
             moveable_to_next = []
@@ -1351,7 +1377,7 @@ class SimilarityEngine:
                                 # Verify one more time before moving
                                 if self._can_cluster_join_batch(cluster_to_move, redistributed[to_idx],
                                                               similarity_matrix, cluster_ids,
-                                                              progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else 0.85):
+                                                              progressive_thresholds[to_idx] if to_idx < len(progressive_thresholds) else FINAL_SIMILARITY_THRESHOLD):
                                     redistributed[from_idx].remove(cluster_to_move)
                                     redistributed[to_idx].append(cluster_to_move)
                                     excess -= 1
@@ -1638,21 +1664,21 @@ class InductiveCodeGenerator:
             total_tokens += len(self.encoding.encode(sample_prompt))
         
         avg_input = total_tokens / sample_size
-        # Assume 20% output ratio for code generation (more complex than quality filtering)
-        return int(avg_input * 1.2)
+        # Add margin for output estimation
+        return int(avg_input * OUTPUT_TOKEN_ESTIMATE_MARGIN)
 
     def estimate_tokens(self, prompt: str) -> int:
         """Estimate total tokens using adaptive strategy (from qualityFilter.py)"""
         actual_input_tokens = len(self.encoding.encode(prompt))
         
-        # Input estimation: first prompt + 15%, then average of first 3
+        # Input estimation: first prompt + margin, then average of first 3
         if self.first_prompt_tokens is None:
-            # First prompt: use actual + 15% margin
+            # First prompt: use actual + margin
             self.first_prompt_tokens = actual_input_tokens
-            estimated_input = int(actual_input_tokens * 1.15)
+            estimated_input = int(actual_input_tokens * INPUT_TOKEN_ESTIMATE_MARGIN)
         elif len(self.input_token_history) < 3:
-            # Still collecting data: use actual + 15%
-            estimated_input = int(actual_input_tokens * 1.15)
+            # Still collecting data: use actual + margin
+            estimated_input = int(actual_input_tokens * INPUT_TOKEN_ESTIMATE_MARGIN)
         else:
             # Use average of first 3 actual inputs
             avg_input = sum(self.input_token_history) / len(self.input_token_history)
@@ -1662,10 +1688,10 @@ class InductiveCodeGenerator:
         if len(self.input_token_history) < 3:
             self.input_token_history.append(actual_input_tokens)
         
-        # Output estimation: 20% of input for reasoning models, then average of first 5 responses
+        # Output estimation: % of input for reasoning models, then average of first 5 responses
         if len(self.output_token_history) < 5:
-            # Use 20% of input as estimate (higher for reasoning models)
-            estimated_output = int(estimated_input * 0.20)
+            # Use % of input as estimate (higher for reasoning models)
+            estimated_output = int(estimated_input * OUTPUT_ESTIMATE_PCT_OF_INPUT)
         else:
             # Use average of first 5 actual outputs
             avg_output = sum(self.output_token_history) / len(self.output_token_history)
@@ -1684,11 +1710,11 @@ class InductiveCodeGenerator:
         available_pct = (self.tpm_bucket.available / self.tpm_bucket.tpm) * 100
         
         # Calculate real utilization based on consumption rate vs capacity
-        if len(self.actual_total_tokens) >= 10:
-            # Use actual consumption rate over last 10 samples
-            recent_avg = sum(list(self.actual_total_tokens)[-10:]) / 10
-            # Convert to per-second rate (assuming ~2s per request for rough estimate)
-            consumption_rate_per_sec = recent_avg / 2.0
+        if len(self.actual_total_tokens) >= BUCKET_STATUS_RECENT_SAMPLES:
+            # Use actual consumption rate over last N samples
+            recent_avg = sum(list(self.actual_total_tokens)[-BUCKET_STATUS_RECENT_SAMPLES:]) / BUCKET_STATUS_RECENT_SAMPLES
+            # Convert to per-second rate (assuming default latency per request for rough estimate)
+            consumption_rate_per_sec = recent_avg / ASSUMED_LATENCY_PER_REQUEST
             # Calculate utilization as percentage of per-second capacity
             real_utilization_pct = (consumption_rate_per_sec / (self.tpm_bucket.tpm / 60)) * 100
         else:
@@ -1700,7 +1726,7 @@ class InductiveCodeGenerator:
             'capacity': int(self.tpm_bucket.tpm),
             'available_pct': available_pct,
             'utilization_pct': real_utilization_pct,
-            'low_tokens': self.tpm_bucket.available < self.tpm_bucket.tpm * 0.2
+            'low_tokens': self.tpm_bucket.available < self.tpm_bucket.tpm * LOW_TOKEN_THRESHOLD_PCT
         }
     
     def get_token_estimation_stats(self) -> dict:
