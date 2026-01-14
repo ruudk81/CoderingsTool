@@ -29,7 +29,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from utils.llm import create_client, llm_create_async
+from utils.llm import create_client, llm_create_async, ProbeResponse
 from prompts import (IDEA_EXTRACTION_PROMPT, EXTRACT_SUBJECT,
                      CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
                      CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2)
@@ -809,12 +809,13 @@ class IdeaExtractor:
             placeholder_phrasing_template
         )
         
-        # For probes: avoid response_model so we can read .usage
+        # For probes: use minimal ProbeResponse model (required for Azure+instructor)
         resp = await asyncio.wait_for(
             llm_create_async(
                 client=self.client,
                 model=self.model,
                 prompt=prompt,
+                response_model=ProbeResponse,  # Required for Azure compatibility
                 temperature=self.config.temperature,
                 track_usage=False,  # Manual tracking for probes
             ),

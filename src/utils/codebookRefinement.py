@@ -11,12 +11,39 @@ from dataclasses import dataclass
 from scipy.cluster.hierarchy import linkage, fcluster
 
 from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, Field
 
 # === CONSTANTS ========================================================================================================
 OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
 
 from config import ModelConfig, DEFAULT_MODEL_CONFIG, DEFAULT_LANGUAGE, OPENAI_API_KEY, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
 from utils.llm import create_client, llm_create_sync
+
+
+# =============================================================================
+# LLM Response Models (match exact prompt output format)
+# =============================================================================
+class LLMCodeItem(BaseModel):
+    """Response model for a single code in LLM output (uses 'code' not 'subcode')"""
+    id: str = Field(..., description="Original code ID or comma-separated IDs if merged")
+    code: str = Field(..., description="Code label")
+    description: str = Field(..., description="Code description (≤20 words)")
+    category: str = Field(default="", description="Empty for 2-level, category name for 3-level")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class LLMThemeItem(BaseModel):
+    """Response model for a theme in LLM output (uses 'theme' and 'codes')"""
+    theme: str = Field(..., description="Main theme label")
+    codes: List[LLMCodeItem] = Field(..., description="List of codes under this theme")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class LLMRefinementResponse(BaseModel):
+    """Response model matching exact LLM output format for codebook refinement"""
+    analysis: str = Field(..., description="Detailed analysis of refinement decisions")
+    refined_codebook: List[LLMThemeItem] = Field(..., description="Refined codebook with themes and codes")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 from prompts import CODEBOOK_REFINEMENT_PROMPT, CODEBOOK_MERGE_PROMPT
 from models import RefinedCodebookModel, CodeRefinementResults, RefinedSubcode, RefinedCodebookCategory
 from utils.codeGenerator import CodeGeneratorReasoningResults
@@ -366,6 +393,70 @@ class CodebookRefinementProcessor:
 
         return refined_model
 
+    def _convert_llm_response_to_model(self, response: LLMRefinementResponse, id_to_cluster_map: dict) -> RefinedCodebookModel:
+        """Convert LLMRefinementResponse (instructor output) to RefinedCodebookModel.
+
+        Args:
+            response: Validated LLMRefinementResponse from instructor
+            id_to_cluster_map: Mapping from sequential code ID to source cluster ID
+
+        Returns:
+            RefinedCodebookModel with properly mapped cluster IDs
+        """
+        categories = []
+
+        for theme_item in response.refined_codebook:
+            try:
+                subcodes = []
+                for code_item in theme_item.codes:
+                    # Map sequential ID back to source_cluster_id
+                    sequential_id = code_item.id.strip().strip('[]') if code_item.id else ''
+
+                    if not sequential_id:
+                        self.reporter.warning(f"    Code '{code_item.code}' has no ID - cannot map to source_cluster")
+                        source_cluster = ''
+                    elif ',' in sequential_id:
+                        # Merged codes - split and look up each cluster
+                        id_parts = [id.strip() for id in sequential_id.split(',')]
+                        cluster_parts = [id_to_cluster_map.get(id, '') for id in id_parts]
+                        source_cluster = ','.join([c for c in cluster_parts if c])
+                        if not source_cluster:
+                            self.reporter.warning(f"    Failed to map IDs '{sequential_id}' to any clusters")
+                    else:
+                        source_cluster = id_to_cluster_map.get(sequential_id, '')
+                        if not source_cluster:
+                            self.reporter.warning(f"    ID '{sequential_id}' not found in id_to_cluster_map")
+
+                    subcode = RefinedSubcode(
+                        id=sequential_id,
+                        code=code_item.code,
+                        description=code_item.description,
+                        category=code_item.category or '',
+                        source_cluster=source_cluster
+                    )
+                    subcodes.append(subcode)
+
+                category = RefinedCodebookCategory(
+                    category=theme_item.theme,
+                    subcodes=subcodes
+                )
+                categories.append(category)
+
+            except Exception as e:
+                self.reporter.error(f"Failed to convert theme: {e}")
+                continue
+
+        return RefinedCodebookModel(
+            analysis=response.analysis,
+            refined_codebook=[cat.model_dump() for cat in categories],
+            generation_metadata={
+                'model': self.model_config.codebook_refinement_model,
+                'reasoning_effort': "minimal",
+                'text_verbosity': "low",
+                'timestamp': datetime.now().isoformat()
+            }
+        )
+
     def _call_refinement_llm(self, survey_question: str, raw_codes: List[dict]) -> RefinedCodebookModel:
         """Call GPT-5 for codebook refinement using simple sync call"""
         # Build mapping from sequential ID to source_cluster_id
@@ -403,23 +494,24 @@ class CodebookRefinementProcessor:
             # Get temperature for chat models (reasoning models use defaults in llm.py)
             temperature = self.model_config.get_temperature_for_stage('refinement') if model_type == "chat" else 0.0
 
+            # Use LLMRefinementResponse for structured output with instructor
             response = llm_create_sync(
                 client=self.client,
                 model=model_name,
                 prompt=prompt,
+                response_model=LLMRefinementResponse,
                 temperature=temperature,
                 max_tokens=self.model_config.default_max_tokens,
                 track_usage=True
             )
 
-            # Parse response and convert to model
-            response_data = self._parse_response_json(response)
-            refined_model = self._convert_to_refined_model(response_data, id_to_cluster_map)
-            
+            # Convert LLM response to internal model format
+            refined_model = self._convert_llm_response_to_model(response, id_to_cluster_map)
+
             self.reporter.info(f"LLM call successful: {len(refined_model.refined_codebook)} categories generated")
-            
+
             return refined_model
-            
+
         except Exception as e:
             self.reporter.error(f"LLM call failed: {str(e)}")
             raise
@@ -587,14 +679,14 @@ class CodebookRefinementProcessor:
             client=self.client,
             model=model_name,
             prompt=prompt,
+            response_model=LLMRefinementResponse,
             temperature=temperature,
             max_tokens=self.model_config.default_max_tokens,
             track_usage=True
         )
 
-        # Parse response (use existing parse logic)
-        parsed_json = self._parse_response_json(response)
-        return self._convert_to_refined_model(parsed_json, id_to_cluster_map)
+        # Convert LLM response to internal model format
+        return self._convert_llm_response_to_model(response, id_to_cluster_map)
 
     def _format_codebooks_for_reduce(self, map_results: List[Dict]) -> str:
         """Format multiple codebooks from MAP phase for REDUCE prompt"""
@@ -667,6 +759,7 @@ class CodebookRefinementProcessor:
             client=self.client,
             model=model_name,
             prompt=prompt,
+            response_model=LLMRefinementResponse,
             temperature=temperature,
             max_tokens=self.model_config.default_max_tokens,
             track_usage=True
@@ -674,10 +767,7 @@ class CodebookRefinementProcessor:
 
         # Use id_to_cluster_map passed from caller (built from original raw_codes)
         # This preserves ALL cluster IDs, including those dropped/merged in MAP phase
-
-        # Parse response
-        parsed_json = self._parse_response_json(response)
-        return self._convert_to_refined_model(parsed_json, id_to_cluster_map)
+        return self._convert_llm_response_to_model(response, id_to_cluster_map)
 
     def _refine_hierarchically(self, survey_question: str, raw_codes: List[dict]) -> CodeRefinementResults:
         """Hierarchical MAP-REDUCE refinement orchestrator"""

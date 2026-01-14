@@ -21,7 +21,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from utils.llm import create_client, llm_create_async
+from utils.llm import create_client, llm_create_async, ProbeResponse
 from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -507,22 +507,24 @@ class Grader:
         return original
     
     async def probe_call_no_structured(self, task_dict):
-        """Probe call without structured output for bootstrap measurement"""
+        """Probe call with minimal response model for bootstrap measurement"""
         prompt = self._build_individual_prompt(
             task_dict.get('var_lab', self.question),
             task_dict['task_id'],
             task_dict['response_text']
         )
 
-        # For probes: avoid response_model so we can read .usage
+        # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
         resp = await llm_create_async(
             client=self.client,
             model=self.model,
             prompt=prompt,
+            response_model=ProbeResponse,
             temperature=self.config.temperature,
             track_usage=False,  # Manual tracking for probes
         )
 
+        # Extract usage from instructor's _raw_response
         u = getattr(resp, "_raw_response", None)
         if u:
             u = getattr(u, "usage", None)
