@@ -25,8 +25,8 @@ from sklearn.preprocessing import normalize
 from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
-from models import ClusterModel  
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from models import ClusterModel
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, API_PROVIDER
 from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 from .verboseReporter import VerboseReporter
 
@@ -36,7 +36,16 @@ try:
 except ImportError:
     pass
 
-client = OpenAI()
+# Create OpenAI client for raw responses.create API
+# Note: This module uses OpenAI's native responses API with GPT-5 reasoning features
+# Azure does NOT support responses API - codeGenerator requires OpenAI provider
+if API_PROVIDER == "azure":
+    raise RuntimeError(
+        "codeGenerator.py requires OpenAI provider (responses API with GPT-5 reasoning features). "
+        "Azure OpenAI does not support the responses API. "
+        "Please set API_PROVIDER='openai' in config.py for code generation."
+    )
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 logger = logging.getLogger(__name__)
 
