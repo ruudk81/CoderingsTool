@@ -14,7 +14,6 @@ from dataclasses import dataclass
 import numpy as np
 import nest_asyncio
 from pydantic import BaseModel
-import instructor
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
 
@@ -35,7 +34,8 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, create_instructor_client
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from utils.llm import create_client, llm_create_async
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -400,7 +400,7 @@ class SpellChecker:
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0
 
-        self.client = create_instructor_client(self.model, async_mode=True)
+        self.client = create_client(self.model, async_mode=True)
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
@@ -1019,15 +1019,23 @@ Suggested corrections: {task_dict['suggestions']}
                 )
             
                 # For probes: avoid response_model so we can read .usage
-                resp = await self.client.responses.create(
+                resp = await llm_create_async(
+                    client=self.client,
                     model=self.model,
-                    input=prompt,
+                    prompt=prompt,
                     temperature=self.config.temperature,
+                    track_usage=False,  # Manual tracking for probes
                 )
 
-                u = getattr(resp, "usage", None)
-                # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
-                return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
+                u = getattr(resp, "_raw_response", None)
+                if u:
+                    u = getattr(u, "usage", None)
+                if not u:
+                    u = getattr(resp, "usage", None)
+                # Handle both Responses API (input_tokens) and Chat API (prompt_tokens)
+                input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
+                output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
+                return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
             limits = get_openai_rate_limits(self.model)
             
@@ -1281,9 +1289,10 @@ Suggested corrections: {task_dict['suggestions']}
                     
                     # Make API call with adaptive timeout
                     response = await asyncio.wait_for(
-                        self.client.responses.create(
+                        llm_create_async(
+                            client=self.client,
                             model=self.model,
-                            input=full_prompt,
+                            prompt=full_prompt,
                             response_model=LLMCorrectionResponse,
                             temperature=self.config.temperature
                         ),
