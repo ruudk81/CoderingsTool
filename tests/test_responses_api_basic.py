@@ -109,67 +109,105 @@ class TestResponsesAPIWithOpenAI:
 
 
 class TestResponsesAPIWithAzure:
-    """Test responses.create with Azure OpenAI (if available)"""
+    """Test responses.create with Azure OpenAI using v1 API format"""
 
     @pytest.mark.skipif(
         not os.getenv("AZURE_OPENAI_ENDPOINT") or not os.getenv("AZURE_OPENAI_API_KEY"),
         reason="Azure not configured"
     )
-    def test_instructor_responses_mode_azure(self):
-        """Test instructor with RESPONSES_TOOLS mode on Azure"""
+    def test_instructor_responses_mode_azure_v1(self):
+        """Test instructor with RESPONSES_TOOLS mode on Azure using v1 API"""
         import instructor
-        from openai import AzureOpenAI
+        from openai import OpenAI
 
-        # Create Azure client
-        azure_client = AzureOpenAI(
+        # v1 API format: use standard OpenAI client with custom base_url
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        azure_client = OpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2025-08-01"
+            base_url=azure_base_url
         )
 
-        # Patch with instructor
-        client = instructor.from_client(
+        # Patch with instructor using from_openai (not from_client)
+        client = instructor.from_openai(
             azure_client,
             mode=instructor.Mode.RESPONSES_TOOLS
         )
 
         assert client is not None
-        print("✓ Created Azure client with RESPONSES_TOOLS mode")
+        print(f"✓ Created Azure v1 client with RESPONSES_TOOLS mode (base_url: {azure_base_url})")
 
     @pytest.mark.skipif(
         not os.getenv("AZURE_OPENAI_ENDPOINT") or not os.getenv("AZURE_OPENAI_API_KEY"),
         reason="Azure not configured"
     )
     @pytest.mark.asyncio
-    async def test_simple_responses_create_azure(self):
-        """Test basic responses.create call with Azure"""
+    async def test_simple_responses_create_azure_v1(self):
+        """Test basic responses.create call with Azure using v1 API"""
         import instructor
-        from openai import AsyncAzureOpenAI
+        from openai import AsyncOpenAI
 
-        # Note: You need to set the deployment name
-        deployment_name = os.getenv("AZURE_GPT41_MINI_DEPLOYMENT", "gpt-41-mini")
+        # Get deployment name from env (this is the model name for Azure)
+        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 
-        azure_client = AsyncAzureOpenAI(
+        # v1 API format: use standard AsyncOpenAI client with custom base_url
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        azure_client = AsyncOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2025-08-01"
+            base_url=azure_base_url
         )
 
-        client = instructor.from_client(
+        client = instructor.from_openai(
             azure_client,
             mode=instructor.Mode.RESPONSES_TOOLS
         )
 
         # Test with simple extraction task
-        # Note: model parameter should be deployment name for Azure
+        # Use deployment name as model parameter for Azure
         response = await client.responses.create(
             input="Extract: Alice is 28 years old",
             response_model=SimpleUser,
-            # model=deployment_name  # Uncomment if needed
+            model=deployment_name
         )
 
         assert isinstance(response, SimpleUser)
-        print(f"✓ Azure responses.create successful: {response}")
+        print(f"✓ Azure v1 responses.create successful: {response}")
+
+    @pytest.mark.skipif(
+        not os.getenv("AZURE_OPENAI_ENDPOINT") or not os.getenv("AZURE_OPENAI_API_KEY"),
+        reason="Azure not configured"
+    )
+    def test_sync_responses_create_azure_v1(self):
+        """Test synchronous responses.create call with Azure v1 API"""
+        import instructor
+        from openai import OpenAI
+
+        # Get deployment name from env
+        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
+
+        # v1 API format
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        azure_client = OpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            base_url=azure_base_url
+        )
+
+        client = instructor.from_openai(
+            azure_client,
+            mode=instructor.Mode.RESPONSES_TOOLS
+        )
+
+        # Sync call
+        response = client.responses.create(
+            input="Extract: Bob is 35 years old",
+            response_model=SimpleUser,
+            model=deployment_name
+        )
+
+        assert isinstance(response, SimpleUser)
+        print(f"✓ Azure v1 sync responses.create successful: {response}")
 
 
 class TestParameterDifferences:

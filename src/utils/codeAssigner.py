@@ -24,7 +24,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER
-from utils.llm import create_client, llm_create_async, create_embedding_client
+from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse
 from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -586,25 +586,30 @@ class CodeAssigner:
         return prompt
     
     async def probe_call_no_structured(self, task_dict):
-        """Probe call without structured output for bootstrap measurement"""
+        """Probe call with minimal response model for bootstrap measurement"""
         idea_data = task_dict['idea_data']
         respondent_id, idea_id, idea_text, idea_embedding, expanded_cluster = idea_data
 
         prompt = self._create_prompt(idea_id, idea_text)
 
-        # For probes: avoid response_model so we can read .usage
+        # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
         resp = await llm_create_async(
             client=self.client,
             model=self.model,
             prompt=prompt,
+            response_model=ProbeResponse,
             temperature=self.config.temperature,
             track_usage=False  # We're extracting usage manually for bootstrap
         )
 
-        # Handle both Azure (prompt_tokens) and OpenAI (input_tokens) response formats
-        u = getattr(resp, "usage", None)
+        # Extract usage from instructor's _raw_response
+        u = getattr(resp, "_raw_response", None)
         if u:
-            # Try Azure format first, then OpenAI format
+            u = getattr(u, "usage", None)
+        if not u:
+            u = getattr(resp, "usage", None)
+        # Handle both Azure (prompt_tokens) and OpenAI (input_tokens) response formats
+        if u:
             prompt_tokens = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", 0)
             completion_tokens = getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", 0)
             return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}

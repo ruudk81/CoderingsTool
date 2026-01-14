@@ -616,37 +616,35 @@ Follow these steps exactly and in order. Do not skip or reorder any step. Use yo
 
 Output strictly as valid JSON using this exact structure (values in {language}, field names in English):
 {{
-  "{cluster_id}": {{
-    "analysis": "Provide your analysis here in {language}.",
-    "extracted_themes": [
-      {{
-        "theme_id": 1,
-        "theme_label": "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]",
-        "theme_clarification": "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]",
-        "abstraction_level": "Driver/Motive/Why | Attribute/What | Action/How",
-        "assignment_examples": {{
-          "inclusion": [
-            "[examples inclusion in {language}]",
-          ],
-          "exclusion": [
-            "[examples exclusion in {language}]"
-          ],
-          "near_neighbor": {{
-            "label": "[neighbor label in {language} or 'Unknown']",
-            "tell_apart_rule": "[1-sentence distinction in {language}]"
-          }}
+  "cluster_id": "{cluster_id}",
+  "analysis": "Provide your analysis here in {language}.",
+  "extracted_themes": [
+    {{
+      "theme_id": 1,
+      "theme_label": "[≤ 10 words | active/actionable formulation of ONE ATOMIC theme in relation to the research question]",
+      "theme_clarification": "[≤ 30 words | illustrative descriptive codes from <inputs> that clarify and support the label — tight, grounded, evidence-based]",
+      "abstraction_level": "Driver/Motive/Why | Attribute/What | Action/How",
+      "assignment_examples": {{
+        "inclusion": [
+          "[examples inclusion in {language}]"
+        ],
+        "exclusion": [
+          "[examples exclusion in {language}]"
+        ],
+        "near_neighbor": {{
+          "label": "[neighbor label in {language} or 'Unknown']",
+          "tell_apart_rule": "[1-sentence distinction in {language}]"
         }}
       }}
-      // Add additional theme objects here if more than one COC was found
-    ]
-  }}
+    }}
+  ]
 }}
 
 
 Critical requirements:
 - Output must be valid JSON only — no extra commentary or explanation before or after.
 - Keep field names in English; write values in {language}.
-- Replace "cluster_id"  with the actual values provided.
+- The cluster_id value must be exactly "{cluster_id}" as provided in the inputs.
 - Conduct your analysis in the specified language.
 """
 

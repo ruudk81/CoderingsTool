@@ -62,43 +62,45 @@ class TestAzurePrerequisites:
 
 
 class TestAzureAPIKeyAuthentication:
-    """Test Azure OpenAI connection with API key authentication"""
+    """Test Azure OpenAI connection with API key authentication using v1 API"""
 
     @pytest.mark.skipif(
-        not os.getenv("AZURE_OPENAI_API_KEY"),
-        reason="AZURE_OPENAI_API_KEY not set - skipping API key tests"
+        not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_ENDPOINT"),
+        reason="AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT not set"
     )
-    def test_connection_with_api_key(self):
-        """Test basic connection to Azure OpenAI with API key"""
-        from openai import AzureOpenAI
+    def test_connection_with_api_key_v1(self):
+        """Test basic connection to Azure OpenAI with API key using v1 API format"""
+        from openai import OpenAI
 
-        client = AzureOpenAI(
+        # v1 API format: use standard OpenAI client with custom base_url
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        client = OpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2025-08-01"
-        )
-
-        # Simple test: list models (or try a basic completion)
-        # Note: Actual API call depends on your deployment
-        assert client is not None
-        print("✓ Successfully created Azure OpenAI client with API key")
-
-    @pytest.mark.skipif(
-        not os.getenv("AZURE_OPENAI_API_KEY"),
-        reason="AZURE_OPENAI_API_KEY not set"
-    )
-    def test_async_client_with_api_key(self):
-        """Test async Azure OpenAI client with API key"""
-        from openai import AsyncAzureOpenAI
-
-        client = AsyncAzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2025-08-01"
+            base_url=azure_base_url
         )
 
         assert client is not None
-        print("✓ Successfully created async Azure OpenAI client with API key")
+        print(f"✓ Successfully created Azure OpenAI v1 client with base_url: {azure_base_url}")
+
+    @pytest.mark.skipif(
+        not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_ENDPOINT"),
+        reason="AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT not set"
+    )
+    def test_async_client_with_api_key_v1(self):
+        """Test async Azure OpenAI client with API key using v1 API format"""
+        from openai import AsyncOpenAI
+
+        # v1 API format: use standard AsyncOpenAI client with custom base_url
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        client = AsyncOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            base_url=azure_base_url
+        )
+
+        assert client is not None
+        print(f"✓ Successfully created async Azure OpenAI v1 client with base_url: {azure_base_url}")
 
 
 class TestAzureManagedIdentity:
@@ -241,24 +243,26 @@ class TestInstructorIntegration:
         not os.getenv("AZURE_OPENAI_ENDPOINT") or not os.getenv("AZURE_OPENAI_API_KEY"),
         reason="Azure not fully configured"
     )
-    def test_instructor_from_client_azure(self):
-        """Test that instructor.from_client works with Azure client"""
+    def test_instructor_from_openai_azure_v1(self):
+        """Test that instructor.from_openai works with Azure v1 API client"""
         import instructor
-        from openai import AzureOpenAI
+        from openai import OpenAI
 
-        azure_client = AzureOpenAI(
+        # v1 API format: use standard OpenAI client with custom base_url
+        azure_base_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT').rstrip('/')}/openai/v1/"
+
+        azure_client = OpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2025-08-01"
+            base_url=azure_base_url
         )
 
-        client = instructor.from_client(
+        client = instructor.from_openai(
             azure_client,
             mode=instructor.Mode.RESPONSES_TOOLS
         )
 
         assert client is not None
-        print("✓ instructor.from_client works with Azure OpenAI")
+        print("✓ instructor.from_openai works with Azure v1 API")
 
     def test_instructor_from_provider_azure(self):
         """Test that instructor.from_provider works with Azure provider string"""
@@ -275,21 +279,32 @@ class TestInstructorIntegration:
             print(f"ℹ instructor.from_provider syntax varies - check docs: {e}")
 
 
-class TestAPIVersionSupport:
-    """Test that API version supports responses API"""
+class TestV1APIFormat:
+    """Test that v1 API format is correctly configured for Responses API"""
 
-    def test_api_version_is_v1(self):
-        """Test that we're using API version with responses.create support"""
-        api_version = "2025-08-01"
+    def test_v1_base_url_format(self):
+        """Test that v1 API base_url is correctly formatted"""
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+        azure_base_url = f"{endpoint.rstrip('/')}/openai/v1/"
 
-        # Responses API available in 2025-08-01 and later
-        year, month, day = map(int, api_version.split("-"))
-        assert year >= 2025, "API version must be 2025 or later for responses API"
+        assert azure_base_url.endswith("/openai/v1/"), "Base URL must end with /openai/v1/"
+        assert "openai.azure.com" in azure_base_url, "Must be Azure OpenAI endpoint"
 
-        if year == 2025:
-            assert month >= 8, "For 2025, must be month 08 (August) or later"
+        print(f"✓ v1 API base_url format correct: {azure_base_url}")
 
-        print(f"✓ API version {api_version} supports responses.create API")
+    def test_v1_api_supports_responses_create(self):
+        """Document that v1 API supports responses.create"""
+        print("\n" + "="*70)
+        print("Azure v1 API - Responses API Support")
+        print("="*70)
+        print("The v1 API format uses:")
+        print("  base_url = https://{resource}.openai.azure.com/openai/v1/")
+        print("")
+        print("This gives access to:")
+        print("  - client.responses.create()  ← Required for reasoning models")
+        print("  - client.chat.completions.create()")
+        print("  - client.embeddings.create()")
+        print("="*70 + "\n")
 
 
 # Test Summary

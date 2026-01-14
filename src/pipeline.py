@@ -45,9 +45,9 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 3
+RUN_UNTIL_STEP = 8
 FORCE_RECALCULATE_ALL = False
-VERBOSE = True  
+VERBOSE = True
 PROMPT_PRINTER = False
 LANGUAGE = "nl"
 

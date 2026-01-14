@@ -35,7 +35,7 @@ from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spac
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from utils.llm import create_client, llm_create_async
+from utils.llm import create_client, llm_create_async, ProbeResponse
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -1004,29 +1004,31 @@ Suggested corrections: {task['suggestions']}
 
             
             async def probe_call_no_structured(self, task_dict):
-               
+
                 task_text = f"""Task:
 Respondent ID: {task_dict['respondent_id']}
 Response: "{task_dict['response_with_placeholders']}"
 Misspelled words: {task_dict['oov_words']}
 Suggested corrections: {task_dict['suggestions']}
 """
-                
+
                 prompt = SPELLCHECK_INSTRUCTIONS.format(
                     language=DEFAULT_LANGUAGE,
                     var_lab=task_dict.get('var_lab', self.var_lab),
                     tasks=task_text
                 )
-            
-                # For probes: avoid response_model so we can read .usage
+
+                # Use minimal ProbeResponse model for Azure compatibility (instructor requires response_model)
                 resp = await llm_create_async(
                     client=self.client,
                     model=self.model,
                     prompt=prompt,
+                    response_model=ProbeResponse,
                     temperature=self.config.temperature,
                     track_usage=False,  # Manual tracking for probes
                 )
 
+                # Extract usage from instructor's _raw_response
                 u = getattr(resp, "_raw_response", None)
                 if u:
                     u = getattr(u, "usage", None)

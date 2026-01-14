@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import difflib
 
 from openai import OpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
-from pydantic import BaseModel, ConfigDict, RootModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, RootModel, Field, field_validator, model_validator
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type #wait_exponential
 from pydantic import ValidationError
@@ -135,8 +135,88 @@ class ClusterSummaryItem(BaseModel):
     analysis: str
     extracted_themes: List[ClusterThemeItem]
 
-class ClusterSummaryOutput(RootModel[Dict[str, ClusterSummaryItem]]):
-    root: Dict[str, ClusterSummaryItem]
+class ClusterSummaryOutput(BaseModel):
+    """Output model for cluster theme extraction.
+
+    Handles multiple input formats from LLM responses:
+    1. New format (preferred): {"cluster_id": "3", "analysis": "...", "extracted_themes": [...]}
+    2. Legacy format: {"3": {"analysis": "...", "extracted_themes": [...]}}
+    3. Instructor-wrapped: {"root": {"3": {...}}}
+
+    The `root` property provides backwards compatibility with code that expects
+    Dict[str, ClusterSummaryItem] format.
+    """
+    cluster_id: str = Field(..., description="The cluster identifier (e.g., '3', '5')")
+    analysis: str = Field(..., description="Analysis of the cluster content")
+    extracted_themes: List[ClusterThemeItem] = Field(..., description="List of extracted themes from this cluster")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_input_format(cls, data: Any) -> Dict[str, Any]:
+        """Handle multiple LLM response formats and normalize to expected structure.
+
+        Handles:
+        - {"cluster_id": "3", "analysis": "...", ...} - direct flat format (pass through)
+        - {"3": {"analysis": "...", ...}} - legacy dict-key format (extract and add cluster_id)
+        - {"root": {"3": {...}}} - instructor-wrapped format (unwrap and normalize)
+        - {"root": ClusterSummaryItem(...)} - instructor-wrapped with object (extract data)
+        """
+        if not isinstance(data, dict):
+            return data  # Let Pydantic handle validation errors
+
+        # Already in correct format?
+        if "cluster_id" in data and "analysis" in data:
+            return data
+
+        # Handle instructor's RootModel wrapping: {"root": {...}}
+        if "root" in data:
+            inner = data["root"]
+            # inner could be {"3": ClusterSummaryItem} or {"3": {"analysis": ...}}
+            if isinstance(inner, dict):
+                # Find the first key (cluster_id) and its value
+                for cluster_id_key, value in inner.items():
+                    if isinstance(value, ClusterSummaryItem):
+                        # It's already a ClusterSummaryItem object
+                        return {
+                            "cluster_id": str(cluster_id_key),
+                            "analysis": value.analysis,
+                            "extracted_themes": value.extracted_themes
+                        }
+                    elif isinstance(value, dict):
+                        # It's a dict with analysis/extracted_themes
+                        return {
+                            "cluster_id": str(cluster_id_key),
+                            "analysis": value.get("analysis", ""),
+                            "extracted_themes": value.get("extracted_themes", [])
+                        }
+                    break  # Only process first key
+
+        # Handle legacy dict-key format: {"3": {"analysis": ...}}
+        # Check if data has exactly one key that looks like a cluster ID
+        keys = list(data.keys())
+        if len(keys) == 1 and keys[0] not in ("cluster_id", "analysis", "extracted_themes", "root"):
+            cluster_id_key = keys[0]
+            inner_data = data[cluster_id_key]
+            if isinstance(inner_data, dict) and "analysis" in inner_data:
+                return {
+                    "cluster_id": str(cluster_id_key),
+                    "analysis": inner_data.get("analysis", ""),
+                    "extracted_themes": inner_data.get("extracted_themes", [])
+                }
+
+        return data  # Return as-is, let Pydantic validate
+
+    @property
+    def root(self) -> Dict[str, 'ClusterSummaryItem']:
+        """Backwards compatibility - reconstruct Dict[str, ClusterSummaryItem] format."""
+        return {
+            self.cluster_id: ClusterSummaryItem(
+                analysis=self.analysis,
+                extracted_themes=self.extracted_themes
+            )
+        }
+
 
 """Prompt 2 : Coding Decision"""
 class MatchedCandidate(BaseModel):
@@ -445,128 +525,95 @@ class JSONValidationError(Exception):
     pass
 
 def extract_json_from_markdown(text: str) -> str:
-    """Extract JSON from markdown code blocks if present"""
+    """Extract JSON from markdown code blocks or embedded JSON in text.
+
+    Handles:
+    1. ```json ... ``` - JSON in markdown code block
+    2. ``` ... ``` - Code block without language identifier
+    3. Text with embedded JSON - Find first { and last } for JSON object extraction
+    """
+    import re
+
+    text = text.strip()
+
     # Check for ```json ... ``` pattern
-    if text.strip().startswith('```json') and text.strip().endswith('```'):
-        # Extract content between the markers
-        lines = text.strip().split('\n')
-        if len(lines) >= 3:  # Must have at least opening, content, closing
-            json_content = '\n'.join(lines[1:-1])
-            return json_content
-    # Check for ``` ... ``` pattern (without json identifier)
-    elif text.strip().startswith('```') and text.strip().endswith('```'):
-        lines = text.strip().split('\n')
+    if text.startswith('```json') and text.endswith('```'):
+        lines = text.split('\n')
         if len(lines) >= 3:
-            json_content = '\n'.join(lines[1:-1])
-            return json_content
-    # Return original text if no markdown blocks found
+            return '\n'.join(lines[1:-1])
+
+    # Check for ``` ... ``` pattern (without json identifier)
+    if text.startswith('```') and text.endswith('```'):
+        lines = text.split('\n')
+        if len(lines) >= 3:
+            return '\n'.join(lines[1:-1])
+
+    # Check for JSON code block anywhere in the text (not just at start/end)
+    json_block_match = re.search(r'```(?:json)?\s*\n(.*?)```', text, re.DOTALL)
+    if json_block_match:
+        return json_block_match.group(1).strip()
+
+    # Try to find embedded JSON object in text (useful when LLM outputs analysis text before JSON)
+    # Find the first { and last } which typically encloses the JSON object
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        potential_json = text[first_brace:last_brace + 1]
+        # Validate it's likely JSON by checking for basic structure
+        try:
+            import json
+            json.loads(potential_json)  # Validate it's parseable
+            return potential_json
+        except json.JSONDecodeError:
+            pass  # Fall through to return original
+
+    # Return original text if no JSON extraction possible
     return text
 
 async def async_responses_create_with_json_retry(
-    model: str, 
-    prompt: str, 
-    response_model, 
-    reasoning_effort: str = "minimal", 
-    text_verbosity: str = "low", 
-    semaphore = None,
-    rate_limiter = None,
-    tpm_bucket = None,
-    latency_tracker = None,
-    config = None,
+    model: str,
+    prompt: str,
+    response_model,
+    reasoning_effort: str = "minimal",
+    text_verbosity: str = "low",
+    semaphore=None,
+    rate_limiter=None,
+    tpm_bucket=None,
+    latency_tracker=None,
+    config=None,
     max_retries: int = 3,
     timeout: float = 30.0
-    ):
-    """Async wrapper with JSON validation retry logic"""
-    
-    base_prompt = prompt
-    
-    for attempt in range(max_retries):
-        try:
-            # Get raw response
-            resp = await async_responses_create_with_unified_limits(
-                model=model,
-                prompt=prompt,
-                semaphore=semaphore,
-                rate_limiter=rate_limiter,
-                tpm_bucket=tpm_bucket,
-                latency_tracker=latency_tracker,
-                config=config,
-                reasoning_effort=reasoning_effort,
-                text_verbosity=text_verbosity
-            )
-            
-            # Extract JSON from markdown if present
-            raw_text = resp.output_text
-            json_text = extract_json_from_markdown(raw_text)
-            
-            # Log if markdown unwrapping occurred
-            if json_text != raw_text:
-                logger.info(f"[JSON EXTRACTION] Unwrapped JSON from markdown code block for model {model}")
-            
-            # Try to parse JSON
-            if hasattr(response_model, 'model_validate_json'):
-                # Special handling for ClusterSummaryOutput - LLM might return array instead of object
-                if response_model == ClusterSummaryOutput:
-                    import json
-                    try:
-                        parsed_json = json.loads(json_text)
-                        # Handle various LLM response formats
-                        if isinstance(parsed_json, list):
-                            if len(parsed_json) == 1 and isinstance(parsed_json[0], dict):
-                                # Case: [{"cluster_id": {...}}] -> {"cluster_id": {...}}
-                                parsed_json = parsed_json[0]
-                            elif len(parsed_json) > 1:
-                                # Case: [{"cluster_id": {...}}, {...}] - merge all dictionaries
-                                merged_dict = {}
-                                for item in parsed_json:
-                                    if isinstance(item, dict):
-                                        merged_dict.update(item)
-                                parsed_json = merged_dict
-                        # Now validate with the corrected structure
-                        response = response_model.model_validate(parsed_json)
-                    except (json.JSONDecodeError, ValidationError):
-                        # Fall back to original method if preprocessing fails
-                        response = response_model.model_validate_json(json_text)
-                else:
-                    response = response_model.model_validate_json(json_text)
-                    
-                if hasattr(response, 'root'):
-                    return response.root
-                return response
-            else:
-                # Fallback for models without model_validate_json
-                return response_model(json_text)
-                
-        except ValidationError as e:
-            error_msg = str(e)
-            
-            # Check if this is a retryable JSON error
-            if attempt < max_retries - 1:  # Don't retry on last attempt
-                if "control character" in error_msg.lower() or "invalid json" in error_msg.lower():
-                    # Check if this is a GPT-4 model for specific handling
-                    is_gpt4 = model.startswith('gpt-4')
-                    
-                    # Enhance prompt for retry based on error type
-                    if "control character" in error_msg.lower():
-                        prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON only. Use standard ASCII characters. Avoid any control characters or special Unicode symbols in your response."
-                    elif "expected" in error_msg.lower() and ("," in error_msg or "}" in error_msg):
-                        prompt = base_prompt + "\n\nIMPORTANT: Return valid JSON with proper syntax. Ensure all objects have correct comma placement and closing braces."
-                    elif is_gpt4 and "expected value at line 1 column 1" in error_msg:
-                        # GPT-4 specific - likely wrapped in markdown
-                        prompt = base_prompt + "\n\nIMPORTANT: Return ONLY raw JSON without any markdown formatting or code blocks. Do NOT wrap the JSON in ```json``` tags or any other formatting."
-                    else:
-                        prompt = base_prompt + "\n\nIMPORTANT: Return only valid, well-formed JSON. Check your syntax carefully. Do not include any markdown formatting or code blocks."
-                    
-                    continue  # Retry with enhanced prompt
-            
-            # Re-raise if not retryable or max retries reached
-            raise e
-        except Exception as e:
-            # Non-JSON errors should not be retried here
-            raise e
-    
-    # Should never reach here, but just in case
-    raise JSONValidationError(f"Failed to get valid JSON after {max_retries} attempts")
+):
+    """Async wrapper that passes response_model to instructor for structured output.
+
+    Instructor handles:
+    - JSON validation against the Pydantic schema
+    - Automatic retries on validation errors (3x by default)
+    - Schema enforcement via Azure's TOOLS mode
+
+    Args:
+        response_model: Pydantic model for structured output validation
+    """
+    # Pass response_model to instructor - it handles validation and retries
+    response = await async_responses_create_with_unified_limits(
+        model=model,
+        prompt=prompt,
+        semaphore=semaphore,
+        rate_limiter=rate_limiter,
+        tpm_bucket=tpm_bucket,
+        latency_tracker=latency_tracker,
+        config=config,
+        response_model=response_model,
+        reasoning_effort=reasoning_effort,
+        text_verbosity=text_verbosity
+    )
+
+    # Response is already a validated Pydantic model from instructor
+    # For RootModel types (like ClusterSummaryOutput), extract the root
+    if hasattr(response, 'root'):
+        return response.root
+    return response
 
 @retry(
     reraise=True,
@@ -574,24 +621,27 @@ async def async_responses_create_with_json_retry(
     wait=wait_exponential_jitter(initial=0.5, max=8),
     retry=retry_if_exception_type(RetryableError)
 )
-def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
+def _sync_responses_create(model: str, prompt: str, response_model=None, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
     """Sync wrapper for LLM calls with retry logic and adaptive timeout.
 
     Uses llm_create_sync() which handles provider differences:
     - OpenAI: uses responses.create() with input= parameter
     - Azure: uses chat.completions.create() with messages= parameter
 
+    Args:
+        response_model: Pydantic model for structured output. Instructor handles validation.
+
     Note: reasoning_effort and text_verbosity are only used for OpenAI GPT-5 reasoning models.
     Azure uses chat completion without reasoning features.
     """
     try:
         # Use llm_create_sync which handles OpenAI vs Azure differences
-        # Note: reasoning parameters are only for OpenAI GPT-5 reasoning models
-        # For Azure, these are ignored as it uses chat.completions.create
+        # Instructor with TOOLS mode validates response against the Pydantic model
         return llm_create_sync(
             client=client,
             model=model,
             prompt=prompt,
+            response_model=response_model,  # Instructor handles validation and retries
             temperature=0.0,  # Use deterministic output for code generation
             track_usage=True
         )
@@ -614,19 +664,20 @@ def _sync_responses_create(model: str, prompt: str, reasoning_effort: str = "min
         logger.error(f"[UNKNOWN ERROR] {type(e).__name__}: {str(e)}")
         raise  # Re-raise non-retryable errors immediately
 
-async def async_responses_create(model: str, prompt: str, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
+async def async_responses_create(model: str, prompt: str, response_model=None, reasoning_effort: str = "minimal", text_verbosity: str = "low", timeout: float = 30.0, raw_input: bool = False):
     """Async wrapper using asyncio.to_thread for true concurrency with adaptive timeout"""
-    return await asyncio.to_thread(_sync_responses_create, model, prompt, reasoning_effort, text_verbosity, timeout, raw_input)
+    return await asyncio.to_thread(_sync_responses_create, model, prompt, response_model, reasoning_effort, text_verbosity, timeout, raw_input)
 
 async def async_responses_create_with_unified_limits(
-    model: str, 
-    prompt: str, 
+    model: str,
+    prompt: str,
     semaphore: asyncio.Semaphore,
     rate_limiter: AsyncLimiter,
     tpm_bucket: TokenBucket,
     latency_tracker: LatencyTracker,
     config,
-    reasoning_effort: str = "minimal", 
+    response_model=None,
+    reasoning_effort: str = "minimal",
     text_verbosity: str = "low"
 ):
     """Async wrapper with unified rate limiting (following qualityFilter.py patterns)"""
@@ -636,22 +687,32 @@ async def async_responses_create_with_unified_limits(
         tokens_needed = int(len(encoding.encode(prompt)) * OUTPUT_TOKEN_ESTIMATE_MARGIN)
     except Exception:
         tokens_needed = FALLBACK_TOKEN_ESTIMATE
-    
+
     # Calculate adaptive timeout before rate limiting
     timeout_seconds = latency_tracker.get_timeout(tokens_needed)
-    
+
     # STANDARDIZED RATE LIMITING PATTERN
     await tpm_bucket.wait_and_acquire(tokens_needed)
     async with semaphore:
         async with rate_limiter:
-            response = await async_responses_create(model, prompt, reasoning_effort, text_verbosity, timeout_seconds)
-            
+            response = await async_responses_create(model, prompt, response_model, reasoning_effort, text_verbosity, timeout_seconds)
+
             # Token reconciliation (if possible)
-            if hasattr(response, 'usage') and response.usage:
-                actual_tokens = response.usage.total_tokens
-                delta = actual_tokens - tokens_needed
-                await tpm_bucket.reconcile(delta)
-            
+            # For instructor responses, check _raw_response for usage data
+            usage = None
+            if hasattr(response, '_raw_response') and response._raw_response:
+                usage = getattr(response._raw_response, 'usage', None)
+            if not usage and hasattr(response, 'usage'):
+                usage = response.usage
+
+            if usage:
+                actual_tokens = getattr(usage, 'total_tokens', 0) or (
+                    getattr(usage, 'prompt_tokens', 0) + getattr(usage, 'completion_tokens', 0)
+                )
+                if actual_tokens > 0:
+                    delta = actual_tokens - tokens_needed
+                    await tpm_bucket.reconcile(delta)
+
             return response
 
 # ============================================================================

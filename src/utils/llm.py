@@ -43,7 +43,41 @@ from config import (
     AZURE_OPENAI_DEPLOYMENT_NAME,
     AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING,
     AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER,
+    ModelConfig,
 )
+
+# Model types for determining if temperature is supported
+_MODEL_TYPES = ModelConfig.MODEL_TYPES
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Check if model is a reasoning model that doesn't support temperature."""
+    return _MODEL_TYPES.get(model, "chat") == "reasoning"
+
+
+# =============================================================================
+# Minimal Response Model for Probe Calls
+# =============================================================================
+class ProbeResponse(BaseModel):
+    """Minimal response model for bootstrap/probe calls that measure latency and tokens."""
+    content: str
+
+
+class RawTextResponse(BaseModel):
+    """Response model for getting raw LLM output text.
+
+    Use this when you need to get raw text from the LLM (e.g., for manual JSON parsing)
+    rather than using instructor's structured output validation.
+
+    The response will have an 'output_text' attribute for compatibility with
+    code that expects raw API response format.
+    """
+    content: str
+
+    @property
+    def output_text(self) -> str:
+        """Compatibility property for code expecting raw API response format."""
+        return self.content
 
 
 # =============================================================================
@@ -340,17 +374,15 @@ def create_client(
 # LLM Request Functions (with automatic token tracking)
 # =============================================================================
 
-def _extract_and_track_usage(response: Any, model: str):
-    """Extract usage from response and record in token_tracker."""
-    # Try to get usage from _raw_response first (instructor pattern)
-    usage = None
-    raw_response = getattr(response, "_raw_response", None)
-    if raw_response:
-        usage = getattr(raw_response, "usage", None)
+def _extract_and_track_usage(completion: Any, model: str):
+    """Extract usage from completion object and record in token_tracker.
 
-    # Fall back to direct usage attribute
-    if not usage:
-        usage = getattr(response, "usage", None)
+    Args:
+        completion: Raw completion object from create_with_completion() or direct API response
+        model: Model name for pricing lookup
+    """
+    # Get usage directly from completion object
+    usage = getattr(completion, "usage", None)
 
     if usage:
         if API_PROVIDER == "azure":
@@ -361,6 +393,7 @@ def _extract_and_track_usage(response: Any, model: str):
             # Responses API uses input_tokens/output_tokens
             input_tokens = getattr(usage, "input_tokens", 0)
             output_tokens = getattr(usage, "output_tokens", 0)
+
         token_tracker.record(model, input_tokens, output_tokens)
 
 
@@ -390,33 +423,82 @@ async def llm_create_async(
     Returns:
         Response (Pydantic model if response_model provided, else raw response)
     """
+    completion = None  # Will hold raw completion for token tracking
+
+    # Check if response_model is a List type (instructor's create_with_completion has a bug with List types)
+    is_list_response = (response_model is not None and
+                        hasattr(response_model, '__origin__') and
+                        response_model.__origin__ is list)
+
+    # Reasoning models (gpt-5-mini, gpt-5, etc.) don't support temperature parameter
+    is_reasoning = _is_reasoning_model(model)
+
     if API_PROVIDER == "azure":
         # Azure: chat.completions.create with messages
         params = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
             "max_tokens": max_tokens,
             **kwargs
         }
+        # Only add temperature for non-reasoning models
+        if not is_reasoning:
+            params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
-        response = await client.chat.completions.create(**params)
+            if is_list_response:
+                # For List types, use regular create() as create_with_completion has a bug
+                response = await client.chat.completions.create(**params)
+                # Try to get _raw_response if instructor attached it
+                completion = getattr(response, "_raw_response", None)
+            else:
+                # Use create_with_completion to get raw response with usage data
+                response, completion = await client.chat.completions.create_with_completion(**params)
+        else:
+            response = await client.chat.completions.create(**params)
+            completion = response  # Raw response when no response_model
     else:
         # OpenAI: responses.create with input
         params = {
             "model": model,
             "input": prompt,
-            "temperature": temperature,
             "max_output_tokens": max_tokens,
             **kwargs
         }
+        # Only add temperature for non-reasoning models
+        if not is_reasoning:
+            params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
-        response = await client.responses.create(**params)
+            if is_list_response:
+                # For List types, use regular create() as create_with_completion has a bug
+                response = await client.responses.create(**params)
+                completion = getattr(response, "_raw_response", None)
+            else:
+                # Use create_with_completion to get raw response with usage data
+                response, completion = await client.responses.create_with_completion(**params)
+        else:
+            response = await client.responses.create(**params)
+            completion = response  # Raw response when no response_model
 
-    if track_usage:
-        _extract_and_track_usage(response, model)
+    if track_usage and completion:
+        _extract_and_track_usage(completion, model)
+
+    # Attach _raw_response to response for backwards compatibility with code that accesses usage directly
+    # This allows utilities like qualityFilter to still do token reconciliation
+    if completion and response is not completion:
+        try:
+            # For list responses, we can't set attributes directly, so wrap in a list subclass
+            if isinstance(response, list):
+                class ResponseList(list):
+                    pass
+                wrapped = ResponseList(response)
+                wrapped._raw_response = completion
+                return wrapped
+            else:
+                response._raw_response = completion
+        except (AttributeError, TypeError):
+            pass  # Some responses don't allow attribute setting
 
     return response
 
@@ -447,33 +529,79 @@ def llm_create_sync(
     Returns:
         Response (Pydantic model if response_model provided, else raw response)
     """
+    completion = None  # Will hold raw completion for token tracking
+
+    # Check if response_model is a List type (instructor's create_with_completion has a bug with List types)
+    is_list_response = (response_model is not None and
+                        hasattr(response_model, '__origin__') and
+                        response_model.__origin__ is list)
+
+    # Reasoning models (gpt-5-mini, gpt-5, etc.) don't support temperature parameter
+    is_reasoning = _is_reasoning_model(model)
+
     if API_PROVIDER == "azure":
         # Azure: chat.completions.create with messages
         params = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
             "max_tokens": max_tokens,
             **kwargs
         }
+        # Only add temperature for non-reasoning models
+        if not is_reasoning:
+            params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
-        response = client.chat.completions.create(**params)
+            if is_list_response:
+                # For List types, use regular create() as create_with_completion has a bug
+                response = client.chat.completions.create(**params)
+                completion = getattr(response, "_raw_response", None)
+            else:
+                # Use create_with_completion to get raw response with usage data
+                response, completion = client.chat.completions.create_with_completion(**params)
+        else:
+            response = client.chat.completions.create(**params)
+            completion = response  # Raw response when no response_model
     else:
         # OpenAI: responses.create with input
         params = {
             "model": model,
             "input": prompt,
-            "temperature": temperature,
             "max_output_tokens": max_tokens,
             **kwargs
         }
+        # Only add temperature for non-reasoning models
+        if not is_reasoning:
+            params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
-        response = client.responses.create(**params)
+            if is_list_response:
+                # For List types, use regular create() as create_with_completion has a bug
+                response = client.responses.create(**params)
+                completion = getattr(response, "_raw_response", None)
+            else:
+                # Use create_with_completion to get raw response with usage data
+                response, completion = client.responses.create_with_completion(**params)
+        else:
+            response = client.responses.create(**params)
+            completion = response  # Raw response when no response_model
 
-    if track_usage:
-        _extract_and_track_usage(response, model)
+    if track_usage and completion:
+        _extract_and_track_usage(completion, model)
+
+    # Attach _raw_response to response for backwards compatibility with code that accesses usage directly
+    if completion and response is not completion:
+        try:
+            if isinstance(response, list):
+                class ResponseList(list):
+                    pass
+                wrapped = ResponseList(response)
+                wrapped._raw_response = completion
+                return wrapped
+            else:
+                response._raw_response = completion
+        except (AttributeError, TypeError):
+            pass
 
     return response
 
