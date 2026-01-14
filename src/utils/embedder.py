@@ -22,6 +22,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, GEMINI_API_KEY, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG, ModelConfig, get_embedding_dimensions
+from utils.llm import create_embedding_client
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -71,7 +72,7 @@ class Embedder:
         self.provider = provider.lower()
 
         if self.provider == "openai":
-            self.client = client or AsyncOpenAI(api_key=OPENAI_API_KEY)
+            self.client = client or create_embedding_client(async_mode=True)
         elif self.provider == "gemini":
             genai = _ensure_gemini()
             genai.configure(api_key=GEMINI_API_KEY)
