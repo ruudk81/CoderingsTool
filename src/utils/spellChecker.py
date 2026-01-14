@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 import nest_asyncio
 from pydantic import BaseModel
+import instructor
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
 #from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter #wait_exponential
@@ -405,8 +406,13 @@ class SpellChecker:
         
         self.suggestion_cache = {} if self.config.enable_suggestion_caching else None
         self.suggestion_cache_hits = 0
-        
-        self.client = get_openai_client(self.openai_api_key)
+
+        self.client = instructor.from_provider(
+            f"openai/{self.model}",
+            mode=instructor.Mode.RESPONSES_TOOLS,
+            async_client=True,
+            api_key=self.openai_api_key
+        )
         
         self.hunspell_path = HUNSPELL_PATH
         self.dict_path = DICT_PATH
@@ -1026,11 +1032,10 @@ Suggested corrections: {task_dict['suggestions']}
                 )
             
                 # For probes: avoid response_model so we can read .usage
-                resp = await self.client.chat.completions.create(
+                resp = await self.client.responses.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
+                    input=prompt,
                     temperature=self.config.temperature,
-                    #max_tokens=self.config.max_tokens
                 )
 
                 u = getattr(resp, "usage", None)
@@ -1288,12 +1293,11 @@ Suggested corrections: {task_dict['suggestions']}
                     
                     # Make API call with adaptive timeout
                     response = await asyncio.wait_for(
-                        self.client.chat.completions.create(
+                        self.client.responses.create(
                             model=self.model,
-                            messages=[{"role": "user", "content": full_prompt}],
+                            input=full_prompt,
                             response_model=LLMCorrectionResponse,
                             temperature=self.config.temperature,
-                            #max_tokens=self.config.max_tokens,
                             seed=self.model_config.seed
                         ),
                         timeout=timeout_seconds
