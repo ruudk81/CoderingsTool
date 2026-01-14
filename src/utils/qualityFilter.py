@@ -2,6 +2,7 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import asyncio
+import math
 import time
 import logging
 import itertools
@@ -35,6 +36,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# === CONSTANTS ========================================================================================================
+INPUT_HISTORY_MAXLEN = 3              # EMA input token history window
+OUTPUT_HISTORY_MAXLEN = 5             # EMA output token history window
+ERROR_WINDOW_SIZE = 50                # Token estimation error tracking window
+DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
+DEFAULT_LATENCY_SECONDS = 2.0         # Default latency estimate
+MIN_CONCURRENCY = 100                 # Minimum concurrent requests
+MAX_CONCURRENCY = 300                 # Maximum concurrent requests
+MIN_WORKERS = 50                      # Minimum worker coroutines
+MAX_WORKERS = 200                     # Maximum worker coroutines
+PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
+DIAGNOSTIC_INTERVAL = 30              # Seconds between diagnostic reports
+MAX_TOKEN_ACQUIRE_ATTEMPTS = 1000     # Max attempts to acquire tokens before failing
+
 # === RATE LIMITING HELPER CLASSES  ========================================================================================================
 
 class TokenBucket:
@@ -64,10 +79,12 @@ class TokenBucket:
                 return wait_seconds
     
     async def wait_and_acquire(self, tokens_needed):
-        """Wait if necessary and acquire tokens"""
+        """Wait if necessary and acquire tokens with safeguard against infinite loops."""
         logger.debug(f"[TOKEN BUCKET] Requesting {tokens_needed} tokens")
-        
-        while True:
+
+        attempts = 0
+        while attempts < MAX_TOKEN_ACQUIRE_ATTEMPTS:
+            attempts += 1
             result = await self.acquire(tokens_needed)
             if result is True:
                 logger.debug(f"[TOKEN BUCKET] Acquired {tokens_needed} tokens, {self.available:.0f} remaining")
@@ -76,11 +93,17 @@ class TokenBucket:
                 # result is wait_seconds
                 logger.debug(f"[TOKEN BUCKET] Insufficient tokens, waiting {result:.1f}s")
                 await asyncio.sleep(result)
+
+        raise RuntimeError(f"Failed to acquire {tokens_needed} tokens after {MAX_TOKEN_ACQUIRE_ATTEMPTS} attempts")
     
-    async def reconcile(self, delta_tokens):
-        """Reconcile actual vs estimated tokens"""
-        # If we overestimated (delta < 0), return tokens
-        # If we underestimated (delta > 0), we already used them
+    async def reconcile(self, delta_tokens: int) -> None:
+        """Reconcile actual token usage against estimate.
+
+        Args:
+            delta_tokens: Difference between actual and estimated tokens.
+                         Negative = overestimated (return tokens to bucket).
+                         Positive = underestimated (already consumed).
+        """
         if delta_tokens < 0:
             async with self.lock:
                 old_available = self.available
@@ -110,7 +133,7 @@ class LatencyTracker:
         """Calculate timeout based on EMA and token count with configurable bounds"""
         config = self.processing_config
         if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 30.0)  # Default 30s or configured minimum, whichever is higher
+            return max(config.adaptive_timeout_min_seconds, DEFAULT_TIMEOUT_SECONDS)
 
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
@@ -124,8 +147,8 @@ class LatencyTracker:
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
         if not self.values:
-            return 2.0  # Default 2s
-        return self.ema if self.ema is not None else 2.0
+            return DEFAULT_LATENCY_SECONDS
+        return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
 
 
 # === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
@@ -213,13 +236,13 @@ class Grader:
         self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Adaptive token estimation (following user's strategy)
-        self.input_token_history = deque(maxlen=3)  # First 3 input token counts
-        self.output_token_history = deque(maxlen=5)  # First 5 output token counts
-        self.estimation_errors = deque(maxlen=50)  # Track accuracy
+        self.input_token_history = deque(maxlen=INPUT_HISTORY_MAXLEN)
+        self.output_token_history = deque(maxlen=OUTPUT_HISTORY_MAXLEN)
+        self.estimation_errors = deque(maxlen=ERROR_WINDOW_SIZE)
         self.first_prompt_tokens = None  # Cache first prompt calculation
         
         # Rolling average of actual total tokens for comparison
-        self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
+        self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
         
         # Latency tracking
         self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
@@ -495,18 +518,18 @@ class Grader:
             temperature=self.config.temperature
         )
 
-        u = getattr(resp, "usage", None)
+        usage = getattr(resp, "usage", None)
         # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
-        return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
+        return {"prompt_tokens": usage.input_tokens, "completion_tokens": usage.output_tokens}
 
-    async def worker(self, queue: asyncio.Queue, results: List):
+    async def worker(self, queue: asyncio.Queue, results: List) -> None:
         """Worker coroutine that processes tasks from queue"""
         while True:
             try:
                 task = await queue.get()
                 if task is None:  # Sentinel
                     break
-                
+
                 try:
                     result = await self.process_task(task)
                     results[task['result_index']] = result
@@ -518,13 +541,17 @@ class Grader:
                 finally:
                     self.stats['tasks_processed'] += 1
                     queue.task_done()
-                    
+
+            except asyncio.CancelledError:
+                # Normal cancellation during shutdown
+                break
             except Exception as e:
-                logger.error(f"Worker error: {e}")
+                logger.error(f"Worker fatal error (will terminate): {e}", exc_info=True)
+                self.stats['worker_failures'] = self.stats.get('worker_failures', 0) + 1
                 break
 
-    async def process_all_tasks_async(self, tasks: List[Dict]) -> List[models.QualityFilteredModel]:
-        """Process all tasks using queue + workers pattern with bootstrap measurement"""
+    async def process_all_tasks_async(self, tasks: List[Dict]) -> List[Optional[models.QualityFilteredModel]]:
+        """Process all tasks using queue + workers pattern with bootstrap measurement."""
         if not tasks:
             return []
 
@@ -563,8 +590,8 @@ class Grader:
         
         # Calculate optimal concurrency using Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-        optimal = min(300, max(Little, 100)) #constrained or range 100-300
+        little_law_concurrency = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
+        optimal = min(MAX_CONCURRENCY, max(little_law_concurrency, MIN_CONCURRENCY))
 
         # Initialize rate limiting components
         arrival_rate = min(
@@ -591,14 +618,14 @@ class Grader:
         tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-        print(f"- Optimal by Little's law: {Little}")
-        print(f"- Constrained optimum: {optimal} (min=100, max=300)")
+        print(f"- Optimal by Little's law: {little_law_concurrency}")
+        print(f"- Constrained optimum: {optimal} (min={MIN_CONCURRENCY}, max={MAX_CONCURRENCY})")
         
         print(f"- Processing {len(tasks):,} tasks")
         
         # Calculate number of workers
         expected_throughput = min(rpm_throughput, tpm_throughput)
-        num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+        num_workers = min(MAX_WORKERS, max(MIN_WORKERS, int(expected_throughput * avg_latency_s * 2.0)))
        
         print(f"- Workers launched: (concurrent subroutines): {num_workers}")
         print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
@@ -628,8 +655,8 @@ class Grader:
             await asyncio.sleep(1)
             now = time.time()
             
-            # Regular progress report every 5s
-            if now - last_report >= 5:
+            # Regular progress report
+            if now - last_report >= PROGRESS_REPORT_INTERVAL:
                 completed = self.stats['tasks_processed']
                 remaining = queue.qsize()
                 elapsed = now - start_time
@@ -639,16 +666,14 @@ class Grader:
                       f"Rate: {rate:.1f}/s, Queue: {remaining}")
                 last_report = now
             
-            # Diagnostic report every 30s (if verbose)
-            if self.verbose_reporter.enabled and now - last_diagnostics >= 30:
+            # Diagnostic report (if verbose)
+            if self.verbose_reporter.enabled and now - last_diagnostics >= DIAGNOSTIC_INTERVAL:
                 bucket_status = self.get_token_bucket_status()
                 token_stats = self.get_token_estimation_stats()
                 
                 # Token bucket diagnostics
                 if bucket_status['low_tokens']:
                     self.verbose_reporter.stat_line(f"⚠️ Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
-                # else:
-                #     self.verbose_reporter.stat_line(f"Token bucket: {bucket_status['available_tokens']:,}/{bucket_status['capacity']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
                 
                 # Token estimation diagnostics
                 if token_stats['status'] == 'learning' and token_stats['samples'] >= 5:
@@ -662,15 +687,17 @@ class Grader:
                         initial_avg = token_stats['initial_avg_tokens']
                         difference = actual_avg - initial_avg
                         
-                        # Calculate theoretical throughput with learned average
+                        # Calculate theoretical throughput with learned average (with zero-division guards)
                         limits = get_openai_rate_limits(self.model)
-                        learned_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
-                        initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / initial_avg / 60
-                        
+                        learned_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                        initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+
+                        pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
+                        throughput_change = ((learned_throughput - initial_throughput) / initial_throughput * 100) if initial_throughput > 0 else 0
                         self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
-                                                      f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
+                                                      f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
                         self.verbose_reporter.stat_line(f"Throughput impact: {initial_throughput:.1f}/s → {learned_throughput:.1f}/s "
-                                                      f"({(learned_throughput-initial_throughput)/initial_throughput*100:+.1f}%)")
+                                                      f"({throughput_change:+.1f}%)")
                 
                 last_diagnostics = now
         
@@ -694,10 +721,7 @@ class Grader:
         # Final diagnostic summary (if verbose)
         if self.verbose_reporter.enabled:
             token_stats = self.get_token_estimation_stats()
-            bucket_status = self.get_token_bucket_status()
-            
-            #self.verbose_reporter.stat_line(f"Final token bucket status: {bucket_status['available_tokens']:,}/{bucket_status['capacity']:,} tokens remaining")
-            
+
             if token_stats['status'] == 'learning':
                 accuracy = max(0, 100 - (token_stats['avg_estimation_error'] / max(1, token_stats['avg_input_tokens'] + token_stats['avg_output_tokens']) * 100))
                 self.verbose_reporter.stat_line(f"Token estimation accuracy: {accuracy:.1f}% (avg error: {token_stats['avg_estimation_error']:.0f} tokens)")
@@ -708,14 +732,15 @@ class Grader:
                     actual_avg = token_stats['avg_actual_total_tokens']
                     initial_avg = token_stats['initial_avg_tokens']
                     difference = actual_avg - initial_avg
-                    
-                    # Calculate what throughput would have been with perfect estimation
+
+                    # Calculate what throughput would have been with perfect estimation (with zero-division guards)
                     limits = get_openai_rate_limits(self.model)
-                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
-                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / initial_avg / 60
-                    
+                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+
+                    pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
                     self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
-                                                  f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
+                                                  f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
                     self.verbose_reporter.stat_line(f"Throughput analysis: Expected {initial_throughput:.1f}/s → Optimal {optimal_throughput:.1f}/s with perfect estimation")
         
         return results
@@ -726,12 +751,16 @@ class Grader:
         
         tasks = []
         for i, response in enumerate(items_to_process):
-            # Handle various data types safely
+            # Handle various data types safely (including numpy types)
             response_text = response.response
-            if isinstance(response_text, (float, int)):
-                if str(response_text).lower() in ['nan', 'inf', '-inf']:
-                    response_text = ''
-                else:
+            if isinstance(response_text, (float, int, np.floating, np.integer)):
+                # Check for NaN/Inf using proper numeric functions
+                try:
+                    if math.isnan(float(response_text)) or math.isinf(float(response_text)):
+                        response_text = ''
+                    else:
+                        response_text = str(response_text)
+                except (ValueError, TypeError):
                     response_text = str(response_text)
             elif response_text is None:
                 response_text = ''
