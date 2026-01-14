@@ -11,7 +11,6 @@ from collections import deque
 from dataclasses import dataclass
 import numpy as np
 
-import instructor
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from instructor.exceptions import InstructorRetryException
@@ -22,6 +21,7 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
+from utils.llm import create_client, llm_create_async
 from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -221,13 +221,8 @@ class Grader:
         # Initialize tokenizer for token counting (cached)
         self.encoding = get_tiktoken_encoding(self.model)
 
-        # Instructor-patched async OpenAI client for structured output with Responses API
-        self.client = instructor.from_provider(
-            f"openai/{self.model}",
-            mode=instructor.Mode.RESPONSES_TOOLS,
-            async_client=True,
-            api_key=OPENAI_API_KEY
-        )
+        # Instructor-patched async client for structured output (supports OpenAI and Azure)
+        self.client = create_client(self.model, async_mode=True)
 
         # Rate limiting setup
         limits = get_openai_rate_limits(self.model)
@@ -436,12 +431,13 @@ class Grader:
                     
                     # Make API call
                     response = await asyncio.wait_for(
-                        self.client.responses.create(
+                        llm_create_async(
+                            client=self.client,
                             model=self.model,
                             response_model=List[models.QualityFilteredModel],
-                            input=prompt,
+                            prompt=prompt,
                             temperature=self.config.temperature,
-                            max_output_tokens=self.config.max_tokens
+                            max_tokens=self.config.max_tokens
                         ),
                         timeout=timeout
                     )
@@ -451,28 +447,35 @@ class Grader:
                     self.latency_tracker.add(latency)
                     
                     # Track actual token usage for learning and reconciliation
-                    if hasattr(response, '_raw_response'):
-                        usage = response._raw_response.usage
-                        if usage:
-                            actual_total_tokens = usage.total_tokens
-                            actual_output_tokens = usage.completion_tokens
-                            
-                            # Update output token history for estimation learning
-                            if len(self.output_token_history) < 5:
-                                self.output_token_history.append(actual_output_tokens)
-                            
-                            # Track actual total tokens for rolling average
-                            self.actual_total_tokens.append(actual_total_tokens)
-                            
-                            # Track estimation accuracy
-                            estimation_error = abs(actual_total_tokens - est_tokens)
-                            self.estimation_errors.append(estimation_error)
-                            
-                            # Reconcile token difference with bucket
-                            delta = actual_total_tokens - est_tokens
-                            if task.get('task_index', 0) < 5:
-                                print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
-                            await self.tpm_bucket.reconcile(delta)
+                    usage = getattr(response, '_raw_response', None)
+                    if usage:
+                        usage = getattr(usage, 'usage', None)
+                    if not usage:
+                        usage = getattr(response, 'usage', None)
+
+                    if usage:
+                        # Handle both Responses API (input_tokens/output_tokens) and Chat API (prompt_tokens/completion_tokens)
+                        input_tokens = getattr(usage, 'input_tokens', 0) or getattr(usage, 'prompt_tokens', 0)
+                        output_tokens = getattr(usage, 'output_tokens', 0) or getattr(usage, 'completion_tokens', 0)
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (input_tokens + output_tokens)
+                        actual_output_tokens = output_tokens
+
+                        # Update output token history for estimation learning
+                        if len(self.output_token_history) < 5:
+                            self.output_token_history.append(actual_output_tokens)
+
+                        # Track actual total tokens for rolling average
+                        self.actual_total_tokens.append(actual_total_tokens)
+
+                        # Track estimation accuracy
+                        estimation_error = abs(actual_total_tokens - est_tokens)
+                        self.estimation_errors.append(estimation_error)
+
+                        # Reconcile token difference with bucket
+                        delta = actual_total_tokens - est_tokens
+                        if task.get('task_index', 0) < 5:
+                            print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
+                        await self.tpm_bucket.reconcile(delta)
                     
                     # Extract result
                     if response and len(response) > 0:
@@ -512,15 +515,23 @@ class Grader:
         )
 
         # For probes: avoid response_model so we can read .usage
-        resp = await self.client.responses.create(
+        resp = await llm_create_async(
+            client=self.client,
             model=self.model,
-            input=prompt,
-            temperature=self.config.temperature
+            prompt=prompt,
+            temperature=self.config.temperature,
+            track_usage=False,  # Manual tracking for probes
         )
 
-        usage = getattr(resp, "usage", None)
-        # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
-        return {"prompt_tokens": usage.input_tokens, "completion_tokens": usage.output_tokens}
+        u = getattr(resp, "_raw_response", None)
+        if u:
+            u = getattr(u, "usage", None)
+        if not u:
+            u = getattr(resp, "usage", None)
+        # Handle both Responses API (input_tokens) and Chat API (prompt_tokens)
+        input_tokens = getattr(u, "input_tokens", 0) or getattr(u, "prompt_tokens", 0)
+        output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
+        return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
     async def worker(self, queue: asyncio.Queue, results: List) -> None:
         """Worker coroutine that processes tasks from queue"""
