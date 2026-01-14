@@ -2,10 +2,13 @@ import os, sys; sys.path.extend([p for p in [os.getcwd().split('coderingsTool')[
 
 # === MODULES ========================================================================================================
 import asyncio
+import random
+import re
 import time
 import statistics
 import itertools
 import logging
+import unicodedata
 from typing import Dict, List, Optional, Union, Literal
 from dataclasses import dataclass
 from collections import deque
@@ -27,13 +30,37 @@ import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from prompts import IDEA_EXTRACTION_PROMPT, EXTRACT_SUBJECT
+from prompts import (IDEA_EXTRACTION_PROMPT, EXTRACT_SUBJECT,
+                     CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
+                     CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2)
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding
 
 async_client = get_openai_client(OPENAI_API_KEY)
+
+
+# === CONSTANTS ========================================================================================================
+INPUT_HISTORY_MAXLEN = 3              # EMA input token history window
+OUTPUT_HISTORY_MAXLEN = 5             # EMA output token history window
+ERROR_WINDOW_SIZE = 50                # Token estimation error tracking window
+DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
+DEFAULT_LATENCY_SECONDS = 2.0         # Default latency estimate
+MIN_CONCURRENCY = 100                 # Minimum concurrent requests
+MAX_CONCURRENCY = 300                 # Maximum concurrent requests
+MIN_WORKERS = 50                      # Minimum worker coroutines
+MAX_WORKERS = 200                     # Maximum worker coroutines
+PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
+DIAGNOSTIC_INTERVAL = 30              # Seconds between diagnostic reports
+MAX_TOKEN_ACQUIRE_ATTEMPTS = 1000     # Max attempts to acquire tokens before failing
+BOOTSTRAP_TIMEOUT_SECONDS = 30.0      # Timeout for bootstrap probe calls
+DEFAULT_AVG_TOKENS = 1500             # Default token estimate fallback
+SAMPLE_SIZE_FOR_TOKEN_ESTIMATION = 10 # Sample size for initial token calculation
+GENERIC_SPECIFIER_SAMPLE_MIN = 50     # Min samples for generic specifiers
+GENERIC_SPECIFIER_SAMPLE_MAX = 1000   # Max samples for generic specifiers
+GENERIC_SPECIFIER_CHUNK_SIZE = 100    # Chunk size for specifier extraction
+MAX_SPECIFIER_WORKERS = 10            # Max workers for specifier extraction
 
 
 # === RATE LIMITING CLASSES  ========================================================================================================
@@ -65,16 +92,25 @@ class TokenBucket:
     
     async def wait_and_acquire(self, tokens_needed):
         """Wait if necessary and acquire tokens"""
-        while True:
+        attempts = 0
+        while attempts < MAX_TOKEN_ACQUIRE_ATTEMPTS:
+            attempts += 1
             result = await self.acquire(tokens_needed)
             if result is True:
                 return
             else:
                 # result is wait_seconds
                 await asyncio.sleep(result)
-    
-    async def reconcile(self, delta_tokens):
-        """Reconcile actual vs estimated tokens"""
+
+        raise RuntimeError(f"Failed to acquire {tokens_needed} tokens after {MAX_TOKEN_ACQUIRE_ATTEMPTS} attempts")
+
+    async def reconcile(self, delta_tokens: int) -> None:
+        """Reconcile actual token usage against estimate.
+
+        Args:
+            delta_tokens: Difference between actual and estimated tokens.
+                         Negative = overestimated (return tokens to bucket).
+        """
         if delta_tokens < 0:
             async with self.lock:
                 self.available = min(self.tpm, self.available - delta_tokens)
@@ -100,7 +136,7 @@ class LatencyTracker:
         """Calculate timeout based on EMA and token count with configurable bounds"""
         config = self.processing_config
         if not self.values:
-            return max(config.adaptive_timeout_min_seconds, 30.0)
+            return max(config.adaptive_timeout_min_seconds, DEFAULT_TIMEOUT_SECONDS)
 
         # Use P95 latency as base
         p95 = np.percentile(list(self.values), 95)
@@ -113,8 +149,8 @@ class LatencyTracker:
     def get_avg_latency(self):
         """Get average latency for concurrency calculations"""
         if not self.values:
-            return 2.0  # Default 2s
-        return self.ema if self.ema is not None else 2.0
+            return DEFAULT_LATENCY_SECONDS
+        return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
 
 
 # === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
@@ -252,13 +288,13 @@ class IdeaExtractor:
         self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Adaptive token estimation (following qualityFilter strategy)
-        self.input_token_history = deque(maxlen=3)  # First 3 input token counts
-        self.output_token_history = deque(maxlen=5)  # First 5 output token counts
-        self.estimation_errors = deque(maxlen=50)  # Track accuracy
+        self.input_token_history = deque(maxlen=INPUT_HISTORY_MAXLEN)  # First N input token counts
+        self.output_token_history = deque(maxlen=OUTPUT_HISTORY_MAXLEN)  # First N output token counts
+        self.estimation_errors = deque(maxlen=ERROR_WINDOW_SIZE)  # Track accuracy
         self.first_prompt_tokens = None  # Cache first prompt calculation
-        
+
         # Rolling average of actual total tokens for comparison
-        self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
+        self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)  # Track actual total usage
         
         # Latency tracking
         self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
@@ -290,10 +326,10 @@ class IdeaExtractor:
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting"""
         if not self.responses:
-            return 1500  # Conservative fallback
-        
-        # Sample up to 10 responses for token estimation
-        sample_size = min(10, len(self.responses))
+            return DEFAULT_AVG_TOKENS  # Conservative fallback
+
+        # Sample up to N responses for token estimation
+        sample_size = min(SAMPLE_SIZE_FOR_TOKEN_ESTIMATION, len(self.responses))
         sample_responses = self.responses[:sample_size]
         
         token_counts = []
@@ -314,7 +350,7 @@ class IdeaExtractor:
             completion_tokens = int(prompt_tokens * 0.25)
             token_counts.append(prompt_tokens + completion_tokens)
         
-        return int(statistics.mean(token_counts)) if token_counts else 1500
+        return int(statistics.mean(token_counts)) if token_counts else DEFAULT_AVG_TOKENS
 
     async def _extract_subject(self, survey_question: str) -> SubjectExtractionResponse:
         """Extract canonical subject/actor from survey question with caching"""
@@ -355,8 +391,11 @@ class IdeaExtractor:
             
             return response
             
+        except asyncio.CancelledError:
+            # Re-raise cancellation - don't mask shutdown signals
+            raise
         except Exception as e:
-            logger.warning(f"Subject extraction failed: {e}. Using fallback.")
+            logger.warning(f"Subject extraction failed: {e}. Using fallback.", exc_info=True)
             # Fallback: extract a reasonable default from the question
             fallback = SubjectExtractionResponse(
                 decision="CANONICAL_SUBJECT",
@@ -377,8 +416,6 @@ class IdeaExtractor:
         Returns:
             Dict with consolidated specifier values
         """
-        from prompts import CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2
-
         # Announce consolidation is starting
         if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
             group_name = "Group1 (lang/perspective/intent)" if group == 1 else "Group2 (domain/topic/entity)"
@@ -459,16 +496,12 @@ class IdeaExtractor:
             }
 
     async def _extract_generic_specifiers(self) -> Dict[str, str]:
-
-        import random
-        from collections import Counter
-
         # Sample responses (20% with min 50, max 1000)
-        sample_size = min(1000, max(int(0.2 * len(self.responses)), 50))
+        sample_size = min(GENERIC_SPECIFIER_SAMPLE_MAX, max(int(0.2 * len(self.responses)), GENERIC_SPECIFIER_SAMPLE_MIN))
         sample = random.sample(self.responses, min(sample_size, len(self.responses)))
 
         # Split into chunks
-        chunk_size = 100
+        chunk_size = GENERIC_SPECIFIER_CHUNK_SIZE
         chunks = [sample[i:i+chunk_size] for i in range(0, len(sample), chunk_size)]
 
         self.verbose_reporter.stat_line(f"Generic specifiers: {len(sample)} samples, {len(chunks)} chunks")
@@ -566,9 +599,6 @@ class IdeaExtractor:
         return result
 
     async def _process_generic_specifier_tasks(self, tasks: List[Dict]) -> List[Dict]:
-       
-        import asyncio
-
         # Create queue and results list
         queue = asyncio.Queue()
         results = []
@@ -578,7 +608,7 @@ class IdeaExtractor:
             await queue.put(task)
 
         # Add sentinels for workers
-        num_workers = min(10, len(tasks))  # Max 10 workers (one per task)
+        num_workers = min(MAX_SPECIFIER_WORKERS, len(tasks))  # Max workers (one per task)
         for _ in range(num_workers):
             await queue.put(None)
 
@@ -610,13 +640,12 @@ class IdeaExtractor:
 
                 # Acquire semaphore (reuse existing self.semaphore)
                 async with self.semaphore:
-                    # Wait for rate limit availability (conservative estimate: 1500 tokens/task)
-                    await self.tpm_bucket.acquire(1500)
+                    # Wait for rate limit availability (conservative estimate)
+                    await self.tpm_bucket.acquire(DEFAULT_AVG_TOKENS)
                     await self.rate_limiter.acquire()
 
                     # Build prompt based on group
                     if task['group'] == 1:
-                        from prompts import CONTEXT_SPECIFIER_PROMPT1
                         prompt = CONTEXT_SPECIFIER_PROMPT1.format(
                             language=self.language,
                             survey_question=self.var_lab,
@@ -625,7 +654,6 @@ class IdeaExtractor:
                         )
                         response_model = GenericSpecifierGroup1Response
                     else:
-                        from prompts import CONTEXT_SPECIFIER_PROMPT2
                         prompt = CONTEXT_SPECIFIER_PROMPT2.format(
                             language=self.language,
                             survey_question=self.var_lab,
@@ -653,7 +681,11 @@ class IdeaExtractor:
                         'response': response
                     })
 
+            except asyncio.CancelledError:
+                # Re-raise cancellation - don't mask shutdown signals
+                raise
             except Exception as e:
+                logger.warning(f"Generic specifier task {task['task_id']} failed: {e}", exc_info=True)
                 self.verbose_reporter.stat_line(f"Generic specifier task {task['task_id']} failed: {e}")
             finally:
                 queue.task_done()
@@ -786,12 +818,12 @@ class IdeaExtractor:
                 input=prompt,
                 temperature=self.config.temperature
             ),
-            timeout=30.0  # Conservative timeout for bootstrap
+            timeout=BOOTSTRAP_TIMEOUT_SECONDS  # Conservative timeout for bootstrap
         )
 
-        u = getattr(resp, "usage", None)
+        usage = getattr(resp, "usage", None)
         # Responses API uses input_tokens/output_tokens instead of prompt_tokens/completion_tokens
-        return {"prompt_tokens": u.input_tokens, "completion_tokens": u.output_tokens}
+        return {"prompt_tokens": usage.input_tokens, "completion_tokens": usage.output_tokens}
 
     @retry(
         retry=retry_if_exception_type((
@@ -973,8 +1005,6 @@ class IdeaExtractor:
         )
 
     def _normalize_idea_text(self, text: str) -> str:
-        import unicodedata
-
         if not text:
             return ""
 
@@ -1010,13 +1040,13 @@ class IdeaExtractor:
         
         # Calculate optimal concurrency using Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(
+        little_law_concurrency = compute_optimal_concurrency(
             api_limits, avg_latency_s, avg_tokens,
             processing_config=self.processing_config,
             cap=self.processing_config.concurrency_cap_permissive,
             min_conc=self.processing_config.concurrency_min_permissive
         )
-        optimal = min(300, max(Little, 100))
+        optimal = min(MAX_CONCURRENCY, max(little_law_concurrency, MIN_CONCURRENCY))
 
         # Initialize rate limiting components
         arrival_rate = min(
@@ -1121,7 +1151,7 @@ class IdeaExtractor:
 
         # Calculate Little's Law for diagnostics
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
-        Little = compute_optimal_concurrency(
+        little_law_concurrency = compute_optimal_concurrency(
             api_limits, avg_latency_s, avg_tokens,
             processing_config=self.processing_config,
             cap=self.processing_config.concurrency_cap_permissive,
@@ -1139,14 +1169,14 @@ class IdeaExtractor:
         tpm_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
-        print(f"- Optimal by Little's law: {Little}")
-        print(f"- Constrained optimum: {optimal} (min=100, max=300)")
+        print(f"- Optimal by Little's law: {little_law_concurrency}")
+        print(f"- Constrained optimum: {optimal} (min={MIN_CONCURRENCY}, max={MAX_CONCURRENCY})")
         
         print(f"- Processing {len(tasks):,} tasks")
         
         # Calculate number of workers
         expected_throughput = min(rpm_throughput, tpm_throughput) 
-        num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+        num_workers = min(MAX_WORKERS, max(MIN_WORKERS, int(expected_throughput * avg_latency_s * 2.0)))
        
         print(f"\nWorkers launched: (concurrent subroutines): {num_workers}")
         print(f"API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
@@ -1176,19 +1206,19 @@ class IdeaExtractor:
             await asyncio.sleep(1)
             now = time.time()
             
-            # Regular progress report every 5s
-            if now - last_report >= 5:
+            # Regular progress report
+            if now - last_report >= PROGRESS_REPORT_INTERVAL:
                 completed = self.stats['tasks_processed']
                 remaining = queue.qsize()
                 elapsed = now - start_time
                 rate = completed / elapsed if elapsed > 0 else 0
-                
+
                 print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
                       f"Rate: {rate:.1f}/s, Queue: {remaining}")
                 last_report = now
-            
-            # Diagnostic report every 30s (if verbose)
-            if self.verbose_reporter.enabled and now - last_diagnostics >= 30:
+
+            # Diagnostic report (if verbose)
+            if self.verbose_reporter.enabled and now - last_diagnostics >= DIAGNOSTIC_INTERVAL:
                 bucket_status = self.get_token_bucket_status()
                 token_stats = self.get_token_estimation_stats()
                 
@@ -1236,14 +1266,16 @@ class IdeaExtractor:
                     actual_avg = token_stats['avg_actual_total_tokens']
                     initial_avg = token_stats['initial_avg_tokens']
                     difference = actual_avg - initial_avg
-                    
+
                     # Calculate what throughput would have been with perfect estimation
                     limits = get_openai_rate_limits(self.model)
-                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
-                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / initial_avg / 60
-                    
+                    # Guard against division by zero
+                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+                    pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
+
                     self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
-                                                  f"({difference:+.0f} tokens, {difference/initial_avg*100:+.1f}%)")
+                                                  f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
                     self.verbose_reporter.stat_line(f"Throughput analysis: Expected {initial_throughput:.1f}/s → Optimal {optimal_throughput:.1f}/s with perfect estimation")
         
         return results
@@ -1327,7 +1359,6 @@ class IdeaExtractor:
 
         # Show idea examples with enhanced format
         if response_examples:
-            import re
             print("\n📋 Sample extracted ideas:")
             for example in response_examples:
                 print(f'  • "{example["response"]}"')
