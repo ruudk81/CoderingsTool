@@ -1,5 +1,5 @@
 # === FOLDERS TO IGNORE ===
-BERTopic/
+BERTopic*/
 data/
 exports/
 data/cache/

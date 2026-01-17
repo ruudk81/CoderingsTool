@@ -945,15 +945,31 @@ class Clusterer:
         return ms, mcs, f"baseline(ms={ms}, mcs={mcs}, ladder={ladder})"
     
     
-    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = 5, max_mcs: int = 250) -> tuple[int, int, str, str]:
+    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = None, max_mcs: int = 250) -> tuple[int, int, str, str]:
         """
         A → B: structure sets direction (factor), size sets scale (baseline).
+        Adaptive floor: adjusts min_mcs based on dataset size.
         Returns: (ms, mcs, notes_a, notes_b)
         """
-        f, notes_a = self._structure_factor_from_space(U)
-        ms0, mcs0, notes_b = self._baseline_by_n(U.shape[0])
+        n = U.shape[0]
 
-        ms  = max(min_ms, int(np.clip(int(round(ms0 * f)), min_ms, U.shape[0])))
+        # Adaptive floor based on dataset size
+        if min_mcs is None:
+            if n <= 100:
+                min_mcs = 2
+            elif n <= 300:
+                min_mcs = 3
+            elif n <= 1000:
+                min_mcs = 5
+            elif n <= 5000:
+                min_mcs = 8
+            else:
+                min_mcs = 10
+
+        f, notes_a = self._structure_factor_from_space(U)
+        ms0, mcs0, notes_b = self._baseline_by_n(n)
+
+        ms  = max(min_ms, int(np.clip(int(round(ms0 * f)), min_ms, n)))
         mcs = int(np.clip(int(round(mcs0 * f)), min_mcs, max_mcs))
 
         return ms, mcs, notes_a, notes_b
@@ -961,13 +977,30 @@ class Clusterer:
     
     @staticmethod
     def _apply_threshold_rule(ms: int, mcs: int, dbcv: Optional[float], hard_noise: float,
-                              min_ms: int = 2, min_mcs: int = 5,
+                              n_points: int = None,
+                              min_ms: int = 2, min_mcs: int = None,
                               dbcv_cut: float = 0.50, noise_cut: float = 0.20) -> tuple[int, int, str, bool]:
         """
         If hard_noise > 20% OR (DBCV available and < 0.50): halve ms and mcs. Floors applied.
+        Adaptive floor: adjusts min_mcs based on dataset size if n_points provided.
         hard_noise = fraction of noise points with low similarity to all clusters (true outliers).
         Returns (new_ms, new_mcs, note, changed_flag).
         """
+        # Calculate adaptive floor if not provided
+        if min_mcs is None and n_points is not None:
+            if n_points <= 100:
+                min_mcs = 2
+            elif n_points <= 300:
+                min_mcs = 3
+            elif n_points <= 1000:
+                min_mcs = 5
+            elif n_points <= 5000:
+                min_mcs = 8
+            else:
+                min_mcs = 10
+        elif min_mcs is None:
+            min_mcs = 5  # Fallback to original default
+
         trigger = False
         note_parts = []
         if hard_noise is not None and hard_noise > noise_cut:
@@ -996,8 +1029,23 @@ class Clusterer:
             Tuple of (fitted HDBSCAN model, cluster labels, ClusterSummary)
         """
         # Get structure-scaled baseline
+        n = U.shape[0]
         ms, mcs, notes_a, notes_b = self._suggest_params(U)
+
+        # Determine adaptive floor for logging
+        if n <= 100:
+            floor_note = f"n={n} → adaptive floor: min_mcs=2 (small dataset)"
+        elif n <= 300:
+            floor_note = f"n={n} → adaptive floor: min_mcs=3 (small-medium dataset)"
+        elif n <= 1000:
+            floor_note = f"n={n} → adaptive floor: min_mcs=5 (medium dataset)"
+        elif n <= 5000:
+            floor_note = f"n={n} → adaptive floor: min_mcs=8 (large dataset)"
+        else:
+            floor_note = f"n={n} → adaptive floor: min_mcs=10 (very large dataset)"
+
         self.verbose_reporter.stat_line("Param suggestion:")
+        self.verbose_reporter.stat_line(f"  [Adaptive] {floor_note}")
         self.verbose_reporter.stat_line(f"  [A] {notes_a}")
         self.verbose_reporter.stat_line(f"  [B] {notes_b}; → scaled(ms={ms}, mcs={mcs})")
         self.verbose_reporter.empty_line()
@@ -1107,7 +1155,8 @@ class Clusterer:
             ms_new, mcs_new, note, changed = self._apply_threshold_rule(
                 ms_best, mcs_best,
                 dbcv=dbcv0, hard_noise=hard_noise_best,
-                min_ms=2, min_mcs=5, dbcv_cut=0.50, noise_cut=0.20
+                n_points=n,
+                min_ms=2, min_mcs=None, dbcv_cut=0.50, noise_cut=0.20
             )
             note_all.append(note)
             if not changed:
