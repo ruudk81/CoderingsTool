@@ -4,100 +4,291 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CoderingsTool is a Dutch text analysis pipeline that processes open-ended survey responses through LLM-powered analysis. It runs as a Streamlit web app with a 10-step processing pipeline.
+CoderingsTool is an AI-powered qualitative data analysis tool that automates the coding of open-ended survey responses. It uses LLMs (GPT-4.1/GPT-5) to process text responses through a multi-stage pipeline: preprocessing, quality filtering, idea extraction, embedding generation, clustering, codebook generation, refinement, and code assignment.
 
-## Commands
+The tool supports both OpenAI and Azure OpenAI APIs and provides a bilingual (Dutch/English) Streamlit web interface alongside standalone pipeline execution.
+
+## Environment Setup
+
+This project uses a per-project virtual environment managed with `uv`:
 
 ```bash
-# Setup environment (first time / after changes)
+# Setup and activate environment (run from project root)
+chmod +x setup.sh
+source ./setup.sh
+```
+
+The setup script creates/updates `.venv`, installs dependencies from [requirements.txt](requirements.txt), and activates the environment.
+
+## Running the Application
+
+### Streamlit Web Interface
+
+```bash
+# Activate environment first
 source ./setup.sh
 
 # Run the Streamlit app
 streamlit run src/app.py
-
-# Run pipeline directly (for testing/development)
-cd src && python pipeline.py
 ```
 
-Pipeline standalone config is at the top of `src/pipeline.py` (lines 28-51): set `filename`, `var_name`, `sample_size`, `RUN_UNTIL_STEP`, and `FORCE_RECALCULATE_ALL`.
+The Streamlit app ([src/app.py](src/app.py)) provides an interactive UI with step-by-step navigation through the pipeline.
+
+### Standalone Pipeline Execution
+
+Edit the configuration variables at the top of [src/pipeline.py](src/pipeline.py):
+
+```python
+filename = "your_data_file.sav"
+id_column = "respondentid"
+var_name = "Q1"
+sample_size = 50  # or None for full dataset
+RUN_UNTIL_STEP = 8  # Stop at specific step (0-9)
+FORCE_RECALCULATE_ALL = False
+```
+
+Then run:
+
+```bash
+# From src directory
+cd src
+python pipeline.py
+```
 
 ## Architecture
 
-### Pipeline Steps (0-9)
+### Core Pipeline Structure
 
-| Step | Name | Utility | Output Model |
-|------|------|---------|--------------|
-| 0 | Load Data | `dataLoader.py` | `ResponseModel` |
-| 1 | Preprocess | `spellChecker.py` | `PreprocessedModel` |
-| 2 | Quality Filter | `qualityFilter.py` | `QualityFilteredModel` |
-| 3 | Extract Ideas | `ideaExtractor.py` | `IdeasExtractedModel` |
-| 4 | Embeddings | `embedder.py` | `EmbeddingsModel` |
-| 5 | Cluster | `clusterer.py` | `ClusterModel` |
-| 6 | Generate Codebook | `codeGenerator.py` | `CodebookModel` |
-| 7 | Refine Codebook | `codebookRefinement.py` | `RefinedCodebookModel` |
-| 8 | Assign Codes | `codeAssigner.py` | `CodeAssignedModel` |
-| 9 | Export | `resultsExporter.py` | SPSS/Excel files |
+The pipeline is organized into 10 sequential steps in [src/pipeline.py](src/pipeline.py):
 
-### Key Files
+- **Step 0** (`step_0_load_data`): Load data from SPSS files (.sav)
+- **Step 1** (`step_1_preprocess`): Spell checking using Hunspell + LLM correction
+- **Step 2** (`step_2_quality_filter`): Filter out gibberish, empty, and "don't know" responses
+- **Step 3** (`step_3_extract_ideas`): Extract individual ideas/concepts from responses
+- **Step 4** (`step_4_generate_embeddings`): Generate text embeddings using OpenAI models
+- **Step 5** (`step_5_cluster`): Cluster ideas using UMAP + HDBSCAN
+- **Step 6** (`step_6_generate_codebook`): Generate initial codebook from clusters
+- **Step 7** (`step_7_refine_codebook`): Refine codebook with LLM reasoning
+- **Step 8** (`step_8_assign_codes`): Assign codes to all ideas
+- **Step 9** (`step_9_export_results`): Export results to Excel
 
-- `src/app.py` - Streamlit UI with bilingual support (NL/EN)
-- `src/pipeline.py` - Core pipeline with `step_N_*()` functions
-- `src/config.py` - All configuration dataclasses (`ModelConfig`, `ProcessingConfig`, `CacheConfig`, etc.)
-- `src/models.py` - Pydantic models for pipeline data flow
-- `src/prompts.py` - LLM prompt templates
-- `src/ui_text.py` - Bilingual UI text constants
+Each step takes the output from the previous step, applies transformations, and returns results as Pydantic models defined in [src/models.py](src/models.py).
 
-### Data Flow
+### Data Flow & Pydantic Models
+
+Data flows through progressively enriched Pydantic models ([src/models.py](src/models.py)):
 
 ```
 ResponseModel → PreprocessedModel → QualityFilteredModel → IdeasExtractedModel
-→ EmbeddingsModel → ClusterModel → (CodebookModel) → CodeAssignedModel
+→ EmbeddingsModel → ClusterModel → CodeAssignedModel
 ```
 
-Each step's output model extends the previous, preserving all fields while adding new ones.
-
-### Caching System
-
-`src/utils/cacheManager.py` handles SQLite-based caching:
-- Cache key = `{filename}_{step_name}_{variable_key}`
-- Variable key generated by `generate_enhanced_variable_key()` includes: variables, sample_size, merge_config
-- Cache invalidation cascades: changing step N invalidates steps N+1 through 9
+Each model extends the previous, adding new fields as data progresses through the pipeline.
 
 ### LLM Integration
 
-- Uses OpenAI API via `instructor` library for structured outputs
-- Models configured in `config.py` → `ModelConfig` dataclass
-- Rate limiting via `TokenBucket` pattern with adaptive timeouts
-- Async processing with `asyncio` and `aiolimiter`
+All LLM calls go through the centralized [src/utils/llm.py](src/utils/llm.py) module:
 
-## Conventions
+- **Dual Provider Support**: Switches between OpenAI and Azure OpenAI via `API_PROVIDER` setting in [src/config.py](src/config.py)
+- **OpenAI**: Uses Responses API (`responses.create()`) with `input=` parameter
+- **Azure**: Uses Chat Completions API (`chat.completions.create()`) with `messages=` parameter
+- **Structured Outputs**: All calls use `instructor` library with Pydantic response models
+- **Token Tracking**: Global `token_tracker` monitors usage and costs across all LLM calls
 
-### Bilingual UI Pattern
+Main functions:
+- `create_client(model, async_mode)` - Create instructor-wrapped client
+- `llm_create_async()` - Async LLM call with structured output
+- `get_model_limits(model)` - Get context window/max output for a model
 
-All user-facing strings support NL/EN:
+### Configuration System
+
+[src/config.py](src/config.py) centralizes all configuration via dataclasses:
+
+- **API Configuration**: `API_PROVIDER`, OpenAI/Azure credentials, deployment names
+- **Model Configuration**: `ModelConfig` - model selection, rate limits, model types (chat vs reasoning)
+- **Processing Configuration**: Step-specific configs (SpellCheckConfig, QualityFilterConfig, EmbeddingConfig, HDBSCANConfig, etc.)
+- **Hunspell Configuration**: Cross-platform paths for spell checking dictionaries
+- **Language Configuration**: Multilingual labels (Dutch, English, German, French, Spanish)
+
+The config is loaded from environment variables via `.env` file at project root.
+
+### Caching System
+
+[src/utils/cacheManager.py](src/utils/cacheManager.py) implements SQLite-backed caching:
+
+- **Cache Keys**: Generated from `(filename, step_name, variable_key)` tuple
+- **Variable Keys**: Handle single variables (`Q18`) and merged variables (`Q18+Q19+Q20_concat_semicolon_skip_250`)
+- **Binary Storage**: Pickled Pydantic models stored in SQLite BLOBs
+- **Invalidation**: Cascade invalidation - updating a step invalidates all downstream steps
+- **Concurrency**: Thread-safe with context managers and connection pooling
+
+Key functions:
+- `save_to_cache()` - Save step results
+- `load_from_cache()` - Load cached results
+- `invalidate_cache()` - Force recalculation
+- `generate_enhanced_variable_key()` - Generate cache keys with merge config
+
+### Utility Modules
+
+Key utilities in [src/utils/](src/utils/):
+
+- **[dataLoader.py](src/utils/dataLoader.py)**: SPSS file loading, variable merging, sampling
+- **[spellChecker.py](src/utils/spellChecker.py)**: Hunspell + LLM spell correction with parallel processing
+- **[qualityFilter.py](src/utils/qualityFilter.py)**: Filter low-quality responses (gibberish, empty, "don't know")
+- **[ideaExtractor.py](src/utils/ideaExtractor.py)**: Extract individual ideas from responses with LLM
+- **[embedder.py](src/utils/embedder.py)**: Generate embeddings via OpenAI/Azure embedding models
+- **[clusterer.py](src/utils/clusterer.py)**: UMAP + HDBSCAN clustering with parallel UMAP processing
+- **[codeGenerator.py](src/utils/codeGenerator.py)**: Multi-phase codebook generation with batching strategies
+- **[codebookRefinement.py](src/utils/codebookRefinement.py)**: LLM-based codebook refinement with reasoning models
+- **[codeAssigner.py](src/utils/codeAssigner.py)**: Assign codes to ideas with parallel processing
+- **[resultsExporter.py](src/utils/resultsExporter.py)**: Export to Excel with formatted sheets
+
+### Streamlit App Architecture
+
+[src/app.py](src/app.py) implements a step-based navigation system:
+
+- **Session State Management**: Stores configuration, results, and progress in `st.session_state`
+- **Step Pages**: Each pipeline step has a dedicated UI page function (`render_step_0_page()`, etc.)
+- **Configuration Management**: `DatasetConfig` dataclass manages dataset configuration with validation
+- **Bilingual UI**: All text defined in [src/ui_text.py](src/ui_text.py) with Dutch/English support
+- **Cache Recovery**: Automatic cache corruption detection and recovery
+- **Progress Tracking**: Visual progress indicators with completed steps, current step, and max step reached
+
+### Prompts System
+
+[src/prompts.py](src/prompts.py) contains all LLM prompt templates:
+
+- **Template Variables**: Prompts use `{variable}` placeholders for runtime substitution
+- **Multi-step Prompts**: Some utilities (e.g., codeGenerator) use multi-phase prompt chains
+- **Language Support**: Prompts include language-specific instructions
+- **Structured Output**: All prompts designed for Pydantic model outputs via instructor
+
+## API Provider Configuration
+
+The tool supports dual providers via the `API_PROVIDER` setting in [src/config.py](src/config.py):
+
 ```python
-"Verwerken" if st.session_state.language == "nl" else "Process"
+API_PROVIDER = "azure"  # or "openai"
 ```
 
-### Session State Keys
+### OpenAI Configuration
 
-- Config keys: `filename`, `var_lab`, `sample_size_config`, `force_recalculate_all`
-- Pipeline results: `st.session_state.pipeline_results['{step_key}']`
-- Step stats: `st.session_state['{step_name}_stats']` (not in pipeline_results)
-
-### Step Completion Tracking
-
-```python
-from utils.cacheManager import is_step_completed, mark_step_completed
-if is_step_completed(N):  # Check if step N is done
-mark_step_completed(N)     # Mark step N as complete
+Set in `.env`:
+```
+OPENAI_API_KEY=your_key_here
 ```
 
-## Custom Agents
+### Azure OpenAI Configuration
 
-Four specialized subagents available in `.claude/agents/`:
+Set in `.env`:
+```
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY=your_key_here
+AZURE_OPENAI_API_VERSION=2024-02-01
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4.1
+AZURE_OPENAI_DEPLOYMENT_NAME_EMBEDDING=text-embedding-3-large
+AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER=gpt-4.1
 
-- **utils-dependency-auditor** - Analyze `/src/utils` for unused/redundant utilities
-- **config-parameter-curator** - Migrate hardcoded values to `config.py`
-- **responses-api-migrator** - Migrate OpenAI chat.completions to responses API (COMPLETED)
-- **azure-client-migrator** - Migrate to provider-agnostic client factories for Azure support (PENDING)
+# Optional: For dynamic limit fetching via ARM API
+AZURE_SUBSCRIPTION_ID=your_subscription_id
+AZURE_RESOURCE_GROUP=your_resource_group
+```
+
+## Model Selection
+
+Models are configured in [src/config.py](src/config.py) `ModelConfig`:
+
+- **Reasoning Models** (e.g., gpt-5, o1): No temperature parameter, used for complex reasoning tasks
+- **Chat Models** (e.g., gpt-4.1, gpt-5-chat): Support temperature, used for most tasks
+- **Model Type Detection**: `ModelConfig.MODEL_TYPES` dict maps model names to types
+- **Rate Limits**: `OPENAI_RATE_LIMITS` defines tokens/min, requests/min, tokens/day per model
+
+When modifying LLM calls, check if the model is a reasoning model using `_is_reasoning_model()` in [src/utils/llm.py](src/utils/llm.py).
+
+## Data Directory Structure
+
+```
+data/               # SPSS files (.sav) - gitignored
+exports/            # Excel exports - gitignored
+hunspell/          # Spell check dictionaries (nl_NL, en_GB)
+  dict/
+    nl_NL/
+    en_GB/
+  hunspell.exe     # Windows only
+src/
+  utils/           # Pipeline utilities
+  backup/          # Version history
+  app.py           # Streamlit web UI
+  pipeline.py      # Standalone pipeline
+  config.py        # Configuration
+  models.py        # Pydantic models
+  prompts.py       # LLM prompts
+  ui_text.py       # Bilingual UI text
+```
+
+## Important Development Notes
+
+### When Modifying Utility Files
+
+1. **Check Provider Compatibility**: Ensure changes work with both OpenAI and Azure providers
+2. **Use Centralized LLM Module**: All LLM calls MUST go through [src/utils/llm.py](src/utils/llm.py)
+3. **Update Cache Keys**: If changing input parameters, update cache key generation to avoid stale caches
+4. **Maintain Pydantic Models**: Keep model chain intact (each model extends previous)
+5. **Test Both Modes**: Test changes in both Streamlit app and standalone pipeline
+
+### When Adding New Pipeline Steps
+
+1. Add step function to [src/pipeline.py](src/pipeline.py) following `step_N_name()` pattern
+2. Update `STEP_NAMES` dict in both [src/pipeline.py](src/pipeline.py) and [src/ui_text.py](src/ui_text.py)
+3. Add corresponding Pydantic model to [src/models.py](src/models.py)
+4. Create step page function in [src/app.py](src/app.py): `render_step_N_page()`
+5. Add prompts to [src/prompts.py](src/prompts.py) if using LLM
+
+### When Modifying Configuration
+
+1. Update dataclass in [src/config.py](src/config.py)
+2. Update session state initialization in [src/app.py](src/app.py) if needed
+3. Update any UI elements that reference the config
+4. Consider cache invalidation if config changes affect results
+
+### Cross-Platform Compatibility
+
+The codebase supports macOS, Linux, and Windows:
+
+- **Hunspell**: Cross-platform paths in [src/config.py](src/config.py) (`_get_hunspell_paths()`)
+- **CPU Detection**: Uses `os.cpu_count()` and `multiprocessing.cpu_count()` (both cross-platform)
+- **Path Handling**: Uses `pathlib.Path` for cross-platform path operations
+
+## Common Gotchas
+
+1. **Cache Invalidation**: When changing step logic, you may need to manually delete cache or set `FORCE_RECALCULATE_ALL = True`
+2. **Session State vs Config**: Streamlit app uses `st.session_state` for runtime state; [src/config.py](src/config.py) for persistent settings
+3. **Async vs Sync**: Most utilities use async LLM calls; ensure proper `await` and event loop handling
+4. **Model Limits**: Check model context windows before batching; use `get_model_limits()` from [src/utils/llm.py](src/utils/llm.py)
+5. **Provider Differences**: OpenAI uses Responses API; Azure uses Chat Completions API - differences abstracted in [src/utils/llm.py](src/utils/llm.py)
+6. **Widget Key Conflicts**: Streamlit app uses `_config` suffix for storage keys to avoid widget conflicts (see `DatasetConfig` in [src/app.py](src/app.py))
+
+## Testing
+
+There is no automated test suite. Test manually:
+
+1. **Standalone Pipeline**: Run [src/pipeline.py](src/pipeline.py) with a small sample size
+2. **Streamlit App**: Run `streamlit run src/app.py` and walk through steps
+3. **Provider Switching**: Test with both `API_PROVIDER = "openai"` and `API_PROVIDER = "azure"`
+4. **Cache Behavior**: Test with fresh cache and with existing cache
+
+## Key Dependencies
+
+- **streamlit**: Web UI framework
+- **pandas**: Data manipulation
+- **pyreadstat**: SPSS file reading
+- **openai**: OpenAI API client (used for both OpenAI and Azure)
+- **instructor**: Structured LLM outputs with Pydantic
+- **scikit-learn**: Machine learning utilities
+- **hdbscan**: Clustering algorithm
+- **umap-learn**: Dimensionality reduction
+- **tiktoken**: Token counting
+- **spacy**: Advanced NLP (optional, with language models)
+- **azure-identity, azure-mgmt-cognitiveservices**: Azure ARM API access (optional)
+
+See [requirements.txt](requirements.txt) for full dependency list with version constraints.

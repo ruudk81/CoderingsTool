@@ -45,7 +45,7 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 8
+RUN_UNTIL_STEP = 5
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1899,7 +1899,7 @@ if __name__ == '__main__':
                 cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                 print(f"- {cleaned_idea}")
     
-    # === STEP 5 ====
+    # === STEP 5 ==== 
     """Reduce data/get clusters"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
     initial_cluster_results = step_5_cluster(
@@ -1913,6 +1913,7 @@ if __name__ == '__main__':
     check_execution_stop(5)
     
     if False: #debug - print random clusters  
+   
         import random
         import re
         cluster_ids = list(set([
@@ -1934,6 +1935,7 @@ if __name__ == '__main__':
         for segment_desc in sampled_segments:
             print(f"-    {segment_desc}")
         
+
     if False: #debug if true - print all clusters
         import re
         cluster_ids = list(set([
