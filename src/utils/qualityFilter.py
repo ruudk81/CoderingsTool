@@ -20,8 +20,8 @@ from aiolimiter import AsyncLimiter
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from utils.llm import create_client, llm_create_async, ProbeResponse
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
@@ -42,13 +42,10 @@ OUTPUT_HISTORY_MAXLEN = 5             # EMA output token history window
 ERROR_WINDOW_SIZE = 50                # Token estimation error tracking window
 DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
 DEFAULT_LATENCY_SECONDS = 2.0         # Default latency estimate
-MIN_CONCURRENCY = 100                 # Minimum concurrent requests
-MAX_CONCURRENCY = 300                 # Maximum concurrent requests
-MIN_WORKERS = 50                      # Minimum worker coroutines
-MAX_WORKERS = 200                     # Maximum worker coroutines
 PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
 DIAGNOSTIC_INTERVAL = 30              # Seconds between diagnostic reports
 MAX_TOKEN_ACQUIRE_ATTEMPTS = 1000     # Max attempts to acquire tokens before failing
+# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS now come from ProcessingConfig
 
 # === RATE LIMITING HELPER CLASSES  ========================================================================================================
 
@@ -224,11 +221,16 @@ class Grader:
         # Instructor-patched async client for structured output (supports OpenAI and Azure)
         self.client = create_client(self.model, async_mode=True)
 
-        # Rate limiting setup
-        limits = get_openai_rate_limits(self.model)
+        # Rate limiting setup - use fallback values for initial setup
+        # Actual rate limits will be fetched from API during process_all_tasks_async
+        self.rate_limits = RateLimits(
+            tokens_per_minute=FALLBACK_TPM,
+            requests_per_minute=FALLBACK_RPM,
+            tokens_per_day=FALLBACK_TPM * 60 * 24
+        )
 
-        # Token bucket for TPM limiting
-        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+        # Token bucket for TPM limiting (will be re-initialized with actual limits during bootstrap)
+        self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Adaptive token estimation (following user's strategy)
         self.input_token_history = deque(maxlen=INPUT_HISTORY_MAXLEN)
@@ -419,14 +421,12 @@ class Grader:
                     }
                 )
            
-            # TPM bucket for token limiting
-            await self.tpm_bucket.wait_and_acquire(est_tokens)
-            
-            # Calculate dynamic timeout BEFORE rate limiting for progressive learning
+            # Calculate dynamic timeout BEFORE entering rate-limited section
             timeout = self.latency_tracker.get_timeout(est_tokens)
-            
-            # Unified rate limiting and semaphore
+
+            # Semaphore FIRST to prevent convoy effect, then token bucket, then rate limiter
             async with self.semaphore:
+                await self.tpm_bucket.wait_and_acquire(est_tokens)
                 async with self.rate_limiter:
                     
                     # Make API call
@@ -563,63 +563,114 @@ class Grader:
                 self.stats['worker_failures'] = self.stats.get('worker_failures', 0) + 1
                 break
 
+    async def _fetch_rate_limits_from_api(self) -> RateLimits:
+        """Make a minimal API call to fetch rate limits from response headers."""
+        from openai import AsyncOpenAI
+        from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+        if API_PROVIDER == "azure":
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                default_query={"api-version": "2024-10-21"},
+            )
+            model = AZURE_OPENAI_DEPLOYMENT_NAME
+        else:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            model = self.model
+
+        # Make minimal API call with raw response to get headers
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5
+        )
+
+        return extract_rate_limits_from_response(response)
+
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[Optional[models.QualityFilteredModel]]:
         """Process all tasks using queue + workers pattern with bootstrap measurement."""
         if not tasks:
             return []
 
-        # Setup
-        limits = get_openai_rate_limits(self.model)
-        
-        # Bootstrap measurement with probe calls (following spellChecker pattern)
+        self.verbose_reporter.step_start("Quality Assessment")
+
+        # Fetch rate limits dynamically from API response headers
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Fetching rate limits from API...")
+
+        limits = await self._fetch_rate_limits_from_api()
+
+        # Fallback if headers not available
+        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+            limits = RateLimits(
+                tokens_per_minute=FALLBACK_TPM,
+                requests_per_minute=FALLBACK_RPM,
+                tokens_per_day=FALLBACK_TPM * 60 * 24
+            )
+        else:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
+
+        # Store rate limits on self for use in diagnostics/reporting
+        self.rate_limits = limits
+
+        # Bootstrap measurement with probe calls
         sample_tasks = tasks[:min(3, len(tasks))]
         if len(sample_tasks) < 3:
-            # Duplicate tasks if we have fewer than 3
             sample_tasks = sample_tasks * 3
             sample_tasks = sample_tasks[:3]
-        
-        self.verbose_reporter.step_start("Quality Assessment")
+
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
-        
+
         start_time = time.time()
         task_cycle = itertools.cycle(sample_tasks)
-        
+
         async def probe_with_different_tasks():
             return await self.probe_call_no_structured(next(task_cycle))
-        
+
         avg_latency_s, avg_tokens = await bootstrap_measure_async(probe_with_different_tasks, n_probes=3)
-        
+
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"Probe time: {time.time() - start_time:.3f}s")
             self.verbose_reporter.stat_line(f"Bootstrap results: {avg_latency_s:.3f}s avg latency, {avg_tokens:.0f} avg tokens")
-        
+
         # Initialize latency tracker with bootstrap measurements
-        for i in range(3):  # Add 3 samples to get started
+        for i in range(3):
             self.latency_tracker.add(avg_latency_s)
-        
+
         # Update avg_tokens with bootstrap measurement
         self.avg_tokens = int(avg_tokens)
-        
+
         # Calculate optimal concurrency using Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
         little_law_concurrency = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-        optimal = min(MAX_CONCURRENCY, max(little_law_concurrency, MIN_CONCURRENCY))
+
+        # Use ProcessingConfig for bounds instead of hardcoded constants
+        max_concurrency = self.processing_config.concurrency_cap_default
+        min_concurrency = self.processing_config.concurrency_min_default
+        optimal = min(max_concurrency, max(little_law_concurrency, min_concurrency))
 
         # Initialize rate limiting components
         arrival_rate = min(
             limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
             limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
         )
-        
+
         if arrival_rate < 1:
             self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
         else:
             self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-        
+
         self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
         self.optimal_concurrency = min(len(tasks), optimal)
-        
+
+        # Re-initialize TokenBucket with actual rate limits
+        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+
         print("[RATE LIMITING SETUP]")
         print(f"- Model: {self.model}")
         print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
@@ -632,13 +683,15 @@ class Grader:
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
         print(f"- Optimal by Little's law: {little_law_concurrency}")
-        print(f"- Constrained optimum: {optimal} (min={MIN_CONCURRENCY}, max={MAX_CONCURRENCY})")
-        
+        print(f"- Constrained optimum: {optimal} (min={min_concurrency}, max={max_concurrency})")
+
         print(f"- Processing {len(tasks):,} tasks")
-        
-        # Calculate number of workers
+
+        # Calculate number of workers using ProcessingConfig bounds
         expected_throughput = min(rpm_throughput, tpm_throughput)
-        num_workers = min(MAX_WORKERS, max(MIN_WORKERS, int(expected_throughput * avg_latency_s * 2.0)))
+        max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
+        min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
+        num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
        
         print(f"- Workers launched: (concurrent subroutines): {num_workers}")
         print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
@@ -701,9 +754,9 @@ class Grader:
                         difference = actual_avg - initial_avg
                         
                         # Calculate theoretical throughput with learned average (with zero-division guards)
-                        limits = get_openai_rate_limits(self.model)
-                        learned_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
-                        initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+                        # Use dynamically fetched rate limits stored on self
+                        learned_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                        initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
 
                         pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
                         throughput_change = ((learned_throughput - initial_throughput) / initial_throughput * 100) if initial_throughput > 0 else 0
@@ -747,9 +800,9 @@ class Grader:
                     difference = actual_avg - initial_avg
 
                     # Calculate what throughput would have been with perfect estimation (with zero-division guards)
-                    limits = get_openai_rate_limits(self.model)
-                    optimal_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
-                    initial_throughput = limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+                    # Use dynamically fetched rate limits stored on self
+                    optimal_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                    initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
 
                     pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
                     self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
@@ -796,8 +849,8 @@ class Grader:
         pre_filtered_items = [r for r in self.responses if r.quality_filter_code is not None]
         
         self.verbose_reporter.step_start("Quality Assessment")
-        limits = get_openai_rate_limits(self.model)
-        self.verbose_reporter.stat_line(f"Model: {self.model} (Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM)")
+        # Use fallback rate limits for initial display (actual limits fetched during processing)
+        self.verbose_reporter.stat_line(f"Model: {self.model} (Initial limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM)")
         self.verbose_reporter.stat_line(f"Items needing LLM evaluation: {len(items_to_process)}")
         self.verbose_reporter.stat_line(f"Pre-filtered items: {len(pre_filtered_items)}")
         

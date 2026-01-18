@@ -52,10 +52,23 @@ from config import CacheConfig
 # CONFIGURATION
 # =============================================================================
 
-# Dataset configuration
-FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-VARIABLE = "Q20"
-SAMPLE_SIZE = 50
+# Mode: 'single' or 'all'
+# - 'single': Run experiment on one specific dataset (configured below)
+# - 'all': Auto-discover and run on ALL datasets with cached embeddings
+RUN_MODE = 'single'
+
+# Dataset configuration (for 'single' mode)
+#FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#VARIABLE = "Q20"
+#SAMPLE_SIZE = 50
+
+#FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
+#VARIABLE = "Qd1_combined"
+#SAMPLE_SIZE = 2000
+
+FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
+VARIABLE = "Qd1_combined"
+SAMPLE_SIZE = 2000
 
 # UMAP grid configuration
 UMAP_NEIGHBORS = [5, 10, 30]
@@ -66,15 +79,113 @@ UMAP_MIN_DIST = 0.1
 K_RANGE = range(3, 16)
 
 # Output paths
-EXPORTS_DIR = Path(__file__).parent.parent.parent / "exports"
+# For 'all' mode, creates subdirectories per dataset
+EXPORTS_BASE_DIR = Path(__file__).parent.parent.parent / "exports" / "umap_clustering_comparison"
+EXPORTS_DIR = Path(__file__).parent.parent.parent / "exports"  # Backwards compatible for single mode
+
+# =============================================================================
+# DATASET DISCOVERY
+# =============================================================================
+
+def discover_cached_datasets(debug: bool = False) -> List[Dict]:
+    """
+    Query cache database to find all datasets with Step 4 (embeddings) cached.
+
+    Args:
+        debug: If True, print debug information
+
+    Returns:
+        List of dicts with:
+        - filename: SPSS filename
+        - variable_key: Cache variable key (e.g., "Q20_50")
+        - var_name: Variable name parsed from key (e.g., "Q20")
+        - sample_size: Sample size parsed from key (e.g., 50) or None if full dataset
+        - n_ideas: Number of ideas in the dataset (from cache inspection)
+    """
+    import sqlite3
+    import pickle
+
+    # Use absolute path to project root to avoid path resolution issues
+    # when running from different directories
+    project_root = Path(__file__).parent.parent.parent
+    cache_dir = project_root / "data" / "cache"
+    db_path = cache_dir / "cache.db"
+
+    if debug:
+        print(f"DEBUG: db_path={db_path}, exists={db_path.exists()}")
+        print(f"DEBUG: cache_dir={cache_dir}")
+
+    datasets = []
+
+    with sqlite3.connect(str(db_path)) as conn:
+        cursor = conn.execute('''
+            SELECT DISTINCT filename, variable_key, cache_path
+            FROM cache_metadata
+            WHERE step_name = 'embeddings' AND status = 'valid'
+            ORDER BY filename, variable_key
+        ''')
+
+        for filename, variable_key, cache_path in cursor.fetchall():
+            # Parse sample_size from variable_key (e.g., "Q20_100" → 100)
+            parts = variable_key.rsplit('_', 1)
+            var_name = parts[0]
+
+            # Check if last part is a number (sample size)
+            if len(parts) > 1 and parts[1].isdigit():
+                sample_size = int(parts[1])
+            else:
+                sample_size = None
+                var_name = variable_key
+
+            # Count ideas in the cache file
+            n_ideas = 0
+            full_cache_path = Path(cache_path)
+            if not full_cache_path.is_absolute():
+                full_cache_path = cache_dir / cache_path
+
+            if full_cache_path.exists():
+                try:
+                    with open(full_cache_path, 'rb') as f:
+                        data = pickle.load(f)
+                    # Count ideas across all responses
+                    for response in data:
+                        if isinstance(response, dict):
+                            ideas = response.get('response_ideas', [])
+                        else:
+                            ideas = getattr(response, 'response_ideas', []) or []
+                        n_ideas += len([i for i in ideas if (i.get('idea_embedding') if isinstance(i, dict) else getattr(i, 'idea_embedding', None)) is not None])
+                except Exception as e:
+                    print(f"Warning: Could not count ideas in {cache_path}: {e}")
+
+            datasets.append({
+                'filename': filename,
+                'variable_key': variable_key,
+                'var_name': var_name,
+                'sample_size': sample_size,
+                'n_ideas': n_ideas
+            })
+
+    return datasets
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
-def load_step4_embeddings() -> Tuple[np.ndarray, List[str]]:
+def load_step4_embeddings(
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
+    variable_key: Optional[str] = None
+) -> Tuple[np.ndarray, List[str]]:
     """
     Load Step 4 embeddings from cache.
+
+    Args:
+        filename: SPSS filename (defaults to global FILENAME)
+        variable: Variable name (defaults to global VARIABLE)
+        sample_size: Sample size (defaults to global SAMPLE_SIZE)
+        variable_key: Pre-computed variable key (overrides variable/sample_size)
 
     Returns:
         embeddings: numpy array of shape (n_ideas, embedding_dim)
@@ -82,18 +193,24 @@ def load_step4_embeddings() -> Tuple[np.ndarray, List[str]]:
     """
     import pickle
 
-    # Generate variable key (Q20 with sample_size=50 -> "Q20_50")
-    variable_key = generate_enhanced_variable_key(
-        selected_variables=[VARIABLE],
-        is_merged=False,
-        sample_size=SAMPLE_SIZE
-    )
+    # Use global defaults if not provided
+    _filename = filename if filename is not None else FILENAME
+    _variable = variable if variable is not None else VARIABLE
+    _sample_size = sample_size if sample_size is not None else SAMPLE_SIZE
+
+    # Generate variable key if not provided
+    if variable_key is None:
+        variable_key = generate_enhanced_variable_key(
+            selected_variables=[_variable],
+            is_merged=False,
+            sample_size=_sample_size
+        )
 
     # Build cache file path directly (bypassing database lookup)
     # Cache is in project_root/data/cache
     project_root = Path(__file__).parent.parent.parent
     cache_dir = project_root / "data" / "cache"
-    base_name = Path(FILENAME).stem
+    base_name = Path(_filename).stem
     cache_filename = f"005_embeddings_{base_name}_{variable_key}.pkl"
     cache_path = cache_dir / cache_filename
 
@@ -110,7 +227,7 @@ def load_step4_embeddings() -> Tuple[np.ndarray, List[str]]:
     data = [models.EmbeddingsModel.model_validate(item) for item in serializable_data]
 
     if data is None:
-        raise ValueError(f"No cached embeddings found for {FILENAME}/{variable_key}. Run pipeline Step 4 first.")
+        raise ValueError(f"No cached embeddings found for {_filename}/{variable_key}. Run pipeline Step 4 first.")
 
     # Extract embeddings and texts from all ideas
     embeddings_list = []
@@ -625,146 +742,57 @@ def find_knee(distances: np.ndarray) -> Tuple[int, float]:
     return knee_idx, max_dist
 
 
-def compute_elbow_strength(distances: np.ndarray) -> Tuple[int, float, float]:
-    """
-    Compute normalized elbow strength.
-
-    Args:
-        distances: Sorted k-NN distances
-
-    Returns:
-        knee_idx: Index of knee point
-        knee_distance: k-NN distance at knee point
-        strength: Elbow strength (0-1), higher = sharper elbow
-    """
-    knee_idx, max_dist = find_knee(distances)
-    value_range = distances.max() - distances.min()
-
-    if value_range == 0:
-        return knee_idx, distances[knee_idx], 0.0
-
-    strength = max_dist / value_range
-    return knee_idx, distances[knee_idx], strength
-
-
-def classify_density_structure(strength: float) -> str:
-    """
-    Classify density structure based on elbow strength.
-
-    Args:
-        strength: Elbow strength value
-
-    Returns:
-        Classification: "strong", "weak", or "none"
-
-    Interpretation:
-        - strong (>0.10): Clear density separation → HDBSCAN recommended
-        - weak (0.05-0.10): Some structure → test both approaches
-        - none (<0.05): Smooth density → Agglomerative/K-means recommended
-    """
-    if strength > 0.10:
-        return "strong"
-    elif strength > 0.05:
-        return "weak"
-    else:
-        return "none"
-
-
-def compute_slope_ratio(distances: np.ndarray, knee_idx: int,
-                        window: int = 5, eps: float = 1e-9) -> float:
-    """
-    Compute slope ratio at knee point to validate if knee is "sharp" enough.
-
-    A meaningful knee should have slope_after / slope_before >= 3,
-    indicating a significant acceleration in the distance curve.
-
-    Args:
-        distances: Sorted k-NN distances
-        knee_idx: Index of the detected knee point
-        window: Number of points to use for slope calculation (default 5)
-        eps: Small value to avoid division by zero
-
-    Returns:
-        Slope ratio (slope_after / slope_before). Values >= 3 indicate sharp knee.
-        Returns 0 if knee is too close to edges for safe computation.
-    """
-    n = len(distances)
-
-    # Cannot compute safely if knee is too close to edges
-    if knee_idx < window or knee_idx + window >= n:
-        return 0.0
-
-    # Slope before knee: (y[knee] - y[knee - window]) / window
-    slope_before = (distances[knee_idx] - distances[knee_idx - window]) / window
-
-    # Slope after knee: (y[knee + window] - y[knee]) / window
-    slope_after = (distances[knee_idx + window] - distances[knee_idx]) / window
-
-    return slope_after / (slope_before + eps)
-
-
 def choose_cluster_strategy_via_knee(
     X: np.ndarray,
     knn_k: int = 5,
     metric: str = "euclidean",
-    kneedle_S: float = 1.0,
-    lower_mult: float = 0.5,
-    upper_mult: float = 4.0,
-    tail_frac: float = 0.85,
-    slope_ratio_threshold: float = 3.0,
-    slope_window: int = 5
+    y_diff_threshold: float = 0.6
 ) -> Dict:
     """
     Detect knee in kNN distance curve and recommend clustering strategy.
 
-    SEARCH WINDOW:
-    - start_idx = 1 (skip first point)
-    - end_idx = int(0.85 * n) (exclude extreme tail)
-    - Let KneeLocator find the natural knee in the full meaningful range
+    ADAPTIVE PARAMETERS:
+    - S (sensitivity): Scales with dataset size (S = n/100) to maintain consistent
+      detection behavior across different dataset sizes. S=1 for n≤100, S=20 for n=2000.
+    - interp_method: Uses 'polynomial' for small datasets (n<200) to smooth noisy curves,
+      'interp1d' for larger datasets.
 
-    ACCEPTANCE BOUNDS (for evaluating if knee suggests HDBSCAN):
-    - K_min = max(3, int(0.5 * sqrt(n)))
-    - K_max = min(int(4 * sqrt(n)), int(0.85 * n))
+    KNEE SHARPNESS TEST (y_difference):
+    - Uses KneeLocator's built-in y_difference metric (perpendicular distance to diagonal)
+    - max(y_difference) >= 0.6 indicates a sharp knee with clear density transition
+    - Values ~0.9 indicate very sharp knees, ~0.5-0.6 indicate gradual curves
+    - This is more robust than slope ratio as it doesn't depend on window size
 
-    SLOPE RATIO TEST:
-    - Validates that the knee is "sharp" enough (not just gradual curvature)
-    - slope_after / slope_before >= 3.0 indicates a meaningful density transition
-    - Prevents recommending HDBSCAN for nearly linear curves
-
-    Only recommend HDBSCAN if:
-    1. Knee exists
-    2. Knee falls within [K_min, K_max]
-    3. Slope ratio >= threshold (knee is sharp enough)
+    Only recommend HDBSCAN if knee exists AND y_difference >= threshold.
 
     Args:
         X: L2-normalized embeddings (n_samples, n_features)
         knn_k: Which neighbor distance to use (default 5)
         metric: Distance metric for kNN (default "euclidean")
-        kneedle_S: Sensitivity parameter for KneeLocator
-        lower_mult: Multiplier for lower bound (default 0.5)
-        upper_mult: Multiplier for upper bound (default 4.0)
-        tail_frac: Maximum fraction of n for search/acceptance (default 0.85)
-        slope_ratio_threshold: Minimum slope ratio for sharp knee (default 3.0)
-        slope_window: Window size for slope calculation (default 5)
+        y_diff_threshold: Minimum y_difference for sharp knee (default 0.6)
 
     Returns:
         Dict with:
         - recommendation: "HDBSCAN" | "AGGLOMERATIVE_OR_KMEANS"
         - K: Knee point index (or None if not found)
-        - K_min: Lower acceptance bound
-        - K_max: Upper acceptance bound
-        - start_idx: Start of search window
-        - end_idx: End of search window
-        - is_meaningful: Whether knee passes all tests (bounds + slope ratio)
-        - in_bounds: Whether knee falls within acceptance bounds
-        - has_sharp_knee: Whether slope ratio >= threshold
-        - slope_ratio: Computed slope ratio at knee
+        - is_meaningful: Whether knee passes y_difference test
+        - has_sharp_knee: Whether y_difference >= threshold
+        - y_difference: Max normalized perpendicular distance (knee sharpness)
         - knee_distance: kNN distance at knee point
         - distances: Sorted kNN distances array
-        - elbow_strength: Normalized elbow strength (for comparison)
+        - kneedle_S: Adaptive S parameter used
+        - interp_method: Interpolation method used
     """
     n = len(X)
     sqrt_n = np.sqrt(n)
+
+    # Adaptive parameters based on dataset size
+    # S scales with n to maintain consistent detection behavior
+    # S=1 for n≤100, S=5 for n=500, S=20 for n=2000
+    kneedle_S = max(1.0, n / 100)
+
+    # Use polynomial smoothing for small/noisy datasets
+    interp_method = "polynomial" if n < 200 else "interp1d"
 
     # 1. Compute kNN distances
     nn = NearestNeighbors(n_neighbors=knn_k + 1, metric=metric)
@@ -775,26 +803,23 @@ def choose_cluster_strategy_via_knee(
     # 2. Sort for elbow analysis
     sorted_distances = np.sort(k_distances)
 
-    # 3. Define search window: [1, 0.85*n]
-    # Search the full meaningful range - let KneeLocator find the natural knee
+    # 3. Define search window: full range [1, n-1]
+    # Skip first point (always 0 or very small), include everything else
     start_idx = 1
-    end_idx = int(tail_frac * n)
-
-    # Ensure valid window
-    if end_idx <= start_idx:
-        end_idx = n - 1
+    end_idx = n - 1
 
     # Extract search segment for knee detection
     search_distances = sorted_distances[start_idx:end_idx]
     search_x = np.arange(len(search_distances))
 
-    # 4. Detect knee on search window
+    # 4. Detect knee on search window with adaptive parameters
     kneedle = KneeLocator(
         x=search_x,
         y=search_distances,
         S=kneedle_S,
         curve="convex",
-        direction="increasing"
+        direction="increasing",
+        interp_method=interp_method
     )
 
     # 5. Map knee back to original coordinate system
@@ -804,63 +829,42 @@ def choose_cluster_strategy_via_knee(
     else:
         K = None
 
-    # 6. Compute acceptance bounds (narrower than search window)
-    # These bounds determine if the knee position suggests HDBSCAN is appropriate
-    K_min = max(3, int(lower_mult * sqrt_n))
-    K_max = min(int(upper_mult * sqrt_n), int(tail_frac * n))
-
-    # 7. Check if knee is within acceptance bounds
-    in_bounds = K is not None and K_min <= K <= K_max
-
-    # 8. Compute slope ratio to validate knee sharpness
-    if K is not None:
-        slope_ratio = compute_slope_ratio(sorted_distances, K, window=slope_window)
-        has_sharp_knee = slope_ratio >= slope_ratio_threshold
+    # 6. Compute y_difference to validate knee sharpness
+    # y_difference is the normalized perpendicular distance from each point to the diagonal
+    # max(y_difference) is a robust measure of knee sharpness that doesn't depend on window size
+    if K is not None and kneedle.y_difference is not None and len(kneedle.y_difference) > 0:
+        y_difference = float(max(kneedle.y_difference))
+        has_sharp_knee = y_difference >= y_diff_threshold
     else:
-        slope_ratio = 0.0
+        y_difference = 0.0
         has_sharp_knee = False
 
-    # 9. Determine if knee is meaningful for HDBSCAN
-    # Knee must: exist AND fall within bounds AND be sharp enough
-    is_meaningful = in_bounds and has_sharp_knee
+    # 7. Determine if knee is meaningful for HDBSCAN
+    # Only requirement: knee must be sharp enough (y_difference >= threshold)
+    is_meaningful = has_sharp_knee
 
-    # 10. Compute elbow strength on search window
-    if K is not None and len(search_distances) > 2:
-        knee_distance = sorted_distances[K]
-        _, max_dist = find_knee(search_distances)
-        value_range = search_distances.max() - search_distances.min()
-        elbow_strength = max_dist / value_range if value_range > 0 else 0.0
-    else:
-        knee_distance = None
-        # Still compute elbow strength on search window
-        if len(search_distances) > 2:
-            _, _, elbow_strength = compute_elbow_strength(search_distances)
-        else:
-            elbow_strength = 0.0
+    # 8. Get knee distance
+    knee_distance = sorted_distances[K] if K is not None else None
 
     return {
         "recommendation": "HDBSCAN" if is_meaningful else "AGGLOMERATIVE_OR_KMEANS",
         "K": K,
-        "K_min": K_min,
-        "K_max": K_max,
-        "start_idx": start_idx,
-        "end_idx": end_idx,
         "is_meaningful": is_meaningful,
-        "in_bounds": in_bounds,
         "has_sharp_knee": has_sharp_knee,
-        "slope_ratio": slope_ratio,
+        "y_difference": y_difference,
         "knee_distance": knee_distance,
         "distances": sorted_distances,
-        "elbow_strength": elbow_strength,
         "n": n,
-        "sqrt_n": sqrt_n
+        "sqrt_n": sqrt_n,
+        "kneedle_S": kneedle_S,
+        "interp_method": interp_method
     }
 
 
 def generate_knn_elbow_plots(embeddings: np.ndarray, umap_configs: List[Dict],
                              output_path: Path, k: int = 5) -> List[Dict]:
     """
-    Generate kNN distance elbow plots with knee detection and acceptance bounds
+    Generate kNN distance elbow plots with adaptive knee detection
     for each UMAP configuration.
 
     Args:
@@ -885,60 +889,46 @@ def generate_knn_elbow_plots(embeddings: np.ndarray, umap_configs: List[Dict],
         ax = axes[i]
         reduced = config['reduced']
 
-        # Use new knee detection with acceptance bounds
+        # Use adaptive knee detection
         knee_result = choose_cluster_strategy_via_knee(reduced, knn_k=k)
 
-        # Store results with all new fields including search window and slope ratio
+        # Store results with adaptive params
         elbow_results.append({
             'n_neighbors': config['n_neighbors'],
             'n_components': config['n_components'],
             'knee_K': knee_result['K'],
-            'K_min': knee_result['K_min'],
-            'K_max': knee_result['K_max'],
-            'start_idx': knee_result['start_idx'],
-            'end_idx': knee_result['end_idx'],
-            'in_bounds': knee_result['in_bounds'],
             'has_sharp_knee': knee_result['has_sharp_knee'],
-            'slope_ratio': knee_result['slope_ratio'],
+            'y_difference': knee_result['y_difference'],
             'knee_meaningful': knee_result['is_meaningful'],
             'knee_recommendation': knee_result['recommendation'],
             'knee_distance': knee_result['knee_distance'],
-            'elbow_strength': knee_result['elbow_strength'],
-            'density_structure': classify_density_structure(knee_result['elbow_strength'])
+            'kneedle_S': knee_result['kneedle_S'],
+            'interp_method': knee_result['interp_method']
         })
 
         # Plot the kNN distances
         sorted_distances = knee_result['distances']
         ax.plot(sorted_distances, linewidth=1.5, color='blue', label='k-NN distances')
 
-        # Show truncated search window with vertical lines
-        ax.axvline(x=knee_result['start_idx'], color='gray', linestyle=':', alpha=0.7)
-        ax.axvline(x=knee_result['end_idx'], color='gray', linestyle=':', alpha=0.7)
-        # Shade search window (where knee detection operates)
-        ax.axvspan(knee_result['start_idx'], knee_result['end_idx'],
-                   alpha=0.08, color='blue', label='Search window')
-
-        # Shade acceptance region (where knee is considered meaningful)
-        ax.axvspan(knee_result['K_min'], knee_result['K_max'],
-                   alpha=0.15, color='green', label='Acceptance zone')
-
-        # Mark knee point only if slope ratio >= 3 (sharp knee)
+        # Mark knee point if found and sharp
         if knee_result['K'] is not None and knee_result['has_sharp_knee']:
-            color = 'green' if knee_result['is_meaningful'] else 'orange'
-            marker = 'o' if knee_result['is_meaningful'] else 'X'
             ax.scatter([knee_result['K']], [knee_result['knee_distance']],
-                       color=color, s=100, zorder=5, marker=marker,
+                       color='green', s=100, zorder=5, marker='o',
                        label=f"Knee @ {knee_result['K']}")
-            ax.axhline(y=knee_result['knee_distance'], color=color, linestyle='--', alpha=0.3)
-            ax.axvline(x=knee_result['K'], color=color, linestyle='--', alpha=0.3)
+            ax.axhline(y=knee_result['knee_distance'], color='green', linestyle='--', alpha=0.3)
+            ax.axvline(x=knee_result['K'], color='green', linestyle='--', alpha=0.3)
+        elif knee_result['K'] is not None:
+            # Knee found but not sharp enough - show in orange
+            ax.scatter([knee_result['K']], [knee_result['knee_distance']],
+                       color='orange', s=80, zorder=5, marker='x',
+                       label=f"Knee @ {knee_result['K']} (flat)")
 
-        # Title with search window and bounds info
-        window_str = f"Win:[{knee_result['start_idx']}-{knee_result['end_idx']}]"
-        bounds_str = f"[{knee_result['K_min']}-{knee_result['K_max']}]"
-        knee_str = f"K={knee_result['K']}" if knee_result['K'] is not None else "K=None"
+        # Simplified title
+        knee_str = f"K={knee_result['K']}" if knee_result['K'] is not None else "No knee"
+        ydiff_str = f"ydiff={knee_result['y_difference']:.2f}"
         short_rec = "HDBSCAN" if knee_result['recommendation'] == "HDBSCAN" else "Agg/KM"
         ax.set_title(f"n={config['n_neighbors']}, d={config['n_components']} | "
-                     f"{knee_str} {bounds_str} → {short_rec}\n{window_str}")
+                     f"{knee_str} ({ydiff_str}) → {short_rec}")
         ax.set_xlabel('Points (sorted)')
         ax.set_ylabel(f'{k}-NN distance')
         ax.grid(True, alpha=0.3)
@@ -947,24 +937,24 @@ def generate_knn_elbow_plots(embeddings: np.ndarray, umap_configs: List[Dict],
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)
 
-    plt.suptitle('kNN Distance Elbow Plots with Knee Detection & Acceptance Bounds', fontsize=14, y=1.02)
+    plt.suptitle('kNN Distance Elbow Plots with Adaptive Knee Detection', fontsize=14, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
     print(f"Saved kNN elbow plots to {output_path}")
 
-    # Print elbow analysis summary with search window, acceptance bounds, and slope ratio
-    print("\nKnee Detection Analysis (bounds + slope ratio test):")
-    print("  Legend: bounds=IN/OUT, slope=ratio (≥3.0 = sharp)")
+    # Print elbow analysis summary with adaptive params
+    if elbow_results:
+        first_result = elbow_results[0]
+        print(f"\nKnee Detection Analysis (adaptive: S={first_result['kneedle_S']:.1f}, interp={first_result['interp_method']}):")
+        print("  Legend: y_difference ≥0.6 = sharp knee → HDBSCAN recommended")
     for r in elbow_results:
-        knee_str = f"K={r['knee_K']:2d}" if r['knee_K'] is not None else "K=None"
-        bounds_str = f"[{r['K_min']}-{r['K_max']}]"
-        bounds_status = "IN" if r['in_bounds'] else "OUT"
-        slope_str = f"slope={r['slope_ratio']:.1f}"
+        knee_str = f"K={r['knee_K']:3d}" if r['knee_K'] is not None else "K=None"
+        ydiff_str = f"ydiff={r['y_difference']:.2f}"
         sharp_status = "sharp" if r['has_sharp_knee'] else "flat"
         print(f"  UMAP n={r['n_neighbors']:2d}, d={r['n_components']:2d}: "
-              f"{knee_str} {bounds_str} {bounds_status:3s} | {slope_str} ({sharp_status}) → {r['knee_recommendation']}")
+              f"{knee_str} | {ydiff_str} ({sharp_status}) → {r['knee_recommendation']}")
 
     return elbow_results
 
@@ -1216,20 +1206,18 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
     if elbow_lookup:
         df['knee_K'] = df.apply(lambda row: elbow_lookup.get(
             (row['umap_neighbors'], row['umap_components']), {}).get('knee_K'), axis=1)
-        df['K_min'] = df.apply(lambda row: elbow_lookup.get(
-            (row['umap_neighbors'], row['umap_components']), {}).get('K_min'), axis=1)
-        df['K_max'] = df.apply(lambda row: elbow_lookup.get(
-            (row['umap_neighbors'], row['umap_components']), {}).get('K_max'), axis=1)
-        df['in_bounds'] = df.apply(lambda row: elbow_lookup.get(
-            (row['umap_neighbors'], row['umap_components']), {}).get('in_bounds'), axis=1)
-        df['slope_ratio'] = df.apply(lambda row: elbow_lookup.get(
-            (row['umap_neighbors'], row['umap_components']), {}).get('slope_ratio'), axis=1)
+        df['y_difference'] = df.apply(lambda row: elbow_lookup.get(
+            (row['umap_neighbors'], row['umap_components']), {}).get('y_difference'), axis=1)
         df['has_sharp_knee'] = df.apply(lambda row: elbow_lookup.get(
             (row['umap_neighbors'], row['umap_components']), {}).get('has_sharp_knee'), axis=1)
         df['knee_meaningful'] = df.apply(lambda row: elbow_lookup.get(
             (row['umap_neighbors'], row['umap_components']), {}).get('knee_meaningful'), axis=1)
         df['knee_recommendation'] = df.apply(lambda row: elbow_lookup.get(
             (row['umap_neighbors'], row['umap_components']), {}).get('knee_recommendation'), axis=1)
+        df['kneedle_S'] = df.apply(lambda row: elbow_lookup.get(
+            (row['umap_neighbors'], row['umap_components']), {}).get('kneedle_S'), axis=1)
+        df['interp_method'] = df.apply(lambda row: elbow_lookup.get(
+            (row['umap_neighbors'], row['umap_components']), {}).get('interp_method'), axis=1)
 
     # Reorder columns for readability
     col_order = [
@@ -1237,7 +1225,7 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
         'n_clusters', 'noise_rate',
         'coherence', 'coherence_n_unacceptable', 'coherence_n_low', 'coherence_n_moderate', 'coherence_n_high', 'coherence_breakdown',
         'silhouette', 'davies_bouldin', 'dbcv',
-        'knee_K', 'K_min', 'K_max', 'in_bounds', 'slope_ratio', 'has_sharp_knee', 'knee_meaningful', 'knee_recommendation',
+        'knee_K', 'y_difference', 'has_sharp_knee', 'knee_meaningful', 'knee_recommendation', 'kneedle_S', 'interp_method',
         'params'
     ]
     df = df[[c for c in col_order if c in df.columns]]
@@ -1267,19 +1255,66 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
 # MAIN EXPERIMENT
 # =============================================================================
 
-def run_experiment():
-    """Run the full UMAP × Clustering comparison experiment."""
+def run_experiment(
+    filename: Optional[str] = None,
+    variable: Optional[str] = None,
+    sample_size: Optional[int] = None,
+    variable_key: Optional[str] = None,
+    output_dir: Optional[Path] = None
+) -> Dict:
+    """
+    Run the full UMAP × Clustering comparison experiment on a single dataset.
+
+    Args:
+        filename: SPSS filename (defaults to global FILENAME)
+        variable: Variable name (defaults to global VARIABLE)
+        sample_size: Sample size (defaults to global SAMPLE_SIZE)
+        variable_key: Pre-computed variable key (overrides variable/sample_size)
+        output_dir: Directory for output files (defaults to global EXPORTS_DIR)
+
+    Returns:
+        Dict with experiment summary for cross-dataset comparison:
+        - dataset: variable_key used
+        - n_ideas: Number of ideas processed
+        - n_experiments: Total experiments run
+        - best_algorithm: Algorithm with highest coherence
+        - best_coherence: Highest coherence achieved
+        - best_k: Number of clusters for best result
+        - knee_meaningful_pct: % of UMAP configs with meaningful knee
+        - best_per_algo: Dict with best result per algorithm
+    """
+    # Use defaults if not provided
+    _filename = filename if filename is not None else FILENAME
+    _variable = variable if variable is not None else VARIABLE
+    _sample_size = sample_size if sample_size is not None else SAMPLE_SIZE
+    _variable_key = variable_key
+
+    # Generate variable key if not provided
+    if _variable_key is None:
+        _variable_key = generate_enhanced_variable_key(
+            selected_variables=[_variable],
+            is_merged=False,
+            sample_size=_sample_size
+        )
+
+    # Set output directory (after variable_key is resolved)
+    _output_dir = output_dir if output_dir is not None else EXPORTS_BASE_DIR / _variable_key
 
     print("=" * 70)
-    print("UMAP × Clustering Algorithm Comparison Experiment")
+    print(f"UMAP × Clustering Experiment: {_variable_key}")
     print("=" * 70)
 
-    # Ensure exports directory exists
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Ensure output directory exists
+    _output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Load embeddings
     print("\n[1/5] Loading Step 4 embeddings from cache...")
-    embeddings, idea_texts = load_step4_embeddings()
+    embeddings, idea_texts = load_step4_embeddings(
+        filename=_filename,
+        variable=_variable,
+        sample_size=_sample_size,
+        variable_key=_variable_key
+    )
     n_samples = len(embeddings)
 
     # 2. L2 normalize
@@ -1307,7 +1342,7 @@ def run_experiment():
 
     # 4. Generate kNN elbow plots
     print("\n[4/5] Generating kNN elbow plots...")
-    elbow_plot_path = EXPORTS_DIR / "knn_elbow_plots.png"
+    elbow_plot_path = _output_dir / "knn_elbow_plots.png"
     elbow_results = generate_knn_elbow_plots(embeddings_normalized, umap_configs, elbow_plot_path)
 
     # 5. Run clustering experiments
@@ -1417,13 +1452,13 @@ def run_experiment():
     print("EXPORTING RESULTS")
     print("=" * 70)
 
-    excel_path = EXPORTS_DIR / "umap_clustering_comparison.xlsx"
+    excel_path = _output_dir / "umap_clustering_comparison.xlsx"
     export_results_to_excel(results, excel_path, elbow_results=elbow_results)
 
     # Generate coherence vs k analysis
     print_coherence_by_k_table(results)
 
-    coherence_plot_path = EXPORTS_DIR / "coherence_vs_k.png"
+    coherence_plot_path = _output_dir / "coherence_vs_k.png"
     generate_coherence_vs_k_plot(results, coherence_plot_path)
 
     # Print summary
@@ -1472,8 +1507,179 @@ def run_experiment():
                 max_samples=10
             )
 
+    # Compute summary for cross-dataset comparison
+    # Find overall best
+    best_row = df.loc[df['coherence'].idxmax()]
+    best_algorithm = best_row['algorithm']
+    best_coherence = best_row['coherence']
+    best_k = best_row['n_clusters']
+
+    # Compute % of UMAP configs with meaningful knee
+    n_meaningful = sum(1 for r in elbow_results if r.get('knee_meaningful', False))
+    knee_meaningful_pct = n_meaningful / len(elbow_results) * 100 if elbow_results else 0
+
+    return {
+        'dataset': _variable_key,
+        'filename': _filename,
+        'n_ideas': n_samples,
+        'n_experiments': len(results),
+        'best_algorithm': best_algorithm,
+        'best_coherence': best_coherence,
+        'best_k': best_k,
+        'knee_meaningful_pct': knee_meaningful_pct,
+        'best_per_algo': {
+            algo: {
+                'coherence': best_per_algo[algo]['coherence'],
+                'params': best_per_algo[algo]['params'],
+                'breakdown': best_per_algo[algo]['breakdown']
+            }
+            for algo in ['HDBSCAN', 'Agglomerative', 'K-means']
+            if best_per_algo[algo]['labels'] is not None
+        }
+    }
+
+
+def run_all_cached_datasets() -> List[Dict]:
+    """
+    Discover and run experiment on all datasets with cached embeddings.
+
+    Returns:
+        List of summary dicts, one per dataset
+    """
+    datasets = discover_cached_datasets()
+
+    if not datasets:
+        print("No datasets with cached embeddings found.")
+        return []
+
+    print("=" * 70)
+    print("MULTI-DATASET EXPERIMENT")
+    print("=" * 70)
+    print(f"\nFound {len(datasets)} datasets with cached embeddings:")
+    for ds in datasets:
+        size_str = f"n={ds['sample_size']}" if ds['sample_size'] else "full"
+        print(f"  - {ds['filename']}: {ds['variable_key']} ({size_str}, {ds['n_ideas']} ideas)")
+
+    all_results = []
+
+    for i, ds in enumerate(datasets, 1):
+        print(f"\n{'#'*70}")
+        print(f"# Dataset {i}/{len(datasets)}: {ds['variable_key']}")
+        print(f"{'#'*70}")
+
+        # Create per-dataset output directory
+        output_dir = EXPORTS_BASE_DIR / ds['variable_key']
+
+        try:
+            summary = run_experiment(
+                filename=ds['filename'],
+                variable=ds['var_name'],
+                sample_size=ds['sample_size'],
+                variable_key=ds['variable_key'],
+                output_dir=output_dir
+            )
+            all_results.append(summary)
+        except Exception as e:
+            print(f"ERROR: Failed to process {ds['variable_key']}: {e}")
+            all_results.append({
+                'dataset': ds['variable_key'],
+                'filename': ds['filename'],
+                'n_ideas': ds['n_ideas'],
+                'error': str(e)
+            })
+
+    # Generate cross-dataset comparison report
+    if all_results:
+        generate_comparison_report(all_results, EXPORTS_BASE_DIR / "summary_comparison.xlsx")
+
+    return all_results
+
+
+def generate_comparison_report(all_results: List[Dict], output_path: Path):
+    """
+    Generate summary comparing knee detection and coherence across datasets.
+
+    Args:
+        all_results: List of summary dicts from run_experiment()
+        output_path: Path to save Excel report
+    """
+    print("\n" + "=" * 70)
+    print("CROSS-DATASET COMPARISON REPORT")
+    print("=" * 70)
+
+    # Build comparison DataFrame
+    rows = []
+    for r in all_results:
+        if 'error' in r:
+            rows.append({
+                'dataset': r['dataset'],
+                'filename': r['filename'],
+                'n_ideas': r.get('n_ideas', 0),
+                'error': r['error']
+            })
+            continue
+
+        row = {
+            'dataset': r['dataset'],
+            'filename': r['filename'],
+            'n_ideas': r['n_ideas'],
+            'sqrt_n': np.sqrt(r['n_ideas']),
+            'n_experiments': r['n_experiments'],
+            'best_algorithm': r['best_algorithm'],
+            'best_coherence': r['best_coherence'],
+            'best_k': r['best_k'],
+            'knee_meaningful_pct': r['knee_meaningful_pct'],
+        }
+
+        # Add best per algorithm
+        for algo in ['HDBSCAN', 'Agglomerative', 'K-means']:
+            if algo in r.get('best_per_algo', {}):
+                row[f'{algo}_coherence'] = r['best_per_algo'][algo]['coherence']
+            else:
+                row[f'{algo}_coherence'] = np.nan
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # Print summary to console
+    print("\nDataset Summary:")
+    print("-" * 80)
+    for _, row in df.iterrows():
+        if 'error' in row and pd.notna(row.get('error')):
+            print(f"  {row['dataset']}: ERROR - {row['error']}")
+        else:
+            print(f"  {row['dataset']}: n={row['n_ideas']}, best={row['best_algorithm']} "
+                  f"(coh={row['best_coherence']:.3f}, k={row['best_k']}), "
+                  f"knee_meaningful={row['knee_meaningful_pct']:.0f}%")
+
+    # Export to Excel
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Comparison', index=False)
+
+        # Auto-adjust column widths
+        worksheet = writer.sheets['Comparison']
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+
+    print(f"\nComparison report saved to: {output_path}")
+
 
 if __name__ == "__main__":
-    run_experiment()
+    if RUN_MODE == 'all':
+        run_all_cached_datasets()
+    else:
+        run_experiment()
 
 # %%
