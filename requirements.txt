@@ -18,6 +18,10 @@ scikit-learn>=1.5.0
 hdbscan>=0.8.30
 umap-learn>=0.5.0
 scipy>=1.13.0
+kneed>=0.8.0            # Knee/elbow detection for clustering strategy
+
+# Visualization
+matplotlib>=3.8.0
 
 # LLM / AI
 openai>=1.60.0          # Requires 1.60+ for Responses API

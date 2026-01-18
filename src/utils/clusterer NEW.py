@@ -918,56 +918,423 @@ class Clusterer:
         f = float(np.clip(f, 0.50, 1.50))
         notes.append(f"factor={f:.2f}")
         return f, "; ".join(notes)
-    
-    
+
+
+    def _detect_data_regime(self, U: np.ndarray, n_points: int) -> Dict[str, Any]:
+        """Detect data regime to guide clustering strategy.
+
+        Returns regime classification and characteristics for adaptive strategy selection.
+        Uses simplified regime detection based on size × structure matrix.
+        """
+        # === SIZE CLASSIFICATION ===
+        if n_points < 100:
+            size_class = "small"
+        elif n_points <= 300:
+            size_class = "medium"
+        else:
+            size_class = "large"
+
+        # === STRUCTURE CLASSIFICATION ===
+        # Reuse existing space diagnostics (from _structure_factor_from_space logic)
+        rs = self.rs
+        Xn = U / (np.linalg.norm(U, axis=1, keepdims=True) + 1e-12)
+        Xn = Xn.astype(np.float32, copy=False)
+
+        # Subsample for speed
+        subsample = min(2000, n_points)
+        if n_points > subsample:
+            idx = rs.choice(n_points, subsample, replace=False)
+            Xsub = Xn[idx]
+        else:
+            Xsub = Xn
+
+        m = min(Xsub.shape[0], 1000)
+        idy = rs.choice(Xsub.shape[0], m, replace=False)
+        Y = Xsub[idy]
+
+        # Cosine similarity diagnostics
+        S = Y @ Y.T
+        tri = S[np.triu_indices_from(S, k=1)]
+        q90 = float(np.quantile(tri, 0.90))
+        q50 = float(np.quantile(tri, 0.50))
+
+        # kNN distance variance (measure of density heterogeneity)
+        D = 1.0 - (Xsub @ Xsub.T)
+        np.fill_diagonal(D, np.inf)
+        knn_k = min(15, max(5, Xsub.shape[0] - 1))
+        knn_d = np.partition(D, knn_k, axis=1)[:, :knn_k]
+        kd_mean = float(np.mean(knn_d))
+        kd_std = float(np.std(knn_d))
+        kd_cv = float(kd_std / (kd_mean + 1e-12))
+
+        # Structure classification based on q90
+        if q90 >= 0.80:
+            structure_class = "coherent"  # Dense, similar ideas
+        elif q90 < 0.65:
+            structure_class = "diffuse"   # Sparse, distinct ideas
+        else:
+            structure_class = "mixed"     # Moderate structure
+
+        # === REGIME ASSIGNMENT ===
+        regime_map = {
+            ("small", "diffuse"): "R1",
+            ("small", "mixed"): "R2",
+            ("small", "coherent"): "R3",
+            ("medium", "diffuse"): "R4",
+            ("medium", "mixed"): "R5",
+            ("medium", "coherent"): "R6",
+            ("large", "diffuse"): "R7",
+            ("large", "mixed"): "R8",
+            ("large", "coherent"): "R9",
+        }
+
+        regime_id = regime_map[(size_class, structure_class)]
+
+        # === REGIME DESCRIPTIONS & GOALS ===
+        regime_descriptions = {
+            "R1": "Small+Diffuse: Seek broad holistic themes",
+            "R2": "Small+Mixed: Balance consolidation with distinctions",
+            "R3": "Small+Coherent: Consolidate for quality (broad, stable themes)",
+            "R4": "Medium+Diffuse: Maximize coverage with balanced clusters",
+            "R5": "Medium+Mixed: Standard case (sweet spot)",
+            "R6": "Medium+Coherent: Preserve fine distinctions, high separation",
+            "R7": "Large+Diffuse: Many specific clusters with clear boundaries",
+            "R8": "Large+Mixed: Hierarchical with good separation",
+            "R9": "Large+Coherent: Aggressive consolidation to avoid over-splitting",
+        }
+
+        regime_goals = {
+            "R1": "broad_themes",
+            "R2": "balanced",
+            "R3": "consolidation",
+            "R4": "coverage",
+            "R5": "standard",
+            "R6": "fine_distinctions",
+            "R7": "fine_distinctions",
+            "R8": "balanced",
+            "R9": "consolidation",
+        }
+
+        return {
+            'regime_id': regime_id,
+            'size_class': size_class,
+            'structure_class': structure_class,
+            'description': regime_descriptions[regime_id],
+            'regime_goal': regime_goals[regime_id],
+            'n_points': n_points,
+            'q90': q90,
+            'q50': q50,
+            'kd_cv': kd_cv,
+            'diagnostics': f"n={n_points}, q90={q90:.2f}, q50={q50:.2f}, cv={kd_cv:.2f}"
+        }
+
+
     def _baseline_by_n(self, n: int) -> tuple[int, int, str]:
-        # min_samples (piecewise)
-        if n <= 100:
-            ms = int(np.ceil(0.05 * n))
-        elif n < 500:
-            ms = int(np.ceil(max(np.log(n), 0.02 * n, 0.40 * np.sqrt(n))))
-        else:
-            ms = int(np.ceil(max(np.log(n), 0.01 * n, 0.50 * np.sqrt(n))))
-    
-        # min_cluster_size ladder (your preference)
-        if n <= 500:
-            mcs = int(np.ceil(0.01 * n))       # 1%
-            ladder = "1%"
-        elif n < 2000:
-            mcs = int(np.ceil(0.015 * n))      # 1.5%
-            ladder = "1.5%"
-        else:
-            mcs = int(np.ceil(0.02 * n))       # 2%
-            ladder = "2%"
-
-        ms = min(ms, mcs)          
-    
-        return ms, mcs, f"baseline(ms={ms}, mcs={mcs}, ladder={ladder})"
-    
-    
-    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = 5, max_mcs: int = 250) -> tuple[int, int, str, str]:
         """
-        A → B: structure sets direction (factor), size sets scale (baseline).
-        Returns: (ms, mcs, notes_a, notes_b)
+        Calculate baseline parameters using sqrt-based formula:
+        baseline = max(5, 0.25 * sqrt(n))
+
+        This provides:
+        - Stable floor at 5 for small datasets (n < 400)
+        - Scales appropriately for larger datasets
+        - Same baseline used as starting point for both mcs and ms
         """
-        f, notes_a = self._structure_factor_from_space(U)
-        ms0, mcs0, notes_b = self._baseline_by_n(U.shape[0])
+        baseline = max(5, int(np.ceil(0.25 * np.sqrt(n))))
 
-        ms  = max(min_ms, int(np.clip(int(round(ms0 * f)), min_ms, U.shape[0])))
-        mcs = int(np.clip(int(round(mcs0 * f)), min_mcs, max_mcs))
+        # Both start from same baseline (will be differentiated by regime factors and ms_ratio)
+        mcs = baseline
+        ms = baseline
 
-        return ms, mcs, notes_a, notes_b
+        return ms, mcs, f"baseline(sqrt formula)={baseline} → ms={ms}, mcs={mcs}"
     
     
+    def _suggest_params(self, U: np.ndarray, min_ms: int = 2, min_mcs: int = None, max_mcs: int = 250) -> tuple[int, int, str, str, Dict[str, Any]]:
+        """
+        Regime-aware parameter suggestion using 3-step approach with dual metric control:
+
+        Step 1: Calculate baseline using sqrt formula: max(5, 0.25*sqrt(n))
+        Step 2a: Detect regime (q90 for coherence, kd_cv for density heterogeneity)
+        Step 2b: Apply q90-based factor to min_cluster_size
+        Step 2c: Apply kd_cv-based ratio to min_samples
+        Step 3: Grid search explores factor-based variations
+
+        Dual metric rationale:
+        - q90 (cosine similarity) → controls min_cluster_size scale (semantic coherence)
+        - kd_cv (kNN distance variation) → controls min_samples ratio (density heterogeneity)
+
+        Returns: (ms, mcs, notes_regime, notes_baseline, regime_info)
+        """
+        n = U.shape[0]
+
+        # Adaptive floor based on dataset size
+        if min_mcs is None:
+            if n <= 100:
+                min_mcs = 2
+            elif n <= 300:
+                min_mcs = 3
+            elif n <= 1000:
+                min_mcs = 5
+            elif n <= 5000:
+                min_mcs = 8
+            else:
+                min_mcs = 10
+
+        # === STEP 1: Baseline calculation (sqrt formula) ===
+        ms0, mcs0, notes_baseline = self._baseline_by_n(n)
+
+        # === STEP 2a: Detect regime ===
+        regime_info = self._detect_data_regime(U, n)
+        q90 = regime_info['q90']
+        kd_cv = regime_info['kd_cv']
+
+        # === STEP 2b: Apply q90-based factor to min_cluster_size ===
+        if q90 >= 0.80:
+            # Coherent data: LARGER mcs for consolidation
+            mcs_factor = 1.5
+            mcs_rationale = "coherent (q90≥0.80) → ×1.5 for consolidation"
+        elif q90 < 0.65:
+            # Diffuse data: SMALLER mcs to capture distinct clusters
+            mcs_factor = 0.7
+            mcs_rationale = "diffuse (q90<0.65) → ×0.7 for distinction"
+        else:
+            # Mixed: baseline unchanged
+            mcs_factor = 1.0
+            mcs_rationale = "mixed (0.65≤q90<0.80) → ×1.0 baseline"
+
+        mcs_adjusted = mcs0 * mcs_factor
+        mcs = int(np.clip(int(round(mcs_adjusted)), min_mcs, max_mcs))
+
+        # === STEP 2c: Apply kd_cv-based ratio to min_samples ===
+        # High kd_cv → tight islands in sparse space → allow lower min_samples
+        # Low kd_cv → uniform density → higher min_samples prevents over-merging
+        if kd_cv > 0.8:
+            # Strong "islands" - heterogeneous density
+            ms_ratio = 0.4
+            ms_rationale = "heterogeneous (kd_cv>0.8) → ms=0.4×mcs"
+        else:
+            # Uniform density
+            ms_ratio = 1.0
+            ms_rationale = "uniform (kd_cv≤0.8) → ms=1.0×mcs"
+
+        ms_adjusted = mcs * ms_ratio
+        ms = max(min_ms, int(np.clip(int(round(ms_adjusted)), min_ms, mcs)))
+
+        # Construct notes
+        notes_regime = (
+            f"Regime: {regime_info['regime_id']} ({regime_info['description']}); "
+            f"{mcs_rationale}; {ms_rationale}; "
+            f"baseline={mcs0} → mcs={mcs}, ms={ms}"
+        )
+
+        return ms, mcs, notes_regime, notes_baseline, regime_info
+
+
+    def _generate_grid_pairs(self, mcs_baseline: int, ms_ratio: float, regime_goal: str,
+                            min_mcs: int, min_ms: int) -> List[Tuple[int, int]]:
+        """
+        Generate factor-based grid for (min_samples, min_cluster_size) exploration.
+
+        Applies multiplicative factors to baseline, then splits into ms and mcs
+        using the provided ratio. This maintains consistent scaling across both parameters.
+
+        Uses multiplicative factors that scale with dataset size:
+        - Consolidation regimes: [0.5, 1.0, 1.5, 2.0] (wide exploration)
+        - Balanced regimes: [0.75, 1.0, 1.5] (moderate exploration)
+        - Fine-tune regimes: [0.75, 1.0, 1.25] (narrow exploration)
+
+        Example for consolidation with baseline=8, ratio=0.4:
+        factors = [0.5, 1.0, 1.5, 2.0]
+        Factor 0.5:  8×0.5=4   → mcs=4,  ms=4×0.4=2   → (2, 4)
+        Factor 1.0:  8×1.0=8   → mcs=8,  ms=8×0.4=3   → (3, 8)
+        Factor 1.5:  8×1.5=12  → mcs=12, ms=12×0.4=5  → (5, 12)
+        Factor 2.0:  8×2.0=16  → mcs=16, ms=16×0.4=6  → (6, 16)
+
+        Args:
+            mcs_baseline: Regime-suggested min_cluster_size baseline
+            ms_ratio: Ratio of min_samples to min_cluster_size (e.g., 0.4 for coherent data)
+            regime_goal: Strategy goal ('consolidation', 'balanced', 'fine_distinctions', etc.)
+            min_mcs: Minimum allowed min_cluster_size (adaptive floor)
+            min_ms: Minimum allowed min_samples
+
+        Returns:
+            Sorted list of unique (ms, mcs) tuples for grid search
+        """
+        # Select factors based on regime goal
+        if regime_goal in ['consolidation', 'broad_themes']:
+            # Wide exploration for consolidation strategies
+            factors = [0.5, 1.0, 1.5, 2.0]
+        elif regime_goal in ['balanced', 'standard', 'coverage']:
+            # Moderate exploration
+            factors = [0.75, 1.0, 1.5]
+        else:
+            # Narrow fine-tuning for distinction-preserving strategies
+            factors = [0.75, 1.0, 1.25]
+
+        # Generate (ms, mcs) pairs by applying factors
+        grid_pairs = []
+        for factor in factors:
+            # Apply factor to baseline
+            scaled_mcs = max(min_mcs, int(round(factor * mcs_baseline)))
+
+            # Calculate ms using the ratio
+            scaled_ms = max(min_ms, int(round(scaled_mcs * ms_ratio)))
+
+            # Ensure ms <= mcs (HDBSCAN requirement)
+            scaled_ms = min(scaled_ms, scaled_mcs)
+
+            grid_pairs.append((scaled_ms, scaled_mcs))
+
+        # Remove duplicates and sort by mcs (second element)
+        unique_pairs = sorted(set(grid_pairs), key=lambda x: x[1])
+
+        return unique_pairs
+
+    def _generate_expansion_grid(
+        self,
+        winner: dict,
+        dbcv_best: float,
+        all_results: list,
+        ms_ratio: float,
+        min_mcs: int,
+        min_ms: int
+    ) -> List[Tuple[int, int]]:
+        """
+        Generate expansion candidates based on winner's weaknesses.
+
+        Step 5 expansion logic:
+        - If DBCV < 0.60: try smaller mcs (seek coherent structure)
+        - If hard_noise > 0.10: try smaller ms (reduce orphaning)
+
+        Args:
+            winner: Best config from initial grid search
+            dbcv_best: Maximum DBCV across all initial results
+            all_results: All results from initial grid search
+            ms_ratio: Ratio of min_samples to min_cluster_size
+            min_mcs: Minimum allowed min_cluster_size
+            min_ms: Minimum allowed min_samples
+
+        Returns:
+            List of (ms, mcs) pairs to evaluate, excluding already-tried configs
+        """
+        expansion_pairs = []
+
+        # Trigger 1: Low DBCV → try smaller mcs (seek coherent structure)
+        if dbcv_best < 0.60:
+            # Find config with best DBCV to use as anchor
+            cfg_dbcv_best = max(all_results, key=lambda r: r['metrics'].get('dbcv', -1))
+            base_mcs = cfg_dbcv_best['mcs']
+            for factor in [0.8, 0.67, 0.5]:
+                new_mcs = max(min_mcs, int(round(factor * base_mcs)))
+                new_ms = max(min_ms, int(round(new_mcs * ms_ratio)))
+                new_ms = min(new_ms, new_mcs)  # Ensure ms <= mcs
+                expansion_pairs.append((new_ms, new_mcs))
+
+        # Trigger 2: High noise → try smaller ms for ALL mcs sizes in original grid
+        winner_noise = winner.get('hard_noise', winner.get('metrics', {}).get('hard_noise_rate', 0))
+        if winner_noise > 0.10:
+            for r in all_results:
+                ms_orig, mcs_orig = r['ms'], r['mcs']
+                new_ms = max(min_ms, int(round(0.5 * ms_orig)))
+                if new_ms < ms_orig:  # Only add if actually smaller
+                    expansion_pairs.append((new_ms, mcs_orig))
+
+        # Remove duplicates and configs already in original grid
+        existing = {(r['ms'], r['mcs']) for r in all_results}
+        unique_new = sorted(set(expansion_pairs) - existing, key=lambda x: (x[1], x[0]))
+
+        return unique_new
+
+    def _select_final_config(self, all_results: list, original_winner: dict) -> Tuple[dict, str]:
+        """
+        Select final config with gated acceptance for smaller params.
+
+        Policy:
+        - Prefer the original broad/holistic clustering by default
+        - Allow smaller min_cluster_size only if DBCV >= 0.65 (must prove validity)
+        - Allow smaller min_samples only if hard_noise <= 0.10 (must fix noise)
+        - If a config changes both, it must satisfy both conditions
+        - Among eligible configs, select highest composite score
+        - If none qualify, fall back to original winner
+
+        Args:
+            all_results: All results (initial + expansion)
+            original_winner: Best config from initial grid (before expansion)
+
+        Returns:
+            Tuple of (selected config, selection reason)
+        """
+        eligible = []
+        original_mcs = original_winner['mcs']
+        original_ms = original_winner['ms']
+
+        for r in all_results:
+            ok = True
+
+            # Smaller mcs must prove validity
+            if r['mcs'] < original_mcs:
+                r_dbcv = r.get('dbcv', r.get('metrics', {}).get('dbcv', 0))
+                ok &= (r_dbcv >= 0.65)
+
+            # Smaller ms must fix noise
+            if r['ms'] < original_ms:
+                r_noise = r.get('hard_noise', r.get('metrics', {}).get('hard_noise_rate', 1.0))
+                ok &= (r_noise <= 0.10)
+
+            if ok:
+                eligible.append(r)
+
+        # Fallback: if everything filtered out, keep original winner
+        if not eligible:
+            return original_winner, "fallback to original (no config passed gates)"
+
+        final = max(eligible, key=lambda r: r['score'])
+
+        # Determine selection reason
+        if final['mcs'] < original_mcs and final['ms'] < original_ms:
+            reason = f"smaller mcs+ms passed both gates (DBCV={final.get('dbcv', 0):.2f}>=0.65, noise={final.get('hard_noise', 0):.1%}<=10%)"
+        elif final['mcs'] < original_mcs:
+            reason = f"smaller mcs passed DBCV gate ({final.get('dbcv', 0):.2f}>=0.65)"
+        elif final['ms'] < original_ms:
+            reason = f"smaller ms passed noise gate ({final.get('hard_noise', 0):.1%}<=10%)"
+        elif final == original_winner:
+            reason = "original winner (best eligible score)"
+        else:
+            reason = f"best eligible score ({final['score']:.3f})"
+
+        return final, reason
+
+
     @staticmethod
     def _apply_threshold_rule(ms: int, mcs: int, dbcv: Optional[float], hard_noise: float,
-                              min_ms: int = 2, min_mcs: int = 5,
-                              dbcv_cut: float = 0.50, noise_cut: float = 0.20) -> tuple[int, int, str, bool]:
+                              n_points: int = None,
+                              min_ms: int = 2, min_mcs: int = None,
+                              dbcv_cut: float = 0.50, noise_cut: float = 0.15) -> tuple[int, int, str, bool]:
         """
-        If hard_noise > 20% OR (DBCV available and < 0.50): halve ms and mcs. Floors applied.
+        Polish loop noise handling (Step 4 of regime-aware approach):
+        If hard_noise > threshold: ONLY decrease min_samples (by 0.7×), keep min_cluster_size unchanged.
+
+        This follows HDBSCAN best practice: high noise → lower sample requirement to recover noisy points.
+        We do NOT change min_cluster_size because that's set by the regime strategy.
+
+        Adaptive floor: adjusts min_mcs based on dataset size if n_points provided.
         hard_noise = fraction of noise points with low similarity to all clusters (true outliers).
         Returns (new_ms, new_mcs, note, changed_flag).
         """
+        # Calculate adaptive floor if not provided
+        if min_mcs is None and n_points is not None:
+            if n_points <= 100:
+                min_mcs = 2
+            elif n_points <= 300:
+                min_mcs = 3
+            elif n_points <= 1000:
+                min_mcs = 5
+            elif n_points <= 5000:
+                min_mcs = 8
+            else:
+                min_mcs = 10
+        elif min_mcs is None:
+            min_mcs = 5  # Fallback to original default
+
         trigger = False
         note_parts = []
         if hard_noise is not None and hard_noise > noise_cut:
@@ -978,95 +1345,339 @@ class Clusterer:
             note_parts.append(f"dbcv {dbcv:.2f}<{dbcv_cut:.2f}")
 
         if trigger:
-            ms_new  = max(min_ms, int(np.ceil(0.5 * ms)))
-            mcs_new = max(min_mcs, int(np.ceil(0.5 * mcs)))
-            note_parts.append(f"halve→ ms={ms_new}, mcs={mcs_new}")
+            # ONLY decrease min_samples (by 0.7×), keep min_cluster_size unchanged
+            ms_new = max(min_ms, int(np.ceil(0.7 * ms)))
+            mcs_new = mcs  # Keep mcs unchanged! Regime strategy sets this.
+            note_parts.append(f"reduce ms only: {ms}→{ms_new}, mcs unchanged={mcs}")
             return ms_new, mcs_new, "; ".join(note_parts), True
 
         return ms, mcs, "no change", False
     
 
-    def _auto_hdbscan_grid(self, U: np.ndarray) -> Tuple[HDBSCAN, np.ndarray, ClusterSummary]:
+    def _auto_hdbscan_grid(self, U: np.ndarray, original_embeddings: Optional[np.ndarray] = None) -> Tuple[HDBSCAN, np.ndarray, ClusterSummary]:
         """Auto-tune HDBSCAN parameters using grid search with polish refinement.
 
         Args:
-            U: UMAP-reduced embeddings array
+            U: UMAP-reduced embeddings array (used for HDBSCAN clustering)
+            original_embeddings: Original embeddings (used for regime detection to avoid UMAP artifacts)
 
         Returns:
             Tuple of (fitted HDBSCAN model, cluster labels, ClusterSummary)
         """
-        # Get structure-scaled baseline
-        ms, mcs, notes_a, notes_b = self._suggest_params(U)
-        self.verbose_reporter.stat_line("Param suggestion:")
-        self.verbose_reporter.stat_line(f"  [A] {notes_a}")
-        self.verbose_reporter.stat_line(f"  [B] {notes_b}; → scaled(ms={ms}, mcs={mcs})")
+        # Get regime-aware parameter suggestion
+        # Use original embeddings for regime detection to avoid UMAP q90=1.00 artifact
+        embeddings_for_regime = original_embeddings if original_embeddings is not None else U
+        n = U.shape[0]
+        ms, mcs, notes_regime, notes_baseline, regime_info = self._suggest_params(embeddings_for_regime)
+
+        # Determine adaptive floor for logging
+        if n <= 100:
+            floor_note = f"n={n} → adaptive floor: min_mcs=2 (small dataset)"
+        elif n <= 300:
+            floor_note = f"n={n} → adaptive floor: min_mcs=3 (small-medium dataset)"
+        elif n <= 1000:
+            floor_note = f"n={n} → adaptive floor: min_mcs=5 (medium dataset)"
+        elif n <= 5000:
+            floor_note = f"n={n} → adaptive floor: min_mcs=8 (large dataset)"
+        else:
+            floor_note = f"n={n} → adaptive floor: min_mcs=10 (very large dataset)"
+
+        # Report regime detection and parameter suggestion
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.section_header("REGIME-AWARE PARAMETER SELECTION")
+        self.verbose_reporter.stat_line(f"Detected regime: {regime_info['regime_id']} - {regime_info['description']}")
+        self.verbose_reporter.stat_line(f"Diagnostics: {regime_info['diagnostics']}")
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("3-Step Parameter Selection:")
+        self.verbose_reporter.stat_line(f"  [Adaptive] {floor_note}")
+        self.verbose_reporter.stat_line(f"  [Step 1 - Baseline] {notes_baseline}")
+        self.verbose_reporter.stat_line(f"  [Step 2 - Regime] {notes_regime}")
+
+        # Adaptive floor for mcs grid
+        if n <= 100:
+            min_mcs_floor = 2
+        elif n <= 300:
+            min_mcs_floor = 3
+        elif n <= 1000:
+            min_mcs_floor = 5
+        elif n <= 5000:
+            min_mcs_floor = 8
+        else:
+            min_mcs_floor = 10
+
+        # === STEP 3: Factor-based grid search ===
+        # Generate grid using regime-specific factors applied to BOTH ms and mcs baseline
+        regime_goal = regime_info.get('regime_goal', 'balanced')  # From regime strategy
+
+        # Recalculate ms_ratio (same logic as in _suggest_params)
+        kd_cv = regime_info.get('kd_cv', 0.0)
+        ms_ratio = 0.4 if kd_cv > 0.8 else 1.0
+
+        grid_pairs = self._generate_grid_pairs(mcs, ms_ratio, regime_goal, min_mcs_floor, min_ms=2)
+
+        self.verbose_reporter.stat_line(f"  [Step 3 - Grid] Factor-based grid for goal '{regime_goal}': {grid_pairs}")
         self.verbose_reporter.empty_line()
 
-        # Small micro-grid around ms (keep mcs fixed for now)
-        ms_grid = sorted({int(np.clip(f * ms, 1, mcs)) for f in [0.8, 1.0, 1.2]})
-    
-        # Round 0: evaluate starters
-        results = self._grid_search(U, ms_grid, mcs)
+        # Round 0: evaluate starters (manually iterate over mcs_grid)
+        max_workers = self.clustering_config.grid_search_max_workers or max(1, multiprocessing.cpu_count() - 1)
+        timeout = self.clustering_config.grid_search_timeout_seconds
+
+        self.verbose_reporter.stat_line(f"Running evaluation in parallel with {max_workers} workers")
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                start_time = time.time()
+                future_to_config = {
+                    executor.submit(self._evaluate_hdbscan, U, ms_val, mcs_val): (ms_val, mcs_val)
+                    for ms_val, mcs_val in grid_pairs
+                }
+                results = []
+                completed = 0
+                total = len(grid_pairs)
+
+                for future in concurrent.futures.as_completed(future_to_config, timeout=timeout):
+                    ms_val, mcs_val = future_to_config[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        completed += 1
+
+                        if self.verbose_reporter.enabled:
+                            self.verbose_reporter.stat_line(
+                                f"  Completed {completed}/{total} configs "
+                                f"(ms={ms_val}, mcs={mcs_val})"
+                            )
+                    except Exception as e:
+                        self.verbose_reporter.stat_line(f"  Failed to evaluate (ms={ms_val}, mcs={mcs_val}): {str(e)}")
+                        # Continue with other configurations
+
+                elapsed_total = time.time() - start_time
+                self.verbose_reporter.stat_line(f"Parallel evaluation completed in {elapsed_total:.1f}s")
+
+        except concurrent.futures.TimeoutError:
+            self.verbose_reporter.stat_line(f"Parallel grid search timed out after {timeout}s")
+            raise
+        except Exception as e:
+            self.verbose_reporter.stat_line(f"Parallel grid search failed: {str(e)}")
+            raise
         if not results:
             raise RuntimeError("All clustering configurations failed. No valid results to evaluate.")
     
-        # Score & rank (reuse your logic)
-        sil  = np.clip([r["metrics"].get("sil", np.nan) for r in results], 0, 1)
-        db   = [r["metrics"].get("DB",  np.nan) for r in results]; db = 1.0 - np.clip(db, 0, 1)
-        stab = np.asarray([r["metrics"].get("stab", np.nan) for r in results], float)
-    
-        geometry   = 0.5 * sil + 0.5 * db
-        stability  = stab
-        base_score = (geometry + stability) / 2
-    
-        noise = np.array([r["metrics"].get("noise_rate", np.nan) for r in results], dtype=float)
-        k     = np.array([r["metrics"].get("n_clusters", np.nan) for r in results], dtype=float)
-        k_n   = self._scale_metric01(np.sqrt(k))
-        penalties = (noise + 0.5 * k_n) / 2
-    
-        final_score = 1 + base_score - penalties
+        # === STEP 4: DBCV-primary composite scoring ===
+        # DBCV is primary metric (HDBSCAN is density-based)
+        # Silhouette weight depends on kd_cv (density uniformity)
+        # Penalties are lightweight guardrails, not drivers
+
+        kd_cv = regime_info.get('kd_cv', 0.0)
+
+        # Extract raw metrics
+        dbcv = np.array([r["metrics"].get("dbcv", 0.0) for r in results], dtype=float)
+        sil = np.clip([r["metrics"].get("sil", 0.0) for r in results], 0, 1)
+        hard_noise = np.array([r["metrics"].get("hard_noise_rate",
+                              r["metrics"].get("noise_rate", 0.0)) for r in results], dtype=float)
+        k = np.array([r["metrics"].get("n_clusters", 1) for r in results], dtype=float)
+
+        # Base score: kd_cv-adaptive weighting of DBCV vs silhouette
+        # High kd_cv → heterogeneous density → trust DBCV more
+        # Low kd_cv → uniform density → silhouette is meaningful
+        if kd_cv > 0.6:
+            # Heterogeneous density ("islands") - DBCV dominant
+            base_score = 0.90 * dbcv + 0.10 * sil
+            weight_rationale = f"kd_cv={kd_cv:.2f}>0.6 → DBCV-dominant (0.90/0.10)"
+        else:
+            # Uniform density - balanced weighting
+            base_score = 0.50 * dbcv + 0.50 * sil
+            weight_rationale = f"kd_cv={kd_cv:.2f}≤0.6 → balanced (0.50/0.50)"
+
+        # Noise penalty: only penalize excess above 10% tolerance
+        noise_tolerance = 0.10
+        excess_noise = np.maximum(0.0, hard_noise - noise_tolerance)
+        noise_penalty = 0.50 * excess_noise
+
+        # Symmetric k penalty: penalize deviation from k_target (both under and over)
+        k_target = max(3, n // mcs)
+        k_dev = np.abs(k - k_target) / k_target
+        k_penalty = 0.10 * k_dev
+
+        # Final score
+        final_score = base_score - noise_penalty - k_penalty
+
+        self.verbose_reporter.stat_line(f"  [Step 4 - Score] {weight_rationale}")
+        self.verbose_reporter.stat_line(f"  [Step 4 - Score] k_target={k_target} (from regime mcs={mcs})")
+
         for i, r in enumerate(results):
             r["score"] = float(final_score[i])
             r["score_base"] = float(base_score[i])
-            r["geometry"] = float(geometry[i])
-            r["stability"] = float(stability[i])
-            r["penalties"] = float(penalties[i])
-            r["noise"] = float(noise[i])
-            r["k"] = float(k_n[i])
-    
+            r["dbcv"] = float(dbcv[i])
+            r["sil"] = float(sil[i])
+            r["noise_penalty"] = float(noise_penalty[i])
+            r["k_penalty"] = float(k_penalty[i])
+            r["hard_noise"] = float(hard_noise[i])
+            r["k"] = int(k[i])
+            r["k_target"] = k_target
+
         results.sort(key=lambda r: r["score"], reverse=True)
 
-        # Smart selection: prefer configs with acceptable hard_noise (< 20%)
-        acceptable = [r for r in results if r["metrics"].get("hard_noise_rate", 1.0) < 0.20]
-        if acceptable:
-            # Pick best among acceptable configs
-            best = max(acceptable, key=lambda r: r["score"])
-        else:
-            # No acceptable configs - pick best overall (will trigger halving)
-            best = results[0]
+        # Report grid search results
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line("Grid search results (DBCV-primary scoring):")
+        for i, r in enumerate(results[:5]):  # Show top 5
+            marker = "→" if i == 0 else " "
+            self.verbose_reporter.stat_line(
+                f"  {marker} ms={r['ms']:>2}, mcs={r['mcs']:>2} | "
+                f"k={r['k']:>2} | score={r['score']:.3f} | "
+                f"base={r['score_base']:.3f} (dbcv={r['dbcv']:.2f}, sil={r['sil']:.2f}) | "
+                f"pen: noise={r['noise_penalty']:.3f}, k={r['k_penalty']:.3f}"
+            )
 
-        # Verbose reporting (kept from your original)
+        # === STEP 5: CONDITIONAL GRID EXPANSION ===
+        # Triggers:
+        # - DBCV < 0.60: try smaller mcs (seek coherent structure)
+        # - hard_noise > 0.10: try smaller ms (reduce orphaning)
+
+        # Get initial winner (before expansion)
+        initial_winner = results[0]
+        dbcv_best = max(r['metrics'].get('dbcv', -1) for r in results)
+        winner_noise = initial_winner.get('hard_noise', initial_winner['metrics'].get('hard_noise_rate', 0))
+
+        # Check if expansion is needed
+        needs_mcs_expansion = dbcv_best < 0.60
+        needs_ms_expansion = winner_noise > 0.10
+
+        if needs_mcs_expansion or needs_ms_expansion:
+            self.verbose_reporter.empty_line()
+            self.verbose_reporter.stat_line("[Step 5 - Expansion] Checking expansion triggers:")
+            if needs_mcs_expansion:
+                self.verbose_reporter.stat_line(f"  → DBCV={dbcv_best:.3f} < 0.60: will try smaller mcs")
+            if needs_ms_expansion:
+                self.verbose_reporter.stat_line(f"  → hard_noise={winner_noise:.1%} > 10%: will try smaller ms")
+
+            # Generate expansion candidates
+            expansion_grid = self._generate_expansion_grid(
+                winner=initial_winner,
+                dbcv_best=dbcv_best,
+                all_results=results,
+                ms_ratio=ms_ratio,
+                min_mcs=min_mcs_floor,
+                min_ms=2
+            )
+
+            if expansion_grid:
+                self.verbose_reporter.stat_line(f"  Expansion candidates: {expansion_grid}")
+
+                # Evaluate expansion grid in parallel
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_config = {
+                            executor.submit(self._evaluate_hdbscan, U, ms_val, mcs_val): (ms_val, mcs_val)
+                            for ms_val, mcs_val in expansion_grid
+                        }
+                        expansion_results = []
+
+                        for future in concurrent.futures.as_completed(future_to_config, timeout=timeout):
+                            ms_val, mcs_val = future_to_config[future]
+                            try:
+                                result = future.result()
+                                expansion_results.append(result)
+                                self.verbose_reporter.stat_line(f"  Evaluated expansion (ms={ms_val}, mcs={mcs_val})")
+                            except Exception as e:
+                                self.verbose_reporter.stat_line(f"  Failed (ms={ms_val}, mcs={mcs_val}): {str(e)}")
+
+                    # Merge expansion with original and re-score ALL together
+                    if expansion_results:
+                        # Score expansion results using same raw scoring
+                        exp_dbcv = np.array([r["metrics"].get("dbcv", 0.0) for r in expansion_results], dtype=float)
+                        exp_sil = np.clip([r["metrics"].get("sil", 0.0) for r in expansion_results], 0, 1)
+                        exp_hard_noise = np.array([r["metrics"].get("hard_noise_rate",
+                                          r["metrics"].get("noise_rate", 0.0)) for r in expansion_results], dtype=float)
+                        exp_k = np.array([r["metrics"].get("n_clusters", 1) for r in expansion_results], dtype=float)
+
+                        # Same kd_cv-adaptive weighting as main scoring
+                        if kd_cv > 0.6:
+                            exp_base_score = 0.90 * exp_dbcv + 0.10 * exp_sil
+                        else:
+                            exp_base_score = 0.50 * exp_dbcv + 0.50 * exp_sil
+
+                        # Same noise penalty
+                        exp_excess_noise = np.maximum(0.0, exp_hard_noise - noise_tolerance)
+                        exp_noise_penalty = 0.50 * exp_excess_noise
+
+                        # Same symmetric k penalty
+                        exp_k_dev = np.abs(exp_k - k_target) / k_target
+                        exp_k_penalty = 0.10 * exp_k_dev
+
+                        exp_final_score = exp_base_score - exp_noise_penalty - exp_k_penalty
+
+                        for i, r in enumerate(expansion_results):
+                            r["score"] = float(exp_final_score[i])
+                            r["score_base"] = float(exp_base_score[i])
+                            r["dbcv"] = float(exp_dbcv[i])
+                            r["sil"] = float(exp_sil[i])
+                            r["noise_penalty"] = float(exp_noise_penalty[i])
+                            r["k_penalty"] = float(exp_k_penalty[i])
+                            r["hard_noise"] = float(exp_hard_noise[i])
+                            r["k"] = int(exp_k[i])
+                            r["k_target"] = k_target
+
+                        # Report expansion results
+                        expansion_results.sort(key=lambda r: r["score"], reverse=True)
+                        self.verbose_reporter.empty_line()
+                        self.verbose_reporter.stat_line("Expansion grid results:")
+                        for i, r in enumerate(expansion_results):
+                            marker = "→" if i == 0 else " "
+                            self.verbose_reporter.stat_line(
+                                f"  {marker} ms={r['ms']:>2}, mcs={r['mcs']:>2} | "
+                                f"k={r['k']:>2} | score={r['score']:.3f} | "
+                                f"base={r['score_base']:.3f} (dbcv={r['dbcv']:.2f}, sil={r['sil']:.2f}) | "
+                                f"pen: noise={r['noise_penalty']:.3f}, k={r['k_penalty']:.3f}"
+                            )
+
+                        # Merge with original results
+                        results.extend(expansion_results)
+                        results.sort(key=lambda r: r["score"], reverse=True)
+
+                        self.verbose_reporter.empty_line()
+                        self.verbose_reporter.stat_line(f"✓ Expansion complete: {len(expansion_results)} new configs evaluated")
+
+                except Exception as e:
+                    self.verbose_reporter.stat_line(f"  Grid expansion failed: {str(e)}")
+            else:
+                self.verbose_reporter.stat_line("  No new expansion candidates (all already tried)")
+        else:
+            self.verbose_reporter.empty_line()
+            self.verbose_reporter.stat_line("[Step 5 - Expansion] No expansion needed:")
+            self.verbose_reporter.stat_line(f"  → DBCV={dbcv_best:.3f} >= 0.60 ✓")
+            self.verbose_reporter.stat_line(f"  → hard_noise={winner_noise:.1%} <= 10% ✓")
+
+        # === STEP 6: FINAL SELECTION WITH GATES ===
+        best, selection_reason = self._select_final_config(results, initial_winner)
+        self.verbose_reporter.empty_line()
+        self.verbose_reporter.stat_line(f"[Final Selection] {selection_reason}")
+
+        # Verbose reporting
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Complete evaluation results (sorted by score):")
         for r in results:
+            total_pen = r.get('noise_penalty', 0) + r.get('k_penalty', 0)
             self.verbose_reporter.stat_line(
-                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | clusters={r['metrics'].get('n_clusters', -1):>3} | "
-                f"score={r['score']:.3f} | score_base={r['score_base']:.3f} | penalties={r['penalties']:.3f}"
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k={r['k']:>3} | "
+                f"score={r['score']:.3f} | base={r['score_base']:.3f} | pen={total_pen:.3f}"
             )
         self.verbose_reporter.empty_line()
         for r in results:
             self.verbose_reporter.stat_line(
-                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | geom={r['geometry']:.3f} | stab={r['stability']:.3f}"
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | dbcv={r['dbcv']:.3f} | sil={r['sil']:.3f}"
             )
         self.verbose_reporter.empty_line()
         for r in results:
             m = r["metrics"]
             total_noise = m.get('noise_rate', 0.0)
             soft_noise = m.get('soft_noise_rate', 0.0)
-            hard_noise = m.get('hard_noise_rate', 0.0)
+            hard_noise_rate = m.get('hard_noise_rate', 0.0)
+            k_dev = abs(r['k'] - r['k_target']) / r['k_target']
             self.verbose_reporter.stat_line(
-                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k={r['k']:.3f} | "
-                f"noise: {total_noise:.1%} (soft: {soft_noise:.1%}, hard: {hard_noise:.1%})"
+                f"mcs={r['mcs']:>3} | ms={r['ms']:>3} | k_pen={r['k_penalty']:.3f} (k_dev={k_dev:.2f}) | "
+                f"noise: {total_noise:.1%} (soft: {soft_noise:.1%}, hard: {hard_noise_rate:.1%})"
             )
 
         # Display hard noise similarity distribution in separate section
@@ -1107,7 +1718,8 @@ class Clusterer:
             ms_new, mcs_new, note, changed = self._apply_threshold_rule(
                 ms_best, mcs_best,
                 dbcv=dbcv0, hard_noise=hard_noise_best,
-                min_ms=2, min_mcs=5, dbcv_cut=0.50, noise_cut=0.20
+                n_points=n,
+                min_ms=2, min_mcs=None, dbcv_cut=0.50, noise_cut=0.20
             )
             note_all.append(note)
             if not changed:
@@ -1378,11 +1990,12 @@ class Clusterer:
 
         U = umap_embeddings
         
-        # HDBSCAN 
+        # HDBSCAN
         self.verbose_reporter.empty_line()
         self.verbose_reporter.stat_line("Step 3: Finding optimal clustering parameters...")
-        
-        best_model, labels, summary = self._auto_hdbscan_grid(U)
+
+        # Pass L2-normalized embeddings for regime detection (avoid UMAP q90=1.00 artifact)
+        best_model, labels, summary = self._auto_hdbscan_grid(U, original_embeddings=L2_embeddings)
         
         # Report best configuration
         self.verbose_reporter.empty_line()
