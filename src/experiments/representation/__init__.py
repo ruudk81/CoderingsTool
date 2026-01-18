@@ -13,9 +13,15 @@ Available representations:
 
 from .base import BaseRepresentation
 from .ctfidf_representation import ClassTfidfTransformer, CTfidfRepresentation
+from .mmr_representation import MMRRepresentation
+from .keybert_representation import KeyBERTRepresentation
+from .llm_representation import LLMRepresentation
 
 __all__ = [
     "BaseRepresentation",
     "ClassTfidfTransformer",
     "CTfidfRepresentation",
+    "MMRRepresentation",
+    "KeyBERTRepresentation",
+    "LLMRepresentation",
 ]

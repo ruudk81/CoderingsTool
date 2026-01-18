@@ -4,12 +4,23 @@
 Cluster Analysis Experimentation Framework
 
 Loads cached Step 5 clustering results and experiments with:
-- TF-IDF keyword extraction for clusters
+- Keyword extraction: Standard TF-IDF or BERTopic-inspired c-TF-IDF
 - LLM-based cluster descriptions enhanced with keywords
 - Comparison with original Step 6 codebook generation
 
+Keyword Extraction Methods:
+    - TF-IDF: Standard term frequency-inverse document frequency
+    - c-TF-IDF: Class-based TF-IDF from BERTopic (treats clusters as classes)
+      * Better at identifying cluster-distinguishing terms
+      * Uses BM25 weighting for improved short text performance
+      * Applies frequency reduction to reduce impact of very common words
+
 Usage:
     python experiments/cluster_analysis.py
+
+    To switch methods, modify keyword_method in ExperimentConfig:
+        keyword_method="tfidf"   # Standard TF-IDF
+        keyword_method="ctfidf"  # BERTopic c-TF-IDF (recommended)
 """
 
 import os
@@ -29,10 +40,23 @@ import re
 import models
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils import dataLoader
-from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE
+from config import CacheConfig, ModelConfig, DEFAULT_LANGUAGE, API_PROVIDER
 from experiments.tfidf_analyzer import TfidfAnalyzer, TfidfConfig
+from experiments.prompts import CLUSTER_DESCRIPTION_PROMPT
 from utils.llm import llm_create_sync, create_client
 from pydantic import BaseModel, Field
+
+
+# ============================================================================
+# AZURE PROVIDER VERIFICATION
+# ============================================================================
+
+# Verify Azure provider is active at module load time
+if API_PROVIDER != "azure":
+    print(f"⚠️  WARNING: API_PROVIDER is set to '{API_PROVIDER}' (expected 'azure')")
+    print(f"    To use Azure, set API_PROVIDER='azure' in src/config.py")
+else:
+    print(f"✓ Using Azure OpenAI provider")
 
 
 # ============================================================================
@@ -48,15 +72,27 @@ class ExperimentConfig:
     id_column: str = "DLNMID"
     sample_size: Optional[int] = None
 
-    # TF-IDF settings
+    # Keyword extraction method: "tfidf" or "ctfidf"
+    keyword_method: str = "tfidf"  # NEW: Choose between standard TF-IDF and c-TF-IDF
+
+    # TF-IDF settings (for standard TF-IDF)
     tfidf_config: TfidfConfig = field(default_factory=TfidfConfig)
 
+    # c-TF-IDF settings (for BERTopic-inspired c-TF-IDF)
+    ctfidf_top_k: int = 15
+    ctfidf_bm25_weighting: bool = True
+    ctfidf_reduce_frequent_words: bool = True
+    ctfidf_ngram_range: Tuple[int, int] = (1, 2)
+    ctfidf_min_df: int = 1
+    ctfidf_max_df: float = 0.95
+
     # LLM description generation
-    description_model: str = "gpt-4.1"
+    description_model: str = "gpt-5.2"
     use_keywords_in_prompt: bool = True  # Toggle keyword enhancement
+    max_ideas_per_cluster: int = 10  # Maximum ideas to include in LLM prompt
 
     # Display settings
-    n_sample_clusters: int = 5
+    n_sample_clusters: Optional[int] = None  # None = display all clusters
     show_comparisons: bool = True  # Show original Step 6 codes if available
     verbose: bool = True
 
@@ -89,6 +125,10 @@ EXPERIMENTS = {
     ),
 }
 
+# c-TF-IDF experiment note:
+# To use c-TF-IDF instead of standard TF-IDF, set keyword_method="ctfidf" in ExperimentConfig
+# and configure ctfidf_* parameters (see ExperimentConfig dataclass above)
+
 
 # ============================================================================
 # LLM DESCRIPTION GENERATION
@@ -107,6 +147,7 @@ def generate_cluster_description(
     keywords: Optional[List[Tuple[str, float]]] = None,
     var_lab: str = "",
     model: str = "gpt-4.1",
+    max_ideas: int = 10,
     verbose: bool = False
 ) -> ClusterDescription:
     """
@@ -115,48 +156,51 @@ def generate_cluster_description(
     Args:
         cluster_id: Cluster identifier
         ideas: List of idea texts in the cluster
-        keywords: Optional list of (keyword, score) tuples from TF-IDF
+        keywords: Optional list of (keyword, score) tuples from TF-IDF/c-TF-IDF
         var_lab: Survey question text for context
         model: LLM model to use
+        max_ideas: Maximum ideas to include in prompt
         verbose: Enable verbose output
 
     Returns:
         ClusterDescription with theme, description, and key concepts
     """
-    # Sample ideas if cluster is too large
-    max_ideas_for_prompt = 20
-    if len(ideas) > max_ideas_for_prompt:
-        sampled_ideas = random.sample(ideas, max_ideas_for_prompt)
-    else:
-        sampled_ideas = ideas
+    # Sample ideas based on config max
+    sample_ideas = ideas
+    if len(ideas) > max_ideas:
+        sample_ideas = random.sample(ideas, max_ideas)
+        if verbose:
+            print(f"  (sampled {max_ideas}/{len(ideas)} ideas)", end="")
 
-    # Build prompt
-    prompt_parts = [
-        f"Survey question: {var_lab}\n" if var_lab else "",
-        f"\nCluster {cluster_id} contains {len(ideas)} response ideas.\n",
-        "\nSample ideas from this cluster:\n"
-    ]
+    # Format ideas list
+    ideas_formatted = "\n".join(f"{i+1}. {idea}" for i, idea in enumerate(sample_ideas))
 
-    for i, idea in enumerate(sampled_ideas, 1):
-        prompt_parts.append(f"{i}. {idea}\n")
-
-    # Add TF-IDF keywords if provided
+    # Format keywords section
     if keywords:
-        prompt_parts.append("\nStatistical keyword analysis (TF-IDF) identified these important terms:\n")
-        for i, (keyword, score) in enumerate(keywords[:10], 1):
-            prompt_parts.append(f"  • {keyword}\n")
+        keyword_lines = [f"  • {kw} (score: {score:.3f})" for kw, score in keywords[:10]]
+        keywords_section = f"""Statistical keyword analysis identified these cluster-distinguishing terms:
 
-    prompt_parts.append(
-        "\nBased on these ideas" + (" and keywords" if keywords else "") + ", provide:\n"
-        "1. A short thematic label (3-8 words) that captures the essence of this cluster\n"
-        "2. A detailed description (1-2 sentences) explaining what these responses have in common\n"
-        "3. A list of 3-5 key concepts/themes present in this cluster"
+{chr(10).join(keyword_lines)}
+
+These keywords highlight terms that are statistically important for distinguishing this cluster from others."""
+    else:
+        keywords_section = "(No statistical keywords provided)"
+
+    # Build prompt using template from experiments/prompts.py
+    prompt = CLUSTER_DESCRIPTION_PROMPT.format(
+        language="Dutch",  # Default language for this dataset
+        survey_question=var_lab,
+        cluster_id=cluster_id,
+        num_ideas=len(ideas),
+        keywords_section=keywords_section,
+        ideas_list=ideas_formatted
     )
-
-    prompt = "".join(prompt_parts)
 
     # Call LLM
     try:
+        if verbose:
+            print(f"  [Provider: {API_PROVIDER}, Model: {model}]", end=" ")
+
         client = create_client(model=model, async_mode=False)
         description = llm_create_sync(
             client=client,
@@ -185,15 +229,50 @@ def generate_cluster_description(
 # CLUSTER DATA EXTRACTION
 # ============================================================================
 
+def strip_context_tags(text: str) -> str:
+    """
+    Remove context tags from idea text
+
+    Tags format (from ideaExtractor._format_idea_with_specifiers, line 1033):
+    - Generic tags (line 1): [lang=...][domain=...][topic=...][perspective=...][entity=...][intent=...]
+    - Specific tags (line 2): [sentiment=...][sense=...]
+    - Text (line 3): actual idea content
+
+    Examples:
+        Input: "[lang=nl-NL][domain=voedingsmiddelenindustrie]\n[sentiment=positive][sense=suggestion]\nporties zijn te klein"
+        Output: "porties zijn te klein"
+
+    Args:
+        text: Idea text possibly containing context tags
+
+    Returns:
+        Cleaned text without tags
+    """
+    # Pattern matches: [key=value] where key is one of the 8 tag types
+    # Generic tags: lang, domain, topic, perspective, entity, intent
+    # Specific tags: sentiment, sense
+    pattern = r'\[(?:lang|domain|topic|perspective|entity|intent|sentiment|sense)=[^\]]*\]'
+    cleaned = re.sub(pattern, '', text)
+
+    # Clean up any extra whitespace and newlines from tag removal
+    cleaned = ' '.join(cleaned.split())  # Normalize all whitespace to single spaces
+    cleaned = cleaned.strip()
+
+    return cleaned
+
+
 def extract_cluster_ideas(cluster_results: List[models.ClusterModel]) -> Dict[int, List[str]]:
     """
     Extract cluster ideas from ClusterModel objects (similar to codeGenerator pattern)
+
+    Context tags are automatically stripped from idea texts to prevent pollution
+    of c-TF-IDF keyword extraction and LLM analysis.
 
     Args:
         cluster_results: List of ClusterModel instances from Step 5
 
     Returns:
-        Dict mapping cluster_id to list of idea texts
+        Dict mapping cluster_id to list of CLEANED idea texts (context tags removed)
     """
     clusters = {}
 
@@ -208,9 +287,10 @@ def extract_cluster_ideas(cluster_results: List[models.ClusterModel]) -> Dict[in
                 if cluster_id not in clusters:
                     clusters[cluster_id] = []
 
-                # Extract idea text
+                # Extract idea text and STRIP CONTEXT TAGS
                 idea_text = idea.idea if hasattr(idea, 'idea') else str(idea)
-                clusters[cluster_id].append(idea_text)
+                cleaned_text = strip_context_tags(idea_text)  # Clean tags
+                clusters[cluster_id].append(cleaned_text)
 
     return clusters
 
@@ -281,7 +361,7 @@ def display_sample_clusters(
     cluster_keywords: Dict[int, List[Tuple[str, float]]],
     cluster_descriptions: Dict[int, ClusterDescription],
     original_codes: Optional[Dict[int, Dict[str, str]]] = None,
-    n_samples: int = 5,
+    n_samples: Optional[int] = None,
     ideas_per_cluster: int = 5
 ):
     """
@@ -292,18 +372,19 @@ def display_sample_clusters(
         cluster_keywords: Dict mapping cluster_id to keywords
         cluster_descriptions: Dict mapping cluster_id to LLM descriptions
         original_codes: Optional dict with original Step 6 codes
-        n_samples: Number of clusters to display
+        n_samples: Number of clusters to display (None = all clusters)
         ideas_per_cluster: Number of sample ideas to show per cluster
     """
-    # Sample random clusters
-    cluster_ids = list(clusters.keys())
-    if len(cluster_ids) > n_samples:
+    # Get cluster IDs
+    cluster_ids = sorted(clusters.keys())  # Sort for consistent order
+
+    if n_samples is not None and len(cluster_ids) > n_samples:
         sampled_ids = random.sample(cluster_ids, n_samples)
+        sampled_ids = sorted(sampled_ids)
+        print(f"\nDisplaying {n_samples} randomly selected clusters (out of {len(cluster_ids)} total)\n")
     else:
         sampled_ids = cluster_ids
-
-    # Sort for consistent display
-    sampled_ids = sorted(sampled_ids)
+        print(f"\nDisplaying all {len(cluster_ids)} clusters\n")
 
     for cluster_id in sampled_ids:
         ideas = clusters[cluster_id]
@@ -449,14 +530,33 @@ def run_experiment(config: ExperimentConfig):
         print("✗ No clusters found in cached results")
         return
 
-    # Step 3: Run TF-IDF analysis
+    # Step 3: Run keyword extraction (TF-IDF or c-TF-IDF)
     if config.verbose:
         print(f"{'═' * 80}")
-        print("RUNNING TF-IDF KEYWORD EXTRACTION")
+        if config.keyword_method == "ctfidf":
+            print("RUNNING c-TF-IDF KEYWORD EXTRACTION (BERTopic)")
+        else:
+            print("RUNNING TF-IDF KEYWORD EXTRACTION")
         print(f"{'═' * 80}\n")
 
-    tfidf_analyzer = TfidfAnalyzer(config=config.tfidf_config, verbose=config.verbose)
-    cluster_keywords = tfidf_analyzer.extract_keywords(clusters)
+    if config.keyword_method == "ctfidf":
+        # Use c-TF-IDF (BERTopic-inspired)
+        from representation.ctfidf_representation import CTfidfRepresentation
+
+        ctfidf_analyzer = CTfidfRepresentation(
+            top_k=config.ctfidf_top_k,
+            bm25_weighting=config.ctfidf_bm25_weighting,
+            reduce_frequent_words=config.ctfidf_reduce_frequent_words,
+            ngram_range=config.ctfidf_ngram_range,
+            min_df=config.ctfidf_min_df,
+            max_df=config.ctfidf_max_df,
+            language="nl"
+        )
+        cluster_keywords = ctfidf_analyzer.extract_keywords(clusters, verbose=config.verbose)
+    else:
+        # Use standard TF-IDF
+        tfidf_analyzer = TfidfAnalyzer(config=config.tfidf_config, verbose=config.verbose)
+        cluster_keywords = tfidf_analyzer.extract_keywords(clusters)
 
     # Step 4: Generate LLM descriptions
     if config.verbose:
@@ -487,7 +587,8 @@ def run_experiment(config: ExperimentConfig):
             keywords=keywords,
             var_lab=var_lab,
             model=config.description_model,
-            verbose=False
+            max_ideas=config.max_ideas_per_cluster,
+            verbose=config.verbose
         )
 
         cluster_descriptions[cluster_id] = description
@@ -522,9 +623,17 @@ def run_experiment(config: ExperimentConfig):
         cluster_keywords,
         cluster_descriptions,
         original_codes,
-        n_samples=config.n_sample_clusters,
+        n_samples=config.n_sample_clusters,  # None = all clusters
         ideas_per_cluster=5
     )
+
+    # Return data for optional comparison analysis
+    return {
+        "clusters": clusters,
+        "cluster_keywords": cluster_keywords,
+        "cluster_descriptions": cluster_descriptions,
+        "cluster_results": cluster_results  # Original Step 5 data
+    }
 
 
 # ============================================================================
@@ -539,15 +648,27 @@ if __name__ == "__main__":
         id_column="DLNMID",
         sample_size=50,
 
-        # Choose TF-IDF experiment: "baseline", "bigrams", or "strict_filtering"
+        # NEW: Choose keyword extraction method
+        keyword_method="ctfidf",  # Options: "tfidf" or "ctfidf"
+
+        # Standard TF-IDF settings (used when keyword_method="tfidf")
         tfidf_config=EXPERIMENTS["bigrams"],
+
+        # c-TF-IDF settings (used when keyword_method="ctfidf")
+        ctfidf_top_k=15,
+        ctfidf_bm25_weighting=True,
+        ctfidf_reduce_frequent_words=True,
+        ctfidf_ngram_range=(1, 2),  # Unigrams + bigrams
+        ctfidf_min_df=1,
+        ctfidf_max_df=0.95,
 
         # LLM settings
         description_model="gpt-4.1",
         use_keywords_in_prompt=True,
+        max_ideas_per_cluster=10,
 
         # Display settings
-        n_sample_clusters=5,
+        n_sample_clusters=None,  # None = display all clusters
         show_comparisons=True,
         verbose=True
     )
@@ -571,5 +692,26 @@ if __name__ == "__main__":
 #     verbose=True
 # )
 # run_experiment(config)
+
+# %%
+
+# ============================================================================
+# OPTIONAL: RUN REPRESENTATION MODEL COMPARISON
+# ============================================================================
+# Uncomment to compare all 5 representation models side-by-side:
+#
+# # First run the main experiment
+# experiment_data = run_experiment(config)
+#
+# # Then run the comparison
+# from representation_comparison import compare_all_models
+#
+# comparison_results = compare_all_models(
+#     cluster_results=experiment_data["cluster_results"],
+#     n_sample_clusters=10,
+#     export_excel=True
+# )
+#
+# Output: exports/representation_comparison.xlsx
 
 # %%
