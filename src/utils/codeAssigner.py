@@ -23,8 +23,8 @@ from pydantic import BaseModel, field_validator
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER
-from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM
+from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse, RateLimits, extract_rate_limits_from_response
 from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
@@ -256,11 +256,16 @@ class CodeAssigner:
         self.embedding_client = create_embedding_client(async_mode=False)
         self.embedding_model = self.model_config.embedding_model
 
-        # Rate limiting setup
-        limits = get_openai_rate_limits(self.model)
+        # Rate limiting setup - use fallback values for initial setup
+        # Actual rate limits will be fetched from API during processing
+        self.rate_limits = RateLimits(
+            tokens_per_minute=FALLBACK_TPM,
+            requests_per_minute=FALLBACK_RPM,
+            tokens_per_day=FALLBACK_TPM * 60 * 24
+        )
 
-        # Token bucket for TPM limiting
-        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+        # Token bucket for TPM limiting (will be re-initialized with actual limits during bootstrap)
+        self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
         
         # Progressive token estimation (following qualityFilter.py pattern)
         self.input_token_history = deque(maxlen=3)  # First 3 input token counts
@@ -396,6 +401,30 @@ class CodeAssigner:
             unknown_label=unknown_label
         )
 
+    async def _fetch_rate_limits_from_api(self) -> RateLimits:
+        """Make a minimal API call to fetch rate limits from response headers."""
+        from openai import AsyncOpenAI
+        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+        if API_PROVIDER == "azure":
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                default_query={"api-version": "2024-10-21"},
+            )
+            model = AZURE_OPENAI_DEPLOYMENT_NAME
+        else:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            model = self.model
+
+        # Make minimal API call with raw response to get headers
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5
+        )
+
+        return extract_rate_limits_from_response(response)
 
     def estimate_tokens(self, prompt: str) -> int:
         """Estimate total tokens using adaptive strategy (following qualityFilter.py)"""
@@ -637,15 +666,16 @@ class CodeAssigner:
 
         self.last_prompt = prompt  # Store for backward compatibility
 
-        # Estimate tokens and acquire from TPM bucket
+        # Estimate tokens for rate limiting
         est_tokens = self.estimate_tokens(prompt)
-        await self.tpm_bucket.wait_and_acquire(est_tokens)
 
         # Calculate adaptive timeout
         timeout = self.latency_tracker.get_timeout(est_tokens)
 
-        # Unified rate limiting with semaphore and rate limiter
+        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
+        # then acquire token bucket and rate limiter
         async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
             async with self.rate_limiter:
                 start_time = time.perf_counter()
 
@@ -734,15 +764,16 @@ class CodeAssigner:
 
         self.last_prompt = prompt  # Store for backward compatibility
 
-        # Estimate tokens and acquire from TPM bucket
+        # Estimate tokens for rate limiting
         est_tokens = self.estimate_tokens(prompt)
-        await self.tpm_bucket.wait_and_acquire(est_tokens)
 
         # Calculate adaptive timeout
         timeout = self.latency_tracker.get_timeout(est_tokens)
 
-        # Unified rate limiting with semaphore and rate limiter
+        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
+        # then acquire token bucket and rate limiter
         async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
             async with self.rate_limiter:
                 start_time = time.perf_counter()
 
@@ -1090,12 +1121,36 @@ class CodeAssigner:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""
         if not tasks:
             return []
-        
+
         try:
             #print(f"[DEBUG] Starting process_all_tasks_async with {len(tasks)} tasks")
-            
-            # Setup
-            limits = get_openai_rate_limits(self.model)
+
+            self.verbose_reporter.step_start("Code Assignment")
+
+            # Fetch rate limits dynamically from API response headers
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line("Fetching rate limits from API...")
+
+            limits = await self._fetch_rate_limits_from_api()
+
+            # Fallback if headers not available
+            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+                limits = RateLimits(
+                    tokens_per_minute=FALLBACK_TPM,
+                    requests_per_minute=FALLBACK_RPM,
+                    tokens_per_day=FALLBACK_TPM * 60 * 24
+                )
+            else:
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
+
+            # Store rate limits on self for use in diagnostics/reporting
+            self.rate_limits = limits
+
+            # Re-initialize TokenBucket with actual rate limits
+            self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
 
             # Bootstrap measurement with probe calls (following qualityFilter.py pattern)
             sample_tasks = tasks[:min(3, len(tasks))]
@@ -1103,8 +1158,7 @@ class CodeAssigner:
                 # Duplicate tasks if we have fewer than 3
                 sample_tasks = sample_tasks * 3
                 sample_tasks = sample_tasks[:3]
-            
-            self.verbose_reporter.step_start("Code Assignment")
+
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line("Running bootstrap measurement (3 probe calls)...")
         
@@ -1130,7 +1184,10 @@ class CodeAssigner:
             # Calculate optimal concurrency using Little's Law
             api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
             Little = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
-            optimal = min(300, max(Little, 100)) # constrained to range 100-300
+            # Use ProcessingConfig for bounds instead of hardcoded constants
+            min_concurrency = self.processing_config.concurrency_min_default
+            max_concurrency = self.processing_config.concurrency_cap_default
+            optimal = min(max_concurrency, max(Little, min_concurrency))
 
             # Initialize rate limiting components
             arrival_rate = min(
@@ -1158,13 +1215,15 @@ class CodeAssigner:
             bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
             print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
             print(f"- Optimal by Little's law: {Little}")
-            print(f"- Constrained optimum: {optimal} (min=100, max=300)")
-        
+            print(f"- Constrained optimum: {optimal} (min={min_concurrency}, max={max_concurrency})")
+
             print(f"- Processing {len(tasks):,} tasks")
-            
-            # Calculate number of workers
+
+            # Calculate number of workers using ProcessingConfig bounds
             expected_throughput = min(rpm_throughput, tpm_throughput)
-            num_workers = min(200, max(50, int(expected_throughput * avg_latency_s * 2.0)))
+            max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
+            min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
+            num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
             
             print(f"- Workers launched: (concurrent subroutines): {num_workers}")
             print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
@@ -1281,8 +1340,8 @@ class CodeAssigner:
             self.verbose_reporter.stat_line("No ideas found for code assignment")
             return []
         
-        limits = get_openai_rate_limits(self.model)
-        self.verbose_reporter.stat_line(f"Model: {self.model} (Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM)")
+        # Use fallback rate limits for initial display (actual limits fetched during processing)
+        self.verbose_reporter.stat_line(f"Model: {self.model} (Initial limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM)")
         self.verbose_reporter.stat_line(f"Processing {total_ideas} ideas with {len(self.codebook)} available codes")
         
         # Prepare tasks

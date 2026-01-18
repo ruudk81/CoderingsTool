@@ -22,9 +22,7 @@ MAX_HUNSPELL_PROCESSES = 20          # Max parallel Hunspell processes to preven
 MAX_SAFE_BATCH_SIZE = 1000           # Maximum batch size for Hunspell word checking
 SUGGESTION_BATCH_SIZE = 50           # Words per batch for suggestion generation
 MAX_CONCURRENT_SUGGESTION_BATCHES = 6  # Concurrent batches for suggestion processing
-MIN_CONCURRENCY = 100                # Minimum concurrent API requests
-MAX_WORKERS = 200                    # Maximum worker coroutines
-MIN_WORKERS = 50                     # Minimum worker coroutines
+# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS now come from ProcessingConfig
 OUTPUT_TOKEN_RATIO = 0.15            # Estimated output/input token ratio for spell correction
 SPACY_VECTOR_NORM_THRESHOLD = 5      # Minimum vector norm for valid SpaCy tokens
 
@@ -34,8 +32,8 @@ from .verboseReporter import VerboseReporter, ProcessingStats
 from .cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits
-from utils.llm import create_client, llm_create_async, ProbeResponse
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, API_PROVIDER
+from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 from prompts import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -1039,9 +1037,53 @@ Suggested corrections: {task_dict['suggestions']}
                 output_tokens = getattr(u, "output_tokens", 0) or getattr(u, "completion_tokens", 0)
                 return {"prompt_tokens": input_tokens, "completion_tokens": output_tokens}
 
-            limits = get_openai_rate_limits(self.model)
-            
-            
+            async def fetch_rate_limits_from_api() -> RateLimits:
+                """Make a minimal API call to fetch rate limits from response headers."""
+                from openai import AsyncOpenAI
+                from config import API_PROVIDER, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+                if API_PROVIDER == "azure":
+                    client = AsyncOpenAI(
+                        api_key=AZURE_OPENAI_API_KEY,
+                        base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                        default_query={"api-version": "2024-10-21"},
+                    )
+                    model = AZURE_OPENAI_DEPLOYMENT_NAME
+                else:
+                    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+                    model = self.model
+
+                # Make minimal API call with raw response to get headers
+                response = await client.chat.completions.with_raw_response.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "Hi"}],
+                    max_tokens=5
+                )
+
+                return extract_rate_limits_from_response(response)
+
+            # Fetch rate limits dynamically from API response headers
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line("Fetching rate limits from API...")
+
+            limits = await fetch_rate_limits_from_api()
+
+            # Fallback if headers not available
+            if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+                limits = RateLimits(
+                    tokens_per_minute=FALLBACK_TPM,
+                    requests_per_minute=FALLBACK_RPM,
+                    tokens_per_day=FALLBACK_TPM * 60 * 24
+                )
+            else:
+                if self.verbose_reporter.enabled:
+                    self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
+
+            # Store rate limits on self for use in diagnostics/reporting
+            self.rate_limits = limits
+
             sample_tasks = filtered_tasks[:min(3, len(filtered_tasks))]
             if len(sample_tasks) < 3: 
                 # Duplicate tasks if we have fewer than 3
@@ -1068,8 +1110,10 @@ Suggested corrections: {task_dict['suggestions']}
                 self.latency_tracker.add(avg_latency_s)
 
             Little = compute_optimal_concurrency(ApiLimits(limits.tokens_per_minute, limits.requests_per_minute), avg_latency_s, avg_tokens, self.processing_config)
-            optimal = max(Little, MIN_CONCURRENCY)
-            semaphore = asyncio.Semaphore(min(nr_tasks,optimal))
+            # Use ProcessingConfig for bounds instead of hardcoded constants
+            min_concurrency = self.processing_config.concurrency_min_default
+            optimal = max(Little, min_concurrency)
+            semaphore = asyncio.Semaphore(min(nr_tasks, optimal))
 
             if self.verbose_reporter.enabled:
                 self.verbose_reporter.stat_line(f"Optimal by Little's law: {Little}")
@@ -1115,7 +1159,10 @@ Suggested corrections: {task_dict['suggestions']}
                 limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
             )
             
-            num_workers = min(MAX_WORKERS, max(MIN_WORKERS, int(expected_throughput * avg_latency_s * 2.0)))
+            # Use ProcessingConfig for worker bounds
+            max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
+            min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
+            num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
            
             print(f"- Concurrent subroutines (workers): {num_workers}")
             print(f"- Concurrent ceiling (semaphore): {min(nr_tasks,optimal)}")
@@ -1248,22 +1295,21 @@ Suggested corrections: {task_dict['suggestions']}
 
         respondent_id = task_dict['respondent_id']
         #logger.info(f"[DEBUG API] Starting admission controls for {respondent_id}")
-        
+
         # Count tokens needed for this task
         tokens_needed = self._count_task_tokens(task_dict)
         #logger.info(f"[DEBUG API] Acquiring {tokens_needed} tokens for {respondent_id}")
-        
-        await self.tpm_bucket.wait_and_acquire(tokens_needed)
-        #logger.info(f"[DEBUG API] Tokens acquired for {respondent_id}")
-        
+
         # Calculate intelligent timeout BEFORE rate limiting to enable progressive learning
-        tokens_needed = self._count_task_tokens(task_dict)
         timeout_seconds = self.latency_tracker.get_timeout(tokens_needed)
         #logger.info(f"[TIME OUT SECONDS] Task {task_dict['respondent_id']}: {len(self.latency_tracker.values)} samples → {timeout_seconds:.1f}s timeout")
-        
-        
+
+        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
+        # then acquire token bucket and rate limiter
         async with self.semaphore:
             #logger.info(f"[DEBUG API] Entered semaphore for {respondent_id}")
+            await self.tpm_bucket.wait_and_acquire(tokens_needed)
+            #logger.info(f"[DEBUG API] Tokens acquired for {respondent_id}")
             async with self.rate_limiter:
                 #logger.info(f"[DEBUG API] Entered rate limiter for {respondent_id}")
                 
@@ -1314,25 +1360,20 @@ Suggested corrections: {task_dict['suggestions']}
                     self.stats['llm_calls_failed'] += 1
                     # Don't add timeout to latency tracker as it's not representative
                 except RateLimitError as e:
-                    logger.error(f"[DEBUG API] RATE LIMIT (429): {respondent_id} - {str(e)}")
+                    logger.error(f"[API] RATE LIMIT (429): {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
-                    #raise
                 except APITimeoutError as e:
-                    logger.error(f"[DEBUG API] API TIMEOUT: {respondent_id} - {str(e)}")
+                    logger.error(f"[API] API TIMEOUT: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
-                    #raise
                 except APIConnectionError as e:
-                    logger.error(f"[DEBUG API] CONNECTION ERROR: {respondent_id} - {str(e)}")
+                    logger.error(f"[API] CONNECTION ERROR: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
-                    #raise
                 except InternalServerError as e:
-                    logger.error(f"[DEBUG API] INTERNAL SERVER ERROR: {respondent_id} - {str(e)}")
+                    logger.error(f"[API] INTERNAL SERVER ERROR: {respondent_id} - {str(e)}")
                     self.stats['llm_calls_failed'] += 1
-                    #raise
                 except Exception as e:
-                    logger.error(f"[DEBUG API] UNKNOWN ERROR: {respondent_id} - {type(e).__name__}: {str(e)}")
+                    logger.error(f"[API] UNKNOWN ERROR: {respondent_id} - {type(e).__name__}: {str(e)}")
                     self.stats['llm_calls_failed'] += 1
-                    #raise
                     
                 # Track actual token usage for reconciliation (only if response exists)
                 if response and hasattr(response, '_raw_response'):

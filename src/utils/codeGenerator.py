@@ -26,10 +26,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, get_openai_rate_limits, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM
 from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
 from .verboseReporter import VerboseReporter
-from utils.llm import create_client, llm_create_sync
+from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
 
 try:
     import nest_asyncio
@@ -691,9 +691,10 @@ async def async_responses_create_with_unified_limits(
     # Calculate adaptive timeout before rate limiting
     timeout_seconds = latency_tracker.get_timeout(tokens_needed)
 
-    # STANDARDIZED RATE LIMITING PATTERN
-    await tpm_bucket.wait_and_acquire(tokens_needed)
+    # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
+    # then acquire token bucket and rate limiter
     async with semaphore:
+        await tpm_bucket.wait_and_acquire(tokens_needed)
         async with rate_limiter:
             response = await async_responses_create(model, prompt, response_model, reasoning_effort, text_verbosity, timeout_seconds)
 
@@ -1525,8 +1526,13 @@ class InductiveCodeGenerator:
                 self.encoding = tiktoken.get_encoding("cl100k_base")
                 self.verbose_reporter.warning(f"Fallback to cl100k_base encoding for {self.config.model}")
         
-        # Initialize unified rate limiting system (following qualityFilter.py patterns)
-        rate_limits = get_openai_rate_limits(self.config.model)
+        # Initialize unified rate limiting system - use fallback values for initial setup
+        # Actual rate limits will be fetched from API during async_initialize
+        self.rate_limits = RateLimits(
+            tokens_per_minute=FALLBACK_TPM,
+            requests_per_minute=FALLBACK_RPM,
+            tokens_per_day=FALLBACK_TPM * 60 * 24
+        )
 
         # Initialize bootstrap attributes (will be populated by async_initialize)
         self.bootstrap_latency = None
@@ -1536,13 +1542,13 @@ class InductiveCodeGenerator:
         # Calculate average tokens for rate limiting (fallback until bootstrap completes)
         self.avg_tokens = self._calculate_avg_tokens()
 
-        # Create unified rate limiting system
-        self.tpm_bucket = TokenBucket(rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
-        
+        # Create unified rate limiting system (will be re-initialized with actual limits during bootstrap)
+        self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+
         # Add AsyncLimiter for unified rate limiting (following qualityFilter pattern)
         arrival_rate = min(
-            rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
-            rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
+            self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
+            self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
         if arrival_rate < 1:
             self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
@@ -1550,15 +1556,15 @@ class InductiveCodeGenerator:
             self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
 
         # Calculate optimal concurrency based on API limits and latency
-        rpm_concurrency = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 * 2.0  # Assume 2s avg latency
-        tpm_concurrency = (rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens) * 2.0
+        rpm_concurrency = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60 * 2.0  # Assume 2s avg latency
+        tpm_concurrency = (self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens) * 2.0
         optimal_concurrency = min(rpm_concurrency, tpm_concurrency, self.config.async_concurrency_limit)
 
         self.concurrency_semaphore = asyncio.Semaphore(int(optimal_concurrency))
-        
+
         # Store limits for reporting
-        self.rpm_limit = rate_limits.requests_per_minute
-        self.tpm_limit = rate_limits.tokens_per_minute
+        self.rpm_limit = self.rate_limits.requests_per_minute
+        self.tpm_limit = self.rate_limits.tokens_per_minute
         
         # Initialize latency tracking (following qualityFilter pattern)
         self.latency_tracker = LatencyTracker()
@@ -1601,13 +1607,65 @@ class InductiveCodeGenerator:
             'redistribution_details': {}
         }
 
+    async def _fetch_rate_limits_from_api(self) -> RateLimits:
+        """Make a minimal API call to fetch rate limits from response headers."""
+        from openai import AsyncOpenAI
+        from config import AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME
+
+        if API_PROVIDER == "azure":
+            client = AsyncOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                base_url=f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/",
+                default_query={"api-version": "2024-10-21"},
+            )
+            model = AZURE_OPENAI_DEPLOYMENT_NAME
+        else:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            model = self.config.model
+
+        # Make minimal API call with raw response to get headers
+        response = await client.chat.completions.with_raw_response.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=5
+        )
+
+        return extract_rate_limits_from_response(response)
+
     async def async_initialize(self):
         """Initialize bootstrap measurement and update rate limiting with real API performance data"""
         if self._bootstrap_completed:
             return
-        
+
+        # Fetch rate limits dynamically from API response headers
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line("Fetching rate limits from API...")
+
+        limits = await self._fetch_rate_limits_from_api()
+
+        # Fallback if headers not available
+        if limits.tokens_per_minute == 0 or limits.requests_per_minute == 0:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Warning: Using fallback rate limits (TPM={FALLBACK_TPM}, RPM={FALLBACK_RPM})")
+            limits = RateLimits(
+                tokens_per_minute=FALLBACK_TPM,
+                requests_per_minute=FALLBACK_RPM,
+                tokens_per_day=FALLBACK_TPM * 60 * 24
+            )
+        else:
+            if self.verbose_reporter.enabled:
+                self.verbose_reporter.stat_line(f"Fetched from API: TPM={limits.tokens_per_minute:,}, RPM={limits.requests_per_minute:,}")
+
+        # Store rate limits on self for use in all rate limiting
+        self.rate_limits = limits
+        self.rpm_limit = limits.requests_per_minute
+        self.tpm_limit = limits.tokens_per_minute
+
+        # Re-initialize TokenBucket with actual rate limits
+        self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
+
         # Bootstrap is needed for all modes to properly configure rate limiting
-        
+
         # Bootstrap measurement for real API performance data (following qualityFilter.py pattern)
         if self.cluster_results and len(self.cluster_results) > 0:
             try:
@@ -1678,20 +1736,21 @@ class InductiveCodeGenerator:
         if not self._bootstrap_completed:
             return
 
-        rate_limits = get_openai_rate_limits(self.config.model)
+        # Use dynamically fetched rate limits stored on self
+        rate_limits = self.rate_limits
 
         # Recalculate arrival_rate using bootstrap-measured tokens
         arrival_rate = min(
             rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
             rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
-        
+
         # Update AsyncLimiter with new arrival rate
         if arrival_rate < 1:
             self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
         else:
             self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
-        
+
         # Calculate optimal concurrency using Little's Law with bootstrap-measured latency
         optimal_concurrency = compute_optimal_concurrency(
             ApiLimits(rate_limits.tokens_per_minute, rate_limits.requests_per_minute),
@@ -1701,7 +1760,7 @@ class InductiveCodeGenerator:
             cap=self.config.async_concurrency_limit,
             headroom=self.processing_config.rate_limit_headroom
         )
-        
+
         # Update concurrency semaphore
         self.concurrency_semaphore = asyncio.Semaphore(min(len(self.cluster_results), max(optimal_concurrency, 100)))
         
@@ -2162,8 +2221,8 @@ class InductiveCodeGenerator:
         self.verbose_reporter.step_start("Theme Extraction")
         self.verbose_reporter.stat_line(f"Processing {len(clusters)} clusters")
         
-        # Get rate limits
-        rate_limits = get_openai_rate_limits(self.config.model)
+        # Use dynamically fetched rate limits stored on self
+        rate_limits = self.rate_limits
 
         # Calculate number of workers based on rate limits and latency
         rpm_throughput = rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
@@ -3355,8 +3414,8 @@ class InductiveCodeGenerator:
         if not sub_batch:
             return []
         
-        # Use shared bootstrap data for cluster processing chain (Prompts 2-4)
-        limits = get_openai_rate_limits(self.config.model)
+        # Use dynamically fetched rate limits stored on self
+        limits = self.rate_limits
 
         # Ensure bootstrap measurement has been completed
         if not self._bootstrap_completed:

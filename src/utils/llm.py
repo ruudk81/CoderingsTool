@@ -63,6 +63,51 @@ class ProbeResponse(BaseModel):
     content: str
 
 
+# =============================================================================
+# Dynamic Rate Limits - Fetched from API Response Headers
+# =============================================================================
+@dataclass
+class RateLimits:
+    """Rate limits fetched from API response headers.
+
+    Works for both OpenAI and Azure OpenAI - both providers use the same
+    x-ratelimit-limit-tokens and x-ratelimit-limit-requests headers.
+    """
+    tokens_per_minute: int
+    requests_per_minute: int
+    tokens_per_day: int = 0  # Optional, not always available
+
+
+def extract_rate_limits_from_response(response) -> RateLimits:
+    """Extract TPM/RPM limits from API response headers.
+
+    Works for both OpenAI and Azure OpenAI providers.
+
+    Args:
+        response: Raw API response object with headers attribute
+
+    Returns:
+        RateLimits with tokens_per_minute and requests_per_minute.
+        Returns zeros if headers not present.
+    """
+    # Get headers from response - handle different response types
+    headers = {}
+    if hasattr(response, 'headers'):
+        headers = response.headers
+    elif hasattr(response, '_headers'):
+        headers = response._headers
+
+    # Extract rate limits from standard headers
+    tpm = int(headers.get('x-ratelimit-limit-tokens', 0))
+    rpm = int(headers.get('x-ratelimit-limit-requests', 0))
+
+    return RateLimits(
+        tokens_per_minute=tpm,
+        requests_per_minute=rpm,
+        tokens_per_day=tpm * 60 * 24 if tpm > 0 else 0  # Estimate daily from per-minute
+    )
+
+
 class RawTextResponse(BaseModel):
     """Response model for getting raw LLM output text.
 

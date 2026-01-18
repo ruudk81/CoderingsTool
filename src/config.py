@@ -256,86 +256,14 @@ def get_embedding_model_for_api() -> str:
 
 
 # =============================================================================
-# OPENAI RATE LIMITS (Official limits as of 2025)
+# RATE LIMIT FALLBACKS (Used when API headers are unavailable)
 # =============================================================================
+# Rate limits are now fetched dynamically from API response headers.
+# These fallback values are only used if headers are not present.
+# Set via environment variables or use conservative defaults.
 
-@dataclass
-class OpenAIRateLimits:
-    """Official OpenAI API rate limits by model"""
-    tokens_per_minute: int
-    requests_per_minute: int
-    tokens_per_day: int
-
-OPENAI_RATE_LIMITS = {  
-    "gpt-5": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=10_000,
-        tokens_per_day=200_000_000
-    ),
-    "gpt-5-chat": OpenAIRateLimits(
-        tokens_per_minute=2_000_000,
-        requests_per_minute=10_000,
-        tokens_per_day=200_000_000
-    ),
-    "gpt-5-mini": OpenAIRateLimits(
-        tokens_per_minute=10_000_000,
-        requests_per_minute=10_000,
-        tokens_per_day=1_000_000_000
-    ),
-    "gpt-5-nano": OpenAIRateLimits(
-       tokens_per_minute=10_000_000,
-       requests_per_minute=10_000,
-       tokens_per_day=1_000_000_000
-    ),
-    "gpt-4.1": OpenAIRateLimits(
-       tokens_per_minute=2_000_000,
-       requests_per_minute=10_000,
-       tokens_per_day=1_000_000_000
-    ),
-    "gpt-4.1-mini": OpenAIRateLimits(
-       tokens_per_minute=10_000_000,
-       requests_per_minute=10_000,
-       tokens_per_day=1_000_000_000
-    ),
-    "gpt-4.1-nano": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
-    ),
-    "o4-mini": OpenAIRateLimits(
-        tokens_per_minute=4_000_000,
-        requests_per_minute=5_000,
-        tokens_per_day=40_000_000
-    ),
-    "gpt-4o": OpenAIRateLimits(
-        tokens_per_minute=2_000_000,
-        requests_per_minute=10_000,
-        tokens_per_day=1_000_000_000
-    ),
-    "gpt-4o-mini": OpenAIRateLimits(
-       tokens_per_minute=10_000_000,
-       requests_per_minute=10_000,
-       tokens_per_day=1_000_000_000
-    ),
-    # Fallback for unknown models (conservative limits)
-    "default": OpenAIRateLimits(
-        tokens_per_minute=2_000_000,
-        requests_per_minute=10_000,
-        tokens_per_day=1_000_000_000
-    )
-}
-
-def get_openai_rate_limits(model: str) -> OpenAIRateLimits:
-    """Get rate limits for a specific OpenAI model"""
-    base_model = model.split('-')[0:3]  # Get base model name with 3 or less koppeltekens
-    base_model_str = '-'.join(base_model)
-
-    if model in OPENAI_RATE_LIMITS:
-        return OPENAI_RATE_LIMITS[model]
-    elif base_model_str in OPENAI_RATE_LIMITS:
-        return OPENAI_RATE_LIMITS[base_model_str]
-    else:
-        return OPENAI_RATE_LIMITS["default"]
+FALLBACK_TPM = int(os.getenv("FALLBACK_TPM", "100000"))  # Conservative: 100K tokens/min
+FALLBACK_RPM = int(os.getenv("FALLBACK_RPM", "100"))     # Conservative: 100 requests/min
 
 # =============================================================================
 # EMBEDDING MODEL DIMENSIONS
