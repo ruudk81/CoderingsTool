@@ -22,6 +22,18 @@ class PreprocessedModel(ResponseModel):
 class QualityFilteredModel(PreprocessedModel):
     pass
 
+# Strict model for LLM response validation (instructor enforces required fields)
+class QualityFilterLLMResponse(BaseModel):
+    """Strict response model for quality filter LLM calls.
+    Unlike QualityFilteredModel, quality_filter is REQUIRED (not Optional).
+    This ensures instructor enforces True/False and rejects null.
+    """
+    respondent_id: Any
+    response: Union[str, float, int, None]
+    quality_filter: bool  # REQUIRED - instructor will enforce True/False
+    quality_filter_code: Optional[int] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
     idea: str

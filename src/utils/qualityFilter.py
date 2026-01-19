@@ -434,7 +434,7 @@ class Grader:
                         llm_create_async(
                             client=self.client,
                             model=self.model,
-                            response_model=List[models.QualityFilteredModel],
+                            response_model=List[models.QualityFilterLLMResponse],
                             prompt=prompt,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens
@@ -473,14 +473,20 @@ class Grader:
 
                         # Reconcile token difference with bucket
                         delta = actual_total_tokens - est_tokens
-                        if task.get('task_index', 0) < 5:
-                            print(f"[DEBUG] Task {task.get('task_index', 0)}: Reconciling {delta} tokens (actual: {actual_total_tokens}, estimated: {est_tokens})")
                         await self.tpm_bucket.reconcile(delta)
                     
-                    # Extract result
+                    # Extract result and convert strict LLM response to pipeline model
                     if response and len(response) > 0:
+                        llm_result = response[0]
+                        # Convert QualityFilterLLMResponse to QualityFilteredModel
+                        result = models.QualityFilteredModel(
+                            respondent_id=llm_result.respondent_id,
+                            response=llm_result.response,
+                            quality_filter=llm_result.quality_filter,
+                            quality_filter_code=llm_result.quality_filter_code
+                        )
                         self.stats['tasks_successful'] += 1
-                        return response[0]
+                        return result
                     else:
                         return self.create_fallback_response(task)
                     
@@ -869,10 +875,10 @@ class Grader:
         else:
             self.verbose_reporter.stat_line("No items require LLM evaluation")
             self._results = []
-        
-        # Create mapping for efficient lookup
-        llm_results_map = {result.respondent_id: result for result in self._results if result}
-        
+
+        # Create mapping for efficient lookup (normalize to str for type-safe lookup)
+        llm_results_map = {str(result.respondent_id): result for result in self._results if result}
+
         # Merge results in original order
         merged_results = []
         for original_item in self.responses:
@@ -880,9 +886,9 @@ class Grader:
                 # Keep pre-filtered item
                 merged_results.append(original_item)
             else:
-                # Use LLM result if available
-                if original_item.respondent_id in llm_results_map:
-                    merged_results.append(llm_results_map[original_item.respondent_id])
+                # Use LLM result if available (normalize to str for lookup)
+                if str(original_item.respondent_id) in llm_results_map:
+                    merged_results.append(llm_results_map[str(original_item.respondent_id)])
                 else:
                     # Fallback if not processed
                     original_item.quality_filter = False
@@ -891,7 +897,7 @@ class Grader:
         
         # Update results
         self._results = merged_results
-        
+
         # Calculate statistics
         quality_counts = {"high": 0, "medium": 0, "low": 0}
         filtered_examples = []
