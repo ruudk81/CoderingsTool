@@ -86,6 +86,14 @@ K_RANGE = range(3, 16)
 # Mean persistence >= this suggests stable HDBSCAN clusters
 PERSISTENCE_THRESHOLD = 0.45
 
+# DVC (Density Variation Coefficient) configuration
+# DVC = std(d_k) / mean(d_k), where d_k is distance to k-th nearest neighbor
+# High DVC indicates varying density → HDBSCAN better
+# Low DVC indicates uniform density → Agglomerative better
+DVC_KNN_K = 10  # k for k-th nearest neighbor distance
+DVC_HIGH_THRESHOLD = 0.45  # Above this → HDBSCAN recommended
+DVC_LOW_THRESHOLD = 0.25   # Below this → Agglomerative recommended
+
 # Output paths
 # For 'all' mode, creates subdirectories per dataset
 EXPORTS_BASE_DIR = Path(__file__).parent.parent.parent / "exports" / "umap_clustering_comparison"
@@ -392,6 +400,62 @@ def compute_dbcv(labels: np.ndarray, embeddings: np.ndarray) -> float:
     except Exception as e:
         print(f"DBCV calculation failed: {e}")
         return -1.0
+
+
+def compute_dvc(embeddings: np.ndarray, k: int = DVC_KNN_K) -> Dict:
+    """
+    Compute Density Variation Coefficient (DVC).
+
+    DVC = std(d_k) / mean(d_k), where d_k is distance to k-th nearest neighbor.
+
+    High DVC (>0.45) indicates varying density → HDBSCAN better
+    Low DVC (<0.25) indicates uniform density → Agglomerative better
+
+    Args:
+        embeddings: L2-normalized embeddings
+        k: k-th nearest neighbor to use
+
+    Returns:
+        Dict with dvc, mean_dk, std_dk, recommendation
+    """
+    n = len(embeddings)
+    if n < k + 1:
+        return {
+            'dvc': np.nan,
+            'mean_dk': np.nan,
+            'std_dk': np.nan,
+            'recommendation': 'INSUFFICIENT_DATA'
+        }
+
+    nbrs = NearestNeighbors(n_neighbors=k + 1, metric='euclidean')
+    nbrs.fit(embeddings)
+    distances, _ = nbrs.kneighbors(embeddings)
+
+    # Distance to k-th nearest neighbor (skip self at index 0)
+    d_k = distances[:, -1]
+
+    mean_dk = float(np.mean(d_k))
+    std_dk = float(np.std(d_k))
+
+    if mean_dk == 0:
+        dvc = np.nan
+        recommendation = 'ZERO_MEAN'
+    else:
+        dvc = std_dk / mean_dk
+
+        if dvc > DVC_HIGH_THRESHOLD:
+            recommendation = 'HDBSCAN'
+        elif dvc < DVC_LOW_THRESHOLD:
+            recommendation = 'AGGLOMERATIVE'
+        else:
+            recommendation = 'EITHER'
+
+    return {
+        'dvc': float(dvc) if not np.isnan(dvc) else np.nan,
+        'mean_dk': mean_dk,
+        'std_dk': std_dk,
+        'recommendation': recommendation
+    }
 
 
 def run_hdbscan_grid(reduced: np.ndarray, n_samples: int) -> Dict:
@@ -1372,7 +1436,8 @@ def generate_coherence_vs_k_plot(results: List[Dict], output_path: Path):
 # =============================================================================
 
 def export_results_to_excel(results: List[Dict], output_path: Path,
-                            elbow_results: Optional[List[Dict]] = None):
+                            elbow_results: Optional[List[Dict]] = None,
+                            dvc_result: Optional[Dict] = None):
     """
     Export experiment results to Excel.
 
@@ -1380,8 +1445,14 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
         results: List of experiment result dicts
         output_path: Path to save Excel file
         elbow_results: Optional list of knee detection results per UMAP config
+        dvc_result: Optional DVC result dict (global, computed on original embeddings)
     """
     df = pd.DataFrame(results)
+
+    # Add DVC columns (global value, same for all rows)
+    if dvc_result:
+        df['dvc'] = dvc_result.get('dvc', np.nan)
+        df['dvc_recommendation'] = dvc_result.get('recommendation', np.nan)
 
     # Create lookup for elbow results by UMAP config
     elbow_lookup = {}
@@ -1443,6 +1514,8 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
         'silhouette', 'davies_bouldin', 'dbcv',
         # Persistence metrics (HDBSCAN only)
         'mean_persistence', 'min_persistence', 'max_persistence', 'std_persistence', 'weighted_persistence',
+        # DVC (global, computed on original embeddings)
+        'dvc', 'dvc_recommendation',
         # Knee detection
         'knee_K', 'y_difference', 'has_sharp_knee', 'knee_meaningful', 'knee_recommendation', 'kneedle_S', 'interp_method',
         # Combined recommendation (knee + persistence)
@@ -1542,6 +1615,16 @@ def run_experiment(
     print("\n[2/5] L2 normalizing embeddings...")
     embeddings_normalized = l2_normalize(embeddings)
     print(f"Normalized {n_samples} embeddings")
+
+    # 2b. Compute DVC on original embeddings (before UMAP)
+    print(f"\n[2b/5] Computing Density Variation Coefficient (k={DVC_KNN_K})...")
+    dvc_result = compute_dvc(embeddings_normalized, k=DVC_KNN_K)
+    dvc_val = dvc_result['dvc']
+    if not np.isnan(dvc_val):
+        print(f"  DVC = {dvc_val:.3f} (mean_dk={dvc_result['mean_dk']:.4f}, std_dk={dvc_result['std_dk']:.4f})")
+        print(f"  → Recommendation: {dvc_result['recommendation']}")
+    else:
+        print(f"  DVC could not be computed: {dvc_result['recommendation']}")
 
     # 3. Run UMAP grid
     print("\n[3/5] Running UMAP grid...")
@@ -1682,7 +1765,7 @@ def run_experiment(
     print("=" * 70)
 
     excel_path = _output_dir / "umap_clustering_comparison.xlsx"
-    export_results_to_excel(results, excel_path, elbow_results=elbow_results)
+    export_results_to_excel(results, excel_path, elbow_results=elbow_results, dvc_result=dvc_result)
 
     # Generate coherence vs k analysis
     print_coherence_by_k_table(results)
@@ -1741,6 +1824,19 @@ def run_experiment(
                     for rec, count in rec_counts.items():
                         pct = count / len(hdbscan_recs) * 100
                         print(f"  {rec}: {count}/{len(hdbscan_recs)} ({pct:.0f}%)")
+
+    # DVC Summary
+    if dvc_result and not np.isnan(dvc_result.get('dvc', np.nan)):
+        dvc = dvc_result['dvc']
+        rec = dvc_result['recommendation']
+        print(f"\nDensity Variation Coefficient (computed on original embeddings):")
+        print(f"  DVC = {dvc:.3f}")
+        if rec == 'HDBSCAN':
+            print(f"  → High density variation (>{DVC_HIGH_THRESHOLD}) suggests HDBSCAN")
+        elif rec == 'AGGLOMERATIVE':
+            print(f"  → Uniform density (<{DVC_LOW_THRESHOLD}) suggests Agglomerative/K-means")
+        else:
+            print(f"  → Intermediate regime ({DVC_LOW_THRESHOLD}-{DVC_HIGH_THRESHOLD}) - both algorithms viable")
 
     print(f"\nTotal experiments: {len(results)}")
     print(f"Results saved to: {excel_path}")
@@ -1805,6 +1901,9 @@ def run_experiment(
         'hdbscan_mean_persistence': hdbscan_mean_persistence,
         'hdbscan_persistence_stable_pct': hdbscan_persistence_stable_pct,
         'noise_rate_cv': noise_rate_cv,
+        # DVC (Density Variation Coefficient)
+        'dvc': dvc_result.get('dvc', np.nan) if dvc_result else np.nan,
+        'dvc_recommendation': dvc_result.get('recommendation', np.nan) if dvc_result else np.nan,
         'best_per_algo': {
             algo: {
                 'coherence': best_per_algo[algo]['coherence'],
@@ -1912,6 +2011,9 @@ def generate_comparison_report(all_results: List[Dict], output_path: Path):
             'hdbscan_mean_persistence': r.get('hdbscan_mean_persistence', np.nan),
             'hdbscan_persistence_stable_pct': r.get('hdbscan_persistence_stable_pct', np.nan),
             'noise_rate_cv': r.get('noise_rate_cv', np.nan),
+            # DVC metrics
+            'dvc': r.get('dvc', np.nan),
+            'dvc_recommendation': r.get('dvc_recommendation', np.nan),
         }
 
         # Add best per algorithm
@@ -1939,9 +2041,12 @@ def generate_comparison_report(all_results: List[Dict], output_path: Path):
             persistence_str = ""
             if pd.notna(row.get('hdbscan_mean_persistence')):
                 persistence_str = f", persistence={row['hdbscan_mean_persistence']:.2f}"
+            dvc_str = ""
+            if pd.notna(row.get('dvc')):
+                dvc_str = f", DVC={row['dvc']:.3f}→{row['dvc_recommendation']}"
             print(f"  {row['dataset']}: n={row['n_ideas']}, best={row['best_algorithm']} "
                   f"(coh={row['best_coherence']:.3f}, k={row['best_k']}), "
-                  f"knee_meaningful={row['knee_meaningful_pct']:.0f}%{persistence_str}")
+                  f"knee_meaningful={row['knee_meaningful_pct']:.0f}%{persistence_str}{dvc_str}")
 
     # Export to Excel
     output_path.parent.mkdir(parents=True, exist_ok=True)
