@@ -22,6 +22,11 @@ kneed>=0.8.0            # Knee/elbow detection for clustering strategy
 
 # Visualization
 matplotlib>=3.8.0
+plotly>=5.18.0              # For Optuna visualizations
+kaleido>=0.2.1              # For saving plotly figures as images
+
+# Hyperparameter optimization
+optuna>=3.5.0
 
 # LLM / AI
 openai>=1.60.0          # Requires 1.60+ for Responses API

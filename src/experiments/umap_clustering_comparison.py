@@ -66,8 +66,12 @@ RUN_MODE = 'single'
 #VARIABLE = "Qd1_combined"
 #SAMPLE_SIZE = 2000
 
-FILENAME = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-VARIABLE = "Qd1_combined"
+#FILENAME = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+#VARIABLE = "Qd1_combined"
+#SAMPLE_SIZE = 2000
+
+FILENAME = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+VARIABLE = "Q15"
 SAMPLE_SIZE = 2000
 
 # UMAP grid configuration
@@ -77,6 +81,10 @@ UMAP_MIN_DIST = 0.1
 
 # K-means and Agglomerative K range
 K_RANGE = range(3, 16)
+
+# Persistence threshold for algorithm selection
+# Mean persistence >= this suggests stable HDBSCAN clusters
+PERSISTENCE_THRESHOLD = 0.45
 
 # Output paths
 # For 'all' mode, creates subdirectories per dataset
@@ -288,6 +296,74 @@ def run_umap(embeddings: np.ndarray, n_neighbors: int, n_components: int,
 # CLUSTERING FUNCTIONS
 # =============================================================================
 
+def extract_persistence_metrics(clusterer: hdbscan.HDBSCAN, labels: np.ndarray) -> Dict:
+    """
+    Extract cluster persistence metrics from fitted HDBSCAN model.
+
+    Persistence measures how stable clusters are across different density thresholds
+    in the HDBSCAN dendrogram. Higher persistence = more stable/robust clusters.
+
+    Args:
+        clusterer: Fitted HDBSCAN model
+        labels: Cluster labels from the model
+
+    Returns:
+        Dict with:
+        - persistence_values: List of per-cluster persistence scores
+        - mean_persistence: Mean persistence across all clusters
+        - min_persistence: Minimum persistence value
+        - max_persistence: Maximum persistence value
+        - std_persistence: Standard deviation of persistence values
+        - weighted_persistence: Size-weighted persistence (larger clusters weighted more)
+    """
+    # Try both attribute names (depends on HDBSCAN version)
+    persistence = getattr(clusterer, "cluster_persistence_", None)
+    if persistence is None:
+        persistence = getattr(clusterer, "cluster_stability_", None)
+
+    # Handle missing or empty persistence data
+    if persistence is None or len(persistence) == 0:
+        return {
+            'persistence_values': [],
+            'mean_persistence': np.nan,
+            'min_persistence': np.nan,
+            'max_persistence': np.nan,
+            'std_persistence': np.nan,
+            'weighted_persistence': np.nan
+        }
+
+    persistence = np.array(persistence)
+
+    # Calculate basic statistics
+    metrics = {
+        'persistence_values': persistence.tolist(),
+        'mean_persistence': float(np.mean(persistence)),
+        'min_persistence': float(np.min(persistence)),
+        'max_persistence': float(np.max(persistence)),
+        'std_persistence': float(np.std(persistence)) if len(persistence) > 1 else 0.0,
+    }
+
+    # Calculate size-weighted persistence (same formula as clusterer.py _cluster_stability)
+    # Formula: (1/N_non_noise) * sum(persistence[c] * |cluster_c|)
+    mask = labels >= 0
+    if np.any(mask):
+        labels_non_noise = labels[mask]
+        n = labels_non_noise.size
+        max_lab = int(labels_non_noise.max())
+        counts = np.bincount(labels_non_noise, minlength=max_lab + 1).astype(float)
+        k = min(len(persistence), len(counts))
+        if k > 0 and n > 0:
+            weighted = float(np.dot(persistence[:k], counts[:k]) / n)
+        else:
+            weighted = np.nan
+    else:
+        weighted = np.nan
+
+    metrics['weighted_persistence'] = weighted
+
+    return metrics
+
+
 def compute_dbcv(labels: np.ndarray, embeddings: np.ndarray) -> float:
     """
     Compute DBCV (Density-Based Clustering Validation) score.
@@ -330,7 +406,7 @@ def run_hdbscan_grid(reduced: np.ndarray, n_samples: int) -> Dict:
         n_samples: Number of samples (for parameter calculation)
 
     Returns:
-        dict with best labels, params, and metrics
+        dict with best labels, params, metrics, AND persistence metrics
     """
     sqrt_n = np.sqrt(n_samples)
     mcs_grid = [
@@ -341,6 +417,7 @@ def run_hdbscan_grid(reduced: np.ndarray, n_samples: int) -> Dict:
 
     best_result = None
     best_dbcv = -2.0
+    best_clusterer = None  # Store the fitted model for persistence extraction
 
     for mcs in mcs_grid:
         ms = max(1, int(0.5 * mcs))
@@ -360,10 +437,23 @@ def run_hdbscan_grid(reduced: np.ndarray, n_samples: int) -> Dict:
         noise_count = (labels == -1).sum()
         noise_rate = noise_count / len(labels)
 
-        print(f"    HDBSCAN mcs={mcs}, ms={ms}: k={n_clusters}, noise={noise_rate:.2%}, DBCV={dbcv:.3f}")
+        # Extract persistence for logging
+        persistence_metrics = extract_persistence_metrics(clusterer, labels)
+        mean_pers = persistence_metrics.get('mean_persistence', np.nan)
+        weighted_pers = persistence_metrics.get('weighted_persistence', np.nan)
+        pers_str = ""
+        if not np.isnan(mean_pers):
+            pers_str = f", pers(mean={mean_pers:.3f}"
+            if not np.isnan(weighted_pers):
+                pers_str += f", wgt={weighted_pers:.3f})"
+            else:
+                pers_str += ")"
+
+        print(f"    HDBSCAN mcs={mcs}, ms={ms}: k={n_clusters}, noise={noise_rate:.2%}, DBCV={dbcv:.3f}{pers_str}")
 
         if dbcv > best_dbcv:
             best_dbcv = dbcv
+            best_clusterer = clusterer  # Keep reference to best model
             best_result = {
                 'labels': labels,
                 'n_clusters': n_clusters,
@@ -371,6 +461,17 @@ def run_hdbscan_grid(reduced: np.ndarray, n_samples: int) -> Dict:
                 'dbcv': dbcv,
                 'params': {'min_cluster_size': mcs, 'min_samples': ms}
             }
+
+    # Extract persistence metrics from best clusterer
+    if best_result and best_clusterer is not None:
+        persistence_metrics = extract_persistence_metrics(best_clusterer, best_result['labels'])
+        best_result.update({
+            'mean_persistence': persistence_metrics['mean_persistence'],
+            'min_persistence': persistence_metrics['min_persistence'],
+            'max_persistence': persistence_metrics['max_persistence'],
+            'std_persistence': persistence_metrics['std_persistence'],
+            'weighted_persistence': persistence_metrics['weighted_persistence'],
+        })
 
     return best_result
 
@@ -861,6 +962,93 @@ def choose_cluster_strategy_via_knee(
     }
 
 
+def choose_cluster_strategy_combined(
+    knee_result: Dict,
+    persistence_metrics: Dict,
+    persistence_threshold: float = PERSISTENCE_THRESHOLD,
+    y_diff_threshold: float = 0.6
+) -> Dict:
+    """
+    Combined algorithm selection using BOTH knee detection AND persistence metrics.
+
+    Decision Logic (4-quadrant matrix):
+    ┌─────────────────┬─────────────────────────┬─────────────────────────┐
+    │                 │ High Persistence (≥0.45)│ Low Persistence (<0.45) │
+    ├─────────────────┼─────────────────────────┼─────────────────────────┤
+    │ Sharp Knee      │ HDBSCAN_STRONG          │ HDBSCAN_WEAK            │
+    │ (ydiff ≥ 0.6)   │ (high confidence)       │ (medium confidence)     │
+    ├─────────────────┼─────────────────────────┼─────────────────────────┤
+    │ Flat Knee       │ HDBSCAN_WEAK            │ AGGLOMERATIVE_OR_KMEANS │
+    │ (ydiff < 0.6)   │ (medium confidence)     │ (high confidence)       │
+    └─────────────────┴─────────────────────────┴─────────────────────────┘
+
+    Args:
+        knee_result: Dict from choose_cluster_strategy_via_knee()
+        persistence_metrics: Dict with mean_persistence, etc. (from extract_persistence_metrics)
+        persistence_threshold: Minimum mean_persistence for stable clusters (default from config)
+        y_diff_threshold: Minimum y_difference for sharp knee (default 0.6)
+
+    Returns:
+        Dict with:
+        - recommendation: "HDBSCAN_STRONG" | "HDBSCAN_WEAK" | "AGGLOMERATIVE_OR_KMEANS"
+        - has_sharp_knee: bool
+        - has_high_persistence: bool (or None if data unavailable)
+        - y_difference: float
+        - mean_persistence: float
+        - confidence: "high" | "medium" | "low"
+        - reasoning: str explaining the decision
+    """
+    has_sharp_knee = knee_result.get('has_sharp_knee', False)
+    y_difference = knee_result.get('y_difference', 0.0)
+    mean_persistence = persistence_metrics.get('mean_persistence', np.nan)
+
+    # Handle missing persistence data - fall back to knee-only decision
+    if np.isnan(mean_persistence):
+        return {
+            'recommendation': "HDBSCAN" if has_sharp_knee else "AGGLOMERATIVE_OR_KMEANS",
+            'has_sharp_knee': has_sharp_knee,
+            'has_high_persistence': None,
+            'y_difference': y_difference,
+            'mean_persistence': np.nan,
+            'confidence': 'low',
+            'reasoning': f'Persistence data unavailable, using knee detection only (ydiff={y_difference:.2f})'
+        }
+
+    has_high_persistence = mean_persistence >= persistence_threshold
+
+    # 4-quadrant decision matrix
+    if has_sharp_knee and has_high_persistence:
+        # Best case: both signals agree HDBSCAN is appropriate
+        recommendation = "HDBSCAN_STRONG"
+        confidence = "high"
+        reasoning = f"Sharp knee (ydiff={y_difference:.2f}) + stable clusters (persistence={mean_persistence:.2f}≥{persistence_threshold})"
+    elif has_sharp_knee and not has_high_persistence:
+        # Sharp knee but clusters not very stable - proceed with caution
+        recommendation = "HDBSCAN_WEAK"
+        confidence = "medium"
+        reasoning = f"Sharp knee (ydiff={y_difference:.2f}) but weak cluster stability (persistence={mean_persistence:.2f}<{persistence_threshold})"
+    elif not has_sharp_knee and has_high_persistence:
+        # No clear knee but clusters are stable - density structure may exist
+        recommendation = "HDBSCAN_WEAK"
+        confidence = "medium"
+        reasoning = f"Flat knee (ydiff={y_difference:.2f}) but high persistence ({mean_persistence:.2f}≥{persistence_threshold}) suggests density structure"
+    else:
+        # Both signals agree: no density structure
+        recommendation = "AGGLOMERATIVE_OR_KMEANS"
+        confidence = "high"
+        reasoning = f"Flat knee (ydiff={y_difference:.2f}) + low persistence ({mean_persistence:.2f}<{persistence_threshold}) - no clear density structure"
+
+    return {
+        'recommendation': recommendation,
+        'has_sharp_knee': has_sharp_knee,
+        'has_high_persistence': has_high_persistence,
+        'y_difference': y_difference,
+        'mean_persistence': mean_persistence,
+        'confidence': confidence,
+        'reasoning': reasoning
+    }
+
+
 def generate_knn_elbow_plots(embeddings: np.ndarray, umap_configs: List[Dict],
                              output_path: Path, k: int = 5) -> List[Dict]:
     """
@@ -1219,13 +1407,46 @@ def export_results_to_excel(results: List[Dict], output_path: Path,
         df['interp_method'] = df.apply(lambda row: elbow_lookup.get(
             (row['umap_neighbors'], row['umap_components']), {}).get('interp_method'), axis=1)
 
+    # Add combined recommendation columns for HDBSCAN rows
+    # Uses both knee detection and persistence metrics
+    def get_combined_recommendation(row):
+        if row['algorithm'] != 'HDBSCAN':
+            return {'recommendation': np.nan, 'confidence': np.nan, 'reasoning': np.nan}
+
+        # Get knee result for this UMAP config
+        elbow = elbow_lookup.get((row['umap_neighbors'], row['umap_components']), {})
+        knee_result = {
+            'has_sharp_knee': elbow.get('has_sharp_knee', False),
+            'y_difference': elbow.get('y_difference', 0.0)
+        }
+
+        # Get persistence metrics from the row
+        persistence_metrics = {
+            'mean_persistence': row.get('mean_persistence', np.nan)
+        }
+
+        # Get combined recommendation
+        combined = choose_cluster_strategy_combined(knee_result, persistence_metrics)
+        return combined
+
+    if elbow_lookup:
+        combined_results = df.apply(get_combined_recommendation, axis=1)
+        df['combined_recommendation'] = combined_results.apply(lambda x: x.get('recommendation', np.nan))
+        df['combined_confidence'] = combined_results.apply(lambda x: x.get('confidence', np.nan))
+        df['combined_reasoning'] = combined_results.apply(lambda x: x.get('reasoning', np.nan))
+
     # Reorder columns for readability
     col_order = [
         'umap_neighbors', 'umap_components', 'algorithm',
         'n_clusters', 'noise_rate',
         'coherence', 'coherence_n_unacceptable', 'coherence_n_low', 'coherence_n_moderate', 'coherence_n_high', 'coherence_breakdown',
         'silhouette', 'davies_bouldin', 'dbcv',
+        # Persistence metrics (HDBSCAN only)
+        'mean_persistence', 'min_persistence', 'max_persistence', 'std_persistence', 'weighted_persistence',
+        # Knee detection
         'knee_K', 'y_difference', 'has_sharp_knee', 'knee_meaningful', 'knee_recommendation', 'kneedle_S', 'interp_method',
+        # Combined recommendation (knee + persistence)
+        'combined_recommendation', 'combined_confidence', 'combined_reasoning',
         'params'
     ]
     df = df[[c for c in col_order if c in df.columns]]
@@ -1377,20 +1598,28 @@ def run_experiment(
             )
             # Apply algorithm-appropriate metric filtering
             metrics = apply_algorithm_metric_filter(metrics, 'HDBSCAN')
+
+            # Add persistence metrics (from run_hdbscan_grid)
             results.append({
                 'umap_neighbors': n_neighbors,
                 'umap_components': n_components,
                 'algorithm': 'HDBSCAN',
                 'params': str(hdbscan_result['params']),
+                'mean_persistence': hdbscan_result.get('mean_persistence', np.nan),
+                'min_persistence': hdbscan_result.get('min_persistence', np.nan),
+                'max_persistence': hdbscan_result.get('max_persistence', np.nan),
+                'std_persistence': hdbscan_result.get('std_persistence', np.nan),
+                'weighted_persistence': hdbscan_result.get('weighted_persistence', np.nan),
                 **metrics
             })
-            # Track best HDBSCAN
+            # Track best HDBSCAN (include persistence)
             if metrics['coherence'] > best_per_algo['HDBSCAN']['coherence']:
                 best_per_algo['HDBSCAN'] = {
                     'coherence': metrics['coherence'],
                     'labels': hdbscan_result['labels'].copy(),
                     'params': hdbscan_result['params'],
-                    'breakdown': metrics['coherence_breakdown']
+                    'breakdown': metrics['coherence_breakdown'],
+                    'mean_persistence': hdbscan_result.get('mean_persistence', np.nan)
                 }
 
         # Agglomerative (all k values)
@@ -1480,9 +1709,38 @@ def run_experiment(
         if not algo_df.empty:
             best = algo_df.loc[algo_df['coherence'].idxmax()]
             breakdown = best_per_algo[algo].get('breakdown', 'N/A')
+            persistence_str = ""
+            if algo == 'HDBSCAN':
+                mean_pers = best_per_algo[algo].get('mean_persistence', np.nan)
+                if not np.isnan(mean_pers):
+                    persistence_str = f", persistence={mean_pers:.3f}"
             print(f"  {algo}: n={best['umap_neighbors']}, d={best['umap_components']}, "
-                  f"coherence={best['coherence']:.3f}, k={best['n_clusters']}")
+                  f"coherence={best['coherence']:.3f}, k={best['n_clusters']}{persistence_str}")
             print(f"    Breakdown: {breakdown}")
+
+    # Persistence analysis summary (HDBSCAN only)
+    hdbscan_df = df[df['algorithm'] == 'HDBSCAN']
+    if not hdbscan_df.empty and 'mean_persistence' in hdbscan_df.columns:
+        persistence_values = hdbscan_df['mean_persistence'].dropna()
+        if len(persistence_values) > 0:
+            mean_persistence_overall = persistence_values.mean()
+            persistence_stable_count = (persistence_values >= PERSISTENCE_THRESHOLD).sum()
+            persistence_stable_pct = persistence_stable_count / len(persistence_values) * 100
+
+            print(f"\nHDBSCAN Persistence Analysis:")
+            print(f"  Mean persistence across all configs: {mean_persistence_overall:.3f}")
+            print(f"  Configs with stable clusters (≥{PERSISTENCE_THRESHOLD}): "
+                  f"{persistence_stable_count}/{len(persistence_values)} ({persistence_stable_pct:.0f}%)")
+
+            # Combined recommendation summary
+            if 'combined_recommendation' in df.columns:
+                hdbscan_recs = df[df['algorithm'] == 'HDBSCAN']['combined_recommendation'].dropna()
+                if len(hdbscan_recs) > 0:
+                    rec_counts = hdbscan_recs.value_counts()
+                    print(f"\nCombined Recommendations (knee + persistence):")
+                    for rec, count in rec_counts.items():
+                        pct = count / len(hdbscan_recs) * 100
+                        print(f"  {rec}: {count}/{len(hdbscan_recs)} ({pct:.0f}%)")
 
     print(f"\nTotal experiments: {len(results)}")
     print(f"Results saved to: {excel_path}")
@@ -1518,6 +1776,22 @@ def run_experiment(
     n_meaningful = sum(1 for r in elbow_results if r.get('knee_meaningful', False))
     knee_meaningful_pct = n_meaningful / len(elbow_results) * 100 if elbow_results else 0
 
+    # Compute HDBSCAN persistence summary
+    hdbscan_persistence_values = df[df['algorithm'] == 'HDBSCAN']['mean_persistence'].dropna()
+    if len(hdbscan_persistence_values) > 0:
+        hdbscan_mean_persistence = float(hdbscan_persistence_values.mean())
+        hdbscan_persistence_stable_pct = float((hdbscan_persistence_values >= PERSISTENCE_THRESHOLD).sum() / len(hdbscan_persistence_values) * 100)
+        # Noise rate coefficient of variation (stability measure)
+        noise_rates = df[df['algorithm'] == 'HDBSCAN']['noise_rate'].dropna()
+        if len(noise_rates) > 0 and noise_rates.mean() > 0:
+            noise_rate_cv = float(noise_rates.std() / noise_rates.mean())
+        else:
+            noise_rate_cv = np.nan
+    else:
+        hdbscan_mean_persistence = np.nan
+        hdbscan_persistence_stable_pct = np.nan
+        noise_rate_cv = np.nan
+
     return {
         'dataset': _variable_key,
         'filename': _filename,
@@ -1527,11 +1801,16 @@ def run_experiment(
         'best_coherence': best_coherence,
         'best_k': best_k,
         'knee_meaningful_pct': knee_meaningful_pct,
+        # Persistence summary
+        'hdbscan_mean_persistence': hdbscan_mean_persistence,
+        'hdbscan_persistence_stable_pct': hdbscan_persistence_stable_pct,
+        'noise_rate_cv': noise_rate_cv,
         'best_per_algo': {
             algo: {
                 'coherence': best_per_algo[algo]['coherence'],
                 'params': best_per_algo[algo]['params'],
-                'breakdown': best_per_algo[algo]['breakdown']
+                'breakdown': best_per_algo[algo]['breakdown'],
+                'mean_persistence': best_per_algo[algo].get('mean_persistence', np.nan) if algo == 'HDBSCAN' else np.nan
             }
             for algo in ['HDBSCAN', 'Agglomerative', 'K-means']
             if best_per_algo[algo]['labels'] is not None
@@ -1629,14 +1908,22 @@ def generate_comparison_report(all_results: List[Dict], output_path: Path):
             'best_coherence': r['best_coherence'],
             'best_k': r['best_k'],
             'knee_meaningful_pct': r['knee_meaningful_pct'],
+            # Persistence metrics
+            'hdbscan_mean_persistence': r.get('hdbscan_mean_persistence', np.nan),
+            'hdbscan_persistence_stable_pct': r.get('hdbscan_persistence_stable_pct', np.nan),
+            'noise_rate_cv': r.get('noise_rate_cv', np.nan),
         }
 
         # Add best per algorithm
         for algo in ['HDBSCAN', 'Agglomerative', 'K-means']:
             if algo in r.get('best_per_algo', {}):
                 row[f'{algo}_coherence'] = r['best_per_algo'][algo]['coherence']
+                if algo == 'HDBSCAN':
+                    row[f'{algo}_persistence'] = r['best_per_algo'][algo].get('mean_persistence', np.nan)
             else:
                 row[f'{algo}_coherence'] = np.nan
+                if algo == 'HDBSCAN':
+                    row[f'{algo}_persistence'] = np.nan
 
         rows.append(row)
 
@@ -1649,9 +1936,12 @@ def generate_comparison_report(all_results: List[Dict], output_path: Path):
         if 'error' in row and pd.notna(row.get('error')):
             print(f"  {row['dataset']}: ERROR - {row['error']}")
         else:
+            persistence_str = ""
+            if pd.notna(row.get('hdbscan_mean_persistence')):
+                persistence_str = f", persistence={row['hdbscan_mean_persistence']:.2f}"
             print(f"  {row['dataset']}: n={row['n_ideas']}, best={row['best_algorithm']} "
                   f"(coh={row['best_coherence']:.3f}, k={row['best_k']}), "
-                  f"knee_meaningful={row['knee_meaningful_pct']:.0f}%")
+                  f"knee_meaningful={row['knee_meaningful_pct']:.0f}%{persistence_str}")
 
     # Export to Excel
     output_path.parent.mkdir(parents=True, exist_ok=True)
