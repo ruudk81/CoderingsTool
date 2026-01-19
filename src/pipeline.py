@@ -22,15 +22,15 @@ model_config = ModelConfig()
 
 #  ===  STANDALONE ======================================================================================================== 
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
-sample_size = 50
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Q20"
+#sample_size = 50
 
-# filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-# id_column = "DLNMID"
-# var_name = "Qd1_combined"
-# sample_size = 2000 
+filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+sample_size = 2000 
 
 #filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 #id_column = "DLNMID"
@@ -42,7 +42,7 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 2
+RUN_UNTIL_STEP = 4
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -801,7 +801,13 @@ def step_5_cluster(
     verbose=True,
     streamlit_container=None        # Optional progress updates
 ):
-    """Step 5: Perform dimensionality reduction and clustering
+    """Step 5: Perform dimensionality reduction and clustering using ClustererV2
+
+    Uses ClustererV2 with:
+    - Automatic algorithm selection (DVC + knee detection)
+    - Optuna-based HDBSCAN optimization
+    - c-TF-IDF keyword extraction
+    - LLM cluster label generation
 
     Args:
         embedded_text: List of EmbeddingsModel instances from step 4
@@ -816,11 +822,11 @@ def step_5_cluster(
     Returns:
         List[models.ClusterModel]: List of models with cluster assignments
     """
-    from utils.clusterer import Clusterer
+    from utils.clusterer import ClustererV2, ClustererV2Config
     from utils.verboseReporter import VerboseReporter
-    from config import HDBSCANConfig, DEFAULT_HDBSCAN_CONFIG, DEFAULT_UMAP_CONFIG, DEFAULT_CLUSTERING_CONFIG
 
     step_name = "initial_clusters"
+    representations_step_name = "cluster_representations"
 
     # Auto-generate variable_key if not provided
     if variable_key is None:
@@ -847,11 +853,8 @@ def step_5_cluster(
 
     # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Clustering ideas with UMAP + HDBSCAN...")
+        streamlit_container.text("🔄 Clustering ideas with ClustererV2 (auto algorithm selection)...")
     verbose_reporter = VerboseReporter(verbose)
-
-    CLUSTERING_ALPHA = HDBSCANConfig.alpha
-    CLUSTERING_EPSILON = HDBSCANConfig.cluster_selection_epsilon
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
         initial_cluster_results = cache_manager.load_from_cache(filename, step_name, variable_key, models.ClusterModel)
@@ -868,40 +871,125 @@ def step_5_cluster(
         if streamlit_container:
             streamlit_container.success(f"✅ Clustering completed (from cache): {num_initial_clusters} clusters")
     else:
-        verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
+        verbose_reporter.section_header("INITIAL CLUSTERING PHASE (ClustererV2)")
         start_time = time.time()
 
-        # Create custom HDBSCAN config if overrides specified
-        hdbscan_config = None
-        if CLUSTERING_ALPHA is not None or CLUSTERING_EPSILON is not None:
-            hdbscan_config = HDBSCANConfig(
-                min_cluster_size=DEFAULT_HDBSCAN_CONFIG.min_cluster_size,
-                min_samples=DEFAULT_HDBSCAN_CONFIG.min_samples,
-                cluster_selection_epsilon=DEFAULT_HDBSCAN_CONFIG.cluster_selection_epsilon,
-                alpha=DEFAULT_HDBSCAN_CONFIG.alpha,
-                metric=DEFAULT_HDBSCAN_CONFIG.metric,
-                cluster_selection_method=DEFAULT_HDBSCAN_CONFIG.cluster_selection_method,
-                prediction_data=DEFAULT_HDBSCAN_CONFIG.prediction_data,
-                approx_min_span_tree=DEFAULT_HDBSCAN_CONFIG.approx_min_span_tree,
-                gen_min_span_tree=DEFAULT_HDBSCAN_CONFIG.gen_min_span_tree,
-                merge_similar_clusters=True,
-                merge_similarity_threshold=0.95
-            )
+        # Configure ClustererV2
+        config = ClustererV2Config(
+            # Algorithm selection: auto (DVC + knee detection)
+            algorithm_mode="auto",
 
-        clusterer = Clusterer(
-            embedded_text,
-            umap_config=DEFAULT_UMAP_CONFIG,
-            clustering_config=DEFAULT_CLUSTERING_CONFIG,
-            hdbscan_config=hdbscan_config,
-            verbose=verbose
+            # DVC thresholds
+            dvc_high_threshold=0.45,
+            dvc_low_threshold=0.25,
+            force_agglomerative_below_dvc=0.25,
+
+            # Knee detection
+            knee_y_diff_threshold=0.6,
+
+            # Optuna optimization
+            use_optuna=True,
+            max_noise_rate=0.20,
+            min_clusters=3,
+
+            # Quality-triggered re-search
+            enable_research=True,
+            research_max_noise_rate=0.10,
+            research_min_validity=0.70,
+            research_cluster_deviation_threshold=0.15,
+
+            # Post-processing
+            enable_merging=True,
+            merge_centroid_threshold=0.95,
+            merge_pairwise_threshold=0.98,
+
+            # Noise reduction (BERTopic-style)
+            noise_reduction_strategy="embeddings",
+            noise_reduction_threshold=0.5,
+
+            # c-TF-IDF keyword extraction
+            generate_ctfidf=True,
+            ctfidf_top_k=10,
+            ctfidf_use_lemmatization=True,
+
+            # LLM cluster labels (for speculative codes)
+            generate_llm_labels=True,
+
+            # Output
+            verbose=verbose,
         )
+
+        # Run clustering
+        clusterer = ClustererV2(embedded_text, config=config)
         clusterer.run()
         initial_cluster_results = clusterer.to_cluster_model()
 
         end_time = time.time()
         elapsed_time = end_time - start_time
+
+        # Cache cluster results (primary output)
         cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
+
+        # Cache cluster representations separately (for speculative codes in step 6)
+        keywords = clusterer.get_cluster_keywords() or {}
+        labels = clusterer.get_cluster_labels() or {}
+
+        if keywords or labels:
+            representations = []
+            all_cluster_ids = set(keywords.keys()) | set(labels.keys())
+
+            for cluster_id in sorted(all_cluster_ids):
+                # Build LLM label model if available
+                llm_label = None
+                if cluster_id in labels:
+                    label = labels[cluster_id]
+                    llm_label = models.ClusterLabelModel(
+                        cluster_id=label.cluster_id,
+                        theme=label.theme,
+                        description=label.description,
+                        key_concepts=label.key_concepts,
+                        n_ideas=label.n_ideas
+                    )
+
+                rep = models.ClusterRepresentationModel(
+                    cluster_id=cluster_id,
+                    keywords=keywords.get(cluster_id, []),
+                    llm_label=llm_label
+                )
+                representations.append(rep)
+
+            # Get algorithm info for metadata
+            algorithm_rec = clusterer.get_algorithm_recommendation()
+            metrics = clusterer.get_metrics()
+
+            representations_model = models.ClusterRepresentationsModel(
+                representations=representations,
+                generation_metadata={
+                    "algorithm": algorithm_rec.recommended_algorithm if algorithm_rec else "unknown",
+                    "dvc_value": algorithm_rec.dvc_value if algorithm_rec else None,
+                    "n_clusters": metrics.n_clusters if metrics else len(all_cluster_ids),
+                    "noise_rate": metrics.noise_rate if metrics else None,
+                    "mean_coherence": metrics.mean_coherence if metrics else None,
+                }
+            )
+
+            # Cache representations (for step 6 speculative codes)
+            cache_manager.save_to_cache(
+                representations_model.model_dump(),
+                filename,
+                representations_step_name,
+                variable_key,
+                elapsed_time,
+                var_lab=var_lab
+            )
+
         print(f"\n'Initial clustering' completed in {elapsed_time:.2f} seconds.")
+
+        # Print summary
+        if verbose and algorithm_rec:
+            print(f"  Algorithm: {algorithm_rec.recommended_algorithm} (DVC={algorithm_rec.dvc_value:.3f})")
+        if verbose and metrics:
+            print(f"  Clusters: {metrics.n_clusters}, Noise: {metrics.noise_rate:.1%}, Coherence: {metrics.mean_coherence:.3f}")
 
         # Optional Streamlit success message
         if streamlit_container:
@@ -1016,12 +1104,41 @@ def step_6_generate_codebook(
 
         # Phase 1: Generate starter codes (optional)
         if use_speculative_starter_codes:
-            starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
-                var_lab=var_lab,
-                verbose=verbose,
-                prompt_printer=prompt_printer
-            )
-            starter_codes = starter_generator.generate()
+            # First, try to load LLM cluster labels from step 5 representations cache
+            starter_codes = []
+            representations_step_name = "cluster_representations"
+
+            if cache_manager.is_cache_valid(filename, representations_step_name, variable_key):
+                try:
+                    # Load as dict since we cached with .model_dump()
+                    representations_data = cache_manager.load_from_cache(
+                        filename, representations_step_name, variable_key
+                    )
+                    if representations_data and len(representations_data) > 0:
+                        rep_data = representations_data[0] if isinstance(representations_data, list) else representations_data
+                        if isinstance(rep_data, dict) and 'representations' in rep_data:
+                            for rep in rep_data['representations']:
+                                if rep.get('llm_label'):
+                                    label = rep['llm_label']
+                                    starter_codes.append({
+                                        'code': label.get('theme', ''),
+                                        'definition': label.get('description', ''),
+                                        'cluster_id': label.get('cluster_id')
+                                    })
+                            if starter_codes:
+                                print(f"Loaded {len(starter_codes)} speculative codes from ClustererV2 LLM labels")
+                except Exception as e:
+                    print(f"Failed to load cluster representations: {e}")
+                    starter_codes = []
+
+            # Fall back to speculative starter codes generator if no LLM labels
+            if not starter_codes:
+                starter_generator = speculativeStarterCodes.SpeculativeStarterCodes(
+                    var_lab=var_lab,
+                    verbose=verbose,
+                    prompt_printer=prompt_printer
+                )
+                starter_codes = starter_generator.generate()
         else:
             # Use empty starter codes when speculative generation is disabled
             starter_codes = []

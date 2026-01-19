@@ -1,4 +1,4 @@
-from typing import List, Any, Optional, Type, Union, Dict
+from typing import List, Any, Optional, Type, Union, Dict, Tuple
 from pydantic import BaseModel, ConfigDict #, Field, RootModel
 import numpy as np
 import numpy.typing as npt
@@ -42,6 +42,7 @@ class IdeasExtractedSubmodel(BaseModel):
 class IdeasExtractedModel(QualityFilteredModel):
     response_ideas: Optional[List[IdeasExtractedSubmodel]] = None
     idea_count: int = 0
+    template_prefix: Optional[str] = None  # Canonical phrasing prefix for embedding text extraction
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
@@ -144,6 +145,31 @@ class ThemeEnrichedCodebookModel(CodebookModel):
     themes_summary: Optional[List[Dict[str, Any]]] = None
     code_to_theme_mapping: Optional[Dict[str, str]] = None
     theme_methodology: Optional[str] = None
+
+
+# === CLUSTER REPRESENTATION MODELS ========================================================================================================
+
+class ClusterLabelModel(BaseModel):
+    """LLM-generated label for a cluster."""
+    cluster_id: int
+    theme: str                    # Short atomic label (≤10 words)
+    description: str              # 1-2 sentence description
+    key_concepts: List[str]       # 3-5 key concepts
+    n_ideas: int                  # Number of ideas in cluster
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ClusterRepresentationModel(BaseModel):
+    """Representation data for a single cluster (keywords + optional LLM label)."""
+    cluster_id: int
+    keywords: List[Tuple[str, float]]           # c-TF-IDF keywords [(word, score), ...]
+    llm_label: Optional[ClusterLabelModel] = None  # LLM-generated label (if enabled)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class ClusterRepresentationsModel(BaseModel):
+    """Container for all cluster representations (for caching)."""
+    representations: List[ClusterRepresentationModel]
+    generation_metadata: Optional[Dict[str, Any]] = None  # Algorithm, config, timestamps
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 
