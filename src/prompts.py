@@ -1108,6 +1108,41 @@ Critical remarks:
 """
 
 # =============================================================================
+# STEP 5: CLUSTER LABEL GENERATION (ClustererV2)
+# =============================================================================
+
+CLUSTER_DESCRIPTION_PROMPT = """You are a qualitative researcher analyzing survey response clusters.
+
+<inputs>
+Language: {language}
+Cluster ID: {cluster_id}
+Research question: "{survey_question}"
+Number of response ideas: {num_ideas}
+
+Statistical keywords (cluster-distinguishing terms):
+{keywords_section}
+
+Representative response ideas from this cluster:
+{ideas_list}
+</inputs>
+
+<task>
+Analyze this cluster and provide a thematic summary:
+1. Read all response ideas carefully
+2. Consider statistical keywords as hints about distinguishing terms
+3. Identify the common atomic theme that unifies these responses
+4. Extract 3-5 key concepts present in this cluster
+</task>
+
+<output_format>
+Provide your analysis in the following structured format:
+- theme: Short atomic thematic label (≤10 words)
+- description: Clear description (1-2 sentences)
+- key_concepts: List of 3-5 key concepts/themes
+</output_format>"""
+
+
+# =============================================================================
 # STEP 7 THEME ORGANIZATION WITH REASONING MODELS
 # =============================================================================
 
