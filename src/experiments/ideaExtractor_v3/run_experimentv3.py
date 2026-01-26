@@ -1,24 +1,19 @@
 #%%
 """
-IdeaExtractor V3 Experiment Runner - VERSION 3
+IdeaExtractor V3 Experiment Runner
 
 This script runs the ideaExtractor step (Step 3) in isolation for experimentation.
-It loads Step 2 (quality_filter) results from cache and runs idea extraction with
-configurable toggles for experimental prompts and extractor logic.
+It loads Step 2 (quality_filter) results from cache and runs idea extraction.
 
-Focus areas for v3:
-- OPTIMAL rate limiting strategy (learned tiktoken→API offset, real-time TPM tracking)
-- PID-style continuous throughput adjustment
-- Faster bootstrap convergence
-- Zero 429 errors while maximizing throughput
+NOTE: After migration, v3 (taxonomy-aware) is now the PRODUCTION ideaExtractor.
+The old ideaExtractor is archived at src/utils/old/ideaExtractor_v2.py.
 
 Usage:
     cd src && python -m experiments.ideaExtractor_v3.run_experimentv3
 
 Toggle modes:
-    USE_EXPERIMENTAL_EXTRACTOR = True  -> Uses local ideaExtractor_experimentalv3.py + local prompts.py
-    USE_EXPERIMENTAL_PROMPTS = True    -> Uses production ideaExtractor + local prompts.py (monkey-patched)
-    Both False                         -> Uses production ideaExtractor + production prompts (baseline)
+    USE_EXPERIMENTAL_EXTRACTOR = True  -> Uses production ideaExtractor (taxonomy-aware, migrated v3)
+    USE_EXPERIMENTAL_EXTRACTOR = False -> Uses archived old ideaExtractor (v2)
 """
 
 import os
@@ -109,21 +104,11 @@ EXPERIMENT_CONFIG = ExperimentConfig(
 
 def inject_experimental_prompts():
     """
-    Monkey-patch production prompts module with experimental prompts.
-    This must be called BEFORE importing IdeaExtractor from production.
+    [DEPRECATED] Prompt injection is no longer needed.
+    After migration, taxonomy prompts are now in production prompts.py.
+    This function is kept for backward compatibility but does nothing.
     """
-    from experiments.ideaExtractor_v3 import prompts as experimental_prompts
-    import prompts as production_prompts
-
-    # Inject all 6 experimental prompts
-    production_prompts.EXTRACT_SUBJECT = experimental_prompts.EXTRACT_SUBJECT
-    production_prompts.CONTEXT_SPECIFIER_PROMPT1 = experimental_prompts.CONTEXT_SPECIFIER_PROMPT1
-    production_prompts.CONTEXT_SPECIFIER_PROMPT2 = experimental_prompts.CONTEXT_SPECIFIER_PROMPT2
-    production_prompts.CONSOLIDATE_SPECIFIERS_GROUP1 = experimental_prompts.CONSOLIDATE_SPECIFIERS_GROUP1
-    production_prompts.CONSOLIDATE_SPECIFIERS_GROUP2 = experimental_prompts.CONSOLIDATE_SPECIFIERS_GROUP2
-    production_prompts.IDEA_EXTRACTION_PROMPT = experimental_prompts.IDEA_EXTRACTION_PROMPT
-
-    print("✅ Experimental prompts injected into production prompts module")
+    print("ℹ️ Prompt injection not needed - taxonomy prompts are now in production prompts.py")
 
 
 # =============================================================================
@@ -220,12 +205,13 @@ def run_experiment(config: ExperimentConfig = None):
         inject_experimental_prompts()
 
     # Import the appropriate IdeaExtractor
+    # Note: After migration, v3 (taxonomy-aware) is now production
     if config.use_experimental_extractor:
-        print("\n🔬 Using EXPERIMENTAL ideaExtractor (OPTIMAL strategy)")
-        from experiments.ideaExtractor_v3.ideaExtractor_experimentalv3 import IdeaExtractor
-    else:
-        print("\n🏭 Using PRODUCTION ideaExtractor")
+        print("\n🔬 Using PRODUCTION ideaExtractor (taxonomy-aware, migrated from v3)")
         from utils.ideaExtractor import IdeaExtractor
+    else:
+        print("\n🏭 Using OLD ideaExtractor (archived v2)")
+        from utils.old.ideaExtractor_v2 import IdeaExtractor
 
     # Import other utilities
     from utils import verboseReporter, promptPrinter

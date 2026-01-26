@@ -684,6 +684,24 @@ def step_3_extract_ideas(
         end_time = time.time()
         elapsed_time = end_time - start_time
         cache_manager.save_to_cache(encoded_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
+
+        # Build and cache extraction metadata (taxonomy, template prefix, context specifiers)
+        if hasattr(encoder, 'build_extraction_metadata'):
+            extraction_metadata = encoder.build_extraction_metadata(
+                filename=filename,
+                var_name=variable_key.split('_')[0] if '_' in variable_key else variable_key
+            )
+            cache_manager.save_metadata_to_cache(
+                metadata=extraction_metadata,
+                filename=filename,
+                step=step_name,
+                variable_key=variable_key,
+                processing_time=elapsed_time,
+                var_lab=var_lab
+            )
+            if verbose:
+                verbose_reporter.stat_line(f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}, template='{extraction_metadata.template_prefix[:50]}...'")
+
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
         # Optional Streamlit success message
