@@ -693,6 +693,14 @@ class SegmentationConfig:
 # EMBEDDING CONFIGURATION
 # =============================================================================
 
+# Embedding text format: controls what text is embedded
+# - "with_context": Full text including all specifier lines (original behavior)
+# - "unique_only": Strip specifiers and template prefix, embed only unique content
+# - "taxonomy_with_context": domain + topic + intent + taxonomy_phrase (space-concatenated)
+# - "taxonomy_unique_only": Just the taxonomy_phrase value
+# Note: taxonomy modes require experimental ideaExtractor_v2 output (which generates taxonomy_phrase)
+EMBEDDING_TEXT_FORMAT = "unique_only"
+
 @dataclass
 class EmbeddingConfig:
     """Configuration for embedding generation step"""

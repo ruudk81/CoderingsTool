@@ -6,9 +6,6 @@ import time
 import warnings
 import pandas as pd
 import numpy as np
-from pathlib import Path
-from datetime import datetime
-import io
 
 # Suppress IPython exit warning when running in Streamlit
 warnings.filterwarnings("ignore", message="To exit: use 'exit', 'quit', or Ctrl-D.")
@@ -31,10 +28,15 @@ model_config = ModelConfig()
 #var_name = "Q20"
 #sample_size = 50
 
-filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
-var_name = "Qd1_combined"
-sample_size = 2000 
+var_name = "Q20"
+sample_size = 500
+
+#filename = "M000000 Associatiemonitor Merk X net databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Qd1_combined"
+#sample_size = 2000 
 
 #filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 #id_column = "DLNMID"
@@ -46,7 +48,7 @@ sample_size = 2000
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 6
+RUN_UNTIL_STEP = 2
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -795,146 +797,6 @@ def step_4_generate_embeddings(
     return embedded_text
 
 
-# =============================================================================
-# STEP 5 HELPER: Export Clustering Results to File
-# =============================================================================
-
-def _export_clustering_results(
-    clusterer,
-    filename: str,
-    var_name: str,
-    sample_size,
-    algorithm_rec,
-    metrics,
-    keywords,
-    labels
-):
-    """
-    Export clustering results to a text file in exports/cluster_results/.
-
-    Mirrors the export functionality from experiments/clusterer_v2/run_clusterer.py
-    for audit trail and analysis.
-
-    Args:
-        clusterer: ClustererV2 instance
-        filename: Original data filename
-        var_name: Variable name
-        sample_size: Sample size (or None)
-        algorithm_rec: Algorithm recommendation object
-        metrics: Clustering metrics object
-        keywords: Dict of cluster keywords
-        labels: Dict of cluster labels
-    """
-    try:
-        # Determine project root and create output directory
-        project_root = Path(__file__).parent.parent
-        output_dir = project_root / "exports" / "cluster_results"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build filename
-        base_name = Path(filename).stem
-        sample_str = str(sample_size) if sample_size else "full"
-        date_str = datetime.now().strftime("%Y%m%d")
-        output_filename = f"cluster_results_{base_name}_{var_name}_{sample_str}_{date_str}.txt"
-        output_path = output_dir / output_filename
-
-        # Capture output
-        output_lines = []
-        output_lines.append("=" * 70)
-        output_lines.append("CLUSTERING RESULTS EXPORT")
-        output_lines.append("=" * 70)
-        output_lines.append(f"\nDataset: {filename}")
-        output_lines.append(f"Variable: {var_name}")
-        output_lines.append(f"Sample size: {sample_size if sample_size else 'full'}")
-        output_lines.append(f"Export date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-        # Algorithm recommendation
-        if algorithm_rec:
-            output_lines.append(f"\n{'='*70}")
-            output_lines.append("ALGORITHM RECOMMENDATION")
-            output_lines.append("=" * 70)
-            output_lines.append(f"Recommended: {algorithm_rec.recommended_algorithm} ({algorithm_rec.confidence} confidence)")
-            output_lines.append(f"DVC: {algorithm_rec.dvc_value:.3f} → {algorithm_rec.dvc_recommendation}")
-            output_lines.append(f"Knee: y_diff={algorithm_rec.y_difference:.2f}, sharp={algorithm_rec.has_sharp_knee}")
-            if algorithm_rec.is_forced:
-                output_lines.append(f"FORCED: Algorithm selection was forced by hard DVC rule")
-            output_lines.append(f"Reasoning: {algorithm_rec.reasoning}")
-
-        # Metrics
-        if metrics:
-            output_lines.append(f"\n{'='*70}")
-            output_lines.append("CLUSTERING METRICS")
-            output_lines.append("=" * 70)
-            output_lines.append(f"Clusters: {metrics.n_clusters}")
-            output_lines.append(f"Noise: {metrics.noise_count} ({metrics.noise_rate:.1%})")
-            output_lines.append(f"Coherence: {metrics.mean_coherence:.3f} ({metrics.coherence_breakdown})")
-            if metrics.dbcv is not None:
-                output_lines.append(f"DBCV: {metrics.dbcv:.3f}")
-            if metrics.silhouette is not None and not np.isnan(metrics.silhouette):
-                output_lines.append(f"Silhouette: {metrics.silhouette:.3f}")
-            if metrics.mean_persistence is not None:
-                output_lines.append(f"Persistence: mean={metrics.mean_persistence:.3f}, weighted={metrics.weighted_persistence:.3f}")
-            output_lines.append(f"Cluster sizes: min={metrics.min_cluster_size}, median={metrics.median_cluster_size}, max={metrics.max_cluster_size}")
-
-        # Template prefix
-        template_prefix = clusterer._template_prefix
-        if template_prefix:
-            prefix_display = template_prefix[:80] + "..." if len(template_prefix) > 80 else template_prefix
-            output_lines.append(f"\nTemplate prefix: '{prefix_display}'")
-
-        # Keywords summary
-        if keywords:
-            output_lines.append(f"\n{'='*70}")
-            output_lines.append(f"c-TF-IDF KEYWORDS ({len(keywords)} clusters)")
-            output_lines.append("=" * 70)
-            for cluster_id in sorted(keywords.keys()):
-                kw_list = keywords[cluster_id]
-                kw_str = ", ".join([f"{kw} ({score:.3f})" for kw, score in kw_list[:10]])
-                output_lines.append(f"Cluster {cluster_id}: {kw_str}")
-
-        # Cluster details with samples
-        output_lines.append(f"\n{'='*70}")
-        output_lines.append("CLUSTER DETAILS")
-        output_lines.append("=" * 70)
-
-        # Get cluster texts from clusterer
-        cluster_texts = clusterer._cluster_texts or {}
-        for cluster_id in sorted(cluster_texts.keys()):
-            texts = cluster_texts[cluster_id]
-            output_lines.append(f"\n{'-'*70}")
-            output_lines.append(f"CLUSTER {cluster_id} ({len(texts)} ideas)")
-            output_lines.append("-" * 70)
-
-            # LLM label if available
-            if labels and cluster_id in labels:
-                label = labels[cluster_id]
-                output_lines.append(f"Theme: {label.theme}")
-                output_lines.append(f"Description: {label.description}")
-                output_lines.append(f"Key concepts: {', '.join(label.key_concepts)}")
-
-            # Keywords for this cluster
-            if keywords and cluster_id in keywords:
-                kw_list = keywords[cluster_id]
-                kw_str = ", ".join([kw for kw, _ in kw_list[:8]])
-                output_lines.append(f"Keywords: {kw_str}")
-
-            # Sample ideas
-            output_lines.append(f"\nSample ideas:")
-            for i, text in enumerate(texts[:10], 1):
-                # Clean up the text for display
-                clean_text = text.split('\n')[-1] if '\n' in text else text
-                output_lines.append(f"  {i}. {clean_text}")
-
-        # Write to file
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(output_lines))
-
-        print(f"\n✓ Clustering results exported to: {output_path}")
-
-    except Exception as e:
-        print(f"Warning: Failed to export clustering results: {e}")
-
-
 def step_5_cluster(
     embedded_text,
     filename,
@@ -1175,18 +1037,6 @@ def step_5_cluster(
 
             # Print all clusters with samples (key feature from experiment version)
             clusterer.print_all_clusters(n_samples=10)
-
-        # Export clustering results to file
-        _export_clustering_results(
-            clusterer=clusterer,
-            filename=filename,
-            var_name=var_name if 'var_name' in dir() else variable_key,
-            sample_size=globals().get('sample_size'),
-            algorithm_rec=algorithm_rec,
-            metrics=metrics,
-            keywords=keywords,
-            labels=labels
-        )
 
         # Optional Streamlit success message
         if streamlit_container:
@@ -2049,10 +1899,20 @@ if __name__ == '__main__':
     else:
         FORCE_STEP = ""
     
-    USE_SPECULATIVE_STARTER_CODES = False
+    USE_SPECULATIVE_STARTER_CODES = True  # Uses LLM labels from ClustererV2 (step 5) if available
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
-    
+
+    # Start capturing all verbose output to file - MUST be before any print statements
+    from utils.saveVerbose import VerboseCapture
+    verbose_capture = VerboseCapture(
+        filename=filename,
+        variable_key=var_name,
+        sample_size=sample_size,
+        run_until_step=RUN_UNTIL_STEP if RUN_UNTIL_STEP is not None else 9
+    )
+    verbose_capture.__enter__()
+
     # Reset token tracker at start of pipeline run
     token_tracker.reset()
 
@@ -2083,9 +1943,9 @@ if __name__ == '__main__':
         variable_key = generate_enhanced_variable_key(
             selected_variables,
             is_merged,
-            sample_size=sample_size,   
+            sample_size=sample_size,
             merge_config=merge_config)
-    
+
     def check_execution_stop(current_step: int):
         """Check if execution should stop after current step"""
         if RUN_UNTIL_STEP is not None and current_step >= RUN_UNTIL_STEP:
@@ -2096,6 +1956,8 @@ if __name__ == '__main__':
             # Print LLM usage summary before exiting
             if token_tracker.call_count > 0:
                 print(token_tracker.get_summary())
+            # Save captured verbose output before exiting
+            verbose_capture.__exit__(None, None, None)
             sys.exit(0)
     
     # === STEP 0 ====
@@ -2223,7 +2085,8 @@ if __name__ == '__main__':
     )
     check_execution_stop(5)
     
-    if False: #debug - print random clusters  
+    #%%
+    if True: #debug - print random clusters  
    
         import random
         import re
@@ -2242,11 +2105,12 @@ if __name__ == '__main__':
                     cleaned_idea = re.sub(r"\[.*?\]", "", idea)
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     cluster_segments.append(cleaned_idea)
-        sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+       #sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
+        sampled_segments = random.sample(cluster_segments, len(cluster_segments))
         for segment_desc in sampled_segments:
             print(f"-    {segment_desc}")
         
-
+    #%%
     if False: #debug if true - print all clusters
         import re
         cluster_ids = list(set([
@@ -2443,8 +2307,11 @@ if __name__ == '__main__':
     # Print LLM usage summary
     if token_tracker.call_count > 0:
         print(token_tracker.get_summary())
-    
-    
+
+    # Save captured verbose output
+    verbose_capture.__exit__(None, None, None)
+
+
 if False: #debug
      cluster_results = cache_manager.load_from_cache(filename,"expanded_clusters", variable_key, models.ClusterModel) 
      for result in cluster_results:

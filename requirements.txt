@@ -17,6 +17,8 @@ pyreadstat>=1.2.0
 scikit-learn>=1.5.0
 hdbscan>=0.8.30
 umap-learn>=0.5.0
+pacmap>=0.7.0               # Alternative to UMAP for dimensionality reduction
+zadu>=0.2.0                 # DR quality metrics (trustworthiness, continuity, etc.)
 scipy>=1.13.0
 kneed>=0.8.0            # Knee/elbow detection for clustering strategy
 
@@ -24,6 +26,9 @@ kneed>=0.8.0            # Knee/elbow detection for clustering strategy
 matplotlib>=3.8.0
 plotly>=5.18.0              # For Optuna visualizations
 kaleido>=0.2.1              # For saving plotly figures as images
+
+# Terminal output
+tqdm>=4.60.0                # Progress bars (works natively in Jupyter)
 
 # Hyperparameter optimization
 optuna>=3.5.0
@@ -54,7 +59,7 @@ httpx>=0.28.0
 requests>=2.32.0
 
 # Google AI (if using Gemini)
-google-generativeai>=0.8.0
+google-genai>=1.0.0
 
 # LangChain (if using)
 langchain-core>=0.3.0

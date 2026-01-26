@@ -9,13 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 from openai import AsyncOpenAI
 
-_genai = None
-def _ensure_gemini():
-    global _genai
-    if _genai is None:
-        import google.generativeai as genai
-        _genai = genai
-    return _genai
+# Gemini client is now instantiated per-Embedder instance (no module-level state)
 
 # === MODELS ========================================================================================================
 import models
@@ -28,7 +22,6 @@ from utils.llm import create_embedding_client
 from .verboseReporter import VerboseReporter, ProcessingStats
 
 # === CONSTANTS ========================================================================================================
-GEMINI_REQUEST_STAGGER_DELAY = 0.05   # Seconds between Gemini requests to avoid rate limits
 RETRY_BACKOFF_BASE = 0.8              # Base multiplier for exponential backoff
 DEFAULT_RETRIES = 3                   # Default retry attempts for API calls
 
@@ -73,10 +66,11 @@ class Embedder:
 
         if self.provider == "openai":
             self.client = client or create_embedding_client(async_mode=True)
+            self.genai_client = None
         elif self.provider == "gemini":
-            genai = _ensure_gemini()
-            genai.configure(api_key=GEMINI_API_KEY)
-            self.client = None  # gemini calls go via the module
+            from google import genai
+            self.client = None
+            self.genai_client = genai.Client(api_key=GEMINI_API_KEY)
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 
@@ -89,22 +83,116 @@ class Embedder:
         self.embedding_dimensions = get_embedding_dimensions(self.embedding_model)
         
         self.verbose_reporter.stat_line(f"Model: {self.embedding_model} ({self.embedding_dimensions} dimensions)")
-    
-    def _get_ResponseData(self, data: List[models.IdeasExtractedModel]) -> List[ResponseData]:
-        """Create segment identifiers for tracking"""
+
+    def _parse_specifiers(self, idea_text: str) -> dict:
+        """Extract specifier values from bracketed format in idea text.
+
+        Parses tags like [domain=retail][topic=groceries] from the idea text
+        and returns them as a dictionary.
+
+        Args:
+            idea_text: Full idea text with specifier brackets
+
+        Returns:
+            Dict mapping specifier names to their values
+        """
+        import re
+        specifiers = {}
+        pattern = r'\[(\w+)=([^\]]*)\]'
+        for match in re.finditer(pattern, idea_text):
+            specifiers[match.group(1)] = match.group(2)
+        return specifiers
+
+    def _get_text_for_embedding(self, idea_text: str, template_prefix: str = None) -> str:
+        """Extract text for embedding based on EMBEDDING_TEXT_FORMAT config.
+
+        Args:
+            idea_text: Full formatted idea with specifiers and template prefix
+            template_prefix: The canonical phrasing prefix (e.g., "Merk X has the association")
+
+        Returns:
+            Text to embed based on config mode:
+            - "with_context": Full text with all specifiers
+            - "unique_only": Just the idea text, stripped of specifiers and prefix
+            - "taxonomy_with_context": domain + topic + intent + taxonomy_phrase (space-concatenated)
+            - "taxonomy_unique_only": Just the taxonomy_phrase value
+        """
+        from config import EMBEDDING_TEXT_FORMAT
+
+        if EMBEDDING_TEXT_FORMAT == "with_context":
+            return idea_text
+
+        # Handle taxonomy modes (require specifiers from experimental ideaExtractor_v2)
+        if EMBEDDING_TEXT_FORMAT == "taxonomy_unique_only":
+            specifiers = self._parse_specifiers(idea_text)
+            taxonomy_phrase = specifiers.get('taxonomy_phrase', '')
+            if taxonomy_phrase:
+                return taxonomy_phrase
+            # Fallback to unique_only if no taxonomy_phrase
+
+        if EMBEDDING_TEXT_FORMAT == "taxonomy_with_context":
+            specifiers = self._parse_specifiers(idea_text)
+            parts = []
+            for key in ['domain', 'topic', 'intent', 'taxonomy_phrase']:
+                if specifiers.get(key):
+                    parts.append(specifiers[key])
+            if parts:
+                return ' '.join(parts)
+            # Fallback to unique_only if no taxonomy fields
+
+        # "unique_only" mode (default/fallback): strip context specifiers and template prefix
+        lines = idea_text.split('\n')
+
+        # Get the actual idea text (last line, after specifier lines)
+        # Format is: [specifiers]\n[sentiment/sense]\n<actual idea text>
+        idea_line = lines[-1] if len(lines) >= 1 else idea_text
+
+        # Strip template prefix if provided
+        if template_prefix and idea_line.startswith(template_prefix):
+            unique_content = idea_line[len(template_prefix):].strip()
+            # Return unique content if non-empty, otherwise return the idea line
+            return unique_content if unique_content else idea_line
+
+        return idea_line
+
+    def _get_ResponseData(self, data: List[models.EmbeddingsModel]) -> List[ResponseData]:
+        """Create segment identifiers for tracking with optional text extraction for embedding."""
         response_data = []
-        
+
+        # Extract template_prefix from the first item with data (used for all items)
+        template_prefix = None
+        for item in data:
+            if hasattr(item, 'template_prefix') and item.template_prefix:
+                template_prefix = item.template_prefix
+                break
+
+        # Log which embedding format is being used
+        from config import EMBEDDING_TEXT_FORMAT
+        if EMBEDDING_TEXT_FORMAT == "taxonomy_unique_only":
+            self.verbose_reporter.stat_line("Embedding format: taxonomy_unique_only (taxonomy_phrase only)")
+        elif EMBEDDING_TEXT_FORMAT == "taxonomy_with_context":
+            self.verbose_reporter.stat_line("Embedding format: taxonomy_with_context (domain + topic + intent + taxonomy_phrase)")
+        elif template_prefix and EMBEDDING_TEXT_FORMAT == "unique_only":
+            self.verbose_reporter.stat_line(f"Embedding format: unique_only (stripping prefix: '{template_prefix[:50]}...')" if len(template_prefix) > 50 else f"Embedding format: unique_only (stripping prefix: '{template_prefix}')")
+        elif EMBEDDING_TEXT_FORMAT == "unique_only":
+            self.verbose_reporter.stat_line("Embedding format: unique_only (no template_prefix available, stripping specifiers only)")
+        else:
+            self.verbose_reporter.stat_line("Embedding format: with_context (full text)")
+
         for respondent_data in data:
             if respondent_data.response_ideas:
                 for response_idea in respondent_data.response_ideas:
+                    # Apply text extraction based on config
+                    text_to_embed = self._get_text_for_embedding(response_idea.idea, template_prefix)
+
                     response_item = ResponseData(
                         respondent_id=str(respondent_data.respondent_id),
                         segment_id=str(response_idea.idea_id),
-                        text_to_embed=response_idea.idea ,
+                        text_to_embed=text_to_embed,
                         array_index=len(response_data)
                     )
                     response_data.append(response_item)
-        
+
         return response_data
     
     async def _generate_question_aware_embeddings(self, response_embeddings: np.ndarray, question: str) -> np.ndarray:
@@ -142,83 +230,48 @@ class Embedder:
         return [np.array(item.embedding, dtype=np.float32) for item in response.data]
     
     
-    def _gemini_values(self, response: Any) -> np.ndarray:
-        """Normalize google-generativeai embed_content response to a float32 numpy array."""
-        # Case 1: dict form: {"embedding": {"values": [...]}} or {"embedding": [...]}
-        if isinstance(response, dict):
-            emb = response.get("embedding")
-            if isinstance(emb, dict) and "values" in emb:
-                return np.array(emb["values"], dtype=np.float32)
-            elif isinstance(emb, (list, tuple)):
-                # Handle direct embedding array in dict: {"embedding": [...]}
-                return np.array(emb, dtype=np.float32)
-            # Sometimes a list under "data"
-            data = response.get("data")
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                emb = data[0].get("embedding")
-                if isinstance(emb, dict) and "values" in emb:
-                    return np.array(emb["values"], dtype=np.float32)
+    def _gemini_values(self, embeddings: List[Any]) -> List[np.ndarray]:
+        """Extract embedding values from google.genai response.
 
-        # Case 2: object with .embedding.values
-        emb = getattr(response, "embedding", None)
-        if emb is not None:
-            vals = getattr(emb, "values", None)
-            if isinstance(vals, (list, tuple)):
-                return np.array(vals, dtype=np.float32)
+        The new google.genai SDK returns consistent Pydantic models with .values attribute.
 
-        # Case 3: list of one
-        if isinstance(response, list) and response:
-            first = response[0]
-            # Recurse once to handle dict/object inside
-            arr = self._gemini_values(first)
-            if arr is not None:
-                return arr
+        Args:
+            embeddings: List of ContentEmbedding objects from genai response
 
-        # If we reach here, shape is unexpected
-        raise TypeError(f"Unexpected Gemini embed_content return type: {type(response)} -> {response!r}")
-        
-    async def _embed_gemini_batch(self, batch_texts: List[str]):
+        Returns:
+            List of numpy arrays containing embedding values
         """
-        GEMINI: Use concurrent processing approach (no true batch API available)
+        return [np.array(emb.values, dtype=np.float32) for emb in embeddings]
         
-        PERFORMANCE OPTIMIZATION:
-        - Concurrent processing with rate limiting (~21 seconds for 772 embeddings)
-        - Uses semaphore to control concurrency and respect API rate limits
+    async def _embed_gemini_batch(self, batch_texts: List[str]) -> List[np.ndarray]:
+        """Generate embeddings using google.genai SDK with native batch support.
+
+        The new SDK supports multiple texts in a single API call, which is
+        much faster than individual calls with staggering.
+
+        Args:
+            batch_texts: List of text strings to embed
+
+        Returns:
+            List of numpy arrays containing embeddings
         """
-        return await self._embed_gemini_concurrent(batch_texts)
-    
-    
-    async def _embed_gemini_concurrent(self, batch_texts: List[str]) -> List[np.ndarray]:
-        """Optimized concurrent Gemini embeddings processing"""
-        genai = _ensure_gemini()
+        from google.genai import types
 
-        # Use provider-specific concurrency from config
-        gemini_concurrency = min(self.config.gemini_max_concurrent, len(batch_texts))
-        semaphore = asyncio.Semaphore(gemini_concurrency)
+        # The new SDK supports batch embedding natively
+        def _embed_batch_sync():
+            return self.genai_client.models.embed_content(
+                model=self.embedding_model,
+                contents=batch_texts,
+                config=types.EmbedContentConfig(
+                    task_type="SEMANTIC_SIMILARITY"
+                )
+            )
 
-        async def embed_single_text(text: str, index: int):
-            async with semaphore:
-                # Stagger requests slightly to avoid rate limit spikes
-                if index > 0:
-                    await asyncio.sleep(GEMINI_REQUEST_STAGGER_DELAY)
-
-                def _embed_single():
-                    return genai.embed_content(
-                        model=self.embedding_model,
-                        content=text
-                    )
-
-                try:
-                    result = await asyncio.to_thread(_embed_single)
-                    return self._gemini_values(result)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    raise RuntimeError(f"Failed to embed text at index {index}: {str(e)[:100]}...") from e
-
-        tasks = [embed_single_text(text, i) for i, text in enumerate(batch_texts)]
-        embeddings = await asyncio.gather(*tasks)
-        return embeddings
+        try:
+            result = await asyncio.to_thread(_embed_batch_sync)
+            return self._gemini_values(result.embeddings)
+        except Exception as e:
+            raise RuntimeError(f"Failed to embed batch of {len(batch_texts)} texts: {str(e)[:200]}") from e
    
     async def _embed_batch(self, batch_texts: List[str]):
         if self.provider == "openai":
@@ -241,11 +294,18 @@ class Embedder:
             response = await self.client.embeddings.create(input=[text_to_embed], model=self.embedding_model)
             return np.array(response.data[0].embedding, dtype=np.float32)
         else:
-            genai = _ensure_gemini()
+            from google.genai import types
+
             def _call():
-                return genai.embed_content(model=self.embedding_model, content=text_to_embed)
+                return self.genai_client.models.embed_content(
+                    model=self.embedding_model,
+                    contents=[text_to_embed],
+                    config=types.EmbedContentConfig(
+                        task_type="SEMANTIC_SIMILARITY"
+                    )
+                )
             response = await asyncio.to_thread(_call)
-            return self._gemini_values(response)
+            return self._gemini_values(response.embeddings)[0]
 
     async def _with_retries(self, fn, *, retries: int = DEFAULT_RETRIES, base: float = RETRY_BACKOFF_BASE):
         """Retry async function with exponential backoff.
@@ -408,7 +468,8 @@ class Embedder:
                 quality_filter=getattr(respondent_data, 'quality_filter', None),
                 quality_filter_code=getattr(respondent_data, 'quality_filter_code', None),
                 response_ideas=embeddings_submodels,
-                idea_count=len(embeddings_submodels)
+                idea_count=len(embeddings_submodels),
+                template_prefix=getattr(respondent_data, 'template_prefix', None)
             )
             result.append(embeddings_model)
         
@@ -420,8 +481,21 @@ class Embedder:
         """Generate both code and description embeddings with ID tracking"""
         if var_lab is not None:
             self.var_lab = var_lab
- 
-        result = asyncio.run(self._process_embeddings_with_id_tracking(data)) 
+
+        result = asyncio.run(self._process_embeddings_with_id_tracking(data))
 
         return result
+
+    def close(self):
+        """Close the Gemini client to release resources."""
+        if self.genai_client is not None:
+            try:
+                self.genai_client.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
+            self.genai_client = None
+
+    def __del__(self):
+        """Cleanup Gemini client on garbage collection."""
+        self.close()
 

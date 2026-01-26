@@ -67,9 +67,9 @@ class VerboseReporter:
     def _output(self, text: str):
         """Centralized output method that handles both terminal and capture"""
         try:
-            # Use sys.__stdout__ to bypass Streamlit's stdout capture
-            # This ensures output appears in the terminal even when running in Streamlit
-            print(text, file=sys.__stdout__, flush=True)
+            # Use sys.stdout to allow TeeOutput/VerboseCapture to capture output
+            # (Previously used sys.__stdout__ to bypass Streamlit, but this also bypassed TeeOutput)
+            print(text, flush=True)
         except UnicodeEncodeError:
             # Replace problematic Unicode characters for Windows console
             # Note: Some emojis may have variation selectors (U+FE0F), replace base chars first

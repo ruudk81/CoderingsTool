@@ -2823,3 +2823,50 @@ class ClustererV2:
 
 # Keep old Clusterer class for backwards compatibility
 Clusterer = ClustererV2
+
+
+def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
+    """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.
+
+    Args:
+        cluster_results: List of ClusterModel objects with idea texts to clean
+
+    Returns:
+        List of ClusterModel objects with cleaned idea texts
+    """
+    cleaned_results = []
+
+    for result in cluster_results:
+        cleaned_response_ideas = []
+
+        if result.response_ideas:
+            for idea_submodel in result.response_ideas:
+                # Extract and clean idea text
+                cleaned_idea = idea_submodel.idea
+                cleaned_idea = re.sub(r"\[.*?\]", "", cleaned_idea)
+                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+
+                # Create new ClusterSubmodel with cleaned text
+                cleaned_submodel = models.ClusterSubmodel(
+                    idea_id=idea_submodel.idea_id,
+                    idea=cleaned_idea,
+                    idea_embedding=idea_submodel.idea_embedding,
+                    initial_cluster=idea_submodel.initial_cluster,
+                    expanded_cluster=idea_submodel.expanded_cluster,
+                    cluster_theme=idea_submodel.cluster_theme
+                )
+                cleaned_response_ideas.append(cleaned_submodel)
+
+        # Create new ClusterModel with cleaned ideas
+        cleaned_result = models.ClusterModel(
+            respondent_id=result.respondent_id,
+            response=result.response,
+            response_type=result.response_type,
+            quality_filter=result.quality_filter,
+            quality_filter_code=result.quality_filter_code,
+            response_ideas=cleaned_response_ideas,
+            idea_count=len(cleaned_response_ideas)
+        )
+        cleaned_results.append(cleaned_result)
+
+    return cleaned_results
