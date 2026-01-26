@@ -48,7 +48,7 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 3
+RUN_UNTIL_STEP = 4
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -801,7 +801,8 @@ def step_4_generate_embeddings(
             extraction_metadata = cache_manager.load_metadata_from_cache(
                 filename=filename,
                 step="extracted_ideas",
-                variable_key=variable_key
+                variable_key=variable_key,
+                model_cls=models.ExtractionMetadata
             )
             if extraction_metadata and verbose:
                 print(f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix[:30]}...')" if extraction_metadata.template_prefix and len(extraction_metadata.template_prefix) > 30 else f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix}')" if extraction_metadata.template_prefix else "   Loaded extraction metadata (no template_prefix)")
@@ -809,7 +810,7 @@ def step_4_generate_embeddings(
             if verbose:
                 print(f"   Note: Could not load extraction metadata: {e}")
 
-        # Initialize embedder with v2 config
+        # Initialize embedder with v2 config (defaults: both mode, analysis enabled)
         embedder_config = EmbedderConfig(verbose=verbose)
         get_embeddings = Embedder(
             config=embedder_config,
@@ -817,15 +818,62 @@ def step_4_generate_embeddings(
             var_lab=var_lab
         )
 
+        # Print configuration summary (matching experiment runner output)
+        if verbose:
+            print(f"\n📋 Embedder Configuration:")
+            print(f"   Provider: {embedder_config.provider}")
+            print(f"   Embedding model: {get_embeddings.embedding_model}")
+            print(f"   Text format: {embedder_config.embedding_text_format}")
+            print(f"   Question-aware: {embedder_config.use_question_aware}")
+            print(f"   Analyze embeddings: {embedder_config.analyze_embeddings}")
+            print(f"   Compute similarity stats: {embedder_config.compute_similarity_stats}")
+
         # Pass extraction metadata for template_prefix access
         if extraction_metadata:
             get_embeddings.set_extraction_metadata(extraction_metadata)
+
+        # Count input statistics
+        total_ideas = sum(item.idea_count for item in encoded_text)
+        if verbose:
+            print(f"\n📊 Input Statistics:")
+            print(f"   Total responses: {len(encoded_text)}")
+            print(f"   Total ideas: {total_ideas}")
+            print(f"   Average ideas per response: {total_ideas / len(encoded_text):.2f}" if encoded_text else "   Average ideas per response: 0")
 
         input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
         embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
 
         end_time = time.time()
         elapsed_time = end_time - start_time
+
+        # Count output statistics
+        embeddings_count = sum(
+            1 for resp in embedded_text
+            if resp.response_ideas
+            for idea in resp.response_ideas
+            if idea.idea_embedding is not None
+        )
+
+        # Print final statistics (matching experiment runner output)
+        if verbose:
+            print(f"\n📊 Embedding Statistics:")
+            print(f"   Responses processed: {len(embedded_text)}")
+            print(f"   Embeddings generated: {embeddings_count}")
+            print(f"   Elapsed time: {elapsed_time:.2f}s")
+            print(f"   Rate: {embeddings_count / elapsed_time:.1f} embeddings/sec" if elapsed_time > 0 else "   Rate: N/A")
+
+            # Print analysis results if available
+            if get_embeddings.analysis:
+                analysis = get_embeddings.analysis
+                print(f"\n🔍 Embedding Analysis:")
+                print(f"   Dimensions: {analysis.embedding_dim}")
+                print(f"   Norm: mean={analysis.mean_norm:.4f}, std={analysis.std_norm:.4f}, "
+                      f"range=[{analysis.min_norm:.4f}, {analysis.max_norm:.4f}]")
+                if analysis.mean_pairwise_similarity is not None:
+                    print(f"   Pairwise similarity: mean={analysis.mean_pairwise_similarity:.4f}, "
+                          f"std={analysis.std_pairwise_similarity:.4f}, "
+                          f"range=[{analysis.min_pairwise_similarity:.4f}, {analysis.max_pairwise_similarity:.4f}]")
+
         cache_manager.save_to_cache(embedded_text, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
         print(f"\n'Embedding generation' completed in {elapsed_time:.2f} seconds.")
 
