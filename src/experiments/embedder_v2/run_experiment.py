@@ -6,12 +6,15 @@ This script runs the embedder step (Step 4) in isolation for experimentation.
 It loads Step 3 (extracted_ideas) results from cache and runs embedding generation
 with configurable settings for provider, model, text format, and analysis options.
 
+NOTE: After migration, v2 is now the PRODUCTION embedder.
+The old embedder is archived at src/utils/old/embedder_v1.py.
+
 Usage:
     cd src && python -m experiments.embedder_v2.run_experiment
 
 Toggle modes:
-    use_experimental_embedder = True  -> Uses local ExperimentalEmbedder
-    use_experimental_embedder = False -> Uses production Embedder
+    use_experimental_embedder = True  -> Uses PRODUCTION embedder (migrated from v2)
+    use_experimental_embedder = False -> Uses OLD embedder (archived v1)
 """
 
 import os
@@ -178,12 +181,13 @@ def run_experiment(config: EmbedderExperimentConfig = None):
     print(f"   Verbose: {config.verbose}")
 
     # Import the appropriate Embedder
+    # Note: After migration, v2 (configurable text formats) is now production
     if config.use_experimental_embedder:
-        print("\n🔬 Using EXPERIMENTAL embedder (local)")
-        from experiments.embedder_v2.embedder_experimental import ExperimentalEmbedder
-    else:
-        print("\n🏭 Using PRODUCTION embedder")
+        print("\n🔬 Using PRODUCTION embedder (migrated from v2)")
         from utils.embedder import Embedder
+    else:
+        print("\n🏭 Using OLD embedder (archived v1)")
+        from utils.old.embedder_v1 import Embedder
 
     # Import other utilities
     from config import ModelConfig
@@ -245,15 +249,33 @@ def run_experiment(config: EmbedderExperimentConfig = None):
     start_time = time.time()
 
     if config.use_experimental_embedder:
-        embedder = ExperimentalEmbedder(
-            experiment_config=config,
+        # Use production embedder (migrated v2) with EmbedderConfig
+        from config_embedder import EmbedderConfig
+        embedder_config = EmbedderConfig(
+            embedding_text_format=config.embedding_text_format,
+            provider=config.provider,
+            openai_batch_size=config.openai_batch_size,
+            openai_max_concurrent=config.openai_max_concurrent,
+            gemini_batch_size=config.gemini_batch_size,
+            gemini_max_concurrent=config.gemini_max_concurrent,
+            use_question_aware=config.use_question_aware,
+            response_weight=config.response_weight,
+            question_weight=config.question_weight,
+            domain_anchor_weight=config.domain_anchor_weight,
+            analyze_embeddings=config.analyze_embeddings,
+            compute_similarity_stats=config.compute_similarity_stats,
+            verbose=config.verbose,
+        )
+        embedder = Embedder(
+            config=embedder_config,
             model_config=model_config,
             var_lab=var_lab
         )
-        # Pass extraction metadata for taxonomy_with_context mode
+        # Pass extraction metadata for template_prefix access
         if extraction_metadata:
-            embedder.extraction_metadata = extraction_metadata
+            embedder.set_extraction_metadata(extraction_metadata)
     else:
+        # Use old embedder (archived v1) - requires different constructor
         from config import EmbeddingConfig
         embedding_config = config.to_embedding_config()
         embedder = Embedder(
@@ -352,7 +374,7 @@ def _get_embedded_text(idea, embedding_text_format: str, template_prefix: Option
 
     if embedding_text_format == "both":
         # Get idea text (using BOTH_MODE_IDEA_FORMAT logic - without prefix)
-        from experiments.embedder_v2.config import BOTH_MODE_IDEA_FORMAT
+        from config_embedder import BOTH_MODE_IDEA_FORMAT
         idea_text = idea.idea
         if BOTH_MODE_IDEA_FORMAT == "idea_without_template_prefix":
             if template_prefix and idea_text.startswith(template_prefix):
