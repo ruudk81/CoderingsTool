@@ -62,17 +62,13 @@ RUN_MODE = 'single'
 #VARIABLE = "Q20"
 #SAMPLE_SIZE = 50
 
-#FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
-#VARIABLE = "Qd1_combined"
-#SAMPLE_SIZE = 2000
-
-#FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
-#VARIABLE = "Qd1_combined"
-#SAMPLE_SIZE = 2000
-
-FILENAME = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
-VARIABLE = "Q15"
+FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
+VARIABLE = "Qd1_combined"
 SAMPLE_SIZE = 2000
+
+#FILENAME = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+#VARIABLE = "Q15"
+#SAMPLE_SIZE = 2000
 
 # UMAP grid configuration
 UMAP_NEIGHBORS = [5, 10, 30]

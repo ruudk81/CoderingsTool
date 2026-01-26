@@ -55,9 +55,17 @@ from utils.cacheManager import generate_enhanced_variable_key
 # =============================================================================
 
 # Dataset configuration
-FILENAME = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
-VARIABLE = "Q15"
-SAMPLE_SIZE = 2000
+#FILENAME = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+#VARIABLE = "Q15"
+#SAMPLE_SIZE = 2000
+
+#FILENAME = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#VARIABLE = "Q20"
+#SAMPLE_SIZE = 50
+
+FILENAME = "M000000 Associatiemonitor Merk X net databestand.sav"
+VARIABLE = "Qd1_combined"
+SAMPLE_SIZE = 2000 
 
 # Fixed UMAP parameters
 UMAP_N_COMPONENTS = 10
