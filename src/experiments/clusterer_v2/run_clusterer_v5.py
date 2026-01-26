@@ -306,7 +306,7 @@ def main():
     # Layer 2: Clustering metadata (keywords, labels, distributions, metrics)
     metadata = clusterer.to_metadata_model()
     cache_manager.save_to_cache(
-        metadata,                     # ClusteringMetadataModel
+        [metadata],                   # ClusteringMetadataModel (wrapped in list for save_to_cache)
         FILENAME,                     # Dataset filename
         "clustering_metadata",        # New step name
         variable_key,                 # Cache key
