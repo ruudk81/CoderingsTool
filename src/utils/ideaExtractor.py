@@ -320,6 +320,9 @@ class IdeaExtractor:
         # Generic specifiers (will be populated during extraction)
         self.generic_specifiers = {}
 
+        # Template prefix for embedding (will be set during extraction)
+        self.template_prefix = None
+
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting"""
         if not self.responses:
@@ -860,6 +863,10 @@ class IdeaExtractor:
             # Extract the template prefix (everything before [ATTRIBUTE_OR_ACTION])
             template_prefix = phrasing_template.split('[ATTRIBUTE_OR_ACTION]')[0].strip() if '[ATTRIBUTE_OR_ACTION]' in phrasing_template else phrasing_template
 
+            # Store template prefix for embedding extraction (set once, reused for all tasks)
+            if self.template_prefix is None:
+                self.template_prefix = template_prefix
+
             # Set the expected prefix for Pydantic validation
             IdeaResponse._expected_template_prefix = template_prefix
 
@@ -982,7 +989,8 @@ class IdeaExtractor:
                             quality_filter=task.get('quality_filter', True),
                             quality_filter_code=task.get('quality_filter_code', 0),
                             response_ideas=ideas,
-                            idea_count=len(ideas)
+                            idea_count=len(ideas),
+                            template_prefix=self.template_prefix
                         )
                     else:
                         return self.create_fallback_response(task)
@@ -1014,7 +1022,8 @@ class IdeaExtractor:
                     idea="PROCESSING_ERROR"
                 )
             ],
-            idea_count=1
+            idea_count=1,
+            template_prefix=self.template_prefix
         )
 
     def _normalize_idea_text(self, text: str) -> str:

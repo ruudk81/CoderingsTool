@@ -530,28 +530,166 @@ class CacheManager:
         """Get cache usage statistics"""
         with self.db._get_connection() as conn:
             stats = {}
-            
+
             # Total cache entries
             cursor = conn.execute("SELECT COUNT(*) as count FROM cache_metadata WHERE status = 'valid'")
             stats['total_entries'] = cursor.fetchone()['count']
-            
+
             # Cache size
             cursor = conn.execute("SELECT SUM(file_size) as total_size FROM cache_metadata WHERE status = 'valid'")
             stats['total_size_bytes'] = cursor.fetchone()['total_size'] or 0
-            
+
             # Entries by step
             cursor = conn.execute('''
-                SELECT step_name, COUNT(*) as count, SUM(file_size) as size 
-                FROM cache_metadata 
-                WHERE status = 'valid' 
+                SELECT step_name, COUNT(*) as count, SUM(file_size) as size
+                FROM cache_metadata
+                WHERE status = 'valid'
                 GROUP BY step_name
             ''')
             stats['by_step'] = {row['step_name']: {
-                'count': row['count'], 
+                'count': row['count'],
                 'size': row['size'] or 0
             } for row in cursor.fetchall()}
-            
+
             return stats
+
+    # =========================================================================
+    # METADATA CACHING (single Pydantic model, not list)
+    # =========================================================================
+
+    def save_metadata_to_cache(
+        self,
+        metadata: T,
+        filename: str,
+        step: str,
+        variable_key: str,
+        processing_time: float = None,
+        var_lab: str = None
+    ) -> bool:
+        """
+        Save a single Pydantic model (metadata) to cache.
+
+        Unlike save_to_cache() which works with lists, this method handles
+        single metadata objects like ExtractionMetadata.
+
+        Args:
+            metadata: Single Pydantic BaseModel instance
+            filename: SPSS filename
+            step: Step name (will be stored with '_metadata' suffix)
+            variable_key: Variable key for cache identification
+            processing_time: Optional processing time in seconds
+            var_lab: Optional variable label
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        if metadata is None:
+            logger.warning(f"No metadata to save for {filename} at step {step} with variable {variable_key}")
+            return False
+
+        # Use _metadata suffix to distinguish from list caches
+        metadata_step = f"{step}_metadata"
+        cache_path = self.get_cache_path(filename, metadata_step, variable_key)
+
+        try:
+            # Convert Pydantic model to dictionary for serialization
+            serializable_data = metadata.model_dump()
+
+            # Save using pickle
+            with open(cache_path, 'wb') as f:
+                pickle.dump(serializable_data, f)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Calculate file hash and size
+            file_hash = self._calculate_file_hash(cache_path)
+            file_size = cache_path.stat().st_size
+
+            # Record in database
+            self.db.record_cache_entry(
+                filename=filename,
+                step_name=metadata_step,
+                variable_key=variable_key,
+                cache_path=str(cache_path),
+                file_hash=file_hash,
+                file_size=file_size,
+                processing_time=processing_time,
+                var_lab=var_lab
+            )
+
+            logger.info(f"Saved metadata to cache for {filename} at step {metadata_step} with variable {variable_key}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving metadata cache for {filename} at step {step} with variable {variable_key}: {e}")
+            # Clean up partial file if it exists
+            if cache_path.exists():
+                cache_path.unlink()
+            return False
+
+    def load_metadata_from_cache(
+        self,
+        filename: str,
+        step: str,
+        variable_key: str,
+        model_cls: Type[T]
+    ) -> Optional[T]:
+        """
+        Load a single Pydantic model (metadata) from cache.
+
+        Unlike load_from_cache() which returns a list, this method returns
+        a single model instance.
+
+        Args:
+            filename: SPSS filename
+            step: Step name (will look for '_metadata' suffix)
+            variable_key: Variable key for cache identification
+            model_cls: Pydantic model class to reconstruct
+
+        Returns:
+            Single Pydantic model instance, or None if not found/invalid
+        """
+        # Use _metadata suffix to match save_metadata_to_cache
+        metadata_step = f"{step}_metadata"
+        cache_info = self.db.get_cache_info(filename, metadata_step, variable_key)
+
+        if not cache_info:
+            logger.info(f"No metadata cache found for {filename} at step {metadata_step} with variable {variable_key}")
+            return None
+
+        cache_path = Path(cache_info['cache_path'])
+
+        if not cache_path.exists():
+            logger.warning(f"Metadata cache file missing: {cache_path}")
+            self.db.invalidate_cache(filename, metadata_step, variable_key)
+            return None
+
+        try:
+            # Load pickled data using safe loader with retry logic
+            serializable_data = self._safe_pickle_load(cache_path)
+
+            # Reconstruct single Pydantic model
+            result = model_cls.model_validate(serializable_data)
+
+            logger.info(f"Loaded metadata from cache for {filename} at step {metadata_step} with variable {variable_key}")
+            return result
+
+        except ValueError as e:
+            if "closed file" in str(e).lower():
+                logger.error(f"File handle error loading metadata cache for {filename} at step {metadata_step}: {e}")
+                self.db.invalidate_cache(filename, metadata_step, variable_key)
+                return None
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"Error loading metadata cache for {filename} at step {metadata_step} with variable {variable_key}: {e}")
+            self.db.invalidate_cache(filename, metadata_step, variable_key)
+            return None
+
+    def is_metadata_cache_valid(self, filename: str, step: str, variable_key: str) -> bool:
+        """Check if metadata cache exists and is valid."""
+        metadata_step = f"{step}_metadata"
+        return self.db.is_cache_valid(filename, metadata_step, variable_key)
 
 
 # # For backward compatibility, keep the cache_intermediate_data methods

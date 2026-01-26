@@ -3434,7 +3434,11 @@ class InductiveCodeGenerator:
             limits.tokens_per_minute * self.processing_config.rate_limit_headroom / self.avg_tokens / 60
         )
         
-        limiter = AsyncLimiter(arrival_rate, 1)
+        # Handle edge case where arrival_rate < 1 to avoid "Can't acquire more than maximum capacity" error
+        if arrival_rate < 1:
+            limiter = AsyncLimiter(1, time_period=1/arrival_rate)
+        else:
+            limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
         semaphore = asyncio.Semaphore(optimal)
         tpm_bucket = self.tpm_bucket  # Use shared TPM bucket
         

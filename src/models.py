@@ -22,6 +22,44 @@ class PreprocessedModel(ResponseModel):
 class QualityFilteredModel(PreprocessedModel):
     pass
 
+
+# === EXTRACTION METADATA MODEL ========================================================================================================
+
+class ExtractionMetadata(BaseModel):
+    """Extraction-level metadata (one per dataset) - flat structure.
+
+    Cached separately from ideas to avoid duplication and enable independent loading.
+    """
+    # File/variable info
+    filename: str = ""
+    var_name: str = ""
+    var_lab: str = ""                     # Survey question
+
+    # Template
+    template_prefix: str = ""             # e.g., "ASN Bank has the association"
+
+    # Context specifiers (6 fields)
+    lang: str = ""                        # e.g., "nl-NL"
+    domain: str = ""                      # e.g., "finance"
+    topic: str = ""                       # e.g., "brand_association"
+    perspective: str = ""                 # e.g., "consumer"
+    entity: str = ""                      # e.g., "asn_bank"
+    intent: str = ""                      # e.g., "evaluate"
+
+    # Taxonomy axis info
+    taxonomy_primary_axis: str = ""       # e.g., "WHAT"
+    taxonomy_secondary_axis: Optional[str] = None
+    taxonomy_rationale: str = ""          # Why this axis was chosen
+    taxonomy_axis_description: str = ""   # Context-specific description
+    taxonomy_sample_phrases: List[str] = []  # 2-6 example phrases
+    taxonomy_actionable_type: str = ""        # e.g., "attributes", "features", "concepts"
+
+    # Timestamp
+    extraction_timestamp: Optional[str] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 # Strict model for LLM response validation (instructor enforces required fields)
 class QualityFilterLLMResponse(BaseModel):
     """Strict response model for quality filter LLM calls.
@@ -36,7 +74,11 @@ class QualityFilterLLMResponse(BaseModel):
 
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
-    idea: str
+    idea: str     # Clean text (no embedded specifiers in new format)
+    taxonomy_phrase: str = ""         # 2-4 word categorization phrase (separate from idea text)
+    parent_category: str = ""         # Higher-level grouping theme grounded in response content
+    sentiment: str = "neutral"        # "positive", "negative", "neutral"
+    sense: str = "factual"            # "factual", "evaluative", "aspirational", "experiential"
     model_config = ConfigDict(arbitrary_types_allowed=True)   
     
 class IdeasExtractedModel(QualityFilteredModel):
@@ -46,12 +88,15 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
+    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of taxonomy_phrase (used in "both" mode)
     
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
+    embedding_text_format: str = "idea"  # "idea" or "taxonomy_phrase"
 
 class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[Union[int, str]] = None
+    cluster_probability: Optional[float] = None  # HDBSCAN membership probability (0-1)
     expanded_cluster: Optional[str] = None
     cluster_theme: Optional[str] = None  # Theme name from Step 6 Chain 1
     
@@ -172,6 +217,85 @@ class ClusterRepresentationsModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+# === CLUSTERING METADATA CACHE MODELS ========================================================================================================
+
+class ClusterRepresentationCacheModel(BaseModel):
+    """Cached representation data for a single cluster (audit trail + LLM output)."""
+    cluster_id: int
+    size: int
+
+    # What was given to LLM (audit trail)
+    representative_samples: List[Tuple[str, float]]  # (text, probability/score)
+    keywords_ctfidf: List[Tuple[str, float]]
+    keywords_mmr: List[Tuple[str, float]]
+    keywords_tfidf: List[Tuple[str, float]]
+
+    # Cluster distributions (also given to LLM)
+    sentiment_distribution: Optional[Dict[str, float]] = None  # e.g., {"positive": 0.3, "neutral": 0.6}
+    sense_distribution: Optional[Dict[str, float]] = None      # e.g., {"factual": 0.7, "evaluative": 0.3}
+
+    # LLM output
+    label_theme: Optional[str] = None
+    label_description: Optional[str] = None
+    label_key_concepts: Optional[List[str]] = None
+
+    # Cluster-level metrics
+    mean_probability: Optional[float] = None
+    coherence: Optional[float] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ClusteringMetricsModel(BaseModel):
+    """Serializable version of clustering quality metrics."""
+    n_clusters: int
+    noise_rate: float
+    noise_count: int
+    mean_coherence: float
+    coherence_breakdown: str
+    silhouette: Optional[float] = None
+    dbcv: Optional[float] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class LLMContextModel(BaseModel):
+    """Global context provided to LLM for all clusters (audit trail)."""
+    survey_question: str
+    language: str
+
+    # Dataset context
+    domain: Optional[str] = None
+    entity: Optional[str] = None
+    topic: Optional[str] = None
+    perspective: Optional[str] = None
+    intent: Optional[str] = None
+
+    # Taxonomy context
+    taxonomy_axis: Optional[str] = None
+    taxonomy_description: Optional[str] = None
+    taxonomy_actionable_type: Optional[str] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ClusteringMetadataModel(BaseModel):
+    """Full clustering metadata cache - separate from per-idea ClusterModel."""
+    # Per-cluster data
+    clusters: Dict[int, ClusterRepresentationCacheModel]
+
+    # Global LLM context (shared across all clusters)
+    llm_context: Optional[LLMContextModel] = None
+
+    # Global metrics
+    metrics: ClusteringMetricsModel
+
+    # Provenance
+    algorithm_used: str
+    algorithm_params: Dict[str, Any]
+    timestamp: str
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 

@@ -18,5 +18,7 @@
         "terminal.ansiBrightMagenta": "#6C71C4",
         "terminal.ansiBrightCyan": "#93A1A1",
         "terminal.ansiBrightWhite": "#FDF6E3"
-    }
+    },
+
+    "workbench.editor.enablePreview": false
 }

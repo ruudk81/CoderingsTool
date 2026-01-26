@@ -234,6 +234,48 @@ def _load_or_recover(filename: str, step_name: str, variable_key: str, model_cls
             # Re-raise other exceptions
             raise
 
+def _get_verbose_capture():
+    """Get or create a VerboseCapture instance for the current session."""
+    from utils.saveVerbose import VerboseCapture
+
+    # Check if we have the required session state
+    if not st.session_state.get('filename'):
+        return None
+
+    # Get current step from session state
+    current_step = st.session_state.get('step', 0)
+
+    # Build variable_key
+    config = DatasetConfig.from_session_state()
+    if config:
+        var_name = config.selected_variables[0] if config.selected_variables else "unknown"
+        sample_size = config.sample_size
+    else:
+        var_name = "unknown"
+        sample_size = None
+
+    return VerboseCapture(
+        filename=st.session_state.filename,
+        variable_key=var_name,
+        sample_size=sample_size,
+        run_until_step=current_step,
+        append_mode=True  # Append for each step in Streamlit
+    )
+
+def _run_with_verbose_capture(step_func, *args, **kwargs):
+    """Run a pipeline step function with verbose output capture."""
+    capture = _get_verbose_capture()
+    if capture:
+        capture.__enter__()
+        try:
+            result = step_func(*args, **kwargs)
+            return result
+        finally:
+            capture.__exit__(None, None, None)
+    else:
+        # No capture available, run directly
+        return step_func(*args, **kwargs)
+
 # Session state ################################################################################################################################
 
 st.set_page_config(page_title="CoderingsTool - Survey Response Analysis", page_icon="📊", layout="wide",initial_sidebar_state="collapsed")
