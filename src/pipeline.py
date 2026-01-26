@@ -23,15 +23,15 @@ model_config = ModelConfig()
 
 #  ===  STANDALONE ======================================================================================================== 
 
-#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Q20"
-#sample_size = 50
-
 filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
 var_name = "Q20"
-sample_size = 500
+sample_size = 50
+
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Q20"
+#sample_size = 500
 
 #filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
 #id_column = "DLNMID"
@@ -48,7 +48,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 2
+RUN_UNTIL_STEP = 3
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -738,7 +738,7 @@ def step_4_generate_embeddings(
     Returns:
         List[models.EmbeddingsModel]: List of models with embeddings
     """
-    from config import EmbeddingConfig
+    from config_embedder import EmbedderConfig
     from utils.embedder import Embedder
     from utils.verboseReporter import VerboseReporter
 
@@ -794,12 +794,33 @@ def step_4_generate_embeddings(
         verbose_reporter.section_header("EMBEDDING GENERATION PHASE")
         start_time = time.time()
         verbose_reporter.step_start("Generating Embeddings", emoji="🔗")
-        embedding_config = EmbeddingConfig()
+
+        # Load extraction metadata from cache (contains template_prefix for embedding format)
+        extraction_metadata = None
+        try:
+            extraction_metadata = cache_manager.load_metadata_from_cache(
+                filename=filename,
+                step="extracted_ideas",
+                variable_key=variable_key
+            )
+            if extraction_metadata and verbose:
+                print(f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix[:30]}...')" if extraction_metadata.template_prefix and len(extraction_metadata.template_prefix) > 30 else f"   Loaded extraction metadata (template_prefix: '{extraction_metadata.template_prefix}')" if extraction_metadata.template_prefix else "   Loaded extraction metadata (no template_prefix)")
+        except Exception as e:
+            if verbose:
+                print(f"   Note: Could not load extraction metadata: {e}")
+
+        # Initialize embedder with v2 config
+        embedder_config = EmbedderConfig(verbose=verbose)
         get_embeddings = Embedder(
-            config=embedding_config,
+            config=embedder_config,
             model_config=model_config,
-            provider="openai",
-            verbose=verbose)
+            var_lab=var_lab
+        )
+
+        # Pass extraction metadata for template_prefix access
+        if extraction_metadata:
+            get_embeddings.set_extraction_metadata(extraction_metadata)
+
         input_data = [item.to_model(models.EmbeddingsModel) for item in encoded_text]
         embedded_text = get_embeddings.get_embeddings_with_tracking(input_data, var_lab)
 
