@@ -116,9 +116,14 @@ class EmbedderConfig:
 
     Aggregates all embedder settings into a single config object.
     This is the main config class used by the Embedder.
+
+    Default settings match the approved experiment configuration:
+    - embedding_text_format="both" for dual embeddings (idea + taxonomy_phrase)
+    - analyze_embeddings=True for quality metrics
+    - compute_similarity_stats=True for pairwise similarity analysis
     """
-    # Text format settings
-    embedding_text_format: Literal["idea", "taxonomy_phrase", "idea_without_template_prefix", "both"] = "idea"
+    # Text format settings - "both" embeds idea text AND taxonomy_phrase separately
+    embedding_text_format: Literal["idea", "taxonomy_phrase", "idea_without_template_prefix", "both"] = "both"
 
     # Provider selection
     provider: str = "openai"                # "openai" or "gemini"
@@ -137,9 +142,9 @@ class EmbedderConfig:
     question_weight: float = 0.3
     domain_anchor_weight: float = 0.1
 
-    # Analysis settings
-    analyze_embeddings: bool = False
-    compute_similarity_stats: bool = False
+    # Analysis settings - enabled by default for quality insights
+    analyze_embeddings: bool = True
+    compute_similarity_stats: bool = True
     max_embeddings_for_similarity: int = 1000
 
     # Retry settings
