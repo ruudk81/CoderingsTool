@@ -138,101 +138,6 @@ Ensure that your entire output is a valid JSON array containing all evaluated re
 # STEP 3: IDEA EXTRACTION  
 # =============================================================================
 
-EXTRACT_SUBJECT = """
-You are a {language} language expert in interpreting survey questions.
-Your task is to extract the canonical focus entity — the single main product, brand, service, actor, or topic the question is about — and produce a reusable phrasing template.
-
-<input>
-Language: {language}
-Survey question: {survey_question}
-</input>
-
-Definitions
-- Canonical focus entity: the main noun phrase that answers "what or who is this question about?"
-  It can be:
-  - a product/brand/service being evaluated
-  - a person/group/institution expected to act
-  - a topic/concept/event being discussed
-
-Constraints
-- Choose exactly one canonical focus.
-- Return a **concise, normalized noun phrase** in {language}.
-- Do **not** include determiners (e.g., "the", "de", "het"), quotes, brackets, or trailing punctuation.
-- Preserve capitalization for proper nouns/brands; otherwise use lowercase.
-- If the question uses pronouns/deictics (e.g., "this brand", "our app"), resolve to the most specific **named** entity present; if none, use the most specific generic noun ("app", "klantenservice", "bezorgproces").
-- If multiple entities appear, pick the one **most central** to what is being evaluated, judged, or requested.
-- If the question refers to a sub-part/feature (e.g., "payment process" of a store), pick the **sub-part** if that is clearly the evaluation target.
-
-Template requirement
-1. Create a phrasing template that downstream steps can use to express evaluations or actions.
-2. Use this structure:
-   **"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ATTRIBUTE_OR_ACTION]"**
-
-   Where:
-   - CANONICAL_TERM: the focus entity (e.g., "electric vehicles", "klantenservice")
-   - VERB/STATE: appropriate verb in {language} (e.g., "is", "has", "should", "needs", "zijn", "heeft", "moet")
-   - SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty if verb alone is sufficient)
-   - ATTRIBUTE_OR_ACTION: placeholder for the actual content
-
-3. Insert:
-   - The canonical term (noun phrase)
-   - The most natural verb/state in {language}
-   - Any necessary scaffolding words (articles, prepositions, auxiliary verbs) to ensure grammatical completeness
-   - Leave `[ATTRIBUTE_OR_ACTION]` as a placeholder
-
-4. The result should sound natural and complete up to the placeholder.
-
-Grammatical completeness constraint
-- The template MUST produce a grammatically complete sentence when [ATTRIBUTE_OR_ACTION] is replaced with a simple adjective or noun.
-- Test your template by filling [ATTRIBUTE_OR_ACTION] with a one-word example (e.g., "expensive", "better", "quality").
-- If the result is grammatically incomplete, add necessary scaffolding words BEFORE the placeholder.
-- Common scaffolding patterns:
-  * For "has/heeft": → "has the [quality/feature/association/characteristic] [ATTRIBUTE_OR_ACTION]"
-  * For "needs/moet": → "needs to [action verb] [ATTRIBUTE_OR_ACTION]"
-  * For "should/zou moeten": → "should [action verb] [ATTRIBUTE_OR_ACTION]"
-  * For "is/zijn": → "is [ATTRIBUTE_OR_ACTION]" (often already complete)
-
-Examples of template construction
-
-✓ GOOD templates (grammatically complete):
-- Survey: "Which associations do you have with Brand X?"
-  → "Brand X has the association [ATTRIBUTE_OR_ACTION]"
-  → Test: "Brand X has the association expensive" ✓
-
-- Survey: "What could the manufacturer improve?"
-  → "The manufacturer should improve [ATTRIBUTE_OR_ACTION]"
-  → Test: "The manufacturer should improve quality" ✓
-
-- Survey: "How do you rate the service?"
-  → "The service is [ATTRIBUTE_OR_ACTION]"
-  → Test: "The service is excellent" ✓
-
-✗ BAD templates (grammatically incomplete):
-- "Brand X has [ATTRIBUTE_OR_ACTION]"
-  → Test: "Brand X has expensive" ✗ (incomplete - missing noun after "has")
-
-- "The manufacturer should [ATTRIBUTE_OR_ACTION]"
-  → Test: "The manufacturer should quality" ✗ (missing verb)
-
-- "The service needs [ATTRIBUTE_OR_ACTION]"
-  → Test: "The service needs better" ✗ (incomplete - "needs" requires "to be" or noun)
-
-Output format (return **only** this JSON object)
-{{
-  "canonical_term": "canonical noun entity in {language}",
-  "canonical_phrasing": "template with canonical term and verb/state inserted in {language}, e.g. 'Elektrische voertuigen zijn [EIGENSCHAP_OF_ACTIE]'"
-}}
-
-Validation checklist before returning:
-- Exactly two keys: `canonical_term`, `canonical_phrasing`
-- Values are in {language}
-- `canonical_term` is a noun phrase with no article or punctuation
-- `canonical_phrasing` includes the correct verb/state (no placeholders for it) and ends with `[ATTRIBUTE_OR_ACTION]`
-- Test grammatical completeness: replace [ATTRIBUTE_OR_ACTION] with a simple word - result must be a complete sentence
-- If incomplete, add necessary scaffolding words (articles, prepositions, auxiliary verbs) before the placeholder
-
-"""
-
 CONTEXT_SPECIFIER_PROMPT1 = """
 You are analyzing survey responses to extract contextual metadata.
 
@@ -260,6 +165,7 @@ Extract these GROUP 1 specifiers (speaker characteristics):
 
 Provide concise answers (2-5 words each) in {language}.""" #structure output given to instructor = pydantic model
 
+
 CONTEXT_SPECIFIER_PROMPT2 = """
 You are analyzing survey responses to extract contextual metadata.
 
@@ -285,6 +191,7 @@ Extract these GROUP 2 specifiers (subject matter):
 
 Provide concise answers (2-5 words each) in {language}.""" #structure output given to instructor = pydantic model
 
+
 CONSOLIDATE_SPECIFIERS_GROUP1 = """
 You are consolidating contextual metadata extracted from multiple chunks of survey responses.
 
@@ -306,6 +213,7 @@ If chunks agree: use the consensus value
 If chunks disagree: choose the most frequently occurring concept (semantic similarity, not lexical match)
 
 Return ONE consolidated set of GROUP 1 specifiers."""
+
 
 CONSOLIDATE_SPECIFIERS_GROUP2 = """
 You are consolidating contextual metadata extracted from multiple chunks of survey responses.
@@ -329,145 +237,470 @@ If chunks disagree: choose the most frequently occurring concept (semantic simil
 
 Return ONE consolidated set of GROUP 2 specifiers."""
 
-IDEA_EXTRACTION_PROMPT = """
-You are a {language} language expert in analyzing written responses to open-ended questions in surveys. 
-Your task is to extract ALL distinct ideas expressed in a respondent's written answer.  
 
-<inputs>
-Survey question: {var_lab}
-Canonical subject focus: {subject}
-Respondent ID: {respondent_id}
-Written response: {response}
-</inputs>
+TAXONOMY_CHUNK_SCORING_PROMPT = """
+You are analyzing survey responses to determine the SINGLE PRIMARY TAXONOMY AXIS that should be used to generate MECE (Mutually Exclusive and Collectively Exhaustive) descriptive codes for a chunk of responses.
 
-<instructions>
-1. Understand the context by reading the survey question and response carefully. 
-        
-2. Idea Identification
-    - Extract all distinct ideas that directly answer or relate to the survey question. 
-    - An “idea” is:
-        - A single, complete thought or opinion
-        - A specific action, behavior, or experience mentioned
-        - A reason, cause, or explanation given
-        - An emotion, attitude, or evaluation expressed
+Here is the survey question that was asked in {language}:
 
-3. Atomicity
-    - Keep each idea atomic — only one concept per idea.
-    - Avoid merging ideas even if they are related.
-    - Split compound statements connected by “and”, “but”, or similar connectors into separate ideas.
-    - The idea you will return must not contain coordinating conjunctions or list markers in {language}.
-    - Forbid list/coordination punctuation: "/", "&", ",", ";", ":", "-", "–" (hyphens allowed only inside a single lexicalized word, not to join ideas).
+<survey_question>
+{survey_question}
+</survey_question>
 
-4. MANDATORY Phrasing template
-    - **CRITICAL REQUIREMENT**: EVERY idea you extract MUST follow this EXACT structure:
-      {phrasing_template}
+Here are the responses in {language} you need to analyze:
 
-    - This is NOT optional. The template structure is MANDATORY for EVERY single idea.
+<chunk_responses>
+{chunk_size}
+</chunk_responses>
 
-    - Replace [ATTRIBUTE_OR_ACTION] with the actual content, but keep everything before it EXACTLY as shown.
+This chunk contains {chunk_size} sample responses.
 
-    - WRONG examples (DO NOT do this):
-      ✗ Starting with different words than the template
-      ✗ Omitting the template prefix entirely
-      ✗ Reordering or rephrasing the template structure
+## YOUR TASK
 
-    - CORRECT approach:
-      ✓ Take the exact prefix from the template (everything before [ATTRIBUTE_OR_ACTION])
-      ✓ Add your specific content after that prefix
-      ✓ Verify the final idea starts with the template prefix character-for-character
+Idebtifty ONE dominant organizing principle as the primary taxonomy axis that best differentiates the responses such that a code set built on it will be:
+- Mutually exclusive (no overlap between codes)
+- Collectively exhaustive (all responses can be coded)
 
-    - Validation: Before outputting each idea, verify it starts with the exact prefix shown in the template.
+## CORE PRINCIPLE
 
-    - Do not change sentiment or tone during normalization.
+Base your decision on COMMUNICATIVE MEANING — what respondents are primarily trying to convey in their responses — not on grammatical form or surface-level word choice.
 
-5. Include Implicit Ideas
-    - Capture both explicit statements and ideas that are clearly implied by the response.
+## SIX POSSIBLE CODING DIMENSIONS
 
-6. Edge Cases
-    - If the response is empty, irrelevant, or "N/A": return an empty array [].
-    - If the response is off-topic: extract ideas anyway but note they may be off-topic.
-    - If only one idea is present: return it in a single-item array.
+You must choose the dimension that produces the CLEANEST MECE PARTITION for this specific question + response set:
 
-7. Sentiment and Sense Extraction
+1) **WHAT** — attributes, features, characteristics, properties, or aspects of something
+   - Use when responses primarily describe different features, qualities, or attributes
 
-   For EACH idea you extract, you must also classify:
+2) **WHY** — goals, motivations, desired outcomes, reasons, purposes, or value sought
+   - Use when responses primarily express different motivations, goals, or reasons
 
-   **sentiment**: The emotional/evaluative tone of the idea
-   - **positive**: Favorable, satisfied, praising, appreciative
-   - **negative**: Critical, dissatisfied, complaining, unfavorable
-   - **neutral**: Factual, neither positive nor negative, descriptive
-   - **mixed**: Contains both positive and negative elements
+3) **HOW** — actions, steps, processes, methods, behaviors, or implementation approaches
+   - Use when responses primarily describe different actions, methods, or behaviors
 
-   Examples:
-   - "excellent service" → positive
-   - "poor quality" → negative
-   - "located in Amsterdam" → neutral
-   - "good product but expensive" → mixed
+4) **WHO** — people, groups, stakeholders, roles, or beneficiaries
+   - Use when responses primarily differ by the person, group, or role involved
 
-   **sense**: The modality or nature of the statement
-   - **factual**: Objective statement of fact or observation
-   - **evaluative**: Subjective judgment, opinion, or assessment
-   - **aspirational**: Desire, wish, or suggestion for future
-   - **experiential**: Personal experience or anecdote
+5) **WHEN** — timing, urgency, sequence, frequency, or temporal aspects
+   - Use when responses primarily differ by time, timing, or frequency
 
-   Examples:
-   - "ASN Bank is sustainable" → evaluative (judgment)
-   - "I received a loan from ASN Bank" → experiential (personal experience)
-   - "ASN Bank should improve service" → aspirational (suggestion)
-   - "ASN Bank has 500,000 customers" → factual (objective fact)
-</instructions>
+6) **WHERE** — place, location, channel, setting, or situational context
+   - Use when responses primarily differ by location, channel, or context
 
-<output_format>
-Return the extracted ideas as a JSON array. Each item should include:
-- "respondent_id": exactly as provided
-- "idea_id": a string number (numbering always starts at "1" and increments sequentially -e.g. "1", "2", etc.).
-- "idea": the descriptive phrase in {language}, normalized and phrased using the provided phrasing template.
-- "sentiment": one of ["positive", "negative", "neutral", "mixed"]
-- "sense": one of ["factual", "evaluative", "aspirational", "experiential"]
+## DEFINING THE PRIMARY AXIS
 
-**TEMPLATE COMPLIANCE CHECK:**
-Before returning, verify that EVERY "idea" field starts with the exact prefix from the phrasing template.
-If an idea doesn't match the template, reformulate it to match.
+Before providing your final answer, use the scratchpad to:
+1. Review the survey question and understand what is being asked
+2. Read through the responses and identify the main themes or patterns
+3. Consider which of the six dimensions best captures how responses differ from each other
+4. Test your choice: Would codes based on this dimension be mutually exclusive and collectively exhaustive?
+5. Define the specific taxonomy axis within your chosen dimension
 
-Always output in {language}.
-</output_format>
+Use <scratchpad> tags for your thinking process.
 
-Here's an example of the desired output example based on the input example:
+## OUTPUT FORMAT After your analysis in the scratchpad, provide your final answer in the following structure:
 
-<input_example>
-Survey question: "What could the manufacturer of electric vehicles do better in your opinion?"
-Respondent ID: 987654321
-Response: "They should make the cars charge faster and improve battery life."
-</input_example>
+<analysis>
+<taxonomy_axis>
+In 1–2 sentences, define the specific organizing axis within the chosen dimension that will become the MECE code spine.
+It must be phrased so that code labels can be created directly from it.
+</taxonomy_axis>
 
-<output_example>
-[
-  {{
-    "respondent_id": "987654321",
-    "idea_id": "1", 
-    "idea": "Electric vehicles should charge faster"
-  }},
-  {{
-    "respondent_id": "987654321",
-    "idea_id": "2",
-    "idea": "Electric vehicles should have improved battery life"
-  }}
-]
-</output_example>
+<evidence>
+Provide 2–3 brief verbatim snippets from the responses that show why this axis is dominant.
+</evidence>
 
-Notice how:
-- The original term “cars” was replaced with the canonical term “electric vehicles” from the survey question.
-- All ideas use SUBJECT phrasing consistently.
-- Each idea is separate and atomic.
-- The meaning and sentiment of the original statement are preserved.
-- Terms are consistent across all ideas, even if the respondent used different or less specific words.    
-    
-Return ONLY the JSON array. Keep field names in English; write values in {language}.
+<mece_check>
+In 1–2 sentences, explain why codes built on this axis will minimize overlap and cover all responses.
+</mece_check>
+</analysis>
+
+All output in your scratchpad and analysis must be written in {language}.
 """
 
 
+TAXONOMY_CONSOLIDATION_PROMPT = """
+You are consolidating chunk-level taxonomy analyses.
+Each chunk summary identified which coding dimension best organizes its responses.
+Your job is to determine the SINGLE PRIMARY TAXONOMY DIMENSION overall — the organizing axis that will be used to build a MECE (Mutually Exclusive, Collectively Exhaustive) descriptive codebook.
+
+<inputs>
+Survey question: {survey_question}
+
+Chunk results:
+{chunk_results}
+</inputs>
+
+## YOUR TASK
+
+1. Aggregate dimension scores across all chunks
+   - Compute evidence-weighted average scores using evidence_count as weights
+
+2. Select the PRIMARY dimension
+   - Choose the dimension that best serves as the global organizing principle
+   - Prioritize the dimension that will yield the cleanest MECE partition across all responses
+   - Do not select a dimension merely because it appears frequently; it must meaningfully differentiate responses
+
+3. Write a CONTEXT-SPECIFIC TAXONOMY AXIS description
+   - Define the code-spine that downstream coding should follow
+   - Must be at a mid-level of abstraction: not too narrow, not too broad
+
+4. Optionally select a SECONDARY dimension
+   - Only if it is truly orthogonal to the primary dimension
+   - Must represent an independent organizing principle, not a sub-type of the primary
+   - Otherwise set to null
+
+## PRIMARY DIMENSION SELECTION CRITERIA
+
+- High and consistent weighted scores across chunks
+- Captures the dominant communicative meaning in responses
+- Produces non-overlapping, actionable coding categories
+- Enables full coverage of response variation
+
+## TAXONOMY AXIS DESCRIPTION GUIDELINES
+
+Write 1–2 sentences that:
+- Are specific to THIS survey question and response domain
+- State the category-type by which responses differ
+- Use wording that can directly seed code labels
+- Indicate what downstream coders should extract
+
+## SECONDARY DIMENSION RULES
+
+- Must add an independent perspective not already captured by the primary
+- Must not cause code overlap with primary-axis codes
+- If no such dimension exists, return null
+
+## CONSOLIDATION RULES
+
+- If chunk results converge: follow the consensus
+- If chunk results diverge: rely on evidence-weighted averages
+- Favor MECE partition quality over raw score dominance
+
+## RETURN JSON ONLY
+
+{{
+  "primary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE",
+  "primary_dimension_rationale": "Brief explanation of why this dimension is dominant",
+  "primary_dimension_description": "Definition of the taxonomy axis (code spine) at proper abstraction level",
+  "primary_dimension_score": float,
+  "secondary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE" or null,
+  "secondary_dimension_rationale": string or null,
+  "all_dimension_scores": {{
+     "WHAT": float,
+     "WHY": float,
+     "HOW": float,
+     "WHO": float,
+     "WHEN": float,
+     "WHERE": float
+  }}
+}}
+"""
+
+
+TAXONOMY_AWARE_SUBJECT_PROMPT = """
+You are a {language} language expert generating a phrasing template for survey response analysis.
+
+<input>
+Language: {language}
+Survey question: {survey_question}
+Primary taxonomy axis: {primary_axis} ({primary_axis_description})
+Secondary axis (if any): {secondary_axis}
+</input>
+
+<taxonomy_axis_dimensions>
+"WHAT": "topic_object - concepts, things, topics, features, attributes"
+"WHY": "intent_purpose - goals, desired outcomes, improvements, reasons"
+"HOW": "action_method - actions, steps, processes, methods, ways"
+"WHO": "actor_target - people, groups, stakeholders, beneficiaries"
+"WHEN": "time_urgency - time references, urgency, sequence, timing"
+"WHERE": "location_context - place, context, channel, location"
+</taxonomy_axis_dimensions>
+
+## Task 1: Identify the canonical subject
+- Find the main product, brand, service, actor, or topic the question is about
+- Return a concise, normalized noun phrase in {language}
+- Preserve capitalization for proper nouns; otherwise use lowercase
+
+## Task 2: Create a phrasing template
+
+Use this flexible structure:
+**"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ATTRIBUTE_OR_ACTION]"**
+
+Where:
+- CANONICAL_TERM: the focus entity from Task 1
+- VERB/STATE: appropriate verb in {language} (e.g., "is", "has", "should", "needs", "zijn", "heeft", "moet")
+- SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty if verb alone works)
+- [ATTRIBUTE_OR_ACTION]: placeholder for actual content
+
+### Axis-aware verb/state guidance
+
+The **{primary_axis}** axis suggests certain verb patterns work best:
+
+- **WHAT** (features, properties): verbs like "has/heeft", "is characterized by/kenmerkt zich door"
+- **WHY** (goals, improvements): verbs like "should achieve/moet bereiken", "needs to provide/moet bieden"
+- **HOW** (actions, methods): verbs like "should/moet", "can/kan", "needs to/moet"
+- **WHO** (stakeholders): focus on the actor, verbs like "needs/heeft nodig", "should receive/moet krijgen"
+- **SENTIMENT** (evaluations): verbs like "is/is", "performs/presteert"
+- **WHEN** (timing): include timing context in scaffolding
+- **WHERE** (location): include location context in scaffolding
+
+Choose the verb/state that sounds MOST NATURAL in {language} for this specific question.
+
+### Grammatical completeness constraint
+
+The template MUST produce a grammatically complete sentence when [ATTRIBUTE_OR_ACTION] is replaced with a simple word.
+
+Test your template by filling [ATTRIBUTE_OR_ACTION] with a one-word example (e.g., "better", "quality", "beter", "kwaliteit").
+
+Common scaffolding patterns:
+* For "has/heeft" → often needs: "has the [quality/feature] [ATTRIBUTE_OR_ACTION]" / "heeft de [eigenschap] [ATTRIBUTE_OR_ACTION]"
+* For "should/moet" → often works directly: "should [ATTRIBUTE_OR_ACTION]" / "moet [ATTRIBUTE_OR_ACTION]"
+* For "is/is" → often works directly: "is [ATTRIBUTE_OR_ACTION]"
+
+## Task 3: Choose the actionable taxonomy dimension
+
+From <taxonomy_axis_dimensions>, select the SINGLE most relevant dimension type for the {primary_axis} axis.
+- Look at the options for {primary_axis} (e.g., for WHAT: "concepts, things, topics, features, attributes")
+- Choose ONE specific term that best fits this survey's responses
+- This narrows the taxonomy focus for MECE code generation
+
+Output format (return **only** this JSON object):
+{{
+  "canonical_term": "main subject/entity from the survey question in {language}",
+  "canonical_phrasing": "natural template ending with [ATTRIBUTE_OR_ACTION] in {language}",
+  "taxonomy_axis": "{primary_axis}",
+  "taxonomy_actionable_type": "chosen single dimension (e.g., 'attributes' or 'features')"
+}}
+"""
+
+
+TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """
+You are a {language} language expert extracting structured ideas through the lens of a specified taxonomy axis,
+
+<inputs>
+Survey question: {var_lab}
+
+Primary taxonomy axis: {taxonomy_axis}
+Primary taxonomy axis description: {taxonomy_axis_description}
+Taxonomy actionable type: {taxonomy_actionable_type}
+
+Domain context: {domain} / {topic} / {entity}
+
+Respondent ID: {respondent_id}
+Response: {response}
+</inputs>
+
+<template_rule>
+REQUIRED FORMAT for the "idea" field:
+- Start with EXACTLY: "{template_prefix}"
+- Then add the specific {taxonomy_actionable_type}
+
+Template structure: {canonical_phrasing}
+
+CORRECT examples:
+- "{template_prefix} duurzaamheid"
+- "{template_prefix} goede service"
+
+INCORRECT examples:
+- Starting with pronouns: "Ze hebben goede service"
+- Missing prefix: "duurzaamheid"
+- Rephrased prefix: "De bank staat voor duurzaamheid"
+</template_rule>
+
+<instructions>
+Extract ALL distinct ideas expressed in this response.
+
+For each idea, produce:
+
+1. **idea** (5–20 words)
+   REQUIRED FORMAT:
+   - Start with EXACTLY: "{template_prefix}"
+   - Then add the specific {taxonomy_actionable_type}
+   - Written in {language}
+
+   The idea MUST begin with the template prefix verbatim.
+
+2. **taxonomy_phrase** (1–3 words)
+- A concise noun-phrase that abstracts the idea into a reusable {taxonomy_actionable_type} aligned with the taxonomy axis ({taxonomy_axis}: {taxonomy_axis_description})
+- Phrasing rules:
+   * Make the semantic core of the taxonomy_phrase the head of the noun phrase.
+   * DO NOT repeat the domain entity or product name (e.g., "{entity}", "maaltijden", "product").
+     - BAD: "zoutgehalte maaltijden" → GOOD: "zoutgehalte"
+     - BAD: "voedingswaarde maaltijden" → GOOD: "voedingswaarde"
+   * Prefer single-word attribute nouns over compound action-nouns.
+     - BAD: "assortiment uitbreiding" → GOOD: "assortimentsvariatie"
+     - BAD: "prijs verlaging" → GOOD: "prijsniveau"
+   * Avoid meta-language about perception, opinion, or thought.
+   * Avoid verbs or verb-noun compounds.
+-  Written in {language}.
+
+3. **parent_category** (1–2 words)
+- A high-level abstract grouping theme for MECE clustering.
+- Must be a single abstract noun or short noun-phrase (e.g., "samenstelling", "aanbod", "kwaliteit", "prijs").
+- DO NOT add qualifiers like "van ingrediënten" or "van product" — keep it minimal.
+- Written in {language}.
+
+4. **sentiment** (choose one): positive | negative | neutral
+
+- positive = praise / approval, etc.
+- negative = complaint / dissatisfaction, etc.
+- neutral = suggestion without judgment / factual mention, etc.
+
+5. **sense** (choose one): factual | evaluative | aspirational | experiential
+
+IDEA SPLITTING RULES
+
+- Split multi-aspect ideas into separate ideas when conceptually distinct.
+- Example: "Sustaainble investment" can be seperated into two atomic concepts "sustainability" and "investment".
+
+EXAMPLE
+
+Template: {canonical_phrasing}
+Template prefix: "{template_prefix}"
+
+Response: "I'd love more shaded seating areas and better evening lighting for safety."
+
+Extracted ideas:
+[
+  {{
+    "respondent_id": "{respondent_id}",
+    "idea_id": "1",
+    "idea": "{template_prefix} more shaded seating areas",
+    "taxonomy_phrase": "shaded seating",
+    "parent_category": "facilities",
+    "sentiment": "positive",
+    "sense": "aspirational"
+  }},
+  {{
+    "respondent_id": "{respondent_id}",
+    "idea_id": "2",
+    "idea": "{template_prefix} better evening lighting",
+    "taxonomy_phrase": "evening lighting",
+    "parent_category": "facilities",
+    "sentiment": "positive",
+    "sense": "aspirational"
+  }}
+]
+
+OUTPUT FORMAT
+
+Return a JSON array. Each item:
+
+{{
+  "respondent_id": "{respondent_id}",
+  "idea_id": "sequential number as string",
+  "idea": "{template_prefix} [specific {taxonomy_actionable_type}]",
+  "taxonomy_phrase": string,
+  "parent_category": string,
+  "sentiment": "positive|negative|neutral",
+  "sense": "factual|evaluative|aspirational|experiential"
+}}
+
+Edge cases:
+- Empty or irrelevant response: return []
+- Single idea: return one item
+- Multiple ideas: return multiple items with sequential idea_id
+
+CRITICAL: Make the semantic core of the taxonomy_phrase the head of the noun phrase.
+
+Return ONLY the JSON array. Field names in English; text values in {language}.
+</instructions>
+"""
+
+# Helper dict for taxonomy axis descriptions
+TAXONOMY_AXIS_DESCRIPTIONS = {
+    "WHAT": "topic_object - concepts, things, topics, features, attributes",
+    "WHY": "intent_purpose - goals, desired outcomes, improvements, reasons",
+    "HOW": "action_method - actions, steps, processes, methods, ways",
+    "WHO": "actor_target - people, groups, stakeholders, beneficiaries",
+    "SENTIMENT": "evaluation - judgment, opinion, positive/negative evaluation",
+    "WHEN": "time_urgency - time references, urgency, sequence, timing",
+    "WHERE": "location_context - place, context, channel, location"
+}
+
+# ============================================================================
+# STEP 5: CLUSTER LABEL GENERATION
 # =============================================================================
-# Speculative codes
+
+# V2 prompt (legacy) - kept for reference
+CLUSTER_DESCRIPTION_PROMPT_V2 = """You are a qualitative researcher analyzing survey response clusters.
+
+<inputs>
+Language: {language}
+Cluster ID: {cluster_id}
+Research question: "{survey_question}"
+Number of response ideas: {num_ideas}
+
+Statistical keywords (cluster-distinguishing terms):
+{keywords_section}
+
+Representative response ideas from this cluster:
+{ideas_list}
+</inputs>
+
+<task>
+Analyze this cluster and provide a thematic summary:
+1. Read all response ideas carefully
+2. Consider statistical keywords as hints about distinguishing terms
+3. Identify the common atomic theme that unifies these responses
+4. Extract 3-5 key concepts present in this cluster
+</task>
+
+<output_format>
+Provide your analysis in the following structured format:
+- theme: Short atomic thematic label (≤10 words)
+- description: Clear description (1-2 sentences)
+- key_concepts: List of 3-5 key concepts/themes
+</output_format>"""
+
+# V4 prompt (MECE-grounded) - active default
+CLUSTER_DESCRIPTION_PROMPT = """You are a qualitative researcher labeling survey-response clusters.
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+{dataset_context_section}
+</survey_context>
+<instruction>The theme label must read as a natural-language answer category to the survey question.</instruction>
+{taxonomy_context}
+<cluster_evidence>
+Cluster ID: {cluster_id}
+Number of {sample_type}: {num_ideas}
+
+<representative_{samples_tag}>
+These {sample_type} are representative of the cluster:
+{ideas_list}
+</representative_{samples_tag}>
+{keywords_section}{cluster_profile_section}
+</cluster_evidence>
+
+<task>
+1. Review the representative {sample_type} to identify common meaning.
+2. Use the statistical keywords to sharpen what makes this cluster distinct.
+3. Identify the common atomic theme expressed directly in the data.
+4. Do not introduce concepts not supported by the {sample_type} or keywords.
+5. Ensure the theme stays strictly within the taxonomy dimension{taxonomy_task_guidance}.
+6. Ensure the theme reads as a short, noun-phrased natural-language answer to the survey question. Use the essence as the head noun, avoid generic language, clutter and verbs.
+</task>
+
+<output_format>
+Provide your analysis in {language}:
+- theme: Short noun-phrased label{taxonomy_output_constraint} (3-10 words)
+- description: 1-2 sentence explanation of what respondents associate with the entity
+- key_concepts: 3-5 concrete concepts grounded in data (from keywords or representative samples)
+</output_format>"""
+
+
+class ClusterDescription(BaseModel):
+    """LLM-generated cluster description (structured output model)."""
+    theme: str = Field(..., description="Short noun-phrased thematic label (3-10 words), reads as answer to survey question")
+    description: str = Field(..., description="1-2 sentence explanation of what respondents associate with the entity")
+    key_concepts: List[str] = Field(..., description="3-5 concrete concepts grounded in data (from keywords or samples)")
+
+
+# =============================================================================
+#  Speculative codes
 # =============================================================================
 
 INITIAL_CODEBOOK_CREATION_PROMPT = """
@@ -1114,84 +1347,7 @@ Critical remarks:
 - Use source_code provided
 """
 
-# =============================================================================
-# STEP 5: CLUSTER LABEL GENERATION
-# =============================================================================
-
-# V2 prompt (legacy) - kept for reference
-CLUSTER_DESCRIPTION_PROMPT_V2 = """You are a qualitative researcher analyzing survey response clusters.
-
-<inputs>
-Language: {language}
-Cluster ID: {cluster_id}
-Research question: "{survey_question}"
-Number of response ideas: {num_ideas}
-
-Statistical keywords (cluster-distinguishing terms):
-{keywords_section}
-
-Representative response ideas from this cluster:
-{ideas_list}
-</inputs>
-
-<task>
-Analyze this cluster and provide a thematic summary:
-1. Read all response ideas carefully
-2. Consider statistical keywords as hints about distinguishing terms
-3. Identify the common atomic theme that unifies these responses
-4. Extract 3-5 key concepts present in this cluster
-</task>
-
-<output_format>
-Provide your analysis in the following structured format:
-- theme: Short atomic thematic label (≤10 words)
-- description: Clear description (1-2 sentences)
-- key_concepts: List of 3-5 key concepts/themes
-</output_format>"""
-
-# V4 prompt (MECE-grounded) - active default
-CLUSTER_DESCRIPTION_PROMPT = """You are a qualitative researcher labeling survey-response clusters.
-
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-{dataset_context_section}
-</survey_context>
-<instruction>The theme label must read as a natural-language answer category to the survey question.</instruction>
-{taxonomy_context}
-<cluster_evidence>
-Cluster ID: {cluster_id}
-Number of {sample_type}: {num_ideas}
-
-<representative_{samples_tag}>
-These {sample_type} are representative of the cluster:
-{ideas_list}
-</representative_{samples_tag}>
-{keywords_section}{cluster_profile_section}
-</cluster_evidence>
-
-<task>
-1. Review the representative {sample_type} to identify common meaning.
-2. Use the statistical keywords to sharpen what makes this cluster distinct.
-3. Identify the common atomic theme expressed directly in the data.
-4. Do not introduce concepts not supported by the {sample_type} or keywords.
-5. Ensure the theme stays strictly within the taxonomy dimension{taxonomy_task_guidance}.
-6. Ensure the theme reads as a short, noun-phrased natural-language answer to the survey question. Use the essence as the head noun, avoid generic language, clutter and verbs.
-</task>
-
-<output_format>
-Provide your analysis in {language}:
-- theme: Short noun-phrased label{taxonomy_output_constraint} (3-10 words)
-- description: 1-2 sentence explanation of what respondents associate with the entity
-- key_concepts: 3-5 concrete concepts grounded in data (from keywords or representative samples)
-</output_format>"""
-
-
-class ClusterDescription(BaseModel):
-    """LLM-generated cluster description (structured output model)."""
-    theme: str = Field(..., description="Short noun-phrased thematic label (3-10 words), reads as answer to survey question")
-    description: str = Field(..., description="1-2 sentence explanation of what respondents associate with the entity")
-    key_concepts: List[str] = Field(..., description="3-5 concrete concepts grounded in data (from keywords or samples)")
+#
 
 
 # =============================================================================
@@ -1589,384 +1745,3 @@ Provide your analysis and assignment in this exact JSON format:
 """
 
 
-# =============================================================================
-# TAXONOMY-AWARE IDEA EXTRACTION (V3)
-# =============================================================================
-
-TAXONOMY_CHUNK_SCORING_PROMPT = """
-You are analyzing survey responses to determine the SINGLE PRIMARY TAXONOMY AXIS that should be used to generate MECE (Mutually Exclusive and Collectively Exhaustive) descriptive codes for a chunk of responses.
-
-Here is the survey question that was asked in {language}:
-
-<survey_question>
-{survey_question}
-</survey_question>
-
-Here are the responses in {language} you need to analyze:
-
-<chunk_responses>
-{chunk_size}
-</chunk_responses>
-
-This chunk contains {chunk_size} sample responses.
-
-## YOUR TASK
-
-Idebtifty ONE dominant organizing principle as the primary taxonomy axis that best differentiates the responses such that a code set built on it will be:
-- Mutually exclusive (no overlap between codes)
-- Collectively exhaustive (all responses can be coded)
-
-## CORE PRINCIPLE
-
-Base your decision on COMMUNICATIVE MEANING — what respondents are primarily trying to convey in their responses — not on grammatical form or surface-level word choice.
-
-## SIX POSSIBLE CODING DIMENSIONS
-
-You must choose the dimension that produces the CLEANEST MECE PARTITION for this specific question + response set:
-
-1) **WHAT** — attributes, features, characteristics, properties, or aspects of something
-   - Use when responses primarily describe different features, qualities, or attributes
-
-2) **WHY** — goals, motivations, desired outcomes, reasons, purposes, or value sought
-   - Use when responses primarily express different motivations, goals, or reasons
-
-3) **HOW** — actions, steps, processes, methods, behaviors, or implementation approaches
-   - Use when responses primarily describe different actions, methods, or behaviors
-
-4) **WHO** — people, groups, stakeholders, roles, or beneficiaries
-   - Use when responses primarily differ by the person, group, or role involved
-
-5) **WHEN** — timing, urgency, sequence, frequency, or temporal aspects
-   - Use when responses primarily differ by time, timing, or frequency
-
-6) **WHERE** — place, location, channel, setting, or situational context
-   - Use when responses primarily differ by location, channel, or context
-
-## DEFINING THE PRIMARY AXIS
-
-Before providing your final answer, use the scratchpad to:
-1. Review the survey question and understand what is being asked
-2. Read through the responses and identify the main themes or patterns
-3. Consider which of the six dimensions best captures how responses differ from each other
-4. Test your choice: Would codes based on this dimension be mutually exclusive and collectively exhaustive?
-5. Define the specific taxonomy axis within your chosen dimension
-
-Use <scratchpad> tags for your thinking process.
-
-## OUTPUT FORMAT After your analysis in the scratchpad, provide your final answer in the following structure:
-
-<analysis>
-<taxonomy_axis>
-In 1–2 sentences, define the specific organizing axis within the chosen dimension that will become the MECE code spine.
-It must be phrased so that code labels can be created directly from it.
-</taxonomy_axis>
-
-<evidence>
-Provide 2–3 brief verbatim snippets from the responses that show why this axis is dominant.
-</evidence>
-
-<mece_check>
-In 1–2 sentences, explain why codes built on this axis will minimize overlap and cover all responses.
-</mece_check>
-</analysis>
-
-All output in your scratchpad and analysis must be written in {language}.
-"""
-
-TAXONOMY_CONSOLIDATION_PROMPT = """
-You are consolidating chunk-level taxonomy analyses.
-Each chunk summary identified which coding dimension best organizes its responses.
-Your job is to determine the SINGLE PRIMARY TAXONOMY DIMENSION overall — the organizing axis that will be used to build a MECE (Mutually Exclusive, Collectively Exhaustive) descriptive codebook.
-
-<inputs>
-Survey question: {survey_question}
-
-Chunk results:
-{chunk_results}
-</inputs>
-
-## YOUR TASK
-
-1. Aggregate dimension scores across all chunks
-   - Compute evidence-weighted average scores using evidence_count as weights
-
-2. Select the PRIMARY dimension
-   - Choose the dimension that best serves as the global organizing principle
-   - Prioritize the dimension that will yield the cleanest MECE partition across all responses
-   - Do not select a dimension merely because it appears frequently; it must meaningfully differentiate responses
-
-3. Write a CONTEXT-SPECIFIC TAXONOMY AXIS description
-   - Define the code-spine that downstream coding should follow
-   - Must be at a mid-level of abstraction: not too narrow, not too broad
-
-4. Optionally select a SECONDARY dimension
-   - Only if it is truly orthogonal to the primary dimension
-   - Must represent an independent organizing principle, not a sub-type of the primary
-   - Otherwise set to null
-
-## PRIMARY DIMENSION SELECTION CRITERIA
-
-- High and consistent weighted scores across chunks
-- Captures the dominant communicative meaning in responses
-- Produces non-overlapping, actionable coding categories
-- Enables full coverage of response variation
-
-## TAXONOMY AXIS DESCRIPTION GUIDELINES
-
-Write 1–2 sentences that:
-- Are specific to THIS survey question and response domain
-- State the category-type by which responses differ
-- Use wording that can directly seed code labels
-- Indicate what downstream coders should extract
-
-## SECONDARY DIMENSION RULES
-
-- Must add an independent perspective not already captured by the primary
-- Must not cause code overlap with primary-axis codes
-- If no such dimension exists, return null
-
-## CONSOLIDATION RULES
-
-- If chunk results converge: follow the consensus
-- If chunk results diverge: rely on evidence-weighted averages
-- Favor MECE partition quality over raw score dominance
-
-## RETURN JSON ONLY
-
-{{
-  "primary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE",
-  "primary_dimension_rationale": "Brief explanation of why this dimension is dominant",
-  "primary_dimension_description": "Definition of the taxonomy axis (code spine) at proper abstraction level",
-  "primary_dimension_score": float,
-  "secondary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE" or null,
-  "secondary_dimension_rationale": string or null,
-  "all_dimension_scores": {{
-     "WHAT": float,
-     "WHY": float,
-     "HOW": float,
-     "WHO": float,
-     "WHEN": float,
-     "WHERE": float
-  }}
-}}
-"""
-
-TAXONOMY_AWARE_SUBJECT_PROMPT = """
-You are a {language} language expert generating a phrasing template for survey response analysis.
-
-<input>
-Language: {language}
-Survey question: {survey_question}
-Primary taxonomy axis: {primary_axis} ({primary_axis_description})
-Secondary axis (if any): {secondary_axis}
-</input>
-
-<taxonomy_axis_dimensions>
-"WHAT": "topic_object - concepts, things, topics, features, attributes"
-"WHY": "intent_purpose - goals, desired outcomes, improvements, reasons"
-"HOW": "action_method - actions, steps, processes, methods, ways"
-"WHO": "actor_target - people, groups, stakeholders, beneficiaries"
-"WHEN": "time_urgency - time references, urgency, sequence, timing"
-"WHERE": "location_context - place, context, channel, location"
-</taxonomy_axis_dimensions>
-
-## Task 1: Identify the canonical subject
-- Find the main product, brand, service, actor, or topic the question is about
-- Return a concise, normalized noun phrase in {language}
-- Preserve capitalization for proper nouns; otherwise use lowercase
-
-## Task 2: Create a phrasing template
-
-Use this flexible structure:
-**"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ATTRIBUTE_OR_ACTION]"**
-
-Where:
-- CANONICAL_TERM: the focus entity from Task 1
-- VERB/STATE: appropriate verb in {language} (e.g., "is", "has", "should", "needs", "zijn", "heeft", "moet")
-- SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty if verb alone works)
-- [ATTRIBUTE_OR_ACTION]: placeholder for actual content
-
-### Axis-aware verb/state guidance
-
-The **{primary_axis}** axis suggests certain verb patterns work best:
-
-- **WHAT** (features, properties): verbs like "has/heeft", "is characterized by/kenmerkt zich door"
-- **WHY** (goals, improvements): verbs like "should achieve/moet bereiken", "needs to provide/moet bieden"
-- **HOW** (actions, methods): verbs like "should/moet", "can/kan", "needs to/moet"
-- **WHO** (stakeholders): focus on the actor, verbs like "needs/heeft nodig", "should receive/moet krijgen"
-- **SENTIMENT** (evaluations): verbs like "is/is", "performs/presteert"
-- **WHEN** (timing): include timing context in scaffolding
-- **WHERE** (location): include location context in scaffolding
-
-Choose the verb/state that sounds MOST NATURAL in {language} for this specific question.
-
-### Grammatical completeness constraint
-
-The template MUST produce a grammatically complete sentence when [ATTRIBUTE_OR_ACTION] is replaced with a simple word.
-
-Test your template by filling [ATTRIBUTE_OR_ACTION] with a one-word example (e.g., "better", "quality", "beter", "kwaliteit").
-
-Common scaffolding patterns:
-* For "has/heeft" → often needs: "has the [quality/feature] [ATTRIBUTE_OR_ACTION]" / "heeft de [eigenschap] [ATTRIBUTE_OR_ACTION]"
-* For "should/moet" → often works directly: "should [ATTRIBUTE_OR_ACTION]" / "moet [ATTRIBUTE_OR_ACTION]"
-* For "is/is" → often works directly: "is [ATTRIBUTE_OR_ACTION]"
-
-## Task 3: Choose the actionable taxonomy dimension
-
-From <taxonomy_axis_dimensions>, select the SINGLE most relevant dimension type for the {primary_axis} axis.
-- Look at the options for {primary_axis} (e.g., for WHAT: "concepts, things, topics, features, attributes")
-- Choose ONE specific term that best fits this survey's responses
-- This narrows the taxonomy focus for MECE code generation
-
-Output format (return **only** this JSON object):
-{{
-  "canonical_term": "main subject/entity from the survey question in {language}",
-  "canonical_phrasing": "natural template ending with [ATTRIBUTE_OR_ACTION] in {language}",
-  "taxonomy_axis": "{primary_axis}",
-  "taxonomy_actionable_type": "chosen single dimension (e.g., 'attributes' or 'features')"
-}}
-"""
-
-TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """
-You are a {language} language expert extracting structured ideas through the lens of a specified taxonomy axis,
-
-<inputs>
-Survey question: {var_lab}
-
-Primary taxonomy axis: {taxonomy_axis}
-Primary taxonomy axis description: {taxonomy_axis_description}
-Taxonomy actionable type: {taxonomy_actionable_type}
-
-Domain context: {domain} / {topic} / {entity}
-
-Respondent ID: {respondent_id}
-Response: {response}
-</inputs>
-
-<template_rule>
-REQUIRED FORMAT for the "idea" field:
-- Start with EXACTLY: "{template_prefix}"
-- Then add the specific {taxonomy_actionable_type}
-
-Template structure: {canonical_phrasing}
-
-CORRECT examples:
-- "{template_prefix} duurzaamheid"
-- "{template_prefix} goede service"
-
-INCORRECT examples:
-- Starting with pronouns: "Ze hebben goede service"
-- Missing prefix: "duurzaamheid"
-- Rephrased prefix: "De bank staat voor duurzaamheid"
-</template_rule>
-
-<instructions>
-Extract ALL distinct ideas expressed in this response.
-
-For each idea, produce:
-
-1. **idea** (5–20 words)
-   REQUIRED FORMAT:
-   - Start with EXACTLY: "{template_prefix}"
-   - Then add the specific {taxonomy_actionable_type}
-   - Written in {language}
-
-   The idea MUST begin with the template prefix verbatim.
-
-2. **taxonomy_phrase** (1–3 words)
--  A concise noun-phrase that abstracts the idea into a reusable {taxonomy_actionable_type} aligned with the taxonomy axis ({taxonomy_axis}: {taxonomy_axis_description})
-- Phrasing rules:
-   * Make the semantic core of the taxonomy_phrase the head of the noun phrase.
-   * DO NOT repeat the domain entity or product name (e.g., "{entity}", "maaltijden", "product").
-     - BAD: "zoutgehalte maaltijden" → GOOD: "zoutgehalte"
-     - BAD: "voedingswaarde maaltijden" → GOOD: "voedingswaarde"
-   * Prefer single-word attribute nouns over compound action-nouns.
-     - BAD: "assortiment uitbreiding" → GOOD: "assortimentsvariatie"
-     - BAD: "prijs verlaging" → GOOD: "prijsniveau"
-   * Avoid meta-language about perception, opinion, or thought.
-   * Avoid verbs or verb-noun compounds.
--  Written in {language}.
-
-3. **parent_category** (1–2 words)
-- A high-level abstract grouping theme for MECE clustering.
-- Must be a single abstract noun or short noun-phrase (e.g., "samenstelling", "aanbod", "kwaliteit", "prijs").
-- DO NOT add qualifiers like "van ingrediënten" or "van product" — keep it minimal.
-- Written in {language}.
-
-4. **sentiment** (choose one): positive | negative | neutral
-
-- positive = praise / approval, etc.
-- negative = complaint / dissatisfaction, etc.
-- neutral = suggestion without judgment / factual mention, etc.
-
-5. **sense** (choose one): factual | evaluative | aspirational | experiential
-
-IDEA SPLITTING RULES
-
-- Split multi-aspect ideas into separate ideas when conceptually distinct.
-- Example: "Sustaainble investment" can be seperated into two atomic concepts "sustainability" and "investment".
-
-EXAMPLE
-
-Template: {canonical_phrasing}
-Template prefix: "{template_prefix}"
-
-Response: "I'd love more shaded seating areas and better evening lighting for safety."
-
-Extracted ideas:
-[
-  {{
-    "respondent_id": "{respondent_id}",
-    "idea_id": "1",
-    "idea": "{template_prefix} more shaded seating areas",
-    "taxonomy_phrase": "shaded seating",
-    "parent_category": "facilities",
-    "sentiment": "positive",
-    "sense": "aspirational"
-  }},
-  {{
-    "respondent_id": "{respondent_id}",
-    "idea_id": "2",
-    "idea": "{template_prefix} better evening lighting",
-    "taxonomy_phrase": "evening lighting",
-    "parent_category": "facilities",
-    "sentiment": "positive",
-    "sense": "aspirational"
-  }}
-]
-
-OUTPUT FORMAT
-
-Return a JSON array. Each item:
-
-{{
-  "respondent_id": "{respondent_id}",
-  "idea_id": "sequential number as string",
-  "idea": "{template_prefix} [specific {taxonomy_actionable_type}]",
-  "taxonomy_phrase": string,
-  "parent_category": string,
-  "sentiment": "positive|negative|neutral",
-  "sense": "factual|evaluative|aspirational|experiential"
-}}
-
-Edge cases:
-- Empty or irrelevant response: return []
-- Single idea: return one item
-- Multiple ideas: return multiple items with sequential idea_id
-
-CRITICAL: Make the semantic core of the taxonomy_phrase the head of the noun phrase.
-
-Return ONLY the JSON array. Field names in English; text values in {language}.
-</instructions>
-"""
-
-# Helper dict for taxonomy axis descriptions
-TAXONOMY_AXIS_DESCRIPTIONS = {
-    "WHAT": "topic_object - concepts, things, topics, features, attributes",
-    "WHY": "intent_purpose - goals, desired outcomes, improvements, reasons",
-    "HOW": "action_method - actions, steps, processes, methods, ways",
-    "WHO": "actor_target - people, groups, stakeholders, beneficiaries",
-    "SENTIMENT": "evaluation - judgment, opinion, positive/negative evaluation",
-    "WHEN": "time_urgency - time references, urgency, sequence, timing",
-    "WHERE": "location_context - place, context, channel, location"
-}

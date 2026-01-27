@@ -32,33 +32,11 @@ from experiments.codeGenerator_v2.config import EXPERIMENT_CONFIG, ExperimentCon
 
 
 # =============================================================================
-# PROMPT INJECTION
+# NOTE: PROMPT INJECTION NO LONGER NEEDED
 # =============================================================================
-
-def inject_experimental_prompts():
-    """
-    Inject local prompts into the production prompts module.
-
-    This allows experimenting with prompt modifications without
-    changing the production src/prompts.py file.
-    """
-    from experiments.codeGenerator_v2 import prompts as local_prompts
-    import prompts as production_prompts
-
-    prompt_names = [
-        'CLUSTER_SUMMARY_PROMPT',
-        'CODING_DECISION_PROMPT',
-        'CODE_CREATION_PROMPT',
-        'VERTICAL_INSTRUCTIONS',
-        'HIERARCHICAL_INSTRUCTIONS',
-        'CODING_MODIFICATION_PROMPT',
-        'VALIDATION_PROMPT',
-    ]
-
-    for name in prompt_names:
-        if hasattr(local_prompts, name):
-            setattr(production_prompts, name, getattr(local_prompts, name))
-            print(f"   Injected: {name}")
+# The experimental codeGenerator.py now directly imports prompts from
+# experiments/codeGenerator_v2/prompts.py instead of production prompts.
+# This means experimental prompts are used automatically without injection.
 
 
 # =============================================================================
@@ -121,17 +99,10 @@ def load_step5_cache(config: ExperimentConfig):
 
 def load_starter_codes(config: ExperimentConfig, variable_key: str):
     """
-    Load starter codes from cluster_representations cache.
+    Load starter codes from clustering_metadata cache.
 
-    Matches pipeline.py lines 1245-1263 exactly:
-        for rep in rep_data['representations']:
-            if rep.get('llm_label'):
-                label = rep['llm_label']
-                starter_codes.append({
-                    'code': label.get('theme', ''),
-                    'definition': label.get('description', ''),
-                    'cluster_id': label.get('cluster_id')
-                })
+    Uses the ClusteringMetadataModel which contains LLM-generated labels
+    (label_theme, label_description) for each cluster.
 
     Args:
         config: Experiment configuration
@@ -140,50 +111,99 @@ def load_starter_codes(config: ExperimentConfig, variable_key: str):
     Returns:
         List of starter code dicts, or empty list if not found
     """
+    import models
     from utils.cacheManager import CacheManager
     from config import CacheConfig
 
     cache_manager = CacheManager(CacheConfig())
-    step = "cluster_representations"
+    step = "clustering_metadata"
 
     if not cache_manager.is_cache_valid(config.filename, step, variable_key):
-        print("   No cluster_representations cache found")
+        print("   No clustering_metadata cache found")
         return []
 
     try:
-        # Load as dict since it was cached with .model_dump()
-        representations_data = cache_manager.load_from_cache(
+        # Load ClusteringMetadataModel from cache
+        results = cache_manager.load_from_cache(
             filename=config.filename,
             step=step,
-            variable_key=variable_key
+            variable_key=variable_key,
+            model_cls=models.ClusteringMetadataModel
         )
 
-        if not representations_data:
+        if not results or len(results) == 0:
             return []
 
-        # Handle list vs single dict
-        rep_data = representations_data[0] if isinstance(representations_data, list) else representations_data
+        metadata = results[0]
 
-        if not isinstance(rep_data, dict) or 'representations' not in rep_data:
-            print("   Warning: Unexpected representations format")
-            return []
-
-        # Extract starter codes from LLM labels (matches pipeline.py exactly)
+        # Extract starter codes from cluster labels
         starter_codes = []
-        for rep in rep_data['representations']:
-            if rep.get('llm_label'):
-                label = rep['llm_label']
+        for cluster_id, cluster_data in metadata.clusters.items():
+            if cluster_data.label_theme:
                 starter_codes.append({
-                    'code': label.get('theme', ''),
-                    'definition': label.get('description', ''),
-                    'cluster_id': label.get('cluster_id')
+                    'code': cluster_data.label_theme,
+                    'definition': cluster_data.label_description or '',
+                    'cluster_id': cluster_id
                 })
 
         return starter_codes
 
     except Exception as e:
-        print(f"   Warning: Could not load cluster_representations: {e}")
+        print(f"   Warning: Could not load clustering_metadata: {e}")
         return []
+
+
+def load_extraction_metadata(config: ExperimentConfig, variable_key: str):
+    """
+    Load extraction metadata from Step 3 (extracted_ideas) cache.
+
+    The ExtractionMetadata contains:
+    - Context specifiers: domain, topic, perspective, intent
+    - Taxonomy clarifiers: taxonomy_primary_axis, taxonomy_axis_description, taxonomy_actionable_type
+    - Template prefix for stripping from ideas
+
+    Args:
+        config: Experiment configuration
+        variable_key: The cache variable key
+
+    Returns:
+        ExtractionMetadata or None if not found
+    """
+    import models
+    from utils.cacheManager import CacheManager
+    from config import CacheConfig
+
+    cache_manager = CacheManager(CacheConfig())
+    step = "extracted_ideas"  # Step 3 cache
+
+    try:
+        extraction_metadata = cache_manager.load_metadata_from_cache(
+            filename=config.filename,
+            step=step,
+            variable_key=variable_key,
+            model_cls=models.ExtractionMetadata
+        )
+
+        if extraction_metadata:
+            print(f"   Loaded extraction metadata:")
+            print(f"     - domain: {extraction_metadata.domain}")
+            print(f"     - topic: {extraction_metadata.topic}")
+            print(f"     - perspective: {extraction_metadata.perspective}")
+            print(f"     - intent: {extraction_metadata.intent}")
+            print(f"     - taxonomy_axis: {extraction_metadata.taxonomy_primary_axis}")
+            print(f"     - taxonomy_axis_description: {extraction_metadata.taxonomy_axis_description[:50]}..." if extraction_metadata.taxonomy_axis_description and len(extraction_metadata.taxonomy_axis_description) > 50 else f"     - taxonomy_axis_description: {extraction_metadata.taxonomy_axis_description}")
+            print(f"     - taxonomy_actionable_type: {extraction_metadata.taxonomy_actionable_type}")
+            if extraction_metadata.template_prefix:
+                prefix_display = extraction_metadata.template_prefix[:40] + "..." if len(extraction_metadata.template_prefix) > 40 else extraction_metadata.template_prefix
+                print(f"     - template_prefix: '{prefix_display}'")
+            return extraction_metadata
+        else:
+            print("   No extraction metadata found in cache")
+            return None
+
+    except Exception as e:
+        print(f"   Warning: Could not load extraction metadata: {e}")
+        return None
 
 
 # =============================================================================
@@ -220,16 +240,14 @@ def run_experiment(config: ExperimentConfig = None):
     print(f"   Variable: {config.var_name}")
     print(f"   Sample size: {config.sample_size}")
     print(f"   Use experimental prompts: {config.use_experimental_prompts}")
+    print(f"   Use experimental theme extraction: {config.use_experimental_theme_extraction}")
     print(f"   Stages to run: {config.stages_to_run}")
     print(f"   Verbose: {config.verbose}")
 
-    # Step 1: Inject experimental prompts if enabled
-    if config.use_experimental_prompts:
-        print("\n Injecting experimental prompts...")
-        inject_experimental_prompts()
-
-    # Import codeGenerator (after prompt injection)
-    from utils.codeGenerator import InductiveCodeGenerator
+    # Import codeGenerator from experiment
+    # The experimental codeGenerator directly imports from local prompts.py
+    # (no longer needs prompt injection since it's a full copy of production code)
+    from experiments.codeGenerator_v2.codeGenerator import InductiveCodeGenerator
     from utils import verboseReporter, promptPrinter, clusterer
 
     # Step 2: Load Step 5 cache
@@ -264,22 +282,37 @@ def run_experiment(config: ExperimentConfig = None):
     print(f"   Unique clusters: {len(all_clusters)}")
     print(f"   Noise points (cluster -1): {noise_count}")
 
-    # Step 4: Load starter codes
-    print("\n Loading starter codes from cluster_representations cache...")
+    # Step 4: Load starter codes (cluster labels from ClustererV2)
+    print("\n Loading starter codes from clustering_metadata cache...")
     starter_codes = load_starter_codes(config, variable_key)
     if starter_codes:
         print(f"   Loaded {len(starter_codes)} starter codes from ClustererV2 LLM labels")
     else:
         print("   No starter codes found - proceeding with empty starter codes")
 
+    # Step 5: Load extraction metadata (context specifiers + taxonomy clarifiers)
+    print("\n Loading extraction metadata from Step 3 cache...")
+    extraction_metadata = load_extraction_metadata(config, variable_key)
+
+    # Initialize CodeDesignerConfig with experimental settings from experiment config
+    from config import DEFAULT_CODEDESIGNER_CONFIG
+    codedesigner_config = DEFAULT_CODEDESIGNER_CONFIG
+    # Use experiment config setting for experimental theme extraction
+    codedesigner_config.use_experimental_theme_extraction = config.use_experimental_theme_extraction
+
     # Initialize utilities
     verbose_reporter = verboseReporter.VerboseReporter(config.verbose)
+    # Always capture prompts when verbose, but only print realtime if prompt_printer_enabled
     prompt_printer = promptPrinter.PromptPrinter(
-        enabled=config.prompt_printer_enabled,
-        print_realtime=True
+        enabled=config.verbose,  # Capture prompts whenever verbose mode is on
+        print_realtime=config.prompt_printer_enabled  # Only print realtime if explicitly enabled
     )
 
-    # Step 5: Run InductiveCodeGenerator (matches pipeline.py)
+    # Print key context specifiers prominently
+    if extraction_metadata:
+        print(f"\n Context: domain={extraction_metadata.domain}, topic={extraction_metadata.topic}")
+
+    # Step 6: Run InductiveCodeGenerator (matches pipeline.py)
     print("\n" + "-" * 80)
     print("RUNNING CODEBOOK GENERATION")
     print("-" * 80)
@@ -293,7 +326,9 @@ def run_experiment(config: ExperimentConfig = None):
         verbose=config.verbose,
         verbose_detailed=config.verbose_detailed,
         prompt_printer=prompt_printer,
-        stages_to_run=config.stages_to_run
+        stages_to_run=config.stages_to_run,
+        config=codedesigner_config,  # Pass config with experimental settings
+        extraction_metadata=extraction_metadata,  # Pass context specifiers + taxonomy
     )
 
     results = generator.generate()
@@ -324,14 +359,16 @@ def run_experiment(config: ExperimentConfig = None):
     print("=" * 80)
     print_statistics(results, elapsed_time)
 
-    # Display sample codebook
-    if results and config.sample_codebook_count > 0:
+    # Display sample codebook (0 = show all, negative = skip)
+    if results and config.sample_codebook_count >= 0:
         print_sample_codebook(results, config.sample_codebook_count)
 
-    # Print prompt summary if enabled
-    if config.prompt_printer_enabled:
-        print("\n")
-        prompt_printer.print_summary()
+    # Display sample prompts (first of each stage) when verbose
+    if config.verbose and prompt_printer.prompts:
+        print("\n" + "=" * 80)
+        print("SAMPLE PROMPTS (First of Each Stage)")
+        print("=" * 80)
+        prompt_printer.print_all_prompts()
 
     return results
 
@@ -374,17 +411,22 @@ def print_statistics(results, elapsed_time: float):
         print(f"   Total themes extracted: {total_themes}")
 
 
-def print_sample_codebook(results, n_samples: int = 10):
-    """Print sample codes from the generated codebook."""
+def print_sample_codebook(results, n_samples: int = 0):
+    """Print codes from the generated codebook. n_samples=0 means show all."""
     if not hasattr(results, 'codebook') or not results.codebook:
         print("\n No codebook to display")
         return
 
     codebook = results.codebook
-    n_samples = min(n_samples, len(codebook))
+
+    # 0 or negative means show all
+    if n_samples <= 0:
+        n_samples = len(codebook)
+    else:
+        n_samples = min(n_samples, len(codebook))
 
     print("\n" + "=" * 80)
-    print(f"SAMPLE CODEBOOK ({n_samples} of {len(codebook)} codes)")
+    print(f"CODEBOOK ({n_samples} codes)")
     print("=" * 80)
 
     samples = codebook[:n_samples]

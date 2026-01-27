@@ -40,8 +40,9 @@ from config import CacheConfig, ModelConfig
 # Import local prompts (can be modified for experimentation)
 from experiments.codeGenerator_v2.prompts import CLUSTER_SUMMARY_PROMPT
 
-# Import ClusterSummaryOutput from codeGenerator
-from utils.codeGenerator import ClusterSummaryOutput
+# Import ClusterSummaryOutput from EXPERIMENTAL codeGenerator (not production!)
+# This ensures ClusterThemeItem instances are compatible during multi-theme expansion
+from experiments.codeGenerator_v2.codeGenerator import ClusterSummaryOutput
 
 
 # =============================================================================
@@ -519,6 +520,158 @@ async def extract_single_theme(
 
     except Exception as e:
         print(f"ERROR: Theme extraction failed for cluster {cluster_id}: {e}")
+        return None
+
+
+# =============================================================================
+# INJECTABLE FUNCTION FOR CODEGENERATOR INTEGRATION
+# =============================================================================
+
+async def extract_single_theme_injectable(
+    cluster_id: Union[int, str],
+    cluster_data: Dict[str, Any],
+    var_lab: str,
+    extraction_metadata: Optional[models.ExtractionMetadata],
+    # codeGenerator dependencies
+    async_responses_create_with_json_retry,  # Function reference from codeGenerator
+    model: str,
+    semaphore,
+    rate_limiter,
+    tpm_bucket,
+    latency_tracker,
+    config,
+    model_config,  # For reasoning_effort and text_verbosity
+    timeout: float = 30.0,
+) -> Optional[ClusterSummaryOutput]:
+    """
+    Injectable version for codeGenerator integration.
+
+    Uses codeGenerator's dependencies instead of creating its own.
+    All experimental logic (probability bands, template stripping, context specifiers)
+    is applied here.
+
+    Args:
+        cluster_id: Cluster identifier
+        cluster_data: Dict with 'ideas' (list of ClusterSubmodel), 'embeddings'
+        var_lab: Survey question text
+        extraction_metadata: ExtractionMetadata for context specifiers and template prefix
+        async_responses_create_with_json_retry: Function from codeGenerator for LLM calls
+        model: Model name for LLM call
+        semaphore: Concurrency semaphore from codeGenerator
+        rate_limiter: Rate limiter from codeGenerator
+        tpm_bucket: Token bucket from codeGenerator
+        latency_tracker: Latency tracker from codeGenerator
+        config: CodeDesignerConfig from codeGenerator
+        model_config: ModelConfig from codeGenerator
+        timeout: Timeout for LLM call
+
+    Returns:
+        ClusterSummaryOutput or None on failure
+    """
+    # Extract ideas and embeddings from cluster_data dict
+    ideas = cluster_data.get('ideas', [])
+    embeddings = cluster_data.get('embeddings', [])
+
+    if not ideas:
+        return None
+
+    # Get template prefix for stripping
+    template_prefix = extraction_metadata.template_prefix if extraction_metadata else ""
+
+    # Prepare idea texts (strip template prefix)
+    idea_texts = []
+    idea_embeddings = []
+    for i, idea in enumerate(ideas):
+        text = idea.idea or ""
+        if template_prefix and text.startswith(template_prefix):
+            text = text[len(template_prefix):].strip()
+        idea_texts.append(text)
+
+        # Collect embeddings
+        if i < len(embeddings):
+            idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
+        elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+            idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
+
+    # Sample using probability bands
+    # Build a temporary ClusterData for the sampling function
+    temp_cluster_data = ClusterData(
+        cluster_id=cluster_id,
+        ideas=ideas,
+        embeddings=idea_embeddings,
+        idea_texts=idea_texts
+    )
+
+    sampled_bands = sample_ideas_by_probability_band(temp_cluster_data, TOTAL_SAMPLE_BUDGET)
+
+    # If no samples, fall back to simple sampling
+    if not sampled_bands or sum(len(v) for v in sampled_bands.values()) == 0:
+        sampled_ideas = sample_representative_ideas(idea_texts, idea_embeddings, MAX_IDEAS_PER_CLUSTER)
+        ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
+    else:
+        ideas_text = format_cluster_text_by_bands(sampled_bands)
+
+    # Build prompt with context specifiers
+    params = {
+        'cluster_id': str(cluster_id),
+        'survey_question': var_lab,
+        'language': extraction_metadata.lang if extraction_metadata and extraction_metadata.lang else DEFAULT_LANGUAGE,
+        'cluster_text': ideas_text
+    }
+
+    # Add context specifiers and taxonomy clarifiers
+    if extraction_metadata:
+        params.update({
+            'lang': extraction_metadata.lang or "",
+            'domain': extraction_metadata.domain or "",
+            'topic': extraction_metadata.topic or "",
+            'perspective': extraction_metadata.perspective or "",
+            'entity': extraction_metadata.entity or "",
+            'intent': extraction_metadata.intent or "",
+            'taxonomy_axis': extraction_metadata.taxonomy_primary_axis or "",
+            'taxonomy_axis_description': extraction_metadata.taxonomy_axis_description or "",
+            'taxonomy_actionable_type': extraction_metadata.taxonomy_actionable_type or "",
+        })
+    else:
+        params.update({
+            'lang': "",
+            'domain': "",
+            'topic': "",
+            'perspective': "",
+            'entity': "",
+            'intent': "",
+            'taxonomy_axis': "",
+            'taxonomy_axis_description': "",
+            'taxonomy_actionable_type': "",
+        })
+
+    prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
+
+    try:
+        # Use codeGenerator's async_responses_create_with_json_retry
+        response = await async_responses_create_with_json_retry(
+            model=model,
+            prompt=prompt,
+            response_model=ClusterSummaryOutput,
+            reasoning_effort=model_config.get_reasoning_effort_for_stage('theme_extraction'),
+            text_verbosity=model_config.get_text_verbosity_for_stage('theme_extraction'),
+            semaphore=semaphore,
+            rate_limiter=rate_limiter,
+            tpm_bucket=tpm_bucket,
+            latency_tracker=latency_tracker,
+            config=config,
+            timeout=timeout
+        )
+
+        # async_responses_create_with_json_retry extracts .root (returns dict)
+        # but caller expects ClusterSummaryOutput object - wrap it back
+        if isinstance(response, dict):
+            return ClusterSummaryOutput(root=response)
+        return response
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Experimental theme extraction failed for cluster {cluster_id}: {e}")
         return None
 
 

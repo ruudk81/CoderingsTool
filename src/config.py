@@ -865,6 +865,9 @@ class CodeDesignerConfig:
     enable_concurrent_leak_recovery: bool = True  # Use concurrent batch processing for modification leak recovery
     modification_leak_batch_size: int = 10  # Batch size for concurrent leak recovery
 
+    # Experimental features
+    use_experimental_theme_extraction: bool = True  # Use experimental theme extraction from codeGenerator_v2
+
 
 
 # =============================================================================
