@@ -1040,6 +1040,17 @@ def step_5_cluster(
         # Cache cluster results (primary output)
         cache_manager.save_to_cache(initial_cluster_results, filename, step_name, variable_key, elapsed_time, var_lab=var_lab)
 
+        # Cache clustering metadata (Layer 2: keywords, labels, distributions, metrics)
+        clustering_metadata = clusterer.to_metadata_model()
+        cache_manager.save_to_cache(
+            [clustering_metadata],
+            filename,
+            "clustering_metadata",
+            variable_key,
+            elapsed_time,
+            var_lab=var_lab
+        )
+
         # Cache cluster representations separately (for speculative codes in step 6)
         keywords = clusterer.get_cluster_keywords() or {}
         labels = clusterer.get_cluster_labels() or {}
@@ -1123,6 +1134,10 @@ def step_5_cluster(
                     print(f"  Silhouette: {metrics.silhouette:.3f}")
                 if metrics.mean_persistence is not None:
                     print(f"  Persistence: mean={metrics.mean_persistence:.3f}, weighted={metrics.weighted_persistence:.3f}")
+                if metrics.mean_probability is not None:
+                    print(f"  Probability: mean={metrics.mean_probability:.3f}, low_ratio={metrics.low_prob_ratio:.1%}")
+                if metrics.mean_outlier_score is not None:
+                    print(f"  Outliers: mean_score={metrics.mean_outlier_score:.3f}, high_ratio={metrics.high_outlier_ratio:.1%}")
                 print(f"  Cluster sizes: min={metrics.min_cluster_size}, median={metrics.median_cluster_size}, max={metrics.max_cluster_size}")
 
             # Template prefix
@@ -1130,6 +1145,8 @@ def step_5_cluster(
             if template_prefix:
                 prefix_display = template_prefix[:60] + "..." if len(template_prefix) > 60 else template_prefix
                 print(f"\nTemplate prefix: '{prefix_display}'")
+            else:
+                print(f"\nTemplate prefix: (none)")
 
             # c-TF-IDF Keywords summary
             if keywords:
@@ -1139,8 +1156,26 @@ def step_5_cluster(
                     kw_str = ", ".join([kw for kw, _ in kw_list[:5]])
                     print(f"  Cluster {cluster_id}: {kw_str}")
 
+            # MMR and TF-IDF Keywords (additional methods from experimental version)
+            all_keywords = clusterer.get_all_cluster_keywords()
+            if all_keywords:
+                for method_name in ["mmr", "tfidf"]:
+                    method_keywords = all_keywords.get(method_name)
+                    if method_keywords:
+                        method_label = {"mmr": "MMR", "tfidf": "TF-IDF"}.get(method_name, method_name)
+                        print(f"\n{method_label} Keywords ({len(method_keywords)} clusters):")
+                        for cluster_id in sorted(method_keywords.keys()):
+                            kw_list = method_keywords[cluster_id]
+                            kw_str = ", ".join([kw for kw, _ in kw_list[:5]])
+                            print(f"  Cluster {cluster_id}: {kw_str}")
+
             # Print all clusters with samples (key feature from experiment version)
             clusterer.print_all_clusters(n_samples=10)
+
+            # Cache confirmation (at end for visibility)
+            print(f"\n{'='*70}")
+            print(f"CACHED: {len(initial_cluster_results)} results to 'initial_clusters' (variable_key: {variable_key})")
+            print(f"CACHED: {len(clustering_metadata.clusters)} clusters to 'clustering_metadata'")
 
         # Optional Streamlit success message
         if streamlit_container:

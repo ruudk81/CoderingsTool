@@ -501,6 +501,7 @@ class Embedder:
                         'idea': response_idea.idea,
                         # Pass through clean fields from input
                         'taxonomy_phrase': getattr(response_idea, 'taxonomy_phrase', '') or '',
+                        'parent_category': getattr(response_idea, 'parent_category', '') or '',
                         'sentiment': getattr(response_idea, 'sentiment', 'neutral') or 'neutral',
                         'sense': getattr(response_idea, 'sense', 'factual') or 'factual',
                     }
