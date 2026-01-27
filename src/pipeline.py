@@ -26,7 +26,7 @@ model_config = ModelConfig()
 filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 id_column = "DLNMID"
 var_name = "Q20"
-sample_size = 50
+sample_size = 500
 
 #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 #id_column = "DLNMID"
@@ -48,7 +48,7 @@ sample_size = 50
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 4
+RUN_UNTIL_STEP = 5
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -894,9 +894,9 @@ def step_5_cluster(
     verbose=True,
     streamlit_container=None        # Optional progress updates
 ):
-    """Step 5: Perform dimensionality reduction and clustering using ClustererV2
+    """Step 5: Perform dimensionality reduction and clustering
 
-    Uses ClustererV2 with:
+    Uses Clusterer with:
     - Automatic algorithm selection (DVC + knee detection)
     - Optuna-based HDBSCAN optimization
     - c-TF-IDF keyword extraction
@@ -915,7 +915,8 @@ def step_5_cluster(
     Returns:
         List[models.ClusterModel]: List of models with cluster assignments
     """
-    from utils.clusterer import ClustererV2, ClustererV2Config
+    from utils.clusterer import Clusterer
+    from config_clusterer import ClustererConfig
     from utils.verboseReporter import VerboseReporter
 
     step_name = "initial_clusters"
@@ -946,7 +947,7 @@ def step_5_cluster(
 
     # Optional Streamlit progress
     if streamlit_container:
-        streamlit_container.text("🔄 Clustering ideas with ClustererV2 (auto algorithm selection)...")
+        streamlit_container.text("🔄 Clustering ideas (auto algorithm selection)...")
     verbose_reporter = VerboseReporter(verbose)
 
     if not force_recalc and cache_manager.is_cache_valid(filename, step_name, variable_key):
@@ -964,11 +965,27 @@ def step_5_cluster(
         if streamlit_container:
             streamlit_container.success(f"✅ Clustering completed (from cache): {num_initial_clusters} clusters")
     else:
-        verbose_reporter.section_header("INITIAL CLUSTERING PHASE (ClustererV2)")
+        verbose_reporter.section_header("INITIAL CLUSTERING PHASE")
         start_time = time.time()
 
-        # Configure ClustererV2
-        config = ClustererV2Config(
+        # Load extraction metadata for taxonomy context
+        extraction_metadata = None
+        try:
+            extraction_metadata = cache_manager.load_metadata_from_cache(
+                filename=filename,
+                step="extracted_ideas",
+                variable_key=variable_key,
+                model_cls=models.ExtractionMetadata
+            )
+            if extraction_metadata and verbose:
+                prefix_display = extraction_metadata.template_prefix[:40] + "..." if extraction_metadata.template_prefix and len(extraction_metadata.template_prefix) > 40 else extraction_metadata.template_prefix or "(none)"
+                print(f"   Loaded extraction metadata (template_prefix: '{prefix_display}')")
+        except Exception as e:
+            if verbose:
+                print(f"   Note: Could not load extraction metadata: {e}")
+
+        # Configure Clusterer
+        config = ClustererConfig(
             # Algorithm selection: auto (DVC + knee detection)
             algorithm_mode="auto",
 
@@ -1013,7 +1030,7 @@ def step_5_cluster(
         )
 
         # Run clustering
-        clusterer = ClustererV2(embedded_text, config=config)
+        clusterer = Clusterer(embedded_text, config=config, extraction_metadata=extraction_metadata)
         clusterer.run()
         initial_cluster_results = clusterer.to_cluster_model()
 
@@ -1260,7 +1277,7 @@ def step_6_generate_codebook(
                                         'cluster_id': label.get('cluster_id')
                                     })
                             if starter_codes:
-                                print(f"Loaded {len(starter_codes)} speculative codes from ClustererV2 LLM labels")
+                                print(f"Loaded {len(starter_codes)} speculative codes from Clusterer LLM labels")
                 except Exception as e:
                     print(f"Failed to load cluster representations: {e}")
                     starter_codes = []
@@ -1986,7 +2003,7 @@ if __name__ == '__main__':
     else:
         FORCE_STEP = ""
     
-    USE_SPECULATIVE_STARTER_CODES = True  # Uses LLM labels from ClustererV2 (step 5) if available
+    USE_SPECULATIVE_STARTER_CODES = True  # Uses LLM labels from Clusterer (step 5) if available
     data_loader = dataLoader.DataLoader(verbose=False)
     var_lab = data_loader.get_varlab(filename=filename, var_name=var_name)
 
