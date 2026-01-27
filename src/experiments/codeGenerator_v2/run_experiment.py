@@ -1,12 +1,18 @@
 #%%
 """
-CodeGenerator V2 Experiment Runner
+codeGenerator V2 Experiment Runner
+
+NOTE: After migration, v2 is now the PRODUCTION codeGenerator.
+The old codeGenerator is archived at src/utils/old/codeGenerator_v1.py.
+
+Toggle modes:
+    USE_PRODUCTION = True  -> Uses PRODUCTION (migrated v2)
+    USE_PRODUCTION = False -> Uses ARCHIVED (v1)
 
 Runs Step 6 (codebook generation) in isolation for experimentation.
 Loads Step 5 (initial_clusters) from cache and runs InductiveCodeGenerator.
 
-This matches the exact behavior of pipeline.py Step 6, allowing prompt
-experimentation via local prompts.py injection.
+This matches the exact behavior of pipeline.py Step 6.
 
 Usage:
     cd src && python -m experiments.codeGenerator_v2.run_experiment
@@ -14,7 +20,6 @@ Usage:
 
 import os
 import sys
-#import sysalri
 
 # Ensure src directory is in path
 src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,15 +34,19 @@ from pathlib import Path
 import nest_asyncio
 nest_asyncio.apply()
 
+# =============================================================================
+# TOGGLE: Use production (migrated v2) or archived (v1) codeGenerator
+# =============================================================================
+USE_PRODUCTION = True
+
+if USE_PRODUCTION:
+    # Production: Uses migrated codeGenerator (probability-band theme extraction)
+    from utils.codeGenerator import InductiveCodeGenerator
+else:
+    # Archived: Uses old codeGenerator (toggle-based, broken references)
+    from utils.old.codeGenerator_v1 import InductiveCodeGenerator
+
 from experiments.codeGenerator_v2.config import EXPERIMENT_CONFIG, ExperimentConfig
-
-
-# =============================================================================
-# NOTE: PROMPT INJECTION NO LONGER NEEDED
-# =============================================================================
-# The experimental codeGenerator.py now directly imports prompts from
-# experiments/codeGenerator_v2/prompts.py instead of production prompts.
-# This means experimental prompts are used automatically without injection.
 
 
 # =============================================================================
@@ -243,10 +252,7 @@ def run_experiment(config: ExperimentConfig = None):
     print(f"   Stages to run: {config.stages_to_run}")
     print(f"   Verbose: {config.verbose}")
 
-    # Import codeGenerator from experiment
-    # The experimental codeGenerator directly imports from local prompts.py
-    # (no longer needs prompt injection since it's a full copy of production code)
-    from experiments.codeGenerator_v2.codeGenerator import InductiveCodeGenerator
+    # InductiveCodeGenerator is imported at module level based on USE_PRODUCTION toggle
     from utils import verboseReporter, promptPrinter, clusterer
 
     # Step 2: Load Step 5 cache
