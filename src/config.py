@@ -855,18 +855,29 @@ class CodeDesignerConfig:
     
     # Idea sampling settings
     max_ideas_per_cluster: int = 30  # Maximum ideas to include per cluster for LLM processing
-    
+
     # SharedCodebook settings
     enable_version_tracking: bool = True  # Track codebook versions
     enable_embedding_cache: bool = True  # Cache code embeddings per version
     max_cached_versions: int = 5  # Maximum cached codebook versions
-    
+
     # Modification leak recovery settings
     enable_concurrent_leak_recovery: bool = True  # Use concurrent batch processing for modification leak recovery
     modification_leak_batch_size: int = 10  # Batch size for concurrent leak recovery
 
-    # Experimental features
-    use_experimental_theme_extraction: bool = True  # Use experimental theme extraction from codeGenerator_v2
+    # Theme extraction probability band settings
+    probability_threshold: float = 0.8  # Only include ideas with cluster_probability < this value
+    total_sample_budget: int = 30  # Total ideas to sample across all probability bands
+    probability_bands: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
+        'inner':  (0.6, 0.8),   # High-ish probability: 0.6 <= prob < 0.8
+        'border': (0.4, 0.6),   # Medium probability: 0.4 <= prob < 0.6
+        'fringe': (0.0, 0.4),   # Low probability: prob < 0.4
+    })
+    band_labels: Dict[str, str] = field(default_factory=lambda: {
+        'inner':  'inner members',
+        'border': 'border members',
+        'fringe': 'fringe members',
+    })
 
 
 

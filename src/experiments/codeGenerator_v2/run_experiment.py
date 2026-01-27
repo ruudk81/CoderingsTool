@@ -239,8 +239,6 @@ def run_experiment(config: ExperimentConfig = None):
     print(f"   Filename: {config.filename}")
     print(f"   Variable: {config.var_name}")
     print(f"   Sample size: {config.sample_size}")
-    print(f"   Use experimental prompts: {config.use_experimental_prompts}")
-    print(f"   Use experimental theme extraction: {config.use_experimental_theme_extraction}")
     print(f"   Stages to run: {config.stages_to_run}")
     print(f"   Verbose: {config.verbose}")
 
@@ -294,11 +292,9 @@ def run_experiment(config: ExperimentConfig = None):
     print("\n Loading extraction metadata from Step 3 cache...")
     extraction_metadata = load_extraction_metadata(config, variable_key)
 
-    # Initialize CodeDesignerConfig with experimental settings from experiment config
+    # Initialize CodeDesignerConfig
     from config import DEFAULT_CODEDESIGNER_CONFIG
     codedesigner_config = DEFAULT_CODEDESIGNER_CONFIG
-    # Use experiment config setting for experimental theme extraction
-    codedesigner_config.use_experimental_theme_extraction = config.use_experimental_theme_extraction
 
     # Initialize utilities
     verbose_reporter = verboseReporter.VerboseReporter(config.verbose)
@@ -495,9 +491,8 @@ def save_results_to_file(output: str, config: ExperimentConfig) -> Path:
     base_name = Path(config.filename).stem
     sample_str = str(config.sample_size) if config.sample_size else "full"
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    prompt_mode = "experimental" if config.use_experimental_prompts else "production"
 
-    output_filename = f"codegenerator_{base_name}_{config.var_name}_{sample_str}_{prompt_mode}_{date_str}.txt"
+    output_filename = f"codegenerator_{base_name}_{config.var_name}_{sample_str}_{date_str}.txt"
     output_path = output_dir / output_filename
 
     with open(output_path, 'w', encoding='utf-8') as f:
