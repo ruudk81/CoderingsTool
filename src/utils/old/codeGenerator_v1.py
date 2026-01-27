@@ -27,9 +27,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM
-# Import prompts from production
-from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT, VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
-from utils.verboseReporter import VerboseReporter
+from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
+from .verboseReporter import VerboseReporter
 from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
 
 try:
@@ -93,18 +92,6 @@ PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
 DIAGNOSTIC_REPORT_INTERVAL = 30       # Seconds between diagnostic reports
 
 # ============================================================================
-# INTERNAL DATA STRUCTURES
-# ============================================================================
-
-@dataclass
-class _ClusterData:
-    """Container for cluster data during theme extraction."""
-    cluster_id: Union[int, str]
-    ideas: List[Any]  # Full idea objects (ClusterSubmodel)
-    embeddings: List[np.ndarray]
-    idea_texts: List[str]  # Processed idea texts (with template prefix stripped)
-
-# ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
 
@@ -117,7 +104,7 @@ class NearNeighbor(BaseModel):
 class AssignmentExamples(BaseModel):
     inclusion: List[str] = Field(..., min_length=1)
     exclusion: List[str] = Field(..., min_length=1)
-    near_neighbor: Optional[NearNeighbor] = None  # Nullable when no boundary update needed
+    near_neighbor: NearNeighbor
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ClusterThemeItem(BaseModel):
@@ -234,15 +221,13 @@ class ClusterSummaryOutput(BaseModel):
 """Prompt 2 : Coding Decision"""
 class MatchedCandidate(BaseModel):
     code: str
-    definition: Optional[str] = None  # May be inferred by LLM if not provided
-    definition_source: Literal["provided", "inferred"] = "inferred"
+    definition: str
     assignment_examples: Optional[AssignmentExamples] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ModifyParameters(BaseModel):
-    modify_instruction: Literal["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"]
-    conceptual_family: Literal["same", "different"]
-    abstraction_level: Literal["same", "different"]
+    modify_instruction: Literal["vertical_broaden_same_motive", "hierarchical_parent_diff_motive_same_family", "none"]
+    motive_comparison: Literal["same", "different_same_family", "different_not_related"]
     abstraction_level_action: Literal["keep", "broaden_to_parent", "none"]
     inclusion_update: Optional[str] = None
     exclusion_update: Optional[str] = None
@@ -255,7 +240,7 @@ class CodingDecision(BaseModel):
     theme_number: int
     theme_name: str
     matched_candidates: List[MatchedCandidate]
-    decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HIERARCHICAL", "CREATE"]
+    decision: str  # use | modify | create
     source_code: Optional[str] = None
     modify_parameters: ModifyParameters
     justification: str
@@ -1006,7 +991,7 @@ class SimilarityEngine:
         """Generate embeddings for all theme names using efficient batch processing (like embedder.py)"""
         self.verbose_reporter.step_start("Theme Embedding")
         self.verbose_reporter.stat_line(f"Processing {len(themes)} theme names in batches")
-
+        
         # Prepare data for batch processing
         cluster_ids = list(themes.keys())
         # Get theme_labels - themes[cid] is ClusterSummaryOutput with root dict
@@ -1045,7 +1030,7 @@ class SimilarityEngine:
             self.verbose_reporter.error(f"Batch embedding failed: {e}")
             # Fallback to individual processing if batch fails
             self.verbose_reporter.warning("Falling back to individual embedding processing")
-
+            
             for cluster_id, theme in themes.items():
                 try:
                     # Extract theme_label from ClusterSummaryOutput structure
@@ -1060,7 +1045,7 @@ class SimilarityEngine:
                     self.verbose_reporter.error(f"Failed to embed theme for cluster {cluster_id}: {individual_error}")
                     # Use zero vector as fallback
                     theme_embeddings[cluster_id] = np.zeros(1536)
-
+        
         self.verbose_reporter.stat_line(f"Generated embeddings for {len(theme_embeddings)} themes")
         self.verbose_reporter.step_complete("Theme Embedding")
         return theme_embeddings
@@ -1498,13 +1483,6 @@ class InductiveCodeGenerator:
         self.verbose = verbose
         self.verbose_detailed = verbose_detailed
         self.prompt_printer = prompt_printer
-        # Track which stages have captured their first prompt (for displaying sample prompts)
-        self._prompt_captured = {
-            'stage1_theme': False,
-            'stage2_decision': False,
-            'stage3_generation': False,
-            'stage4_validation': False
-        }
         self.config = config or DEFAULT_CODEDESIGNER_CONFIG
         self.processing_config = processing_config or DEFAULT_PROCESSING_CONFIG
         self.stages_to_run = stages_to_run
@@ -1629,40 +1607,6 @@ class InductiveCodeGenerator:
         self._redistribution_stats = {
             'clusters_redistributed': [],
             'redistribution_details': {}
-        }
-
-    def _get_context_specifier_params(self) -> Dict[str, str]:
-        """Extract context specifier params from extraction_metadata for prompt formatting.
-
-        Returns a dict with all context specifier fields that can be merged into
-        prompt params dicts. If extraction_metadata is not available, returns
-        empty strings for all fields.
-
-        Used by: CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
-                 CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
-        """
-        if self._extraction_metadata:
-            return {
-                'lang': self._extraction_metadata.lang or "",
-                'domain': self._extraction_metadata.domain or "",
-                'topic': self._extraction_metadata.topic or "",
-                'perspective': self._extraction_metadata.perspective or "",
-                'entity': self._extraction_metadata.entity or "",
-                'intent': self._extraction_metadata.intent or "",
-                'taxonomy_axis': self._extraction_metadata.taxonomy_primary_axis or "",
-                'taxonomy_axis_description': self._extraction_metadata.taxonomy_axis_description or "",
-                'taxonomy_actionable_type': self._extraction_metadata.taxonomy_actionable_type or "",
-            }
-        return {
-            'lang': "",
-            'domain': "",
-            'topic': "",
-            'perspective': "",
-            'entity': "",
-            'intent': "",
-            'taxonomy_axis': "",
-            'taxonomy_axis_description': "",
-            'taxonomy_actionable_type': "",
         }
 
     async def _fetch_rate_limits_from_api(self) -> RateLimits:
@@ -1838,13 +1782,12 @@ class InductiveCodeGenerator:
             ideas_list = cluster_result.response_ideas or []
             ideas_text = "\n".join([f"- {idea}" for idea in ideas_list[:10]])  # Sample first 10 ideas
             
-            # Estimate tokens for typical cluster summary prompt (including context specifiers)
+            # Estimate tokens for typical cluster summary prompt
             sample_prompt = CLUSTER_SUMMARY_PROMPT.format(
                 cluster_id="sample",
                 survey_question=self.var_lab or "sample question",
                 language=DEFAULT_LANGUAGE,
-                cluster_text=ideas_text,
-                **self._get_context_specifier_params()  # Add context specifiers
+                cluster_text=ideas_text
             )
             total_tokens += len(self.encoding.encode(sample_prompt))
         
@@ -1966,13 +1909,12 @@ class InductiveCodeGenerator:
         ideas = cluster_data.get('ideas', ['sample idea'])[:10]  # Limit to 10 ideas for probe
         ideas_text = "\n".join([f"- {idea}" for idea in ideas])
         
-        # Build prompt - EXACT same as production (including context specifiers)
+        # Build prompt - EXACT same as production
         prompt = CLUSTER_SUMMARY_PROMPT.format(
             cluster_id=cluster_data.get('cluster_id', 'probe'),
             survey_question=self.var_lab,
             language=DEFAULT_LANGUAGE,
-            cluster_text=ideas_text,
-            **self._get_context_specifier_params()  # Add context specifiers
+            cluster_text=ideas_text
         )
         
         # Use EXACT same adaptive timeout as production
@@ -2170,10 +2112,9 @@ class InductiveCodeGenerator:
             cluster_summary_items = list(theme_data.root.values())
             if cluster_summary_items and cluster_summary_items[0].extracted_themes:
                 theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_examples') and theme.assignment_examples is not None:
+                if hasattr(theme, 'assignment_examples'):
                     neighbor = theme.assignment_examples.near_neighbor
-                    if neighbor is not None:
-                        return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
+                    return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
         return "Unknown"
 
     def _calculate_cosine_similarities(
@@ -2324,7 +2265,8 @@ class InductiveCodeGenerator:
                     try:
                         result = await self._extract_single_theme(
                             task['cluster_id'],
-                            task['cluster_data']
+                            task['ideas'],
+                            cluster_data=task['cluster_data']
                         )
                         theme_results[task['cluster_id']] = result
                     except Exception as e:
@@ -2639,27 +2581,27 @@ class InductiveCodeGenerator:
             if count > 0:
                 # Calculate average similarity for ideas assigned to this sub-cluster
                 sub_similarities = [
-                    score['similarity']
-                    for score in redistribution_detail['similarity_scores']
+                    score['similarity'] 
+                    for score in redistribution_detail['similarity_scores'] 
                     if score['assigned_to'] == sub_id
                 ]
                 avg_similarity = np.mean(sub_similarities) if sub_similarities else 0.0
-
+            
             redistribution_detail['redistribution'][sub_id] = {
                 'count': count,
                 'avg_similarity': float(avg_similarity)
             }
-
+        
         # Log redistribution summary
         #counts = [redistribution_detail['redistribution'][sub_id]['count'] for sub_id in sub_cluster_ids]
         #self.verbose_reporter.stat_line(f"Redistributed cluster {original_cluster_id}: {redistribution_detail['original_idea_count']} ideas → {counts} across {len(sub_cluster_ids)} sub-themes")
-
+        
         # Store detailed statistics
         self._redistribution_stats['clusters_redistributed'].append(original_cluster_id)
         self._redistribution_stats['redistribution_details'][str(original_cluster_id)] = redistribution_detail
-
+        
         #self.verbose_reporter.step_complete(f"Idea redistribution for cluster {original_cluster_id}")
-
+        
         return redistributed_clusters
     
     async def _update_cluster_models_with_redistribution(self, multi_theme_mapping: Dict[int, List[str]], original_clusters: Dict, themes: Dict[str, ClusterSummaryOutput],theme_embeddings: Dict[str, np.ndarray]):
@@ -2885,207 +2827,66 @@ class InductiveCodeGenerator:
             )
     
         return sampled_texts
-
+    
     #########################################################################################################
-    # THEME EXTRACTION HELPER METHODS - Probability Band Sampling
-    #########################################################################################################
-
-    def _strip_template_prefix(self, text: str) -> str:
-        """Remove template prefix from idea text."""
-        if self._extraction_metadata and self._extraction_metadata.template_prefix:
-            prefix = self._extraction_metadata.template_prefix
-            if text.startswith(prefix):
-                return text[len(prefix):].strip()
-        return text
-
-    def _sample_ideas_by_probability_band(
-        self,
-        cluster_data: _ClusterData,
-        total_budget: int = None
-    ) -> Dict[str, List[str]]:
-        """
-        Group ideas by probability bands and sample within each band.
-
-        Returns dict: band_name -> list of sampled idea texts
-        Only non-empty bands are included.
-
-        Budget is split evenly across non-empty bands.
-        Within each band, HDBSCAN sampling is applied via _sample_representative_ideas.
-        """
-        import random
-
-        if total_budget is None:
-            total_budget = self.config.total_sample_budget
-
-        probability_bands = self.config.probability_bands
-
-        # Group ideas by probability band
-        bands: Dict[str, Tuple[List[str], List[np.ndarray]]] = {
-            'inner':  ([], []),
-            'border': ([], []),
-            'fringe': ([], []),
-        }
-
-        for i, idea in enumerate(cluster_data.ideas):
-            prob = idea.cluster_probability or 0.0
-            text = cluster_data.idea_texts[i]
-            emb = cluster_data.embeddings[i] if i < len(cluster_data.embeddings) else None
-
-            # Determine which band this idea belongs to
-            for band_name, (low, high) in probability_bands.items():
-                if low <= prob < high:
-                    bands[band_name][0].append(text)
-                    if emb is not None:
-                        bands[band_name][1].append(emb)
-                    break
-
-        # Filter to non-empty bands
-        non_empty_bands = {name: data for name, data in bands.items() if len(data[0]) > 0}
-
-        if not non_empty_bands:
-            return {}
-
-        # Split budget evenly across non-empty bands
-        n_bands = len(non_empty_bands)
-        per_band_budget = total_budget // n_bands
-        remainder = total_budget % n_bands
-
-        # Allocate budget (give remainder to bands in order: inner, border, fringe)
-        band_budgets = {}
-        remainder_idx = 0
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name in non_empty_bands:
-                extra = 1 if remainder_idx < remainder else 0
-                band_budgets[band_name] = per_band_budget + extra
-                remainder_idx += 1
-
-        # Sample within each band
-        result: Dict[str, List[str]] = {}
-
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name not in non_empty_bands:
-                continue
-
-            texts, embeddings = non_empty_bands[band_name]
-            budget = band_budgets[band_name]
-
-            # For small bands, return all; for larger, use HDBSCAN sampling
-            if len(texts) <= budget:
-                result[band_name] = texts
-            else:
-                # Use existing _sample_representative_ideas with the texts
-                # Since it expects idea objects or strings, pass strings directly
-                sampled = self._sample_representative_ideas(texts, budget)
-                result[band_name] = sampled
-
-        return result
-
-    def _format_cluster_text_by_bands(self, sampled_bands: Dict[str, List[str]]) -> str:
-        """
-        Format sampled ideas grouped by probability bands.
-
-        Output format:
-            inner members:
-            - idea 1
-            - idea 2
-
-            border members:
-            - idea 3
-            - idea 4
-
-            fringe members:
-            - idea 5
-            - idea 6
-        """
-        band_labels = self.config.band_labels
-        sections = []
-
-        for band_name in ['inner', 'border', 'fringe']:
-            if band_name not in sampled_bands or not sampled_bands[band_name]:
-                continue
-
-            label = band_labels[band_name]
-            ideas_list = "\n".join([f"- {idea}" for idea in sampled_bands[band_name]])
-            sections.append(f"{label}:\n{ideas_list}")
-
-        return "\n\n".join(sections)
-
-    #########################################################################################################
-    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -
+    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -  
     #########################################################################################################
     
-    async def _extract_single_theme(self, cluster_id: Union[int, str], cluster_data: Dict[str, Any]):
-        """Extract theme for single cluster using probability band sampling.
+    async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str], cluster_data: Dict[str, Any] = None):
+        """Extract theme for single cluster using instructor
 
         Args:
             cluster_id: Cluster identifier
-            cluster_data: Cluster data dict with 'ideas' and 'embeddings'
+            ideas: List of idea text strings (for backwards compatibility)
+            cluster_data: Optional full cluster data dict (needed for experimental mode)
         """
-        # Extract ideas and embeddings from cluster_data
-        ideas = cluster_data.get('ideas', [])
-        embeddings = cluster_data.get('embeddings', [])
 
-        if not ideas:
-            self.verbose_reporter.error(f"No ideas in cluster {cluster_id}")
-            return None
+        # Experimental mode: use injectable function from experiments folder
+        if self.config.use_experimental_theme_extraction and cluster_data is not None:
+            from experiments.codeGenerator_v2.run_theme_extraction_v1 import (
+                extract_single_theme_injectable
+            )
+            return await extract_single_theme_injectable(
+                cluster_id=cluster_id,
+                cluster_data=cluster_data,
+                var_lab=self.var_lab,
+                extraction_metadata=self._extraction_metadata,
+                async_responses_create_with_json_retry=async_responses_create_with_json_retry,
+                model=self.model_config.get_model_for_stage('theme_extraction'),
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self.rate_limiter,
+                tpm_bucket=self.tpm_bucket,
+                latency_tracker=self.latency_tracker,
+                config=self.config,
+                model_config=self.model_config,
+                timeout=self._get_adaptive_timeout(),
+            )
 
-        # Strip template prefix and build ClusterData
-        idea_texts = []
-        idea_embeddings = []
-
-        for i, idea in enumerate(ideas):
-            text = idea.idea or ""
-            text = self._strip_template_prefix(text)
-            idea_texts.append(text)
-
-            # Collect embeddings
-            if i < len(embeddings):
-                idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
-            elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
-                idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
-
-        # Build ClusterData for sampling
-        temp_cluster_data = _ClusterData(
-            cluster_id=cluster_id,
-            ideas=ideas,
-            embeddings=idea_embeddings,
-            idea_texts=idea_texts
-        )
-
-        # Sample using probability bands
-        sampled_bands = self._sample_ideas_by_probability_band(temp_cluster_data)
-
-        # Format ideas text
-        if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
-            ideas_text = self._format_cluster_text_by_bands(sampled_bands)
-        else:
-            # Fallback to simple list if no bands
-            sampled_ideas = self._sample_representative_ideas(idea_texts)
-            ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
-
-        # Determine language
-        language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
-
-        # Build prompt with context specifiers
+        # Production mode: existing code
+        # Sample representative ideas if cluster is too large
+        sampled_ideas = self._sample_representative_ideas(ideas)
+        ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
+        
+        # # Prepare exact parameters for prompt
         params = {
-            'cluster_id': str(cluster_id),
+            'cluster_id': str(cluster_id),  # Convert to string as prompt expects string
             'survey_question': self.var_lab,
-            'language': language,
-            'cluster_text': ideas_text,
-            **self._get_context_specifier_params()
+            'language': DEFAULT_LANGUAGE,
+            'cluster_text': ideas_text
         }
-
+        
         prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
-
-        # Capture prompt parameters
-        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
-        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)
-
-        # Capture first prompt with prompt_printer if available
-        if self.prompt_printer and not self._prompt_captured['stage1_theme']:
-            self._prompt_captured['stage1_theme'] = True
+        
+        
+        # Capture exact parameters used in prompt construction
+        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'} 
+        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)  
+   
+        
+        # Capture prompt with prompt_printer if available
+        if self.prompt_printer:
             self.prompt_printer.capture_prompt(
-                step_name="Stage 1: Theme Extraction",
+                step_name="theme_extraction",
                 utility_name="codeGenerator",
                 prompt_content=prompt,
                 prompt_type="cluster_summary",
@@ -3095,33 +2896,42 @@ class InductiveCodeGenerator:
                     "ideas_count": len(ideas)
                 }
             )
-
+        
         try:
+            # Use async wrapper with JSON retry logic and adaptive timeout
             adaptive_timeout = self._get_adaptive_timeout()
-
+            
+            # # Debug: About to make API call
+            # if self.verbose_reporter.enabled:
+            #     self.verbose_reporter.stat_line(f"DEBUG C{cluster_id}: Starting API call with timeout {adaptive_timeout:.1f}s")
+            
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
                 response_model=ClusterSummaryOutput,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,
+                semaphore=self.concurrency_semaphore,  
                 rate_limiter=self.rate_limiter,
                 tpm_bucket=self.tpm_bucket,
                 latency_tracker=self.latency_tracker,
                 config=self.config,
                 timeout=adaptive_timeout
             )
-
-            # Handle response
+            
+            # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
+            # The response is a dictionary with cluster_id as key (RootModel.root was automatically extracted)
             if hasattr(response, '__await__'):
                 self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
                 return None
-
+            
+            # The response should be a dictionary (since async_responses_create_with_json_retry extracts .root)
             if isinstance(response, dict):
+                # The response is already the root dictionary from ClusterSummaryOutput
+                # Create a proper ClusterSummaryOutput object
                 result = ClusterSummaryOutput(root=response)
-
-                # Capture theme extraction results
+                
+                # Capture theme extraction results for transparency
                 cluster_key = str(cluster_id)
                 if cluster_key in response:
                     cluster_summary_item = response[cluster_key]
@@ -3132,13 +2942,14 @@ class InductiveCodeGenerator:
                             'cluster_summary': first_theme.theme_clarification,
                             'themes': cluster_summary_item.extracted_themes,
                         }
-
+                        
                 return result
             else:
                 self.verbose_reporter.error(f"Unexpected response type for cluster {cluster_id}: {type(response)}")
                 return None
-
+            
         except Exception as e:
+            # Sanitize exception message for Windows console
             error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
             self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {error_msg}")
             return None
@@ -3183,8 +2994,7 @@ class InductiveCodeGenerator:
                 exclusion=self._get_exclusion_examples(theme_data),
                 near_neighbor=self._get_near_neighbor(theme_data),
                 code_text=codes_text,
-                theme_id=theme_id,
-                **self._get_context_specifier_params()  # Add context specifiers
+                theme_id=theme_id
             )
             candidate_tokens = len(self.encoding.encode(candidate_prompt)) + 200  # + completion estimate
             token_measurements['candidate_selection'].append(candidate_tokens)
@@ -3202,8 +3012,7 @@ class InductiveCodeGenerator:
                 cluster_summary=self._get_theme_name(theme_data),
                 coding_decision="CREATE",
                 source_code="null",
-                source_definition=None,
-                **self._get_context_specifier_params()  # Add context specifiers
+                source_definition=None
             )
             code_gen_tokens = len(self.encoding.encode(code_gen_prompt)) + 150  # + completion estimate
             token_measurements['code_generation'].append(code_gen_tokens)
@@ -3224,8 +3033,7 @@ class InductiveCodeGenerator:
                 inclusion_examples="  • Example inclusion 1\n  • Example inclusion 2",
                 exclusion_examples="  • Example exclusion",
                 near_neighbor_label="Example neighbor",
-                tell_apart_rule="Example distinction rule",
-                **self._get_context_specifier_params()  # Add context specifiers
+                tell_apart_rule="Example distinction rule"
             )
             validation_tokens = len(self.encoding.encode(validation_prompt)) + 100  # + completion estimate
             token_measurements['validation'].append(validation_tokens)
@@ -3698,7 +3506,7 @@ class InductiveCodeGenerator:
                     theme_data = themes[cluster_id]
                     
                     # Estimate using candidate selection prompt as representative
-                    # Use proper template parameters that match CODING_DECISION_PROMPT (including context specifiers)
+                    # Use proper template parameters that match CODING_DECISION_PROMPT
                     theme_id = self._get_theme_id(theme_data)
                     sample_prompt = CODING_DECISION_PROMPT.format(
                         survey_question=self.var_lab,
@@ -3710,8 +3518,7 @@ class InductiveCodeGenerator:
                         exclusion=self._get_exclusion_examples(theme_data),
                         near_neighbor=self._get_near_neighbor(theme_data),
                         code_text="",  # Empty for estimation
-                        theme_id=theme_id,
-                        **self._get_context_specifier_params()  # Add context specifiers
+                        theme_id=theme_id
                     )
                     
                     # Use progressive estimation for the chain (multiply by 3 for 3 prompts)
@@ -4266,8 +4073,8 @@ class InductiveCodeGenerator:
                                 code_to_assignment_examples[final_code] = {
                                     'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
                                     'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
-                                    'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else None,
-                                    'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
+                                    'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
+                                    'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
                                 }
 
                 # Fallback: Extract from step3_recommendations if validation didn't provide assignment_examples
@@ -4278,8 +4085,8 @@ class InductiveCodeGenerator:
                         code_to_assignment_examples[final_code] = {
                             'inclusion_examples': json.dumps(assignment_ex.inclusion) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else None,
                             'exclusion_examples': json.dumps(assignment_ex.exclusion) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else None,
-                            'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else None,
-                            'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
+                            'near_neighbor_label': assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else None,
+                            'tell_apart_rule': assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else None
                         }
 
                 code_to_clusters[final_code].append(cluster_id)
@@ -4293,7 +4100,7 @@ class InductiveCodeGenerator:
             for cluster_id in cluster_ids:
                 self.cluster_assignments[cluster_id] = {
                     'code': code_text,
-                    'definition': code_to_definition[code_text] or "",  # Ensure definition is never None
+                    'definition': code_to_definition[code_text],
                     'cluster_id': cluster_id
                 }
 
@@ -4302,7 +4109,7 @@ class InductiveCodeGenerator:
         for code_text, cluster_ids in code_to_clusters.items():
             code_entry = {
                 'code': code_text,
-                'definition': code_to_definition[code_text] or "",  # Ensure definition is never None
+                'definition': code_to_definition[code_text],
                 'source_cluster_id': ','.join(cluster_ids)  # Preserve ALL cluster IDs
             }
 
@@ -4839,7 +4646,7 @@ class InductiveCodeGenerator:
                 if self.verbose_detailed:
                     self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - No embeddings available, using simple code format")
 
-            # Prepare exact parameters for prompt (including context specifiers)
+            # Prepare exact parameters for prompt
             params = {
                 "survey_question": self.var_lab,
                 "language": DEFAULT_LANGUAGE,
@@ -4850,30 +4657,14 @@ class InductiveCodeGenerator:
                 "exclusion": self._get_exclusion_examples(theme_data),
                 "near_neighbor": self._get_near_neighbor(theme_data),
                 "code_text": codes_text,
-                "theme_id": theme_id,
-                **self._get_context_specifier_params()  # Add context specifiers
+                "theme_id": theme_id
             }
 
             prompt = CODING_DECISION_PROMPT.format(**params)
-
+            
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step2", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage2_decision']:
-                self._prompt_captured['stage2_decision'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 2: Candidate Selection",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="coding_decision",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model,
-                        "available_codes": len(nearest_codes)
-                    }
-                )
-
+            
             if self.verbose_detailed: 
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Starting candidate selection API call")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP1 - Prompt length: {len(prompt)} chars")
@@ -4946,8 +4737,7 @@ class InductiveCodeGenerator:
                         "source_code": response.coding_decision.source_code,  # Now corrected
                         "modify_parameters": {
                             "modify_instruction": response.coding_decision.modify_parameters.modify_instruction,
-                            "conceptual_family": response.coding_decision.modify_parameters.conceptual_family,
-                            "abstraction_level": response.coding_decision.modify_parameters.abstraction_level,
+                            "motive_comparison": response.coding_decision.modify_parameters.motive_comparison,
                             "abstraction_level_action": response.coding_decision.modify_parameters.abstraction_level_action,
                             "inclusion_update": response.coding_decision.modify_parameters.inclusion_update,
                             "exclusion_update": response.coding_decision.modify_parameters.exclusion_update,
@@ -4999,13 +4789,13 @@ class InductiveCodeGenerator:
                             break
                 
                 # Fallback logic: if MODIFY decision but no source_code, fall back to CREATE
-                if decision in ("MODIFY_VERTICAL", "MODIFY_HIERARCHICAL") and (not source_code or source_code.lower() in ['null', 'none', '']):
+                if decision == "MODIFY" and (not source_code or source_code.lower() in ['null', 'none', '']):
                     if self.verbose_detailed:
-                        self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - {decision} decision without source_code, falling back to CREATE")
+                        self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - MODIFY decision without source_code, falling back to CREATE")
                     decision = "CREATE"
                     source_code = "null"
                     CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-                elif decision in ("MODIFY_VERTICAL", "MODIFY_HIERARCHICAL"):
+                elif decision == "MODIFY":
                     CODING_GENERATION_PROMPT = CODING_MODIFICATION_PROMPT
                 else:
                     CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
@@ -5018,7 +4808,7 @@ class InductiveCodeGenerator:
             theme_name = self._get_theme_name(theme_data)
             theme_description = self._get_theme_description(theme_data)
            
-            # Prepare exact parameters for prompt (including context specifiers)
+            # Prepare exact parameters for prompt
             params = {
                 "language": DEFAULT_LANGUAGE,
                 "survey_question": self.var_lab,
@@ -5033,7 +4823,6 @@ class InductiveCodeGenerator:
                 "exclusion": self._get_exclusion_examples(theme_data),
                 "abstraction_level": self._get_abstraction_level(theme_data),
                 "near_neighbor": self._get_near_neighbor(theme_data),
-                **self._get_context_specifier_params()  # Add context specifiers
             }
 
             # Add modify parameters only if we have valid candidate_selection
@@ -5041,9 +4830,9 @@ class InductiveCodeGenerator:
                 modify_instr = coding_decision_obj.modify_parameters.modify_instruction
 
                 # Select appropriate modification instructions based on type
-                if modify_instr == "vertical_broaden_same_level":
+                if modify_instr == "vertical_broaden_same_motive":
                     modification_instructions = VERTICAL_INSTRUCTIONS
-                elif modify_instr == "hierarchical_parent_diff_level":
+                elif modify_instr == "hierarchical_parent_diff_motive_same_family":
                     HIERARCHICAL_INSTRUCTIONS_FORMATTED = HIERARCHICAL_INSTRUCTIONS.replace("{parent_theme_label}", coding_decision_obj.modify_parameters.parent_theme_label)
                     modification_instructions = HIERARCHICAL_INSTRUCTIONS_FORMATTED
                 else:
@@ -5070,7 +4859,7 @@ class InductiveCodeGenerator:
 
                     if hasattr(existing_examples, 'near_neighbor'):
                         near_neighbor_obj = existing_examples.near_neighbor
-                        if near_neighbor_obj is not None and hasattr(near_neighbor_obj, 'label') and hasattr(near_neighbor_obj, 'tell_apart_rule'):
+                        if hasattr(near_neighbor_obj, 'label') and hasattr(near_neighbor_obj, 'tell_apart_rule'):
                             current_near_neighbor_str = f"{near_neighbor_obj.label}: {near_neighbor_obj.tell_apart_rule}"
                         else:
                             current_near_neighbor_str = ""
@@ -5112,25 +4901,10 @@ class InductiveCodeGenerator:
                 })
             
             prompt = CODING_GENERATION_PROMPT.format(**params)
-
+            
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step3", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage3_generation']:
-                self._prompt_captured['stage3_generation'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 3: Code Generation",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="code_creation" if decision == "CREATE" else "code_modification",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model,
-                        "decision": decision
-                    }
-                )
-
+            
             if self.verbose_detailed:
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Starting code generation API call")
                 self.verbose_reporter.stat_line(f"C{cluster_id}: STEP2 - Prompt length: {len(prompt)} chars")
@@ -5252,8 +5026,8 @@ class InductiveCodeGenerator:
                 assignment_ex = code_generation.generated_code.assignment_examples
                 inclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.inclusion]) if hasattr(assignment_ex, 'inclusion') and assignment_ex.inclusion else "No specific examples provided"
                 exclusion_examples = "\n".join([f"  • {ex}" for ex in assignment_ex.exclusion]) if hasattr(assignment_ex, 'exclusion') and assignment_ex.exclusion else "No specific examples provided"
-                near_neighbor_label = assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'label') else "Unknown"
-                tell_apart_rule = assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and assignment_ex.near_neighbor is not None and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else "N/A"
+                near_neighbor_label = assignment_ex.near_neighbor.label if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'label') else "Unknown"
+                tell_apart_rule = assignment_ex.near_neighbor.tell_apart_rule if hasattr(assignment_ex, 'near_neighbor') and hasattr(assignment_ex.near_neighbor, 'tell_apart_rule') else "N/A"
 
                 # Debug: Log successful extraction from Chain 3
                 if self.verbose_detailed:
@@ -5278,7 +5052,7 @@ class InductiveCodeGenerator:
                         f"(STEP3 didn't provide them)"
                     )
 
-            # Prepare exact parameters for prompt (including context specifiers)
+            # Prepare exact parameters for prompt
             params = {
                 'language': DEFAULT_LANGUAGE,
                 'survey_question': self.var_lab,
@@ -5292,8 +5066,7 @@ class InductiveCodeGenerator:
                 "inclusion_examples": inclusion_examples,
                 "exclusion_examples": exclusion_examples,
                 "near_neighbor_label": near_neighbor_label,
-                "tell_apart_rule": tell_apart_rule,
-                **self._get_context_specifier_params()  # Add context specifiers
+                "tell_apart_rule": tell_apart_rule
             }
 
             # Debug: Log Chain 4 prompt parameters
@@ -5327,25 +5100,11 @@ class InductiveCodeGenerator:
                         )
 
             prompt = VALIDATION_PROMPT.format(**params)
-
+            
             # Capture exact parameters used in prompt construction
             self._capture_prompt_params(cluster_id, "step4", **params)
-
-            # Capture first prompt only with prompt_printer if available
-            if self.prompt_printer and not self._prompt_captured['stage4_validation']:
-                self._prompt_captured['stage4_validation'] = True
-                self.prompt_printer.capture_prompt(
-                    step_name="Stage 4: Validation",
-                    utility_name="codeGenerator",
-                    prompt_content=prompt,
-                    prompt_type="validation",
-                    metadata={
-                        "cluster_id": cluster_id,
-                        "model": self.config.model
-                    }
-                )
-
-            # Use async wrapper with JSON retry logic and adaptive timeout
+            
+                      # Use async wrapper with JSON retry logic and adaptive timeout
             adaptive_timeout = self._get_adaptive_timeout()
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('recommendation_validation'),
