@@ -200,6 +200,7 @@ class ClustererConfig:
     llm_labels_model: str = "gpt-4.1"
     llm_max_ideas_per_cluster: int = 10
     representative_selection_method: str = "dense_region"
+    representative_min_probability: float = 0.8  # Only use ideas with cluster probability > this threshold
 
     # ==========================================================================
     # VISUALIZATION (OPTIONAL)

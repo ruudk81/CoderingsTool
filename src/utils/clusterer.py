@@ -31,6 +31,7 @@ Usage:
     labels = clusterer.get_cluster_labels()
 """
 
+import re
 import warnings
 from typing import List, Dict, Tuple, Optional, Any
 from collections import Counter
@@ -713,11 +714,22 @@ class Clusterer:
                 methods.append("TF-IDF")
             print(f"  Methods: {', '.join(methods)}")
 
+        # Get probabilities for filtering if HDBSCAN was used
+        probabilities = None
+        min_probability = None
+        if self._hdbscan_model is not None and hasattr(self._hdbscan_model, 'probabilities_'):
+            probabilities = self._hdbscan_model.probabilities_
+            min_probability = self.config.representative_min_probability
+            if self._verbose:
+                print(f"  Filtering to ideas with probability > {min_probability}")
+
         self._cluster_keywords = self._representation_engine.extract_all_keywords_from_labels(
             self._labels,
             self._idea_texts,
             taxonomy_phrases=self._taxonomy_phrases,
             embedding_text_format=self._embedding_text_format,
+            probabilities=probabilities,
+            min_probability=min_probability,
             verbose=self._verbose
         )
 
@@ -924,9 +936,10 @@ class Clusterer:
         Supports two selection methods (configurable via representative_selection_method):
 
         1. "dense_region" (default): Uses HDBSCAN's probabilities_ to select ideas that
-           are core members of the cluster. Points with higher probability are more
-           strongly associated with their cluster. Falls back to centroid method if
-           HDBSCAN model is not available (e.g., Agglomerative clustering).
+           are core members of the cluster. Only includes ideas with probability >
+           representative_min_probability (default 0.8) to ensure high-confidence
+           representatives. Falls back to centroid method if HDBSCAN model is not
+           available (e.g., Agglomerative clustering).
 
         2. "centroid": Legacy method that computes the centroid (mean embedding) and
            returns ideas closest to the centroid by cosine similarity.
@@ -975,6 +988,9 @@ class Clusterer:
 
             if use_dense_region:
                 prob = float(self._hdbscan_model.probabilities_[global_idx])
+                # Filter by minimum probability threshold
+                if prob <= self.config.representative_min_probability:
+                    continue
                 # Higher probability = stronger cluster member = better
                 if cleaned_text not in text_to_best or prob > text_to_best[cleaned_text][2]:
                     text_to_best[cleaned_text] = (global_idx, local_idx, prob)
@@ -1294,3 +1310,59 @@ class Clusterer:
             algorithm_params=self._algorithm_params,
             timestamp=datetime.now().isoformat(),
         )
+
+
+def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
+    """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.
+
+    Args:
+        cluster_results: List of ClusterModel objects with idea texts to clean
+
+    Returns:
+        List of ClusterModel objects with cleaned idea texts
+    """
+    cleaned_results = []
+
+    for result in cluster_results:
+        cleaned_response_ideas = []
+
+        if result.response_ideas:
+            for idea_submodel in result.response_ideas:
+                # Extract and clean idea text
+                cleaned_idea = idea_submodel.idea
+                cleaned_idea = re.sub(r"\[.*?\]", "", cleaned_idea)
+                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
+
+                # Create new ClusterSubmodel with cleaned text, preserving all fields
+                cleaned_submodel = models.ClusterSubmodel(
+                    # From IdeasExtractedSubmodel
+                    idea_id=idea_submodel.idea_id,
+                    idea=cleaned_idea,
+                    taxonomy_phrase=idea_submodel.taxonomy_phrase,
+                    parent_category=idea_submodel.parent_category,
+                    sentiment=idea_submodel.sentiment,
+                    sense=idea_submodel.sense,
+                    # From EmbeddingsSubmodel
+                    idea_embedding=idea_submodel.idea_embedding,
+                    taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
+                    # From ClusterSubmodel
+                    initial_cluster=idea_submodel.initial_cluster,
+                    cluster_probability=idea_submodel.cluster_probability,
+                    expanded_cluster=idea_submodel.expanded_cluster,
+                    cluster_theme=idea_submodel.cluster_theme
+                )
+                cleaned_response_ideas.append(cleaned_submodel)
+
+        # Create new ClusterModel with cleaned ideas
+        cleaned_result = models.ClusterModel(
+            respondent_id=result.respondent_id,
+            response=result.response,
+            response_type=result.response_type,
+            quality_filter=result.quality_filter,
+            quality_filter_code=result.quality_filter_code,
+            response_ideas=cleaned_response_ideas,
+            idea_count=len(cleaned_response_ideas)
+        )
+        cleaned_results.append(cleaned_result)
+
+    return cleaned_results

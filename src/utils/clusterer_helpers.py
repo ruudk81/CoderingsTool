@@ -2517,13 +2517,29 @@ class RepresentationEngine:
         idea_texts: List[str],
         taxonomy_phrases: Optional[List[str]] = None,
         embedding_text_format: Optional[str] = None,
+        probabilities: Optional[np.ndarray] = None,
+        min_probability: Optional[float] = None,
         verbose: bool = False
     ) -> Dict[str, Dict[int, List[Tuple[str, float]]]]:
-        """Extract all keywords given cluster labels and idea texts."""
+        """Extract all keywords given cluster labels and idea texts.
+
+        Args:
+            labels: Cluster assignments for each idea
+            idea_texts: Text of each idea
+            taxonomy_phrases: Optional taxonomy phrases for each idea
+            embedding_text_format: Text format used for embeddings
+            probabilities: Optional HDBSCAN cluster membership probabilities
+            min_probability: Only include ideas with probability > this threshold
+            verbose: Enable verbose output
+        """
         cluster_texts = {}
         cluster_taxonomy_phrases = {}
         for i, label in enumerate(labels):
             if label >= 0:
+                # Filter by probability if provided
+                if probabilities is not None and min_probability is not None:
+                    if probabilities[i] <= min_probability:
+                        continue
                 if label not in cluster_texts:
                     cluster_texts[label] = []
                     cluster_taxonomy_phrases[label] = []
