@@ -989,6 +989,13 @@ Apply these decision rules:
 - Exclusion rules describe common misfits to maintain clear boundaries
 - The codebook must remain MECE
 
+**STEP 3.5: Multi-Concept Theme Check**
+If the new theme contains multiple distinct concepts (e.g., "salt reduction AND mild spices"):
+- Identify which concept(s) semantically match the existing code
+- If only ONE concept matches and MODIFY would require changing the existing code's core meaning to accommodate the other concept(s): Decision = CREATE
+- Preserve the existing code unchanged and create a new code for the theme
+- A MODIFY should never replace an existing code's central meaning with a different concept
+
 **STEP 4: Determine Assignment Example Updates**
 
 If decision is **USE**:
@@ -1275,6 +1282,7 @@ LABEL RULES (strict):
 - Make the semantic core of the theme the head of the noun phrase.
 - Adhere to the atomicity rules below.
 - DO NOT repeat the actor, domain, topic or entity in the label ({perspective}, {domain}, {topic} and {entity}).
+- SEMANTIC PRESERVATION: The modified label must preserve the semantic core of the original code. You are BROADENING the code's coverage, not REPLACING its meaning. If the theme would require changing what the original code fundamentally represents, this indicates CREATE should have been chosen instead.
 
 ATOMICITY  RULES (strict):
 - All categorical codes, labels and names  must be single-valued.
@@ -1398,6 +1406,7 @@ d. Atomicity: do labels adhere to these atomicity rules:
 - NEVER include reasons (no "to", "so that", "because").
 - NEVER use punctuation: "/", "&", ",", "–", ":" (unless lexicalized).
 e. DO NOT repeat the actor, domain, topic or entity in the label or names ({perspective}, {domain}, {topic} and {entity}).
+f. Semantic Preservation (MODIFY only): If the decision is MODIFY, does the new label preserve the semantic core of the original code being modified? A MODIFY should BROADEN a code's coverage while keeping its original meaning intact. If the new label shifts or replaces the core concept rather than extending it, reject the MODIFY and recommend CREATE instead.
 </validation_criteria>
 
 Your task is to systematically evaluate the coding proposal against the validation criteria and make a final coding decision. Work through your evaluation step-by-step in a scratchpad before providing your final response.
