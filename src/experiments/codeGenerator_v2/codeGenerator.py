@@ -93,6 +93,18 @@ PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
 DIAGNOSTIC_REPORT_INTERVAL = 30       # Seconds between diagnostic reports
 
 # ============================================================================
+# INTERNAL DATA STRUCTURES
+# ============================================================================
+
+@dataclass
+class _ClusterData:
+    """Container for cluster data during theme extraction."""
+    cluster_id: Union[int, str]
+    ideas: List[Any]  # Full idea objects (ClusterSubmodel)
+    embeddings: List[np.ndarray]
+    idea_texts: List[str]  # Processed idea texts (with template prefix stripped)
+
+# ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
 
@@ -2312,8 +2324,7 @@ class InductiveCodeGenerator:
                     try:
                         result = await self._extract_single_theme(
                             task['cluster_id'],
-                            task['ideas'],
-                            cluster_data=task['cluster_data']
+                            task['cluster_data']
                         )
                         theme_results[task['cluster_id']] = result
                     except Exception as e:
@@ -2874,64 +2885,203 @@ class InductiveCodeGenerator:
             )
     
         return sampled_texts
-    
+
     #########################################################################################################
-    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -  
+    # THEME EXTRACTION HELPER METHODS - Probability Band Sampling
+    #########################################################################################################
+
+    def _strip_template_prefix(self, text: str) -> str:
+        """Remove template prefix from idea text."""
+        if self._extraction_metadata and self._extraction_metadata.template_prefix:
+            prefix = self._extraction_metadata.template_prefix
+            if text.startswith(prefix):
+                return text[len(prefix):].strip()
+        return text
+
+    def _sample_ideas_by_probability_band(
+        self,
+        cluster_data: _ClusterData,
+        total_budget: int = None
+    ) -> Dict[str, List[str]]:
+        """
+        Group ideas by probability bands and sample within each band.
+
+        Returns dict: band_name -> list of sampled idea texts
+        Only non-empty bands are included.
+
+        Budget is split evenly across non-empty bands.
+        Within each band, HDBSCAN sampling is applied via _sample_representative_ideas.
+        """
+        import random
+
+        if total_budget is None:
+            total_budget = self.config.total_sample_budget
+
+        probability_bands = self.config.probability_bands
+
+        # Group ideas by probability band
+        bands: Dict[str, Tuple[List[str], List[np.ndarray]]] = {
+            'inner':  ([], []),
+            'border': ([], []),
+            'fringe': ([], []),
+        }
+
+        for i, idea in enumerate(cluster_data.ideas):
+            prob = idea.cluster_probability or 0.0
+            text = cluster_data.idea_texts[i]
+            emb = cluster_data.embeddings[i] if i < len(cluster_data.embeddings) else None
+
+            # Determine which band this idea belongs to
+            for band_name, (low, high) in probability_bands.items():
+                if low <= prob < high:
+                    bands[band_name][0].append(text)
+                    if emb is not None:
+                        bands[band_name][1].append(emb)
+                    break
+
+        # Filter to non-empty bands
+        non_empty_bands = {name: data for name, data in bands.items() if len(data[0]) > 0}
+
+        if not non_empty_bands:
+            return {}
+
+        # Split budget evenly across non-empty bands
+        n_bands = len(non_empty_bands)
+        per_band_budget = total_budget // n_bands
+        remainder = total_budget % n_bands
+
+        # Allocate budget (give remainder to bands in order: inner, border, fringe)
+        band_budgets = {}
+        remainder_idx = 0
+        for band_name in ['inner', 'border', 'fringe']:
+            if band_name in non_empty_bands:
+                extra = 1 if remainder_idx < remainder else 0
+                band_budgets[band_name] = per_band_budget + extra
+                remainder_idx += 1
+
+        # Sample within each band
+        result: Dict[str, List[str]] = {}
+
+        for band_name in ['inner', 'border', 'fringe']:
+            if band_name not in non_empty_bands:
+                continue
+
+            texts, embeddings = non_empty_bands[band_name]
+            budget = band_budgets[band_name]
+
+            # For small bands, return all; for larger, use HDBSCAN sampling
+            if len(texts) <= budget:
+                result[band_name] = texts
+            else:
+                # Use existing _sample_representative_ideas with the texts
+                # Since it expects idea objects or strings, pass strings directly
+                sampled = self._sample_representative_ideas(texts, budget)
+                result[band_name] = sampled
+
+        return result
+
+    def _format_cluster_text_by_bands(self, sampled_bands: Dict[str, List[str]]) -> str:
+        """
+        Format sampled ideas grouped by probability bands.
+
+        Output format:
+            inner members:
+            - idea 1
+            - idea 2
+
+            border members:
+            - idea 3
+            - idea 4
+
+            fringe members:
+            - idea 5
+            - idea 6
+        """
+        band_labels = self.config.band_labels
+        sections = []
+
+        for band_name in ['inner', 'border', 'fringe']:
+            if band_name not in sampled_bands or not sampled_bands[band_name]:
+                continue
+
+            label = band_labels[band_name]
+            ideas_list = "\n".join([f"- {idea}" for idea in sampled_bands[band_name]])
+            sections.append(f"{label}:\n{ideas_list}")
+
+        return "\n\n".join(sections)
+
+    #########################################################################################################
+    # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -
     #########################################################################################################
     
-    async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str], cluster_data: Dict[str, Any] = None):
-        """Extract theme for single cluster using instructor
+    async def _extract_single_theme(self, cluster_id: Union[int, str], cluster_data: Dict[str, Any]):
+        """Extract theme for single cluster using probability band sampling.
 
         Args:
             cluster_id: Cluster identifier
-            ideas: List of idea text strings (for backwards compatibility)
-            cluster_data: Optional full cluster data dict (needed for experimental mode)
+            cluster_data: Cluster data dict with 'ideas' and 'embeddings'
         """
+        # Extract ideas and embeddings from cluster_data
+        ideas = cluster_data.get('ideas', [])
+        embeddings = cluster_data.get('embeddings', [])
 
-        # Experimental mode: use injectable function from experiments folder
-        if self.config.use_experimental_theme_extraction and cluster_data is not None:
-            from experiments.codeGenerator_v2.run_theme_extraction_v1 import (
-                extract_single_theme_injectable
-            )
-            return await extract_single_theme_injectable(
-                cluster_id=cluster_id,
-                cluster_data=cluster_data,
-                var_lab=self.var_lab,
-                extraction_metadata=self._extraction_metadata,
-                async_responses_create_with_json_retry=async_responses_create_with_json_retry,
-                model=self.model_config.get_model_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,
-                rate_limiter=self.rate_limiter,
-                tpm_bucket=self.tpm_bucket,
-                latency_tracker=self.latency_tracker,
-                config=self.config,
-                model_config=self.model_config,
-                timeout=self._get_adaptive_timeout(),
-            )
+        if not ideas:
+            self.verbose_reporter.error(f"No ideas in cluster {cluster_id}")
+            return None
 
-        # Production mode: existing code
-        # Sample representative ideas if cluster is too large
-        sampled_ideas = self._sample_representative_ideas(ideas)
-        ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
-        
-        # Prepare exact parameters for prompt (including context specifiers)
+        # Strip template prefix and build ClusterData
+        idea_texts = []
+        idea_embeddings = []
+
+        for i, idea in enumerate(ideas):
+            text = idea.idea or ""
+            text = self._strip_template_prefix(text)
+            idea_texts.append(text)
+
+            # Collect embeddings
+            if i < len(embeddings):
+                idea_embeddings.append(np.asarray(embeddings[i], dtype=np.float32))
+            elif hasattr(idea, 'idea_embedding') and idea.idea_embedding is not None:
+                idea_embeddings.append(np.asarray(idea.idea_embedding, dtype=np.float32))
+
+        # Build ClusterData for sampling
+        temp_cluster_data = _ClusterData(
+            cluster_id=cluster_id,
+            ideas=ideas,
+            embeddings=idea_embeddings,
+            idea_texts=idea_texts
+        )
+
+        # Sample using probability bands
+        sampled_bands = self._sample_ideas_by_probability_band(temp_cluster_data)
+
+        # Format ideas text
+        if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
+            ideas_text = self._format_cluster_text_by_bands(sampled_bands)
+        else:
+            # Fallback to simple list if no bands
+            sampled_ideas = self._sample_representative_ideas(idea_texts)
+            ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
+
+        # Determine language
+        language = self._extraction_metadata.lang if self._extraction_metadata and self._extraction_metadata.lang else DEFAULT_LANGUAGE
+
+        # Build prompt with context specifiers
         params = {
-            'cluster_id': str(cluster_id),  # Convert to string as prompt expects string
+            'cluster_id': str(cluster_id),
             'survey_question': self.var_lab,
-            'language': DEFAULT_LANGUAGE,
+            'language': language,
             'cluster_text': ideas_text,
-            **self._get_context_specifier_params()  # Add context specifiers
+            **self._get_context_specifier_params()
         }
 
         prompt = CLUSTER_SUMMARY_PROMPT.format(**params)
-        
-        
-        # Capture exact parameters used in prompt construction
-        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'} 
-        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)  
-   
-        
-        # Capture first prompt only with prompt_printer if available
+
+        # Capture prompt parameters
+        params_for_capture = {k: v for k, v in params.items() if k != 'cluster_id'}
+        self._capture_prompt_params(cluster_id, "step1", **params_for_capture)
+
+        # Capture first prompt with prompt_printer if available
         if self.prompt_printer and not self._prompt_captured['stage1_theme']:
             self._prompt_captured['stage1_theme'] = True
             self.prompt_printer.capture_prompt(
@@ -2945,42 +3095,33 @@ class InductiveCodeGenerator:
                     "ideas_count": len(ideas)
                 }
             )
-        
+
         try:
-            # Use async wrapper with JSON retry logic and adaptive timeout
             adaptive_timeout = self._get_adaptive_timeout()
-            
-            # # Debug: About to make API call
-            # if self.verbose_reporter.enabled:
-            #     self.verbose_reporter.stat_line(f"DEBUG C{cluster_id}: Starting API call with timeout {adaptive_timeout:.1f}s")
-            
+
             response = await async_responses_create_with_json_retry(
                 model=self.model_config.get_model_for_stage('theme_extraction'),
                 prompt=prompt,
                 response_model=ClusterSummaryOutput,
                 reasoning_effort=self.model_config.get_reasoning_effort_for_stage('theme_extraction'),
                 text_verbosity=self.model_config.get_text_verbosity_for_stage('theme_extraction'),
-                semaphore=self.concurrency_semaphore,  
+                semaphore=self.concurrency_semaphore,
                 rate_limiter=self.rate_limiter,
                 tpm_bucket=self.tpm_bucket,
                 latency_tracker=self.latency_tracker,
                 config=self.config,
                 timeout=adaptive_timeout
             )
-            
-            # Handle ClusterSummaryOutput response from CLUSTER_SUMMARY_PROMPT
-            # The response is a dictionary with cluster_id as key (RootModel.root was automatically extracted)
+
+            # Handle response
             if hasattr(response, '__await__'):
                 self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
                 return None
-            
-            # The response should be a dictionary (since async_responses_create_with_json_retry extracts .root)
+
             if isinstance(response, dict):
-                # The response is already the root dictionary from ClusterSummaryOutput
-                # Create a proper ClusterSummaryOutput object
                 result = ClusterSummaryOutput(root=response)
-                
-                # Capture theme extraction results for transparency
+
+                # Capture theme extraction results
                 cluster_key = str(cluster_id)
                 if cluster_key in response:
                     cluster_summary_item = response[cluster_key]
@@ -2991,14 +3132,13 @@ class InductiveCodeGenerator:
                             'cluster_summary': first_theme.theme_clarification,
                             'themes': cluster_summary_item.extracted_themes,
                         }
-                        
+
                 return result
             else:
                 self.verbose_reporter.error(f"Unexpected response type for cluster {cluster_id}: {type(response)}")
                 return None
-            
+
         except Exception as e:
-            # Sanitize exception message for Windows console
             error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
             self.verbose_reporter.error(f"Theme extraction failed for cluster {cluster_id}: {error_msg}")
             return None

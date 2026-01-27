@@ -5,7 +5,8 @@ This module provides experiment configuration settings for running
 the codeGenerator in isolation for testing and prompt modification.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, Tuple
 
 
 @dataclass
@@ -17,10 +18,6 @@ class ExperimentConfig:
     id_column: str = "DLNMID"
     var_name: str = "Q20"
     sample_size: int = 500
-
-    # Experiment toggles
-    use_experimental_prompts: bool = True  # Use local prompts.py (now automatic via import)
-    use_experimental_theme_extraction: bool = True  # Use probability bands + template stripping
 
     # Generator settings (passed to InductiveCodeGenerator)
     stages_to_run: str = 'all'  # 'all' or 'theme_extraction_only'
@@ -48,10 +45,6 @@ EXPERIMENT_CONFIG = ExperimentConfig(
     # filename="M250480 Associatiemonitor ASN Bank net databestand.sav",
     # var_name="Qd1_combined",
     # sample_size=2000,
-
-    # Experiment toggles
-    use_experimental_prompts=True,
-    use_experimental_theme_extraction=True,  # Use probability bands + template stripping
 
     # Generator settings
     stages_to_run='all',
