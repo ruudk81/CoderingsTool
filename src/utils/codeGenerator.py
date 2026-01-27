@@ -1472,9 +1472,11 @@ class InductiveCodeGenerator:
         processing_config: Optional[ProcessingConfig] = None,
         verbose_reporter: Optional['VerboseReporter'] = None,
         stages_to_run: str = 'all',  # 'all' or 'theme_extraction_only'
+        extraction_metadata = None,  # ExtractionMetadata for experimental theme extraction
         **kwargs  # For backward compatibility
     ):
         self.cluster_results = cluster_results
+        self._extraction_metadata = extraction_metadata  # For experimental theme extraction
                 
         self.starter_codes = starter_codes
         self.var_lab = var_lab
@@ -2248,9 +2250,10 @@ class InductiveCodeGenerator:
         for cluster_id, cluster_data in clusters.items():
             await queue.put({
                 'cluster_id': cluster_id,
-                'ideas': cluster_data['ideas']
+                'ideas': cluster_data['ideas'],
+                'cluster_data': cluster_data  # Pass full data for experimental mode
             })
-        
+
         # Create worker tasks
         async def worker():
             while True:
@@ -2258,9 +2261,13 @@ class InductiveCodeGenerator:
                     task = await queue.get()
                     if task is None:  # Sentinel value
                         break
-                    
+
                     try:
-                        result = await self._extract_single_theme(task['cluster_id'], task['ideas'])
+                        result = await self._extract_single_theme(
+                            task['cluster_id'],
+                            task['ideas'],
+                            cluster_data=task['cluster_data']
+                        )
                         theme_results[task['cluster_id']] = result
                     except Exception as e:
                         # Sanitize exception message for Windows console
@@ -2825,9 +2832,37 @@ class InductiveCodeGenerator:
     # Stage 1: Prompt Formatting & LLM Calling  for THEME EXTRACTION/CLUSTER SUMMARIES -  
     #########################################################################################################
     
-    async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str]):
-        """Extract theme for single cluster using instructor"""
-        
+    async def _extract_single_theme(self, cluster_id: Union[int, str], ideas: List[str], cluster_data: Dict[str, Any] = None):
+        """Extract theme for single cluster using instructor
+
+        Args:
+            cluster_id: Cluster identifier
+            ideas: List of idea text strings (for backwards compatibility)
+            cluster_data: Optional full cluster data dict (needed for experimental mode)
+        """
+
+        # Experimental mode: use injectable function from experiments folder
+        if self.config.use_experimental_theme_extraction and cluster_data is not None:
+            from experiments.codeGenerator_v2.run_theme_extraction_v1 import (
+                extract_single_theme_injectable
+            )
+            return await extract_single_theme_injectable(
+                cluster_id=cluster_id,
+                cluster_data=cluster_data,
+                var_lab=self.var_lab,
+                extraction_metadata=self._extraction_metadata,
+                async_responses_create_with_json_retry=async_responses_create_with_json_retry,
+                model=self.model_config.get_model_for_stage('theme_extraction'),
+                semaphore=self.concurrency_semaphore,
+                rate_limiter=self.rate_limiter,
+                tpm_bucket=self.tpm_bucket,
+                latency_tracker=self.latency_tracker,
+                config=self.config,
+                model_config=self.model_config,
+                timeout=self._get_adaptive_timeout(),
+            )
+
+        # Production mode: existing code
         # Sample representative ideas if cluster is too large
         sampled_ideas = self._sample_representative_ideas(ideas)
         ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])

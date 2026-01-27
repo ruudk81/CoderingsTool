@@ -1339,7 +1339,19 @@ def step_6_generate_codebook(
                 print("\nCleaning ideas for code generation...")
 
             cleaned_cluster_results = clusterer.clean_cluster_ideas(initial_cluster_results) #removal of meta data/context specifiers from idea text
-          
+
+            # Load extraction_metadata for experimental theme extraction (if enabled)
+            extraction_metadata = None
+            if codeGenerator.DEFAULT_CODEDESIGNER_CONFIG.use_experimental_theme_extraction:
+                extraction_metadata = cache_manager.load_metadata_from_cache(
+                    filename=filename,
+                    step="extracted_ideas",
+                    variable_key=variable_key,
+                    model_cls=models.ExtractionMetadata
+                )
+                if extraction_metadata and verbose:
+                    print(f"[INFO] Experimental theme extraction enabled - loaded extraction metadata")
+
             # Phase 2: Inductive code generation
             generator = codeGenerator.InductiveCodeGenerator(
                 cluster_results=cleaned_cluster_results,  # Use cleaned version
@@ -1347,7 +1359,8 @@ def step_6_generate_codebook(
                 var_lab=var_lab,
                 verbose=True,
                 verbose_detailed=verbose_detailed,
-                prompt_printer=prompt_printer
+                prompt_printer=prompt_printer,
+                extraction_metadata=extraction_metadata
             )
             results = generator.generate()
 

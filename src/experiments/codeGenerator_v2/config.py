@@ -18,8 +18,9 @@ class ExperimentConfig:
     var_name: str = "Q20"
     sample_size: int = 500
 
-    # Experiment toggle
-    use_experimental_prompts: bool = True  # Inject local prompts.py into production
+    # Experiment toggles
+    use_experimental_prompts: bool = True  # Use local prompts.py (now automatic via import)
+    use_experimental_theme_extraction: bool = True  # Use probability bands + template stripping
 
     # Generator settings (passed to InductiveCodeGenerator)
     stages_to_run: str = 'all'  # 'all' or 'theme_extraction_only'
@@ -32,7 +33,7 @@ class ExperimentConfig:
 
     # Output settings
     save_results_to_file: bool = True
-    sample_codebook_count: int = 10  # Number of codes to display in sample output
+    sample_codebook_count: int = 0  # Number of codes to display (0 = show all)
 
 
 # Default configuration - modify this for your experiments
@@ -48,8 +49,9 @@ EXPERIMENT_CONFIG = ExperimentConfig(
     # var_name="Qd1_combined",
     # sample_size=2000,
 
-    # Experiment toggle
+    # Experiment toggles
     use_experimental_prompts=True,
+    use_experimental_theme_extraction=True,  # Use probability bands + template stripping
 
     # Generator settings
     stages_to_run='all',
@@ -59,5 +61,5 @@ EXPERIMENT_CONFIG = ExperimentConfig(
 
     # Output settings
     save_results_to_file=True,
-    sample_codebook_count=10,
+    sample_codebook_count=0,  # 0 = show all codes
 )
