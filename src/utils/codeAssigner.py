@@ -5,9 +5,9 @@ import asyncio
 import time
 import logging
 import itertools
-from typing import Dict, List, Optional #, Union
-from dataclasses import dataclass
-from collections import deque
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from collections import deque, defaultdict
 import numpy as np
 
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
@@ -36,6 +36,68 @@ try:
     nest_asyncio.apply()
 except ImportError:
     pass
+
+# === STEP-SPECIFIC CONFIG =============================================================================================
+from config_codeAssigner import (
+    DEFAULT_TOKEN_HISTORY_CONFIG,
+    DEFAULT_TIKTOKEN_OFFSET_CONFIG,
+    DEFAULT_TIMEOUT_CONFIG,
+    DEFAULT_REPORTING_CONFIG,
+    DEFAULT_BOOTSTRAP_CONFIG,
+    DEFAULT_PID_CONTROLLER_CONFIG,
+    DEFAULT_TPM_TRACKING_CONFIG,
+    DEFAULT_THROUGHPUT_CONFIG,
+    DEFAULT_ADAPTIVE_THRESHOLD_CONFIG,
+    DEFAULT_DYNAMIC_TOPK_CONFIG,
+    DEFAULT_PATTERN_TRACKING_CONFIG,
+)
+
+# === CONSTANTS (from config_codeAssigner.py) =========================================================================
+# Token history windows
+INPUT_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.input_history_maxlen
+OUTPUT_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.output_history_maxlen
+OUTPUT_RATIO_HISTORY_MAXLEN = DEFAULT_TOKEN_HISTORY_CONFIG.output_ratio_history_maxlen
+DEFAULT_OUTPUT_RATIO = DEFAULT_TOKEN_HISTORY_CONFIG.default_output_ratio
+ERROR_WINDOW_SIZE = DEFAULT_TOKEN_HISTORY_CONFIG.error_window_size
+
+# Tiktoken → API token offset learning
+TIKTOKEN_API_OFFSET_DEFAULT = DEFAULT_TIKTOKEN_OFFSET_CONFIG.api_offset_default
+TIKTOKEN_OFFSET_HISTORY_MAXLEN = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_history_maxlen
+TIKTOKEN_OFFSET_MIN_SAMPLES = DEFAULT_TIKTOKEN_OFFSET_CONFIG.offset_min_samples
+
+# Timeouts and latency
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_timeout_seconds
+DEFAULT_LATENCY_SECONDS = DEFAULT_TIMEOUT_CONFIG.default_latency_seconds
+MAX_TOKEN_ACQUIRE_ATTEMPTS = DEFAULT_TIMEOUT_CONFIG.max_token_acquire_attempts
+BOOTSTRAP_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_CONFIG.bootstrap_timeout_seconds
+
+# Reporting intervals
+PROGRESS_REPORT_INTERVAL = DEFAULT_REPORTING_CONFIG.progress_report_interval
+DIAGNOSTIC_INTERVAL = DEFAULT_REPORTING_CONFIG.diagnostic_interval
+ADJUSTMENT_INTERVAL = DEFAULT_REPORTING_CONFIG.adjustment_interval
+
+# Bootstrap settings
+BOOTSTRAP_NUM_PROBES = DEFAULT_BOOTSTRAP_CONFIG.num_probes
+DEFAULT_AVG_TOKENS = DEFAULT_BOOTSTRAP_CONFIG.default_avg_tokens
+SAMPLE_SIZE_FOR_TOKEN_ESTIMATION = DEFAULT_BOOTSTRAP_CONFIG.sample_size_for_token_estimation
+
+# PID-style continuous adjustment (asymmetric gains)
+PID_KP_UP = DEFAULT_PID_CONTROLLER_CONFIG.kp_up
+PID_KP_DOWN = DEFAULT_PID_CONTROLLER_CONFIG.kp_down
+PID_KI = DEFAULT_PID_CONTROLLER_CONFIG.ki
+PID_KD = DEFAULT_PID_CONTROLLER_CONFIG.kd
+PID_MIN_ADJUSTMENT = DEFAULT_PID_CONTROLLER_CONFIG.min_adjustment
+PID_MAX_ADJUSTMENT = DEFAULT_PID_CONTROLLER_CONFIG.max_adjustment
+
+# Real-time TPM tracking
+TPM_SLIDING_WINDOW_SECONDS = DEFAULT_TPM_TRACKING_CONFIG.sliding_window_seconds
+TPM_SAMPLE_INTERVAL = DEFAULT_TPM_TRACKING_CONFIG.sample_interval
+TPM_TARGET_UTILIZATION = DEFAULT_TPM_TRACKING_CONFIG.target_utilization
+
+# Threshold-based adjustment (fallback to PID)
+THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = DEFAULT_THROUGHPUT_CONFIG.adjustment_min_samples
+THROUGHPUT_ADJUSTMENT_THRESHOLD = DEFAULT_THROUGHPUT_CONFIG.adjustment_threshold
+
 
 # === RATE LIMITING HELPER CLASSES ========================================================================================================
 
@@ -128,6 +190,432 @@ class LatencyTracker:
         if not self.values:
             return 2.0  # Default 2s
         return self.ema if self.ema is not None else 2.0
+
+
+# === V3 OPTIMAL STRATEGY CLASSES ========================================================================================================
+
+class TiktokenOffsetLearner:
+    """V3: Learns the offset between tiktoken counts and actual API token counts.
+
+    The API always reports more tokens than tiktoken because of:
+    - System messages added by the API
+    - Instructor/structured output overhead
+    - Message formatting tokens
+
+    This class learns the average offset and applies it to estimates.
+    """
+    def __init__(self, default_offset: int = 300, history_maxlen: int = 30, min_samples: int = 5):
+        self.default_offset = default_offset
+        self.offsets = deque(maxlen=history_maxlen)
+        self.min_samples = min_samples
+        self._learned_offset = None
+
+    def record(self, tiktoken_count: int, api_count: int):
+        """Record a tiktoken vs API count pair to learn the offset."""
+        offset = api_count - tiktoken_count
+        self.offsets.append(offset)
+
+        # Update learned offset when we have enough samples
+        if len(self.offsets) >= self.min_samples:
+            self._learned_offset = int(sum(self.offsets) / len(self.offsets))
+
+    def get_offset(self) -> int:
+        """Get the current offset to add to tiktoken counts."""
+        if self._learned_offset is not None:
+            return self._learned_offset
+        return self.default_offset
+
+    def is_learned(self) -> bool:
+        """Check if we have enough samples to trust the learned offset."""
+        return len(self.offsets) >= self.min_samples
+
+    def get_stats(self) -> dict:
+        """Get statistics about the offset learning."""
+        return {
+            "samples": len(self.offsets),
+            "learned_offset": self._learned_offset,
+            "using_offset": self.get_offset(),
+            "is_learned": self.is_learned(),
+            "min_offset": min(self.offsets) if self.offsets else None,
+            "max_offset": max(self.offsets) if self.offsets else None,
+        }
+
+
+class RealTimeTPMTracker:
+    """V3: Tracks actual TPM usage in a sliding window for real-time feedback.
+
+    Unlike the token bucket (which tracks available capacity), this tracks
+    actual consumption to provide accurate utilization metrics.
+    """
+    def __init__(self, window_seconds: float = 60.0):
+        self.window_seconds = window_seconds
+        self.samples = deque()  # (timestamp, tokens) pairs
+        self.lock = asyncio.Lock()
+
+    async def record(self, tokens: int):
+        """Record token usage at current time."""
+        async with self.lock:
+            now = time.monotonic()
+            self.samples.append((now, tokens))
+            self._prune_old_samples(now)
+
+    def _prune_old_samples(self, now: float):
+        """Remove samples outside the window."""
+        cutoff = now - self.window_seconds
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+
+    async def get_current_tpm(self) -> float:
+        """Get current TPM rate based on sliding window."""
+        async with self.lock:
+            now = time.monotonic()
+            self._prune_old_samples(now)
+
+            if not self.samples:
+                return 0.0
+
+            total_tokens = sum(t for _, t in self.samples)
+            elapsed = now - self.samples[0][0] if self.samples else 1.0
+            elapsed = max(elapsed, 1.0)  # Avoid division by zero
+
+            # Extrapolate to per-minute rate
+            return (total_tokens / elapsed) * 60
+
+    async def get_utilization(self, tpm_limit: int) -> float:
+        """Get current TPM utilization as a percentage."""
+        current_tpm = await self.get_current_tpm()
+        return (current_tpm / tpm_limit) * 100 if tpm_limit > 0 else 0.0
+
+
+class PIDThroughputController:
+    """V3: PID controller for smooth, continuous throughput adjustment.
+
+    Instead of step-based threshold adjustments, this provides gradual
+    corrections that converge smoothly to optimal throughput.
+
+    Uses ASYMMETRIC gains:
+    - kp_up (0.4): Aggressive when under-utilizing (speed up faster)
+    - kp_down (0.2): Gentle when over-utilizing (slow down carefully)
+
+    The controller tracks:
+    - Error: difference between target and actual TPM utilization
+    - Integral: accumulated error over time (handles persistent bias)
+    - Derivative: rate of change (dampens oscillations)
+    """
+    def __init__(
+        self,
+        target_utilization: float = 0.85,
+        kp_up: float = 0.4,
+        kp_down: float = 0.2,
+        ki: float = 0.05,
+        kd: float = 0.1,
+        min_adjustment: float = 0.02,
+        max_adjustment: float = 0.15
+    ):
+        self.target = target_utilization
+        self.kp_up = kp_up      # Gain when under-utilizing (speed up)
+        self.kp_down = kp_down  # Gain when over-utilizing (slow down)
+        self.ki = ki
+        self.kd = kd
+        self.min_adjustment = min_adjustment
+        self.max_adjustment = max_adjustment
+
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = None
+        self.adjustment_history = deque(maxlen=20)
+
+    def compute_adjustment(self, current_utilization: float) -> float:
+        """Compute throughput adjustment factor based on current utilization.
+
+        Args:
+            current_utilization: Current TPM utilization (0.0 to 1.0+)
+
+        Returns:
+            Adjustment factor to multiply current arrival rate by.
+            - >1.0 means speed up (under-utilizing)
+            - <1.0 means slow down (over-utilizing)
+            - 1.0 means no change
+        """
+        now = time.monotonic()
+
+        # Error: positive means under-utilizing, negative means over-utilizing
+        error = self.target - current_utilization
+
+        # Time delta for integral/derivative
+        dt = 1.0  # Default
+        if self.last_time is not None:
+            dt = max(now - self.last_time, 0.1)
+        self.last_time = now
+
+        # Integral term (accumulated error)
+        self.integral += error * dt
+        # Clamp integral to prevent windup
+        self.integral = max(-0.5, min(0.5, self.integral))
+
+        # Derivative term (rate of change)
+        derivative = (error - self.last_error) / dt if dt > 0 else 0.0
+        self.last_error = error
+
+        # Asymmetric proportional gain: aggressive up, gentle down
+        kp = self.kp_up if error > 0 else self.kp_down
+
+        # PID output
+        output = (kp * error) + (self.ki * self.integral) + (self.kd * derivative)
+
+        # Clamp to reasonable adjustment range
+        output = max(-self.max_adjustment, min(self.max_adjustment, output))
+
+        # Convert to multiplier (1.0 + output)
+        # Ignore tiny adjustments
+        if abs(output) < self.min_adjustment:
+            adjustment = 1.0
+        else:
+            adjustment = 1.0 + output
+
+        self.adjustment_history.append({
+            "time": now,
+            "utilization": current_utilization,
+            "error": error,
+            "output": output,
+            "adjustment": adjustment
+        })
+
+        return adjustment
+
+    def reset(self):
+        """Reset the controller state."""
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = None
+
+    def get_stats(self) -> dict:
+        """Get controller statistics."""
+        recent = list(self.adjustment_history)[-5:] if self.adjustment_history else []
+        return {
+            "target_utilization": self.target,
+            "integral": self.integral,
+            "last_error": self.last_error,
+            "recent_adjustments": recent,
+            "kp_up": self.kp_up,
+            "kp_down": self.kp_down,
+            "ki": self.ki,
+            "kd": self.kd
+        }
+
+
+# === ADAPTIVE CONFIDENCE THRESHOLD CLASSES ========================================================================================================
+
+class ConfidenceTracker:
+    """Tracks running confidence distribution for adaptive thresholding.
+
+    Instead of a fixed 0.7 threshold, this collects Stage 1 confidence scores
+    and provides percentile-based adaptive thresholds.
+
+    Benefits:
+    - Adapts to codebook complexity (fine-grained codebooks naturally have lower confidence)
+    - Accounts for model uncertainty patterns
+    - Reduces unnecessary Stage 2 fallbacks when the codebook is working well
+    """
+
+    def __init__(
+        self,
+        percentile: int = 25,
+        floor: float = 0.5,
+        warmup: int = 20,
+        history_maxlen: int = 500
+    ):
+        self.percentile = percentile
+        self.floor = floor
+        self.warmup = warmup
+        self.confidences = deque(maxlen=history_maxlen)
+
+    def record(self, confidence: float):
+        """Record a confidence score from Stage 1 evaluation."""
+        self.confidences.append(confidence)
+
+    def get_adaptive_threshold(self, fixed_threshold: float) -> float:
+        """Get adaptive threshold based on distribution.
+
+        Returns fixed_threshold if warmup not complete.
+        Otherwise returns the percentile of the distribution, floored at self.floor.
+        """
+        if len(self.confidences) < self.warmup:
+            return fixed_threshold
+
+        percentile_value = np.percentile(list(self.confidences), self.percentile)
+        return max(self.floor, percentile_value)
+
+    def is_warmed_up(self) -> bool:
+        """Check if warmup period is complete."""
+        return len(self.confidences) >= self.warmup
+
+    def get_stats(self) -> dict:
+        """Get distribution statistics for diagnostics."""
+        if not self.confidences:
+            return {"samples": 0}
+
+        conf_list = list(self.confidences)
+        return {
+            "samples": len(conf_list),
+            "mean": float(np.mean(conf_list)),
+            "median": float(np.median(conf_list)),
+            "p25": float(np.percentile(conf_list, 25)),
+            "p75": float(np.percentile(conf_list, 75)),
+            "min": float(min(conf_list)),
+            "max": float(max(conf_list)),
+            "current_threshold": self.get_adaptive_threshold(0.7),
+            "is_warmed_up": self.is_warmed_up()
+        }
+
+
+# === PATTERN TRACKING CLASSES ========================================================================================================
+
+@dataclass
+class ClusterDiagnostics:
+    """Diagnostics for a single cluster."""
+    cluster_id: str
+    total_ideas: int = 0
+    used_default: int = 0
+    used_fallback: int = 0
+    confidences: List[float] = field(default_factory=list)
+
+    @property
+    def fallback_rate(self) -> float:
+        if self.total_ideas == 0:
+            return 0.0
+        return self.used_fallback / self.total_ideas
+
+    @property
+    def avg_confidence(self) -> float:
+        if not self.confidences:
+            return 0.0
+        return sum(self.confidences) / len(self.confidences)
+
+
+class PatternTracker:
+    """Tracks patterns for learning and diagnostics.
+
+    Provides insights on:
+    - Code co-occurrence patterns (which codes appear together for same respondent)
+    - Cluster-specific fallback rates (which clusters have poor default codes)
+    - Confidence calibration (distribution of confidence scores by bucket)
+    """
+
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+
+        # Code co-occurrence: {(code_a, code_b): count}
+        self.code_cooccurrence: Dict[Tuple[str, str], int] = defaultdict(int)
+
+        # Cluster diagnostics: {cluster_id: ClusterDiagnostics}
+        self.cluster_diagnostics: Dict[str, ClusterDiagnostics] = {}
+
+        # Confidence calibration buckets
+        self.confidence_buckets = {
+            "0.5-0.6": {"count": 0, "sum_confidence": 0.0},
+            "0.6-0.7": {"count": 0, "sum_confidence": 0.0},
+            "0.7-0.8": {"count": 0, "sum_confidence": 0.0},
+            "0.8-0.9": {"count": 0, "sum_confidence": 0.0},
+            "0.9-1.0": {"count": 0, "sum_confidence": 0.0},
+        }
+
+        # Assignment history for co-occurrence analysis
+        self._respondent_codes: Dict[str, List[str]] = defaultdict(list)
+
+    def record_assignment(
+        self,
+        respondent_id: str,
+        cluster_id: str,
+        assigned_code: str,
+        confidence: float,
+        used_default: bool,
+        fallback_triggered: bool
+    ):
+        """Record a code assignment for pattern tracking."""
+        if not self.enabled:
+            return
+
+        # Track cluster diagnostics
+        if cluster_id:
+            if cluster_id not in self.cluster_diagnostics:
+                self.cluster_diagnostics[cluster_id] = ClusterDiagnostics(cluster_id=cluster_id)
+            diag = self.cluster_diagnostics[cluster_id]
+            diag.total_ideas += 1
+            diag.confidences.append(confidence)
+            if used_default:
+                diag.used_default += 1
+            if fallback_triggered:
+                diag.used_fallback += 1
+
+        # Track confidence distribution
+        bucket = self._get_confidence_bucket(confidence)
+        if bucket:
+            self.confidence_buckets[bucket]["count"] += 1
+            self.confidence_buckets[bucket]["sum_confidence"] += confidence
+
+        # Track code co-occurrence (same respondent, multiple ideas)
+        self._respondent_codes[respondent_id].append(assigned_code)
+
+    def _get_confidence_bucket(self, confidence: float) -> Optional[str]:
+        if 0.5 <= confidence < 0.6:
+            return "0.5-0.6"
+        elif 0.6 <= confidence < 0.7:
+            return "0.6-0.7"
+        elif 0.7 <= confidence < 0.8:
+            return "0.7-0.8"
+        elif 0.8 <= confidence < 0.9:
+            return "0.8-0.9"
+        elif 0.9 <= confidence <= 1.0:
+            return "0.9-1.0"
+        return None
+
+    def finalize_cooccurrence(self):
+        """Calculate code co-occurrence after all assignments complete."""
+        from itertools import combinations
+
+        for respondent_id, codes in self._respondent_codes.items():
+            unique_codes = list(set(codes))
+            if len(unique_codes) >= 2:
+                for code_a, code_b in combinations(sorted(unique_codes), 2):
+                    self.code_cooccurrence[(code_a, code_b)] += 1
+
+    def get_problematic_clusters(self, fallback_threshold: float = 0.5, min_ideas: int = 3) -> List[Dict]:
+        """Identify clusters with high fallback rates."""
+        problematic = []
+        for cluster_id, diag in self.cluster_diagnostics.items():
+            if diag.total_ideas >= min_ideas and diag.fallback_rate >= fallback_threshold:
+                problematic.append({
+                    "cluster_id": cluster_id,
+                    "total_ideas": diag.total_ideas,
+                    "fallback_rate": diag.fallback_rate,
+                    "avg_confidence": diag.avg_confidence
+                })
+        return sorted(problematic, key=lambda x: x["fallback_rate"], reverse=True)
+
+    def get_top_cooccurrences(self, top_n: int = 10) -> List[Dict]:
+        """Get most common code co-occurrences."""
+        self.finalize_cooccurrence()
+        sorted_pairs = sorted(
+            self.code_cooccurrence.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:top_n]
+        return [
+            {"code_a": pair[0], "code_b": pair[1], "count": count}
+            for (pair, count) in sorted_pairs
+        ]
+
+    def get_confidence_calibration(self) -> Dict:
+        """Get confidence calibration statistics."""
+        result = {}
+        for bucket, data in self.confidence_buckets.items():
+            if data["count"] > 0:
+                result[bucket] = {
+                    "count": data["count"],
+                    "avg_confidence": data["sum_confidence"] / data["count"]
+                }
+        return result
 
 
 # === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
@@ -227,6 +715,9 @@ class CodeAssigner:
         config: Optional[CodeAssignmentConfig] = None,
         model_config: Optional[ModelConfig] = None,
         processing_config: Optional[ProcessingConfig] = None,
+        adaptive_threshold_config = None,
+        dynamic_topk_config = None,
+        pattern_config = None,
         verbose: bool = False,
         prompt_printer = None):
 
@@ -266,18 +757,73 @@ class CodeAssigner:
 
         # Token bucket for TPM limiting (will be re-initialized with actual limits during bootstrap)
         self.tpm_bucket = TokenBucket(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
-        
-        # Progressive token estimation (following qualityFilter.py pattern)
-        self.input_token_history = deque(maxlen=3)  # First 3 input token counts
-        self.output_token_history = deque(maxlen=5)  # First 5 output token counts
-        self.estimation_errors = deque(maxlen=50)  # Track accuracy
+
+        # Progressive token estimation (V3: updated to use config constants)
+        self.input_token_history = deque(maxlen=INPUT_HISTORY_MAXLEN)
+        self.output_token_history = deque(maxlen=OUTPUT_HISTORY_MAXLEN)
+        self.output_ratio_history = deque(maxlen=OUTPUT_RATIO_HISTORY_MAXLEN)  # V3: Track output/input ratios for learning
+        self.estimation_errors = deque(maxlen=ERROR_WINDOW_SIZE)
         self.first_prompt_tokens = None  # Cache first prompt calculation
-        
+
         # Rolling average of actual total tokens for comparison
-        self.actual_total_tokens = deque(maxlen=50)  # Track actual total usage
-        
+        self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
+
         # Latency tracking
         self.latency_tracker = LatencyTracker(processing_config=self.processing_config)
+
+        # === V3 OPTIMAL STRATEGY COMPONENTS ===
+        # Tiktoken→API offset learning (accounts for system overhead)
+        self.tiktoken_offset_learner = TiktokenOffsetLearner(
+            default_offset=TIKTOKEN_API_OFFSET_DEFAULT,
+            history_maxlen=TIKTOKEN_OFFSET_HISTORY_MAXLEN,
+            min_samples=TIKTOKEN_OFFSET_MIN_SAMPLES
+        )
+
+        # Real-time TPM tracking (sliding window)
+        self.tpm_tracker = RealTimeTPMTracker(window_seconds=TPM_SLIDING_WINDOW_SECONDS)
+
+        # PID throughput controller (continuous adjustment)
+        self.pid_controller = PIDThroughputController(
+            target_utilization=TPM_TARGET_UTILIZATION,
+            kp_up=PID_KP_UP,
+            kp_down=PID_KP_DOWN,
+            ki=PID_KI,
+            kd=PID_KD,
+            min_adjustment=PID_MIN_ADJUSTMENT,
+            max_adjustment=PID_MAX_ADJUSTMENT
+        )
+
+        # Track current arrival rate for PID adjustment
+        self.current_arrival_rate = None
+
+        # V3 stats tracking
+        self.v3_stats = {
+            'adjustments_made': 0,
+            'pid_adjustments': 0,
+            'threshold_adjustments': 0,
+            'max_tpm_utilization': 0.0,
+            'min_tpm_utilization': 100.0,
+        }
+
+        # === CODE ASSIGNMENT STRATEGY IMPROVEMENTS ===
+        # Store configs (use defaults if not provided)
+        self.adaptive_threshold_config = adaptive_threshold_config or DEFAULT_ADAPTIVE_THRESHOLD_CONFIG
+        self.dynamic_topk_config = dynamic_topk_config or DEFAULT_DYNAMIC_TOPK_CONFIG
+        self.pattern_config = pattern_config or DEFAULT_PATTERN_TRACKING_CONFIG
+
+        # Confidence tracker for adaptive threshold
+        self.confidence_tracker = ConfidenceTracker(
+            percentile=self.adaptive_threshold_config.adaptive_percentile,
+            floor=self.adaptive_threshold_config.adaptive_floor,
+            warmup=self.adaptive_threshold_config.warmup_samples
+        )
+
+        # Pattern tracker for diagnostics
+        self.pattern_tracker = PatternTracker(enabled=self.pattern_config.enabled)
+
+        # Track last similarity stats for diagnostics
+        self._last_selected_count = 0
+        self._last_top_similarity = 0.0
         
         # Calculate initial average tokens estimate for bootstrapping
         self.avg_tokens = self._calculate_avg_tokens()
@@ -317,7 +863,7 @@ class CodeAssigner:
         self._code_embeddings = None
 
         self.verbose_reporter.stat_line(f"Model: {self.model}")
-        self.verbose_reporter.stat_line(f"API Limits: {limits.requests_per_minute} RPM, {limits.tokens_per_minute:,} TPM")
+        self.verbose_reporter.stat_line(f"API Limits: {self.rate_limits.requests_per_minute} RPM, {self.rate_limits.tokens_per_minute:,} TPM")
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average token count for code assignment requests"""
@@ -427,41 +973,59 @@ class CodeAssigner:
         return extract_rate_limits_from_response(response)
 
     def estimate_tokens(self, prompt: str) -> int:
-        """Estimate total tokens using adaptive strategy (following qualityFilter.py)"""
-        actual_input_tokens = len(self.encoding.encode(prompt))
-        
-        # Input estimation: first prompt + 15%, then average of first 3
-        if self.first_prompt_tokens is None:
-            # First prompt: use actual + 15% margin
-            self.first_prompt_tokens = actual_input_tokens
-            estimated_input = int(actual_input_tokens * 1.15)
-        elif len(self.input_token_history) < 3:
-            # Still collecting data: use actual + 15%
-            estimated_input = int(actual_input_tokens * 1.15)
+        """V3: Estimate total tokens using optimal adaptive strategy.
+
+        V3 Improvements:
+        - Applies learned tiktoken→API offset upfront
+        - Reduced safety margins (offset handles the gap)
+        - Uses output ratio learning for more accurate output estimation
+        - Weighted blend: 70% history, 30% current for stability
+        """
+        # Count tokens with tiktoken
+        tiktoken_count = len(self.encoding.encode(prompt))
+
+        # V3: Apply learned offset (accounts for system overhead)
+        offset = self.tiktoken_offset_learner.get_offset()
+        actual_input_tokens = tiktoken_count + offset
+
+        # V3: Reduced safety margins (offset already accounts for gap)
+        num_samples = len(self.estimation_errors)
+        if num_samples < 5:
+            safety_margin = 1.15  # V3: Reduced from higher margins (offset handles gap)
+        elif num_samples < 15:
+            safety_margin = 1.10  # V3: Reduced once we have some data
         else:
-            # Use average of first 3 actual inputs
+            safety_margin = 1.05  # V3: Tight when learned
+
+        # Input estimation: use history average if available, blend with current
+        if len(self.input_token_history) >= 5:
             avg_input = sum(self.input_token_history) / len(self.input_token_history)
-            estimated_input = int(avg_input)
-        
-        # Track input tokens for learning
-        if len(self.input_token_history) < 3:
-            self.input_token_history.append(actual_input_tokens)
-        
-        # Output estimation: 15% of input, then average of first 5 responses
-        if len(self.output_token_history) < 5:
-            # Use 15% of input as estimate
-            estimated_output = int(estimated_input * 0.15)
+            # Weighted blend: 70% history, 30% current for stability
+            estimated_input = int(0.7 * avg_input + 0.3 * actual_input_tokens)
         else:
-            # Use average of first 5 actual outputs
+            # Early phase: use current with safety margin
+            estimated_input = int(actual_input_tokens * safety_margin)
+
+        # Always update input history
+        self.input_token_history.append(actual_input_tokens)
+
+        # Output estimation: use learned ratio if available
+        if len(self.output_ratio_history) >= 5:
+            # Use learned output/input ratio
+            learned_ratio = sum(self.output_ratio_history) / len(self.output_ratio_history)
+            estimated_output = int(estimated_input * learned_ratio * safety_margin)
+        elif len(self.output_token_history) >= 3:
+            # Use output history average
             avg_output = sum(self.output_token_history) / len(self.output_token_history)
-            estimated_output = int(avg_output)
-        
-        # Ensure we don't exceed max_tokens
+            estimated_output = int(avg_output * safety_margin)
+        else:
+            # Fallback to default ratio with safety margin
+            estimated_output = int(estimated_input * DEFAULT_OUTPUT_RATIO * safety_margin)
+
+        # Cap output to max_tokens
         estimated_output = min(self.config.max_tokens, estimated_output)
-        
-        total_estimate = estimated_input + estimated_output
-        
-        return total_estimate
+
+        return estimated_input + estimated_output
 
     def _assign_themes_to_codes(self, assigned_codes: List[str]) -> List[str]:
         """Map assigned codes to their themes using cached mapping"""
@@ -555,10 +1119,47 @@ class CodeAssigner:
         return self._code_embeddings
 
     def _find_similar_codes(self, idea_embedding: np.ndarray, top_k: int = 10) -> List[models.Codebook]:
-        """Find top-k most similar codes using cosine similarity"""
+        """Find similar codes using configurable selection strategy.
+
+        Supports three modes via dynamic_topk_config:
+        - "fixed": Return exactly top_k codes (default, backward compatible)
+        - "threshold": Return all codes above similarity_threshold
+        - "dropoff": Return codes until similarity drops significantly from best
+        """
         similarities = cosine_similarity([idea_embedding], self.code_embeddings)[0]
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        return [self.codebook[i] for i in top_indices]
+        sorted_indices = np.argsort(similarities)[::-1]
+        sorted_similarities = similarities[sorted_indices]
+
+        mode = self.dynamic_topk_config.mode
+
+        if mode == "fixed":
+            # Original behavior: return exactly top_k
+            k = self.config.top_k_similar_codes
+            selected = sorted_indices[:k]
+        elif mode == "threshold":
+            # Return all codes above similarity threshold
+            above_threshold = sorted_similarities >= self.dynamic_topk_config.similarity_threshold
+            count = int(np.sum(above_threshold))
+            count = min(count, self.dynamic_topk_config.max_codes)
+            count = max(count, self.dynamic_topk_config.min_codes)
+            selected = sorted_indices[:count]
+        elif mode == "dropoff":
+            # Return codes until similarity drops significantly from best
+            best_sim = sorted_similarities[0]
+            cutoff = best_sim * self.dynamic_topk_config.dropoff_ratio
+            count = sum(1 for s in sorted_similarities if s >= cutoff)
+            count = max(count, self.dynamic_topk_config.min_codes)
+            count = min(count, self.dynamic_topk_config.max_codes)
+            selected = sorted_indices[:count]
+        else:
+            # Fallback to original behavior
+            selected = sorted_indices[:self.config.top_k_similar_codes]
+
+        # Track for diagnostics
+        self._last_selected_count = len(selected)
+        self._last_top_similarity = float(sorted_similarities[0]) if len(sorted_similarities) > 0 else 0.0
+
+        return [self.codebook[i] for i in selected]
 
     def _format_examples_list(self, examples: Optional[List[str]]) -> str:
         """Format examples list for prompt display"""
@@ -700,9 +1301,33 @@ class CodeAssigner:
                 if hasattr(response, '_raw_response'):
                     usage = response._raw_response.usage
                     if usage:
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0)
+                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
+                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
+
+                        # Reconcile token bucket
                         delta = actual_total_tokens - est_tokens
                         await self.tpm_bucket.reconcile(delta)
+
+                        # V3: Track output tokens for learning
+                        self.output_token_history.append(actual_output_tokens)
+                        self.actual_total_tokens.append(actual_total_tokens)
+
+                        # V3: Track output ratio for learning
+                        if actual_input_tokens > 0:
+                            ratio = actual_output_tokens / actual_input_tokens
+                            self.output_ratio_history.append(ratio)
+
+                        # V3: Track estimation error
+                        estimation_error = abs(actual_total_tokens - est_tokens)
+                        self.estimation_errors.append(estimation_error)
+
+                        # V3: Record to TPM tracker (real-time sliding window)
+                        await self.tpm_tracker.record(actual_total_tokens)
+
+                        # V3: Learn tiktoken→API offset
+                        tiktoken_input = len(self.encoding.encode(prompt))
+                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
 
         self.stage_1_calls += 1
         return response, prompt
@@ -798,9 +1423,33 @@ class CodeAssigner:
                 if hasattr(response, '_raw_response'):
                     usage = response._raw_response.usage
                     if usage:
-                        actual_total_tokens = getattr(usage, 'total_tokens', 0)
+                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
+                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
+
+                        # Reconcile token bucket
                         delta = actual_total_tokens - est_tokens
                         await self.tpm_bucket.reconcile(delta)
+
+                        # V3: Track output tokens for learning
+                        self.output_token_history.append(actual_output_tokens)
+                        self.actual_total_tokens.append(actual_total_tokens)
+
+                        # V3: Track output ratio for learning
+                        if actual_input_tokens > 0:
+                            ratio = actual_output_tokens / actual_input_tokens
+                            self.output_ratio_history.append(ratio)
+
+                        # V3: Track estimation error
+                        estimation_error = abs(actual_total_tokens - est_tokens)
+                        self.estimation_errors.append(estimation_error)
+
+                        # V3: Record to TPM tracker (real-time sliding window)
+                        await self.tpm_tracker.record(actual_total_tokens)
+
+                        # V3: Learn tiktoken→API offset
+                        tiktoken_input = len(self.encoding.encode(prompt))
+                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
 
         self.stage_2_calls += 1
         return response, prompt
@@ -857,7 +1506,19 @@ class CodeAssigner:
 
                 metadata['default_confidence'] = stage_1_result.confidence
 
-                if stage_1_result.confidence >= 0.7:
+                # Record for adaptive threshold tracking
+                self.confidence_tracker.record(stage_1_result.confidence)
+
+                # Determine threshold (adaptive or fixed)
+                if self.adaptive_threshold_config.use_adaptive:
+                    threshold = self.confidence_tracker.get_adaptive_threshold(
+                        self.adaptive_threshold_config.fixed_threshold
+                    )
+                else:
+                    threshold = self.adaptive_threshold_config.fixed_threshold
+                metadata['threshold_used'] = threshold
+
+                if stage_1_result.confidence >= threshold:
                     # Use default code
                     metadata['used_default'] = True
                     assigned_code = default_code.code
@@ -866,7 +1527,7 @@ class CodeAssigner:
                     self.used_default_count += 1
 
                 else:
-                    # Stage 2: Fallback to top-10 similar codes
+                    # Stage 2: Fallback to similar codes (dynamic top-k)
                     metadata['fallback_triggered'] = True
                     stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, stage_1_result.confidence)
 
@@ -886,6 +1547,16 @@ class CodeAssigner:
 
             # Add theme mapping
             response.assigned_themes = self._assign_themes_to_codes([assigned_code])
+
+            # Record pattern for diagnostics
+            self.pattern_tracker.record_assignment(
+                respondent_id=respondent_id,
+                cluster_id=str(expanded_cluster) if expanded_cluster else "",
+                assigned_code=assigned_code,
+                confidence=confidence,
+                used_default=metadata.get('used_default', False),
+                fallback_triggered=metadata.get('fallback_triggered', False)
+            )
 
             # Capture for debugging (only if verbose)
             if self.verbose:
@@ -1117,6 +1788,183 @@ class CodeAssigner:
         print(f"  Avg calls per idea:         {(self.stage_1_calls + self.stage_2_calls) / total:.2f}")
         print(f"{'='*80}\n")
 
+    def print_learning_insights(self):
+        """Print diagnostic insights from pattern tracking and adaptive threshold."""
+        if not self.pattern_config.enabled:
+            return
+
+        print(f"\n{'─'*60}")
+        print("PATTERN LEARNING INSIGHTS")
+        print(f"{'─'*60}")
+
+        # Adaptive threshold stats
+        if self.adaptive_threshold_config.use_adaptive:
+            stats = self.confidence_tracker.get_stats()
+            print(f"\n📊 Adaptive Threshold:")
+            print(f"   Current threshold: {stats.get('current_threshold', 0.7):.3f}")
+            print(f"   Samples collected: {stats.get('samples', 0)}")
+            print(f"   Warmed up: {'Yes' if stats.get('is_warmed_up', False) else 'No'}")
+            if stats.get('samples', 0) > 0:
+                print(f"   Confidence range: [{stats.get('min', 0):.3f}, {stats.get('max', 0):.3f}]")
+                print(f"   Mean confidence: {stats.get('mean', 0):.3f}")
+        else:
+            print(f"\n📊 Fixed Threshold: {self.adaptive_threshold_config.fixed_threshold}")
+
+        # Dynamic top-k mode info
+        print(f"\n🎯 Dynamic Top-K Mode: {self.dynamic_topk_config.mode}")
+        if self.dynamic_topk_config.mode == "threshold":
+            print(f"   Similarity threshold: {self.dynamic_topk_config.similarity_threshold}")
+        elif self.dynamic_topk_config.mode == "dropoff":
+            print(f"   Dropoff ratio: {self.dynamic_topk_config.dropoff_ratio}")
+
+        # Problematic clusters (high fallback rates)
+        if self.pattern_config.track_cluster_fallback:
+            problematic = self.pattern_tracker.get_problematic_clusters(fallback_threshold=0.5, min_ideas=3)
+            if problematic:
+                print(f"\n⚠️  Clusters with high fallback rates (>50%):")
+                for c in problematic[:5]:
+                    print(f"   • Cluster {c['cluster_id'][:30]}: {c['fallback_rate']*100:.0f}% fallback ({c['total_ideas']} ideas)")
+            else:
+                print(f"\n✅ No clusters with problematic fallback rates")
+
+        # Code co-occurrence patterns
+        if self.pattern_config.track_cooccurrence:
+            cooc = self.pattern_tracker.get_top_cooccurrences(top_n=5)
+            if cooc:
+                print(f"\n🔗 Top code co-occurrences (same respondent):")
+                for c in cooc:
+                    print(f"   • {c['code_a'][:25]} + {c['code_b'][:25]}: {c['count']}x")
+
+        # Confidence calibration
+        if self.pattern_config.track_confidence_calibration:
+            cal = self.pattern_tracker.get_confidence_calibration()
+            if cal:
+                print(f"\n📈 Confidence distribution:")
+                for bucket, data in sorted(cal.items()):
+                    if data['count'] > 0:
+                        print(f"   {bucket}: {data['count']} assignments")
+
+        print(f"{'─'*60}\n")
+
+    # === V3 THROUGHPUT ADJUSTMENT METHODS ========================================================================================================
+
+    async def _apply_pid_adjustment(self) -> bool:
+        """V3: Apply PID-style continuous throughput adjustment based on real-time TPM utilization.
+
+        This provides smooth, gradual adjustments that converge to optimal throughput
+        without the oscillations of threshold-based step changes.
+
+        Returns True if adjustment was applied, False otherwise.
+        """
+        if self.current_arrival_rate is None:
+            return False
+
+        # Get real-time TPM utilization
+        current_tpm = await self.tpm_tracker.get_current_tpm()
+        tpm_limit = self.rate_limits.tokens_per_minute
+        utilization = current_tpm / tpm_limit if tpm_limit > 0 else 0.0
+
+        # Track min/max utilization for stats
+        self.v3_stats['max_tpm_utilization'] = max(self.v3_stats['max_tpm_utilization'], utilization * 100)
+        self.v3_stats['min_tpm_utilization'] = min(self.v3_stats['min_tpm_utilization'], utilization * 100)
+
+        # Compute PID adjustment
+        adjustment = self.pid_controller.compute_adjustment(utilization)
+
+        # Skip if adjustment is negligible (1.0 = no change)
+        if abs(adjustment - 1.0) < 0.01:
+            return False
+
+        # Apply adjustment to arrival rate
+        old_rate = self.current_arrival_rate
+        new_rate = old_rate * adjustment
+
+        # Clamp to reasonable bounds
+        rpm_max = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+        new_rate = max(0.5, min(rpm_max, new_rate))
+
+        # Only apply if change is meaningful
+        if abs(new_rate - old_rate) / old_rate < 0.02:
+            return False
+
+        # Update rate limiter
+        if new_rate < 1:
+            self.rate_limiter = AsyncLimiter(1, time_period=1/new_rate)
+        else:
+            self.rate_limiter = AsyncLimiter(int(new_rate), time_period=1.0)
+
+        self.current_arrival_rate = new_rate
+        self.v3_stats['pid_adjustments'] += 1
+        self.v3_stats['adjustments_made'] += 1
+
+        return True
+
+    def _adjust_throughput_if_needed(self) -> bool:
+        """V3: Threshold-based adjustment (fallback for large corrections).
+
+        This is kept as a fallback for when the token estimate is significantly wrong
+        and a larger step correction is needed before PID can fine-tune.
+
+        Returns True if adjustment was made, False otherwise.
+        """
+        # Need enough samples to make a reliable decision
+        if len(self.actual_total_tokens) < THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
+            return False
+
+        actual_avg = sum(self.actual_total_tokens) / len(self.actual_total_tokens)
+        bootstrap_avg = self.avg_tokens
+
+        # Calculate ratio of actual to bootstrap
+        ratio = actual_avg / bootstrap_avg if bootstrap_avg > 0 else 1.0
+
+        # V3: Only trigger threshold adjustment for significant underestimation
+        # PID handles fine-tuning; this is for coarse correction
+        if ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
+            return False
+
+        # Calculate new arrival rate using actual tokens
+        old_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / bootstrap_avg / 60
+        new_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
+        rpm_throughput = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+
+        new_arrival_rate = min(rpm_throughput, new_tpm_throughput)
+
+        # Reinstall rate limiter with adjusted rate
+        if new_arrival_rate < 1:
+            self.rate_limiter = AsyncLimiter(1, time_period=1/new_arrival_rate)
+        else:
+            self.rate_limiter = AsyncLimiter(int(new_arrival_rate), time_period=1.0)
+
+        # V3: Track current arrival rate for PID
+        self.current_arrival_rate = new_arrival_rate
+
+        # Reinitialize token bucket with fresh state
+        old_bucket_available = self.tpm_bucket.available
+        self.tpm_bucket = TokenBucket(int(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom))
+
+        # Reset PID controller (we just made a step change)
+        self.pid_controller.reset()
+
+        # Update avg_tokens for future calculations
+        old_avg = self.avg_tokens
+        self.avg_tokens = int(actual_avg)
+
+        self.v3_stats['threshold_adjustments'] += 1
+        self.v3_stats['adjustments_made'] += 1
+
+        # Log the adjustment
+        print(f"\n⚡ THROUGHPUT ADJUSTMENT (threshold)")
+        print(f"   Actual tokens ({actual_avg:.0f}) exceeded bootstrap ({bootstrap_avg:.0f}) by {(ratio-1)*100:.0f}%")
+        print(f"   Arrival rate: {old_tpm_throughput:.2f}/s → {new_arrival_rate:.2f}/s")
+        print(f"   avg_tokens: {old_avg} → {self.avg_tokens}")
+        print(f"   Token bucket reset (was {old_bucket_available:,.0f} available)")
+        print(f"   Tiktoken offset: {self.tiktoken_offset_learner.get_offset()} (learned: {self.tiktoken_offset_learner.is_learned()})")
+
+        if self.verbose_reporter.enabled:
+            self.verbose_reporter.stat_line(f"Threshold adjustment: {old_tpm_throughput:.2f}/s → {new_arrival_rate:.2f}/s")
+
+        return True
+
     async def process_all_tasks_async(self, tasks: List[Dict]) -> List[CodeAssignmentResponse]:
         """Process all tasks using queue + workers pattern with bootstrap measurement"""
         if not tasks:
@@ -1203,6 +2051,9 @@ class CodeAssigner:
             self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
             self.optimal_concurrency = min(len(tasks), optimal)
 
+            # V3: Track current arrival rate for PID adjustment
+            self.current_arrival_rate = arrival_rate
+
             print("[RATE LIMITING SETUP]")
             print(f"- Model: {self.model}")
             print(f"- RPM limit: {limits.requests_per_minute:,} ({limits.requests_per_minute * self.processing_config.rate_limit_headroom:,.0f} with headroom)")
@@ -1250,25 +2101,35 @@ class CodeAssigner:
             # Progress monitoring
             start_time = time.time()
             last_report = start_time
-        
+            last_adjustment = start_time  # V3: Track last adjustment time
+
             #print(f"[DEBUG] Starting progress monitoring, queue size: {queue.qsize()}")
-        
+
             # Monitor progress until all tasks are processed
             while self.stats['tasks_processed'] < len(tasks):
                 await asyncio.sleep(1)
                 now = time.time()
-            
+
                 # Regular progress report every 5s
-                if now - last_report >= 5:
+                if now - last_report >= PROGRESS_REPORT_INTERVAL:
                     completed = self.stats['tasks_processed']
                     remaining = queue.qsize()
                     elapsed = now - start_time
                     rate = completed / elapsed if elapsed > 0 else 0
-                
+
                     print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
                       f"Rate: {rate:.1f}/s, Queue: {remaining}")
                     last_report = now
-            
+
+                # V3: Apply PID adjustment periodically
+                if now - last_adjustment >= ADJUSTMENT_INTERVAL:
+                    await self._apply_pid_adjustment()
+                    last_adjustment = now
+
+                    # V3: Also check threshold-based adjustment (fallback for large corrections)
+                    if self.stats['tasks_processed'] >= THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
+                        self._adjust_throughput_if_needed()
+
                 # Check if queue is empty but not all tasks processed (potential deadlock)
                 if queue.empty() and self.stats['tasks_processed'] < len(tasks):
                     #print(f"[DEBUG] Queue empty but only {self.stats['tasks_processed']}/{len(tasks)} processed")
@@ -1305,7 +2166,17 @@ class CodeAssigner:
                         print("    Sample errors:")
                         for i, msg in enumerate(error_data['sample_messages'], 1):
                             print(f"      {i}. {msg}")
-        
+
+            # V3: Report V3 stats
+            if self.v3_stats['adjustments_made'] > 0 or self.tiktoken_offset_learner.is_learned():
+                print(f"\nV3 Rate Limiting Stats:")
+                print(f"- PID adjustments: {self.v3_stats['pid_adjustments']}")
+                print(f"- Threshold adjustments: {self.v3_stats['threshold_adjustments']}")
+                if self.v3_stats['max_tpm_utilization'] > 0:
+                    print(f"- TPM utilization range: {self.v3_stats['min_tpm_utilization']:.1f}% - {self.v3_stats['max_tpm_utilization']:.1f}%")
+                offset_stats = self.tiktoken_offset_learner.get_stats()
+                print(f"- Tiktoken offset: {offset_stats['using_offset']} (learned: {offset_stats['is_learned']}, samples: {offset_stats['samples']})")
+
             return results
         
         except Exception as e:
@@ -1369,7 +2240,11 @@ class CodeAssigner:
                     "High confidence (≥0.7)": high_confidence,
                     "Low confidence (<0.5)": low_confidence
                 })
-        
+
+        # Print diagnostics
+        self.print_assignment_stats()
+        self.print_learning_insights()
+
         return self._results
 
     def assign(self) -> List[models.CodeAssignedModel]:
