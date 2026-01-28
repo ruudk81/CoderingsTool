@@ -28,7 +28,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 from models import ClusterModel
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM
 # Import prompts from production
-from prompts import CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT, VERTICAL_INSTRUCTIONS, HIERARCHICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT, VALIDATION_PROMPT
+from prompts import (
+    CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
+    HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
+    VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
+    MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS
+)
 from utils.verboseReporter import VerboseReporter
 from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
 
@@ -255,7 +260,7 @@ class CodingDecision(BaseModel):
     theme_number: int
     theme_name: str
     matched_candidates: List[MatchedCandidate]
-    decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HIERARCHICAL", "CREATE"]
+    decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HORIZONTAL", "CREATE"]
     source_code: Optional[str] = None
     modify_parameters: ModifyParameters
     justification: str
@@ -2219,7 +2224,8 @@ class InductiveCodeGenerator:
         for code in candidate_codes:
             code_label = code['code']
             cosine = cosine_scores.get(code_label, 0.0)
-            line = f"- {code_label} (cosine: {cosine:.2f})"
+            # line = f"- {code_label} (cosine: {cosine:.2f})"  # With cosine score
+            line = f"- {code_label}"  # Without cosine score
             formatted_lines.append(line)
 
         return "\n".join(formatted_lines)
@@ -3225,6 +3231,7 @@ class InductiveCodeGenerator:
                 exclusion_examples="  • Example exclusion",
                 near_neighbor_label="Example neighbor",
                 tell_apart_rule="Example distinction rule",
+                validation_instructions=CREATE_VALIDATION_INSTRUCTIONS,  # Default for token measurement
                 **self._get_context_specifier_params()  # Add context specifiers
             )
             validation_tokens = len(self.encoding.encode(validation_prompt)) + 100  # + completion estimate
@@ -4636,7 +4643,7 @@ class InductiveCodeGenerator:
                     decision_stats['create'] += 1
                     self.verbose_reporter.stat_line(f"C{cluster_id}: FINAL CREATE decision - will add '{validated_code.code}'")
                 
-                elif final_decision == "modify" and final_source_code:
+                elif final_decision in ("modify", "modify_vertical", "modify_horizontal") and final_source_code:
                     modify_operations.append({
                         'original_code': final_source_code,
                         'new_code': validated_code.code,
@@ -4999,13 +5006,13 @@ class InductiveCodeGenerator:
                             break
                 
                 # Fallback logic: if MODIFY decision but no source_code, fall back to CREATE
-                if decision in ("MODIFY_VERTICAL", "MODIFY_HIERARCHICAL") and (not source_code or source_code.lower() in ['null', 'none', '']):
+                if decision in ("MODIFY_VERTICAL", "MODIFY_HORIZONTAL") and (not source_code or source_code.lower() in ['null', 'none', '']):
                     if self.verbose_detailed:
                         self.verbose_reporter.warning(f"C{cluster_id}: STEP2 - {decision} decision without source_code, falling back to CREATE")
                     decision = "CREATE"
                     source_code = "null"
                     CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
-                elif decision in ("MODIFY_VERTICAL", "MODIFY_HIERARCHICAL"):
+                elif decision in ("MODIFY_VERTICAL", "MODIFY_HORIZONTAL"):
                     CODING_GENERATION_PROMPT = CODING_MODIFICATION_PROMPT
                 else:
                     CODING_GENERATION_PROMPT = CODE_CREATION_PROMPT
@@ -5042,10 +5049,10 @@ class InductiveCodeGenerator:
 
                 # Select appropriate modification instructions based on type
                 if modify_instr == "vertical_broaden_same_level":
-                    modification_instructions = VERTICAL_INSTRUCTIONS
+                    modification_instructions = HORIZONTAL_INSTRUCTIONS
                 elif modify_instr == "hierarchical_parent_diff_level":
-                    HIERARCHICAL_INSTRUCTIONS_FORMATTED = HIERARCHICAL_INSTRUCTIONS.replace("{parent_theme_label}", coding_decision_obj.modify_parameters.parent_theme_label)
-                    modification_instructions = HIERARCHICAL_INSTRUCTIONS_FORMATTED
+                    VERTICAL_INSTRUCTIONS_FORMATTED = VERTICAL_INSTRUCTIONS.replace("{parent_theme_label}", coding_decision_obj.modify_parameters.parent_theme_label)
+                    modification_instructions = VERTICAL_INSTRUCTIONS_FORMATTED
                 else:
                     modification_instructions = ""  # Fallback for "none"
 
@@ -5278,6 +5285,28 @@ class InductiveCodeGenerator:
                         f"(STEP3 didn't provide them)"
                     )
 
+            # Select scenario-specific validation instructions based on decision type
+            coding_proposal = step3_recommendation.get('coding_proposal', 'CREATE').upper() if step3_recommendation else 'CREATE'
+
+            if coding_proposal == 'MODIFY':
+                # Check step2_analysis for MODIFY_VERTICAL vs MODIFY_HORIZONTAL
+                step2_decision = self.step2_analysis.get(cluster_id, {})
+                if hasattr(step2_decision, 'coding_decision'):
+                    original_decision = step2_decision.coding_decision.decision
+                elif isinstance(step2_decision, dict):
+                    original_decision = step2_decision.get('decision', 'MODIFY_VERTICAL')
+                else:
+                    original_decision = 'MODIFY_VERTICAL'
+
+                if original_decision == 'MODIFY_HORIZONTAL':
+                    validation_instructions = MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS
+                else:
+                    validation_instructions = MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS
+            elif coding_proposal == 'USE':
+                validation_instructions = USE_VALIDATION_INSTRUCTIONS
+            else:  # CREATE or unknown
+                validation_instructions = CREATE_VALIDATION_INSTRUCTIONS
+
             # Prepare exact parameters for prompt (including context specifiers)
             params = {
                 'language': DEFAULT_LANGUAGE,
@@ -5293,6 +5322,7 @@ class InductiveCodeGenerator:
                 "exclusion_examples": exclusion_examples,
                 "near_neighbor_label": near_neighbor_label,
                 "tell_apart_rule": tell_apart_rule,
+                "validation_instructions": validation_instructions,  # Scenario-specific instructions
                 **self._get_context_specifier_params()  # Add context specifiers
             }
 

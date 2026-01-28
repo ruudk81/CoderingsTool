@@ -706,7 +706,7 @@ class Clusterer:
     def _run_representation(self):
         """Phase 6: Extract keywords using all enabled representation methods."""
         if self._verbose:
-            print("\n[Phase 6] Keyword Extraction")
+            print("\n[Phase 6] Keyword Extraction & Representation")
             methods = ["c-TF-IDF"]
             if self.config.generate_mmr_keywords:
                 methods.append("MMR")
@@ -721,7 +721,7 @@ class Clusterer:
             probabilities = self._hdbscan_model.probabilities_
             min_probability = self.config.representative_min_probability
             if self._verbose:
-                print(f"  Filtering to ideas with probability > {min_probability}")
+                print(f"  Using core cluster members (probability > {min_probability}) for keywords and LLM samples")
 
         self._cluster_keywords = self._representation_engine.extract_all_keywords_from_labels(
             self._labels,
