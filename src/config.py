@@ -346,7 +346,7 @@ class ModelConfig:
     # theme_extraction_text_verbosity: str = "medium"      
 
     # Code assignment
-    code_assignment_model: str = "gpt-5-chat-latest"
+    code_assignment_model: str = DEFAULT_MODEL  # Uses gpt-4.1-mini (works for both Azure and OpenAI)
   
 
     # =============================================================================

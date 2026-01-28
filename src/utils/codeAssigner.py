@@ -2241,8 +2241,7 @@ class CodeAssigner:
                     "Low confidence (<0.5)": low_confidence
                 })
 
-        # Print diagnostics
-        self.print_assignment_stats()
+        # Print learning insights (assignment stats printed by pipeline.py)
         self.print_learning_insights()
 
         return self._results

@@ -48,7 +48,7 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 5
+RUN_UNTIL_STEP = 6
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -1260,7 +1260,11 @@ def step_6_generate_codebook(
     if streamlit_container:
         streamlit_container.text("🔄 Generating codebook from clusters...")
     verbose_reporter = verboseReporter.VerboseReporter(verbose)
-    prompt_printer = promptPrinter.PromptPrinter(enabled=prompt_printer_enabled, print_realtime=True)
+    # Always capture prompts when verbose, but only print realtime if prompt_printer_enabled
+    prompt_printer = promptPrinter.PromptPrinter(
+        enabled=verbose,  # Capture prompts whenever verbose mode is on
+        print_realtime=prompt_printer_enabled  # Only print realtime if explicitly enabled
+    )
     codebook_reasoning = None
 
     if not force_recalc and cache_manager.is_cache_valid(filename, f"{step_name}_reasoning", variable_key):
@@ -1290,31 +1294,31 @@ def step_6_generate_codebook(
 
         # Phase 1: Generate starter codes (optional)
         if use_speculative_starter_codes:
-            # First, try to load LLM cluster labels from step 5 representations cache
+            # First, try to load LLM cluster labels from step 5 clustering_metadata cache
             starter_codes = []
-            representations_step_name = "cluster_representations"
+            metadata_step_name = "clustering_metadata"
 
-            if cache_manager.is_cache_valid(filename, representations_step_name, variable_key):
+            if cache_manager.is_cache_valid(filename, metadata_step_name, variable_key):
                 try:
-                    # Load as dict since we cached with .model_dump()
-                    representations_data = cache_manager.load_from_cache(
-                        filename, representations_step_name, variable_key
+                    # Load ClusteringMetadataModel from cache
+                    metadata_results = cache_manager.load_from_cache(
+                        filename, metadata_step_name, variable_key,
+                        model_cls=models.ClusteringMetadataModel
                     )
-                    if representations_data and len(representations_data) > 0:
-                        rep_data = representations_data[0] if isinstance(representations_data, list) else representations_data
-                        if isinstance(rep_data, dict) and 'representations' in rep_data:
-                            for rep in rep_data['representations']:
-                                if rep.get('llm_label'):
-                                    label = rep['llm_label']
-                                    starter_codes.append({
-                                        'code': label.get('theme', ''),
-                                        'definition': label.get('description', ''),
-                                        'cluster_id': label.get('cluster_id')
-                                    })
-                            if starter_codes:
-                                print(f"Loaded {len(starter_codes)} speculative codes from Clusterer LLM labels")
+                    if metadata_results and len(metadata_results) > 0:
+                        metadata = metadata_results[0]
+                        # Extract starter codes from cluster labels (matches run_experiment.py)
+                        for cluster_id, cluster_data in metadata.clusters.items():
+                            if cluster_data.label_theme:
+                                starter_codes.append({
+                                    'code': cluster_data.label_theme,
+                                    'definition': cluster_data.label_description or '',
+                                    'cluster_id': cluster_id
+                                })
+                        if starter_codes:
+                            print(f"Loaded {len(starter_codes)} starter codes from Clusterer LLM labels")
                 except Exception as e:
-                    print(f"Failed to load cluster representations: {e}")
+                    print(f"Failed to load clustering_metadata: {e}")
                     starter_codes = []
 
             # Fall back to speculative starter codes generator if no LLM labels
@@ -1509,6 +1513,13 @@ def step_6_generate_codebook(
         if streamlit_container:
             num_codes = len(codebook_reasoning.codebook) if codebook_reasoning and codebook_reasoning.codebook else 0
             streamlit_container.success(f"✅ Codebook generation completed in {elapsed_time:.2f}s: {num_codes} codes")
+
+    # Display sample prompts (first of each stage) when verbose - matches run_experiment.py
+    if verbose and prompt_printer.prompts:
+        print("\n" + "=" * 80)
+        print("SAMPLE PROMPTS (First of Each Stage)")
+        print("=" * 80)
+        prompt_printer.print_all_prompts()
 
     return codebook_reasoning
 
@@ -1979,6 +1990,24 @@ def step_8_assign_codes(
         'processing_time': elapsed_time if 'elapsed_time' in locals() else 0.0
     }
 
+    # Print code distribution
+    if verbose and code_frequency:
+        print(f"\n{'='*70}")
+        print("CODE DISTRIBUTION")
+        print(f"{'='*70}")
+        print(f"{'Code':<45} {'Count':>8} {'Percent':>10}")
+        print(f"{'-'*70}")
+
+        sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
+        for code, count in sorted_codes:
+            pct = (count / total_code_assignments) * 100
+            display_code = code[:42] + "..." if len(code) > 45 else code
+            print(f"{display_code:<45} {count:>8} {pct:>9.1f}%")
+
+        print(f"{'-'*70}")
+        print(f"{'TOTAL':<45} {total_code_assignments:>8} {'100.0%':>10}")
+        print(f"{'='*70}\n")
+
     # Return instance if it exists (for prompt inspection), otherwise None
     instance_for_inspection = code_assigner_instance if 'code_assigner_instance' in locals() else None
     return code_assigned_results, stats, instance_for_inspection
@@ -2234,9 +2263,9 @@ if __name__ == '__main__':
         var_lab = var_lab
     )
     check_execution_stop(5)
-    
-    #%%
-    if True: #debug - print random clusters  
+
+    # NOTE: Removed #%% cell marker here - was breaking VSCode Python Interactive execution
+    if False: #debug - print random clusters  
    
         import random
         import re
@@ -2259,8 +2288,8 @@ if __name__ == '__main__':
         sampled_segments = random.sample(cluster_segments, len(cluster_segments))
         for segment_desc in sampled_segments:
             print(f"-    {segment_desc}")
-        
-    #%%
+
+    # NOTE: Removed #%% cell marker here - was breaking VSCode Python Interactive execution
     if False: #debug if true - print all clusters
         import re
         cluster_ids = list(set([
