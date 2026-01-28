@@ -26,6 +26,8 @@ kneed>=0.8.0            # Knee/elbow detection for clustering strategy
 matplotlib>=3.8.0
 plotly>=5.18.0              # For Optuna visualizations
 kaleido>=0.2.1              # For saving plotly figures as images
+wordcloud>=1.9.0            # Word cloud generation for export visualizations
+networkx>=3.0               # Network graph building for export visualizations
 
 # Terminal output
 tqdm>=4.60.0                # Progress bars (works natively in Jupyter)
