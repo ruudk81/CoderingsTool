@@ -42,7 +42,10 @@ class ResultsExporter:
                        filename: str,
                        var_name: str,
                        quality_filtered_text: Optional[List] = None,
-                       export_dir: Optional[str] = None) -> str:
+                       export_dir: Optional[str] = None,
+                       include_visualizations: bool = False,
+                       clustering_metadata: Optional[models.ClusteringMetadataModel] = None,
+                       extraction_metadata: Optional[models.ExtractionMetadata] = None) -> str:
         """
         Export code assignment results to Excel with all requested columns:
         - respondent_id
@@ -54,6 +57,11 @@ class ResultsExporter:
         - assignment_rationale
         - theme_name
         - theme_description
+
+        Optional visualizations (when include_visualizations=True):
+        - Dendrogram sheet (PNG): Theme > Code > Cluster hierarchy
+        - Word Cloud sheet (PNG): Grid of word clouds per code
+        - Network HTML file: Interactive theme-code-cluster network
         """
         
         self.verbose_reporter.section_header("EXPORTING CODE ASSIGNMENTS TO EXCEL")
@@ -203,13 +211,46 @@ class ResultsExporter:
         
         # Export to Excel with formatting
         self._write_formatted_excel(df, output_path, var_name)
-        
+
         # Report statistics
         self.verbose_reporter.stat_line(f"Total rows exported: {len(export_data)}")
         self.verbose_reporter.stat_line(f"Unique respondents: {df['respondent_id'].nunique()}")
         self.verbose_reporter.stat_line(f"Unique ideas: {df['idea_id'].nunique()}")
         self.verbose_reporter.stat_line(f"Unique codes assigned: {df[df['code_label'] != 'No Code Assigned']['code_label'].nunique()}")
-        
+
+        # Add visualizations if requested
+        network_html_path = None
+        if include_visualizations:
+            try:
+                from .exportVisualizer import ExportVisualizer
+                from openpyxl import load_workbook
+
+                self.verbose_reporter.stat_line("Generating visualizations...")
+
+                visualizer = ExportVisualizer(
+                    clustering_metadata=clustering_metadata,
+                    code_assigned_results=code_assigned_results,
+                    theme_enriched_codebook=theme_enriched_codebook,
+                    extraction_metadata=extraction_metadata,
+                    verbose=self.verbose
+                )
+
+                # Load the workbook we just created and add visualization sheets
+                wb = load_workbook(output_path)
+                wb = visualizer.add_visualizations_to_workbook(wb)
+                wb.save(output_path)
+
+                # Generate network HTML separately (interactive)
+                network_html_path = visualizer.generate_network_html(export_dir)
+                if network_html_path:
+                    self.verbose_reporter.stat_line(f"Network graph HTML: {network_html_path}")
+
+            except ImportError as e:
+                print(f"Warning: Could not import visualization dependencies: {e}")
+                print("Install with: pip install wordcloud networkx")
+            except Exception as e:
+                print(f"Warning: Visualization generation failed: {e}")
+
         return output_path
     
     def export_to_excel_with_reasoning(self,

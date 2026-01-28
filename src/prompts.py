@@ -863,8 +863,7 @@ Survey Question: "{survey_question}"
 </context>
 
 <taxonomy_parameters>
-Taxonmy Axis:  {taxonomy_axis}
-Axis description: {taxonomy_axis_description}
+Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
 primary Coding Dimension: {taxonomy_actionable_type}
 </taxonomy_parameters>
 
@@ -1051,8 +1050,7 @@ New theme:
 
 Here is the taxonomy framework guiding your analysis:
 <taxonomy_parameters>
-Taxonmy Axis:  {taxonomy_axis}
-Axis description: {taxonomy_axis_description}
+Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
 primary Coding Dimension: {taxonomy_actionable_type}
 </taxonomy_parameters>
 
@@ -1190,8 +1188,7 @@ MODIFICATION INSTRUCTIONS:
 {modification_instructions}
 
 Here is the taxonomy framework guiding your analysis:
-- Taxonmy Axis:  {taxonomy_axis}
-- Axis description: {taxonomy_axis_description}
+- Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
 - primary Coding Dimension: {taxonomy_actionable_type}
 
 LABEL RULES (strict):
@@ -1391,8 +1388,7 @@ Further information about the new code:
 </coding_proposal>
 
 Here is the taxonomy framework guiding your analysis:
-- Taxonmy Axis:  {taxonomy_axis}
-- Axis description: {taxonomy_axis_description}
+- Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
 - primary Coding Dimension: {taxonomy_actionable_type}
 
 Here are the scenario-specific validation instructions for this decision type:
@@ -1502,15 +1498,15 @@ Output schema:
 # =============================================================================
 
 CODEBOOK_REFINEMENT_PROMPT = """
-You are a qualitative research methodologist and codebook architect.
-Your task is to transform a raw list of descriptive codes into a MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
+You are a qualitative research methodologist organizing codes into a hierarchical codebook.
+Your PRIMARY task is to ORGANIZE codes into themes - NOT to reduce their number.
 
 Here is the survey question:
 <survey_question>
 {survey_question}
 </survey_question>
 
-Here are the raw codes to refine:
+Here are the codes to organize:
 <raw_codes>
 {raw_codes}
 </raw_codes>
@@ -1520,89 +1516,64 @@ Output your response in this language:
 {language}
 </language>
 
-# Core Definitions (read carefully)
-- Atomic label = a single, irreducible evaluative idea (no conjunctions like "en/and/&", "of/or", no slashes "/", no hypen "-", no bundled meanings). Example: “Waarde”, “Gezondheid”.
-- Meta-theme = a higher-order organizational container for multiple distinct atomic themes within the same analytic domain. A meta-theme is NOT atomic, but its label must still be a single, clean concept word/phrase (e.g., “Productverwachtingen”).
-- Theme = either (a) an atomic evaluative construct, or (b) a meta-theme that groups multiple atomic subthemes (use only when it improves coder clarity or reporting).
+# CRITICAL: Preservation Over Reduction
+Your goal is to ORGANIZE codes into a clear hierarchy, NOT to reduce the number of codes.
+- PRESERVE all codes that represent distinct concepts
+- Only MERGE codes that are TRUE DUPLICATES (identical meaning, just different wording)
+- When in doubt, KEEP codes separate
 
-# Core Rules
+# When to Merge (STRICT criteria - all must apply)
+ONLY merge two codes if ALL of the following are true:
+1. They describe the EXACT same concept (not just related concepts)
+2. A researcher would report them as ONE finding (not as variations)
+3. Their inclusion examples overlap completely
+4. No exclusion examples or tell-apart rules distinguish them
 
-## 1) Enforce MECE (Mutually Exclusive, Collectively Exhaustive)
-Preserve all distinct conceptual meanings. If two codes differ only in wording, phrasing, tone, or surface form—and a trained coder would treat them as the same action or recommendation—MERGE them into a single code.
+If ANY doubt exists → KEEP SEPARATE
 
-**Key Merge Criteria**
-- Operational Action: If the recommended intervention would be the same → MERGE
-- Reporting Test: If results would be reported as one insight → MERGE
+# Structure and Hierarchy
+Organize codes into a 2-level or 3-level hierarchy:
 
-**Decision Tests**
-- Action Test (ACT): “Is the practical implication the same given the survey question?” If yes → merge
-- Reporting Test (RT): “Would a researcher distinguish them in the results?” If no → merge
-- Examples Test (XT): If inclusion examples point to the same expression types AND exclusion examples do not reveal boundaries → merge
+**2-level (Theme → Code)**: Use when themes are simple and codes don't need sub-grouping
+**3-level (Theme → Category → Code)**: Use when a theme contains multiple sub-concepts that benefit from grouping
 
-## 2) Use Assignment Examples (if present)
-Raw codes may include:
-- inclusion examples
-- exclusion examples
-- near_neighbor (with tell-apart rules)
+Guidelines:
+- Every code must belong to exactly one theme
+- Themes should be conceptually coherent (related codes grouped together)
+- Use 3-level hierarchy when ≥3 codes share a clear sub-concept within a theme
+- Aim for 5-15 themes depending on codebook size
 
-Apply them as follows:
-a) Inclusion overlap → candidate merge
-b) Exclusion conflicts → keep separate (boundaries exist)
-c) Near neighbors with tell-apart rules → respect separation unless the difference is purely linguistic (then merge)
-
-If examples are missing, infer cautiously from code labels and context; prefer precision over over-merging.
-
-## 3) Structure and Hierarchy
-- Every code must belong to exactly one parent theme.
-- Themes must be conceptually non-overlapping.
-- Use a **3-level hierarchy (Theme → Subtheme/Category → Code)** whenever it improves coder decisions or reporting clarity.
-  - Use a subtheme/category only when ≥2 codes clearly share a specific sub-idea that aids assignment.
-- A **2-level hierarchy (Theme → Code)** is acceptable if all themes are atomic and subthemes would not add clarity.
-
-## 4) Theme Naming and Descriptions
+# Theme and Code Naming
 
 **Theme Labels**
-- ≤ 10 words
-- Describe what is being evaluated in terms specific to the survey question
-- Atomic (single idea; one polarity: either increase/strengthen OR reduce/avoid)
-- Prefer noun phrases; avoid generic labels (e.g., “Quality”)
-- No reasons or purposes (avoid “to…”, “so that…”, “because…”)
-- Avoid punctuation: “/”, “&”, “,”, “–”, “:” (unless lexicalized)
-- Avoid synonym duplication across themes; choose one canonical term
+- ≤ 10 words, noun phrases preferred
+- Describe the conceptual domain (e.g., "Duurzaamheid", "Klantenservice", "Prijsperceptie")
+- No conjunctions or slashes
+
+**Code Labels**
+- Keep original code labels unless they violate naming rules
+- ≤ 10 words, specific and atomic
 
 **Code Descriptions**
 - ≤ 20 words
-- Define what belongs in this code (observable assignment cues); not causes or interpretations
-- Align directly with the survey question
-- Use patterns like: “Mentions of…”, “References to…”, “Expressions of…”, “Concerns about…”
-
-## 5) Atomicity & Label Hygiene Checks
-Before finalizing:
-- Atomicity Test (AT): Can each label be expressed as one evaluative lens? If not, split or reassign under a meta-theme.
-- Boundary Test (BT): Are differences between themes/subthemes clear and stable?
-- Wording Test (WT): Labels and codes must avoid conjunctions/slashes/comma lists; keep concise and specific.
+- Define what belongs in this code
+- Use patterns like: "Mentions of…", "References to…"
 
 # Required Output Format
 
-First, think through the structure step-by-step in <analysis_thinking> tags. Consider:
-- Which codes should be merged and why (reference assignment_examples where available)
-- Which similar codes should be kept separate and why
-- How to structure the hierarchy (2-level vs. 3-level; where categories help)
-- Total codes preserved vs. merged count
+Think through the organization, then provide JSON:
 
-Then provide your response as valid JSON only, structured exactly as follows: 
-    
 {{
-  "analysis": "Provide detailed analysis in {language}: (1) Which codes were merged and why (include IDs and reference assignment_examples to justify), (2) Which similar codes were kept separate and why (reference inclusion/exclusion examples or near_neighbor boundaries), (3) How hierarchy was structured, (4) Total codes preserved vs. merged count.",
+  "analysis": "In {language}: (1) How codes were organized into themes, (2) Any codes merged (with justification - should be very few), (3) Hierarchy structure chosen (2-level or 3-level), (4) Final count: X codes organized into Y themes.",
   "refined_codebook": [
     {{
-      "theme": "Main theme label",
+      "theme": "Theme label",
       "codes": [
         {{
           "id": "original code_id (or comma-separated IDs if merged)",
           "code": "Code label",
           "description": "≤ 20 words explanation",
-          "category": ""  // Empty string for 2-level, or category name for 3-level
+          "category": ""  // Empty for 2-level, category name for 3-level
         }}
       ]
     }}
@@ -1610,18 +1581,17 @@ Then provide your response as valid JSON only, structured exactly as follows:
 }}
 
 Notes:
-- Use empty string for "category" in 2-level hierarchy; otherwise use a category name for 3-level (subtheme).
-- No commentary before or after JSON.
-- No markdown formatting outside of code blocks.
-- All text must be in the specified output language.
+- The number of codes in output should be close to the number of input codes (merging should be rare)
+- No commentary before or after JSON
+- All text in the specified output language
 
-Begin your analysis and provide the refined codebook.
+Begin organizing the codebook.
 """
 
 
 CODEBOOK_MERGE_PROMPT = """
-You are a qualitative research methodologist performing final codebook consolidation.
-You will be given multiple independent codebooks from different subsets of survey responses. Your task is to produce one unified, MECE (Mutually Exclusive, Collectively Exhaustive) codebook.
+You are a qualitative research methodologist consolidating multiple codebooks into one unified structure.
+Your PRIMARY task is to UNIFY the organization - NOT to reduce the number of codes.
 
 Here is the survey question:
 <survey_question>
@@ -1638,91 +1608,66 @@ All output must be in this language:
 {language}
 </language>
 
-# Core Definitions (read carefully)
-- Atomic label = a single, irreducible evaluative idea (no conjunctions like "en/and/&", "of/or", no slashes "/", no hypen "-", no bundled meanings). Example: “Waarde”, “Gezondheid”.
-- Meta-theme = a higher-order organizational container for multiple distinct atomic themes that belong to the same analytic domain. A meta-theme is NOT atomic, but its LABEL must still be a single, clean concept word/phrase (e.g., “Productverwachtingen”).
-- Theme = either (a) an atomic evaluative construct, or (b) a meta-theme that groups multiple atomic subthemes (use only when it truly improves clarity).
+# CRITICAL: Preservation Over Reduction
+You are consolidating {n_codebooks} codebooks from different batches. Your goal is to:
+1. PRESERVE all unique codes from all codebooks
+2. Only MERGE codes that are TRUE DUPLICATES (identical meaning appearing in multiple codebooks)
+3. Create a unified theme structure that organizes ALL codes
 
-# Your Task
-You have multiple codebooks. Some themes will:
-1) Appear in multiple codebooks (duplicates) → MERGE
-2) Be unique (distinct) → KEEP
-3) Overlap partially → Decide merge vs keep
+# When to Merge (STRICT criteria)
+ONLY merge codes if they are TRUE DUPLICATES:
+- EXACT same concept appearing in multiple codebooks (due to batch overlap)
+- A researcher would consider them identical findings
 
-# Consolidation Principles
-- Parsimony: Keep as simple as possible while preserving conceptual clarity.
-- Non-redundancy: No two themes/codes state the same meaning.
-- Mutual Exclusivity (ME): Each code should logically belong to only one theme.
-- Collective Exhaustiveness (CE): Themes jointly cover all meaningful responses.
-- Conceptual Coherence: Codes under a theme are variations of the same underlying idea.
-- Atomicity: Labels at the atomic level express one clear idea (no multi-concepts).
-- Action/Reporting Alignment: Merge if they would be reported together or lead to the same recommendation.
-- Boundary Clarity: Differences between themes are obvious and justifiable to another researcher.
+Do NOT merge codes that are:
+- Related but distinct concepts
+- Different aspects of the same topic
+- Similar but with different nuances
 
-# Decision Tests (apply explicitly)
-- Atomicity Test (AT): Can the theme be expressed as ONE evaluative lens? If any subparts require different “whys”, it’s NOT atomic.
-- Action Test (ACT): Would two candidate themes lead to the same action/recommendation? If yes, merge.
-- Boundary Test (BT): Are differences between two themes clear and stable? If yes, keep separate.
-- Wording Test (WT): Labels must be ≤10 words, contain no “and/&/ /” or comma lists, and preferably be noun phrases.
-  (Note: WT applies to both themes and codes; use concise, atomic wording.)
+When in doubt → KEEP SEPARATE
 
-# Handling Composite Labels
-If an input theme label is composite (fails AT or WT), do one of:
-- Preferred option A (Group): Create a META-THEME with a single, clean label that expresses their shared domain (not a conjunction), and place the atomic subthemes beneath it; or
-- Option B (Split): Convert it into multiple atomic themes.
-Schema note: When you use a meta-theme in the final JSON, put the meta label in "theme" and use the "category" field on each code to name the atomic subtheme/category beneath that meta-theme.
+# Consolidation Steps
+1. Identify TRUE duplicates across codebooks (codes with identical meaning)
+2. Keep all unique codes
+3. Organize all codes into a unified theme structure
+4. Use 2-level or 3-level hierarchy as appropriate
 
-Choose the option that best improves MECE and reporting clarity.
+# Theme Structure
+**2-level (Theme → Code)**: Simple organization
+**3-level (Theme → Category → Code)**: Use when themes have clear sub-groupings
 
-# Handling Duplicate Codes
-If the same/very similar code appears in multiple themes:
-1) Choose the BEST semantic fit (use ACT, BT, and AT).
-2) Assign it to ONLY that theme (ensuring mutual exclusivity).
-3) Note the reassignment in the analysis log.
+Guidelines:
+- Merge similar THEMES across codebooks (organizational labels), but preserve the CODES within them
+- Every code must appear exactly once in the final codebook
+- Aim for 5-15 themes depending on total code count
 
-# Hierarchy Preference
-- Use a **3-level structure (Meta-theme → Atomic Theme/Category → Code)** whenever it improves conceptual or reporting clarity.
-  - The meta-theme groups multiple distinct but related atomic themes under one analytic domain.
-  - In the JSON output, represent the meta-theme as the "theme" and use the "category" field on each code to indicate the atomic subtheme/category.
-- A **2-level structure (Theme → Code)** may be used only if all themes are atomic and no meta-themes are needed.
+# Label Rules
+- Theme labels: ≤10 words, noun phrases, no conjunctions/slashes
+- Code labels: Keep original labels, ≤10 words
+- Descriptions: ≤30 words, define when to use the code
 
-# Label Rules (strict)
-- No conjunctions (“en/of/and/or/&/-”), no slashes (“/”), no comma-joined lists.
-- Prefer ≤6-word noun phrases where possible; never exceed WT’s ≤10-word limit.
-- Avoid synonyms across labels; pick one canonical term per concept.
-- Each code needs a crisp ≤30-word definition focused on when to use the code.
-
-# Scratchpad (required, hidden in final)
-<scratchpad>
-Think through, step by step, in {language}:
-1) Which themes are duplicates across codebooks? State merges and the reason (ACT + AT).
-2) Which themes are distinct and should remain separate? Justify (BT).
-3) Which input labels are composite? For each, choose Option A (Split to atomic themes) or Option B (Create meta-theme) and justify.
-4) How were duplicate or cross-assigned codes resolved (final placements)?
-5) Final theme count vs. input theme count; why this is more parsimonious and still CE.
-6) Whether 2-level or 3-level hierarchy is used and why.
-7) Run the Wording Test on ALL final labels; rewrite any violations.
-</scratchpad>
-
-# Output (JSON only; no commentary before or after)
-Provide your final answer as valid JSON only, with no commentary before or after:
+# Output Format
 
 {{
-  "analysis":  "In [language]: (1) Which themes were merged across codebooks and why (list specific theme names), (2) Which themes were kept separate and why, (3) How duplicate codes were resolved, (4) Final theme count vs input theme count, (5) Rationale for hierarchy structure.",
+  "analysis": "In {language}: (1) How codebooks were unified, (2) Any duplicate codes merged (should be few - only true duplicates from batch overlaps), (3) Theme structure chosen, (4) Final count: X codes from Y input codebooks organized into Z themes.",
   "refined_codebook": [
     {{
-      "theme": "Final theme label (≤10 words)",
+      "theme": "Theme label",
       "codes": [
         {{
-          "id": "original code ID(s) from input codebooks",
+          "id": "original code ID(s)",
           "code": "Code label",
           "description": "Code definition (≤30 words)",
-          "category": ""  // Empty for 2-level, category name for 3-level (atomic subtheme when using a meta-theme)
+          "category": ""  // Empty for 2-level, category name for 3-level
         }}
       ]
     }}
   ]
 }}
+
+IMPORTANT: The total number of unique codes in your output should be close to the total unique codes across all input codebooks. Significant reduction indicates over-merging.
+
+Begin consolidating the codebooks.
 """
 
 
@@ -1820,6 +1765,93 @@ Critical requirements:
 - If the confidence score is below 0.70, the rationale MUST begin with "EXCLUDE:"
 - The rationale must follow the INCLUDE:/EXCLUDE: format exactly
 - Focus only on the specific concept defined by the code
+- Return ONLY the JSON object, no additional commentary
+
+Begin your evaluation now.
+"""
+
+# Stage 1b: Evaluate multiple codes from cluster family
+FAMILY_CODE_EVALUATION_PROMPT = """
+You are a {language} qualitative coding specialist who assigns codes from a codebook to survey responses.
+Your task is to evaluate MULTIPLE candidate codes from the same cluster family and determine which one (if any) best fits the response.
+
+The language you will be working in: {language}
+
+Here is the survey question for context:
+<survey_question>
+{var_lab}
+</survey_question>
+
+Here is the response you need to analyze:
+<response>
+Idea ID: {idea_id}
+Idea Text: {idea_text}
+</response>
+
+Here are the candidate codes from this cluster family. Evaluate EACH code against the response:
+<candidate_codes>
+{candidate_codes_formatted}
+</candidate_codes>
+
+**Evaluation Process:**
+1. Evaluate EACH candidate code against the response independently
+2. For each code, determine if there is explicit or clearly paraphrased evidence
+3. If multiple codes match with confidence >= 0.70, choose the MOST SPECIFIC one that fits the evidence
+4. If no code matches with confidence >= 0.70, set best_match.code to "NONE"
+
+**Decision Rules (apply to EACH code):**
+
+1) Evidence types
+   • Explicit: the response uses terms that directly express the target concept.
+   • Unambiguous paraphrase: different wording that clearly conveys the target concept without reasonable alternative readings.
+   • Do NOT infer intent beyond the text. Do not rely on general world knowledge.
+
+2) Include vs Exclude
+   • Include if the target concept is explicit or an unambiguous paraphrase appears anywhere in the response.
+   • Exclude if the response:
+       – Only expresses a different code's concept;
+       – Matches any Exclusion Example pattern;
+       – Mentions the concept only in a negated or hypothetical/conditional way;
+       – Is too generic or off-topic.
+
+3) Minimal supporting span
+   • If Including, identify the shortest verbatim span in the response that demonstrates the concept.
+   • Preserve original casing and spelling; do not correct typos.
+
+**Confidence Anchors (0.00–1.00):**
+• 0.90–1.00 (A: Explicit Evidence): The meaning of the code is explicitly and directly stated in the response; no interpretation needed.
+• 0.70–0.89 (B: Unambiguous Paraphrase): The meaning of the code is explicitly present, but phrased differently. The link is clear without inference.
+• 0.50–0.69 (C: Related / Weakly Implied): The code is related but requires interpretive judgment. EXCLUDE threshold.
+• 0.00–0.49 (D: No Fit): The code is not present, is only tangentially related, or contradicts the response.
+
+**Confidence Threshold Rule (Critical):**
+• Only codes with confidence >= 0.70 qualify as matches.
+• If the best-fitting code has confidence < 0.70, set best_match.code to "NONE".
+
+**Tie-Breaking (when multiple codes have confidence >= 0.70):**
+1. Choose the code with the highest confidence score.
+2. If still tied, prefer the more specific code (narrower definition).
+3. If still tied, prefer the code whose definition most closely matches the supporting span.
+
+Provide your response in this exact JSON format:
+{{
+  "idea_id": "{idea_id}",
+  "evaluations": [
+    {{"code": "CODE_NAME_1", "confidence": SCORE, "rationale": "INCLUDE: \"span\" → explanation" or "EXCLUDE: reason"}},
+    {{"code": "CODE_NAME_2", "confidence": SCORE, "rationale": "INCLUDE: \"span\" → explanation" or "EXCLUDE: reason"}}
+  ],
+  "best_match": {{
+    "code": "BEST_CODE_NAME or NONE",
+    "confidence": SCORE,
+    "rationale": "INCLUDE: \"span\" → explanation in {language}" or "EXCLUDE: brief explanation in {language}"
+  }}
+}}
+
+Critical requirements:
+- Evaluate ALL candidate codes in the evaluations array
+- The best_match.code must be one of the evaluated codes OR "NONE" if no code reaches 0.70 confidence
+- The best_match.confidence must match the confidence of the selected code (or 0.0 if NONE)
+- All rationales must follow the INCLUDE:/EXCLUDE: format
 - Return ONLY the JSON object, no additional commentary
 
 Begin your evaluation now.

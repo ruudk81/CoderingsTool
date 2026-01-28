@@ -23,20 +23,20 @@ model_config = ModelConfig()
 
 #  ===  STANDALONE ======================================================================================================== 
 
-filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-id_column = "DLNMID"
-var_name = "Q20"
-sample_size = 500
+#filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+#id_column = "DLNMID"
+#var_name = "Q20"
+#sample_size = 500
 
 #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 #id_column = "DLNMID"
 #var_name = "Q20"
 #sample_size = 500
 
-#filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
-#id_column = "DLNMID"
-#var_name = "Qd1_combined"
-#sample_size = 2000 
+filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
+id_column = "DLNMID"
+var_name = "Qd1_combined"
+sample_size = 2000 
 
 #filename = "M250219 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
 #id_column = "DLNMID"
@@ -48,11 +48,12 @@ sample_size = 500
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 6
+RUN_UNTIL_STEP = 9
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
 LANGUAGE = "nl"
+INCLUDE_VISUALIZATIONS = True  # Add dendrogram, word clouds, and network graph to export
 
 STEP_NAMES = {
     0: "data",
@@ -1998,11 +1999,38 @@ def step_8_assign_codes(
         print(f"{'Code':<45} {'Count':>8} {'Percent':>10}")
         print(f"{'-'*70}")
 
-        sorted_codes = sorted(code_frequency.items(), key=lambda x: x[1], reverse=True)
-        for code, count in sorted_codes:
+        # Separate regular codes from fallback codes (Overig, - algemeen, etc.)
+        from config import MISCELLANEOUS_CODE_LABELS, GENERAL_CODE_LABELS
+        misc_labels = set(MISCELLANEOUS_CODE_LABELS.values())
+        general_suffixes = [f"- {v}" for v in GENERAL_CODE_LABELS.values()]
+
+        def is_fallback_code(code_name):
+            if code_name in misc_labels:
+                return True
+            for suffix in general_suffixes:
+                if suffix in code_name:
+                    return True
+            return False
+
+        regular_codes = [(c, n) for c, n in code_frequency.items() if not is_fallback_code(c)]
+        fallback_codes = [(c, n) for c, n in code_frequency.items() if is_fallback_code(c)]
+
+        # Sort each group by count descending
+        regular_codes.sort(key=lambda x: x[1], reverse=True)
+        fallback_codes.sort(key=lambda x: x[1], reverse=True)
+
+        # Display regular codes first, then fallback codes
+        for code, count in regular_codes:
             pct = (count / total_code_assignments) * 100
             display_code = code[:42] + "..." if len(code) > 45 else code
             print(f"{display_code:<45} {count:>8} {pct:>9.1f}%")
+
+        if fallback_codes:
+            print(f"{'-'*70}")
+            for code, count in fallback_codes:
+                pct = (count / total_code_assignments) * 100
+                display_code = code[:42] + "..." if len(code) > 45 else code
+                print(f"{display_code:<45} {count:>8} {pct:>9.1f}%")
 
         print(f"{'-'*70}")
         print(f"{'TOTAL':<45} {total_code_assignments:>8} {'100.0%':>10}")
@@ -2020,7 +2048,10 @@ def step_9_export_results(
     var_name,
     quality_filtered_text=None,
     verbose=True,
-    streamlit_container=None        # Optional progress updates
+    streamlit_container=None,        # Optional progress updates
+    include_visualizations=False,    # Add visualization sheets to Excel
+    cache_manager=None,              # Required for loading visualization data
+    variable_key=None                # Required for loading visualization data
 ):
     """Step 9: Export results to Excel
 
@@ -2032,6 +2063,9 @@ def step_9_export_results(
         quality_filtered_text: List of QualityFilteredModel instances from step 2 (includes filtered responses)
         verbose: Enable verbose output
         streamlit_container: Optional Streamlit container for progress updates
+        include_visualizations: If True, add dendrogram and word cloud sheets + generate network HTML
+        cache_manager: CacheManager instance for loading visualization data (required if include_visualizations=True)
+        variable_key: Cache variable key (required if include_visualizations=True)
 
     Returns:
         str: Path to exported Excel file
@@ -2042,6 +2076,33 @@ def step_9_export_results(
     if streamlit_container:
         streamlit_container.text("🔄 Exporting results to Excel...")
 
+    # Load visualization data from cache if requested
+    clustering_metadata = None
+    extraction_metadata = None
+
+    if include_visualizations and cache_manager and variable_key:
+        try:
+            # Load clustering metadata (contains c-TF-IDF keywords, LLM labels, etc.)
+            clustering_metadata_list = cache_manager.load_from_cache(
+                filename, "clustering_metadata", variable_key, models.ClusteringMetadataModel
+            )
+            if clustering_metadata_list and len(clustering_metadata_list) > 0:
+                clustering_metadata = clustering_metadata_list[0]
+                if verbose:
+                    print(f"[INFO] Loaded clustering metadata for visualizations")
+
+            # Load extraction metadata (contains taxonomy axis, template prefix, etc.)
+            extraction_metadata = cache_manager.load_metadata_from_cache(
+                filename, "extracted_ideas", variable_key, models.ExtractionMetadata
+            )
+            if extraction_metadata and verbose:
+                print(f"[INFO] Loaded extraction metadata for visualizations")
+
+        except Exception as e:
+            if verbose:
+                print(f"[WARNING] Could not load visualization data: {e}")
+                print("         Visualizations may be incomplete")
+
     try:
         exporter = ResultsExporter(verbose=verbose)
         excel_path = exporter.export_to_excel(
@@ -2050,13 +2111,19 @@ def step_9_export_results(
             filename,
             var_name,
             quality_filtered_text=quality_filtered_text,
-            export_dir=None  # Will create default export directory
+            export_dir=None,  # Will create default export directory
+            include_visualizations=include_visualizations,
+            clustering_metadata=clustering_metadata,
+            extraction_metadata=extraction_metadata
         )
         print(f"[SUCCESS] Code assignments exported to Excel: {excel_path}")
 
         # Optional Streamlit success message
         if streamlit_container:
-            streamlit_container.success(f"✅ Results exported to Excel: {excel_path}")
+            if include_visualizations:
+                streamlit_container.success(f"✅ Results exported with visualizations: {excel_path}")
+            else:
+                streamlit_container.success(f"✅ Results exported to Excel: {excel_path}")
 
         return excel_path
     except Exception as e:
@@ -2474,7 +2541,17 @@ if __name__ == '__main__':
     
     # === STEP 9  =====
     """Export Results"""
-    excel_path = step_9_export_results(code_assigned_results, theme_enriched_codebook, filename, var_name, quality_filtered_text=quality_filtered_text, verbose=VERBOSE)
+    excel_path = step_9_export_results(
+        code_assigned_results,
+        theme_enriched_codebook,
+        filename,
+        var_name,
+        quality_filtered_text=quality_filtered_text,
+        verbose=VERBOSE,
+        include_visualizations=INCLUDE_VISUALIZATIONS,
+        cache_manager=cache_manager,
+        variable_key=variable_key
+    )
     
     # Pipeline completed successfully
     print(f"\n{'='*80}")

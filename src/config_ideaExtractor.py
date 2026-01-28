@@ -125,7 +125,7 @@ class TPMTrackingConfig:
     """
     sliding_window_seconds: float = 60.0    # Track TPM over last 60 seconds
     sample_interval: float = 1.0            # Sample TPM every 1 second
-    target_utilization: float = 0.85        # Target 85% TPM utilization (15% buffer)
+    target_utilization: float = 0.80        # Target 80% TPM utilization (20% buffer)
 
 
 # =============================================================================

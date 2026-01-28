@@ -25,7 +25,7 @@ import models
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM
 from utils.llm import create_client, llm_create_async, create_embedding_client, ProbeResponse, RateLimits, extract_rate_limits_from_response
-from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
+from prompts import DEFAULT_CODE_EVALUATION_PROMPT, FAMILY_CODE_EVALUATION_PROMPT, FALLBACK_CODE_ASSIGNMENT_PROMPT
 
 # === UTILS ========================================================================================================
 from .verboseReporter import VerboseReporter, ProcessingStats
@@ -700,6 +700,36 @@ class FallbackCodeAssignmentResponse(BaseModel):
         return v
 
 
+class CodeEvaluation(BaseModel):
+    """Single code evaluation within family evaluation"""
+    code: str
+    confidence: float
+    rationale: str
+
+    @field_validator('confidence', mode='before')
+    @classmethod
+    def coerce_confidence(cls, v):
+        """Coerce string numbers to float (common with LLM JSON output)"""
+        if isinstance(v, str):
+            return float(v)
+        return v
+
+
+class FamilyCodeEvaluationResponse(BaseModel):
+    """Stage 1b: Evaluating multiple codes from cluster family"""
+    idea_id: str
+    evaluations: List[CodeEvaluation]
+    best_match: CodeEvaluation
+
+    @field_validator('evaluations', mode='before')
+    @classmethod
+    def ensure_list(cls, v):
+        """Ensure evaluations is a list"""
+        if not isinstance(v, list):
+            return [v]
+        return v
+
+
 class CodeAssigner:
     """
     Two-stage code assignment using embedding-based similarity filtering.
@@ -856,8 +886,12 @@ class CodeAssigner:
         self.last_prompt = ""  # Track the last prompt used for assignment
         self.verbose = verbose
 
-        # Build cluster→codes mapping
+        # Build cluster→codes mapping (exact cluster ID match)
         self.cluster_to_codes = self._build_cluster_code_mapping()
+
+        # Build cluster family mapping (base cluster → all related codes)
+        # This groups codes from "12", "12-1", "12-2" etc. under base cluster "12"
+        self.cluster_family_codes = self._build_cluster_family_mapping()
 
         # Code embeddings for similarity filtering (lazy-load on first use)
         self._code_embeddings = None
@@ -926,6 +960,68 @@ class CodeAssigner:
                 self.verbose_reporter.stat_line(f"  {merged_codes_count} codes shared across multiple clusters")
 
         return cluster_dict
+
+    def _get_base_cluster_id(self, cluster_id: str) -> str:
+        """Extract base cluster ID from expanded_cluster format.
+
+        Multi-theme clusters are split into sub-clusters with format "{base}-{index}".
+        This method extracts the base cluster ID for family grouping.
+
+        Examples:
+            "12" -> "12"     (single-theme cluster)
+            "12-1" -> "12"   (first sub-cluster of multi-theme cluster 12)
+            "12-2" -> "12"   (second sub-cluster of multi-theme cluster 12)
+        """
+        if '-' in str(cluster_id):
+            return str(cluster_id).split('-')[0]
+        return str(cluster_id)
+
+    def _build_cluster_family_mapping(self) -> Dict[str, List[models.Codebook]]:
+        """Build mapping from base cluster ID to ALL codes in the cluster family.
+
+        For a base cluster "12", this includes codes from:
+        - "12" (parent/single-theme cluster)
+        - "12-1", "12-2", "12-3", etc. (all sub-clusters from multi-theme expansion)
+
+        This allows Phase 1 to evaluate all related codes when an idea belongs to
+        any sub-cluster of a multi-theme cluster.
+
+        Returns:
+            Dict mapping base_cluster_id -> list of all related Codebook entries
+        """
+        from collections import defaultdict
+        family_mapping = defaultdict(list)
+        seen_codes = defaultdict(set)  # Track codes per family to avoid duplicates
+
+        for code in self.codebook:
+            if hasattr(code, 'source_cluster') and code.source_cluster:
+                # Handle comma-separated cluster IDs (merged codes)
+                cluster_ids = str(code.source_cluster).split(',')
+
+                for cluster_id in cluster_ids:
+                    cluster_id = cluster_id.strip()
+                    if not cluster_id:
+                        continue
+
+                    # Get the base cluster ID (e.g., "12-1" -> "12")
+                    base_id = self._get_base_cluster_id(cluster_id)
+
+                    # Add code to family if not already present (deduplicate)
+                    if code.code not in seen_codes[base_id]:
+                        family_mapping[base_id].append(code)
+                        seen_codes[base_id].add(code.code)
+
+        # Convert to regular dict and log stats
+        family_dict = dict(family_mapping)
+        if self.verbose:
+            total_families = len(family_dict)
+            families_with_multiple = sum(1 for codes in family_dict.values() if len(codes) > 1)
+            avg_codes_per_family = sum(len(codes) for codes in family_dict.values()) / total_families if total_families > 0 else 0
+            self.verbose_reporter.stat_line(f"Cluster family mapping: {total_families} families, avg {avg_codes_per_family:.1f} codes/family")
+            if families_with_multiple > 0:
+                self.verbose_reporter.stat_line(f"  {families_with_multiple} families with multiple codes")
+
+        return family_dict
 
     def _create_prompt_for_estimation(self, idea_id: str, idea_text: str) -> str:
         """Create prompt for token estimation using top-k codes"""
@@ -1332,6 +1428,106 @@ class CodeAssigner:
         self.stage_1_calls += 1
         return response, prompt
 
+    async def evaluate_family_codes(self, idea_id: str, idea_text: str, family_codes: List[models.Codebook]):
+        """Stage 1b: Evaluate multiple codes from cluster family.
+
+        When an idea belongs to a multi-theme cluster (e.g., "12-1"), this method
+        evaluates ALL codes from the cluster family ("12", "12-1", "12-2", etc.)
+        in a single LLM call for comparative judgment.
+
+        Args:
+            idea_id: The idea identifier
+            idea_text: The idea text to evaluate
+            family_codes: List of all Codebook entries from the cluster family
+
+        Returns:
+            tuple: (FamilyCodeEvaluationResponse, str) - response and prompt used
+        """
+        # Format all candidate codes for the prompt
+        candidate_codes_text = "\n---\n".join([
+            f"Code: {code.code}\n"
+            f"Definition: {code.definition}\n"
+            f"Inclusion Examples (valid references for this code):\n    {self._format_examples_list(code.inclusion_examples)}\n"
+            f"Exclusion Examples (invalid references for this code):\n    {self._format_examples_list(code.exclusion_examples)}\n"
+            f"Boundary: Differs from '{code.near_neighbor_label or 'N/A'}' - {code.tell_apart_rule or 'N/A'}"
+            for code in family_codes
+        ])
+
+        prompt = FAMILY_CODE_EVALUATION_PROMPT.format(
+            language=self.language,
+            var_lab=self.var_lab,
+            idea_id=idea_id,
+            idea_text=idea_text,
+            candidate_codes_formatted=candidate_codes_text
+        )
+
+        self.last_prompt = prompt  # Store for backward compatibility
+
+        # Estimate tokens for rate limiting
+        est_tokens = self.estimate_tokens(prompt)
+
+        # Calculate adaptive timeout
+        timeout = self.latency_tracker.get_timeout(est_tokens)
+
+        # FIX CONVOY EFFECT: Acquire semaphore FIRST to bound waiters,
+        # then acquire token bucket and rate limiter
+        async with self.semaphore:
+            await self.tpm_bucket.wait_and_acquire(est_tokens)
+            async with self.rate_limiter:
+                start_time = time.perf_counter()
+
+                response = await asyncio.wait_for(
+                    llm_create_async(
+                        client=self.client,
+                        model=self.model,
+                        prompt=prompt,
+                        response_model=FamilyCodeEvaluationResponse,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        track_usage=True
+                    ),
+                    timeout=timeout
+                )
+
+                # Track latency for adaptive timeout adjustment
+                latency = time.perf_counter() - start_time
+                self.latency_tracker.add(latency)
+
+                # Token reconciliation: reconcile actual vs estimated
+                if hasattr(response, '_raw_response'):
+                    usage = response._raw_response.usage
+                    if usage:
+                        actual_input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', 0)
+                        actual_output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', 0)
+                        actual_total_tokens = getattr(usage, 'total_tokens', 0) or (actual_input_tokens + actual_output_tokens)
+
+                        # Reconcile token bucket
+                        delta = actual_total_tokens - est_tokens
+                        await self.tpm_bucket.reconcile(delta)
+
+                        # V3: Track output tokens for learning
+                        self.output_token_history.append(actual_output_tokens)
+                        self.actual_total_tokens.append(actual_total_tokens)
+
+                        # V3: Track output ratio for learning
+                        if actual_input_tokens > 0:
+                            ratio = actual_output_tokens / actual_input_tokens
+                            self.output_ratio_history.append(ratio)
+
+                        # V3: Track estimation error
+                        estimation_error = abs(actual_total_tokens - est_tokens)
+                        self.estimation_errors.append(estimation_error)
+
+                        # V3: Record to TPM tracker (real-time sliding window)
+                        await self.tpm_tracker.record(actual_total_tokens)
+
+                        # V3: Learn tiktoken→API offset
+                        tiktoken_input = len(self.encoding.encode(prompt))
+                        self.tiktoken_offset_learner.record(tiktoken_input, actual_input_tokens)
+
+        self.stage_1_calls += 1
+        return response, prompt
+
     async def assign_from_all_codes(self, idea_id: str, idea_text: str, idea_embedding: np.ndarray, default_confidence: float):
 
         # Build list of codes: top-10 similar + general + unknown
@@ -1486,22 +1682,26 @@ class CodeAssigner:
             # Local variable to capture the prompt for this specific task (avoid race conditions)
             prompt_used = ""
 
-            # Get default code(s) from this idea's cluster
-            default_codes = self.cluster_to_codes.get(str(expanded_cluster), [])
+            # Get all codes from the cluster family (includes parent and all sub-clusters)
+            # For expanded_cluster="12-1", this gets codes from "12", "12-1", "12-2", etc.
+            base_cluster = self._get_base_cluster_id(str(expanded_cluster))
+            family_codes = self.cluster_family_codes.get(base_cluster, [])
+            metadata['base_cluster'] = base_cluster
+            metadata['family_codes_count'] = len(family_codes)
 
-            if not default_codes:
-                # No codes from this cluster - go straight to fallback (Stage 2)
+            if not family_codes:
+                # No codes from this cluster family - go straight to fallback (Stage 2)
                 metadata['fallback_triggered'] = True
                 stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, default_confidence=0.0)
 
                 assigned_code = stage_2_result.assigned_codes[0]
                 confidence = stage_2_result.assignment_confidence
-                rationale = f"No default code available. {stage_2_result.assignment_rationale}"
+                rationale = f"No family codes available. {stage_2_result.assignment_rationale}"
                 self.used_fallback_count += 1
 
-            else:
-                # Stage 1: Evaluate default code from cluster
-                default_code = default_codes[0]  # Use first code from cluster
+            elif len(family_codes) == 1:
+                # Single code in family - use efficient single-code evaluation (Stage 1)
+                default_code = family_codes[0]
                 stage_1_result, prompt_used = await self.evaluate_default_code(idea_id, idea_text, default_code)
 
                 metadata['default_confidence'] = stage_1_result.confidence
@@ -1534,6 +1734,43 @@ class CodeAssigner:
                     assigned_code = stage_2_result.assigned_codes[0]
                     confidence = stage_2_result.assignment_confidence
                     rationale = f"Default: {stage_1_result.rationale} | Fallback: {stage_2_result.assignment_rationale}"
+                    self.used_fallback_count += 1
+
+            else:
+                # Multiple codes in family - evaluate all candidates (Stage 1b)
+                stage_1b_result, prompt_used = await self.evaluate_family_codes(idea_id, idea_text, family_codes)
+
+                # Record best match confidence for adaptive threshold tracking
+                best_confidence = stage_1b_result.best_match.confidence
+                metadata['default_confidence'] = best_confidence
+                self.confidence_tracker.record(best_confidence)
+
+                # Determine threshold (adaptive or fixed)
+                if self.adaptive_threshold_config.use_adaptive:
+                    threshold = self.confidence_tracker.get_adaptive_threshold(
+                        self.adaptive_threshold_config.fixed_threshold
+                    )
+                else:
+                    threshold = self.adaptive_threshold_config.fixed_threshold
+                metadata['threshold_used'] = threshold
+
+                # Check if best match meets threshold and is not "NONE"
+                if stage_1b_result.best_match.code != "NONE" and best_confidence >= threshold:
+                    # Use best matching family code
+                    metadata['used_default'] = True
+                    assigned_code = stage_1b_result.best_match.code
+                    confidence = best_confidence
+                    rationale = stage_1b_result.best_match.rationale
+                    self.used_default_count += 1
+
+                else:
+                    # Stage 2: Fallback to similar codes (dynamic top-k)
+                    metadata['fallback_triggered'] = True
+                    stage_2_result, prompt_used = await self.assign_from_all_codes(idea_id, idea_text, idea_embedding, best_confidence)
+
+                    assigned_code = stage_2_result.assigned_codes[0]
+                    confidence = stage_2_result.assignment_confidence
+                    rationale = f"Family best: {stage_1b_result.best_match.rationale} | Fallback: {stage_2_result.assignment_rationale}"
                     self.used_fallback_count += 1
 
             # Create response
