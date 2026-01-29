@@ -141,13 +141,6 @@ class ClusterThemeItem(BaseModel):
             raise ValueError(f"theme_label must be ≤10 words, got {word_count}")
         return v
 
-    @field_validator('theme_clarification')
-    @classmethod
-    def validate_clarification_length(cls, v):
-        word_count = len(v.split())
-        if word_count > 30:
-            raise ValueError(f"theme_clarification must be ≤30 words, got {word_count}")
-        return v
 
 class ClusterSummaryItem(BaseModel):
     analysis: str
@@ -2746,8 +2739,13 @@ class InductiveCodeGenerator:
     # IDEA SAMPLING METHODS — UMAP(10D) + HDBSCAN (euclidean), noise excluded
     #########################################################################################################
     
-    def _sample_representative_ideas(self, ideas: List, max_ideas: int = None) -> List[str]:
-        
+    def _sample_representative_ideas(
+        self,
+        ideas: List,
+        max_ideas: int = None,
+        provided_embeddings: Optional[List[np.ndarray]] = None
+    ) -> List[str]:
+
         """Return up to max_ideas that are balanced across sub-clusters (HDBSCAN) or
         the 'best' representatives by centroid similarity, depending on config.
     
@@ -2779,7 +2777,12 @@ class InductiveCodeGenerator:
     
         if ideas and isinstance(ideas[0], str):
             idea_texts = list(ideas)
-            # no embeddings available in this branch
+            # Use provided embeddings if available (from probability band sampling)
+            if provided_embeddings is not None and len(provided_embeddings) == len(ideas):
+                embeddings = [
+                    np.asarray(e, dtype=np.float32) if e is not None else None
+                    for e in provided_embeddings
+                ]
         else:
             for idea in ideas:
                 txt = idea.idea if hasattr(idea, "idea") else str(idea)
@@ -2800,7 +2803,8 @@ class InductiveCodeGenerator:
             return idea_texts
     
         # If we cannot cluster (missing embeddings), use a simple spacing or random fallback
-        have_dense_embeddings = all(e is not None for e in embeddings)
+        # Note: len(embeddings) > 0 check prevents vacuous truth (all() returns True for empty list)
+        have_dense_embeddings = len(embeddings) > 0 and all(e is not None for e in embeddings)
         if not have_dense_embeddings:
             k = min(max_ideas, n)
             sampled = random.sample(idea_texts, k)
@@ -2904,6 +2908,63 @@ class InductiveCodeGenerator:
                 return text[len(prefix):].strip()
         return text
 
+    def _get_starter_code_for_cluster(self, cluster_id: Union[int, str]) -> Optional[Dict[str, str]]:
+        """Look up the Step 5 starter code for a cluster.
+
+        For pure-core clusters (all members have prob >= 0.8), we use the
+        Step 5 label directly instead of re-extracting themes.
+        """
+        cluster_id_str = str(cluster_id)
+        for starter in self.starter_codes:
+            if str(starter.get('cluster_id', '')) == cluster_id_str:
+                return starter
+        return None
+
+    def _create_theme_from_starter_code(
+        self,
+        cluster_id: Union[int, str],
+        starter_code: Dict[str, str],
+        ideas: List
+    ) -> ClusterSummaryOutput:
+        """Create theme extraction result directly from Step 5 starter code.
+
+        For pure-core clusters where all members have probability >= 0.8,
+        we skip LLM theme extraction and use the Step 5 label directly.
+        This label was already derived from core members during clustering.
+        """
+        # Sample ideas for assignment examples
+        idea_texts = [idea.idea if hasattr(idea, 'idea') else str(idea) for idea in ideas[:5]]
+
+        # Ensure we have enough examples
+        if len(idea_texts) < 3:
+            idea_texts = idea_texts + ["(see cluster ideas)"] * (3 - len(idea_texts))
+
+        theme = ClusterThemeItem(
+            theme_id=1,  # Single theme for pure-core cluster
+            theme_label=starter_code['code'][:100],  # Max 100 chars
+            theme_clarification=starter_code.get('definition', starter_code['code'])[:300],
+            abstraction_level="Attribute/What",  # Default to attribute level
+            assignment_examples=AssignmentExamples(
+                inclusion=idea_texts[:3],
+                exclusion=["(not applicable - pure core cluster)"],
+                near_neighbor=None
+            )
+        )
+
+        item = ClusterSummaryItem(
+            analysis=f"Pure-core cluster with {len(ideas)} ideas (all prob >= 0.8). Using Step 5 label.",
+            extracted_themes=[theme]
+        )
+
+        # Store in step1_summaries for downstream processing
+        self.step1_summaries[cluster_id] = {
+            'analysis': item.analysis,
+            'cluster_summary': theme.theme_clarification,
+            'themes': [theme],
+        }
+
+        return ClusterSummaryOutput(root={str(cluster_id): item})
+
     def _sample_ideas_by_probability_band(
         self,
         cluster_data: _ClusterData,
@@ -2979,9 +3040,10 @@ class InductiveCodeGenerator:
             if len(texts) <= budget:
                 result[band_name] = texts
             else:
-                # Use existing _sample_representative_ideas with the texts
-                # Since it expects idea objects or strings, pass strings directly
-                sampled = self._sample_representative_ideas(texts, budget)
+                # Pass embeddings to enable HDBSCAN-based representative sampling
+                sampled = self._sample_representative_ideas(
+                    texts, budget, provided_embeddings=embeddings
+                )
                 result[band_name] = sampled
 
         return result
@@ -3065,8 +3127,19 @@ class InductiveCodeGenerator:
         if sampled_bands and sum(len(v) for v in sampled_bands.values()) > 0:
             ideas_text = self._format_cluster_text_by_bands(sampled_bands)
         else:
-            # Fallback to simple list if no bands
-            sampled_ideas = self._sample_representative_ideas(idea_texts)
+            # Pure-core cluster (all members have prob >= 0.8)
+            # Use Step 5 starter_code label directly instead of re-extracting
+            starter_code = self._get_starter_code_for_cluster(cluster_id)
+            if starter_code:
+                self.verbose_reporter.stat_line(
+                    f"Cluster {cluster_id}: Pure-core cluster, using Step 5 label: '{starter_code['code']}'"
+                )
+                return self._create_theme_from_starter_code(cluster_id, starter_code, ideas)
+
+            # Fallback: random sample if no starter code available
+            import random
+            k = min(self.config.max_ideas_per_cluster, len(idea_texts))
+            sampled_ideas = random.sample(idea_texts, k) if len(idea_texts) > k else idea_texts
             ideas_text = "\n".join([f"- {idea}" for idea in sampled_ideas])
 
         # Determine language
