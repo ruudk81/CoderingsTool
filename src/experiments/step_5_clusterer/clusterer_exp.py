@@ -59,7 +59,7 @@ from .clusterer_helpers_exp import (
     # Parameter Optimization
     ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
     # Quality Metrics
-    ClusterQualityMetrics, ClusteringMetrics,
+    ClusterQualityMetrics, ClusteringMetrics, calculate_coherence_score,
     # Post-Processing
     merge_similar_clusters, recluster_noise, reduce_noise_by_embedding_similarity,
     # Representation
@@ -344,10 +344,14 @@ class Clusterer:
         if self._verbose:
             print(f"  K grid: {k_grid}")
 
-        # Find best K by silhouette score
+        # Find best K by coherence (mean intra-cluster cosine similarity on original embeddings)
         best_k = k_grid[0]
-        best_sil = -1.0
+        best_coherence = -1.0
         best_labels = None
+
+        if self._verbose:
+            print(f"  {'k':>3} | {'coherence':>9} | {'silhouette':>10}")
+            print(f"  {'-'*3}-+-{'-'*9}-+-{'-'*10}")
 
         for k in k_grid:
             if k >= len(self._umap_embeddings):
@@ -361,11 +365,12 @@ class Clusterer:
             labels = clusterer.fit_predict(self._umap_embeddings)
 
             if len(set(labels)) > 1:
+                coherence = calculate_coherence_score(labels, self._embeddings_original)
                 sil = silhouette_score(self._umap_embeddings, labels)
                 if self._verbose:
-                    print(f"    k={k}: silhouette={sil:.3f}")
-                if sil > best_sil:
-                    best_sil = sil
+                    print(f"  {k:>3} | {coherence:>9.3f} | {sil:>10.3f}")
+                if coherence > best_coherence:
+                    best_coherence = coherence
                     best_k = k
                     best_labels = labels.copy()
 
@@ -380,7 +385,7 @@ class Clusterer:
         self._algorithm_params = {'n_clusters': best_k, 'linkage': self.config.agglomerative_linkage}
 
         if self._verbose:
-            print(f"  Best: k={best_k}, silhouette={best_sil:.3f}")
+            print(f"  Best: k={best_k}, coherence={best_coherence:.3f}")
 
     def _run_agglomerative_small(self):
         """
