@@ -221,6 +221,15 @@ def run_experiment(config: ExperimentConfig = None):
                 f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}"
             )
 
+    # Report any PROCESSING_ERROR failures
+    if hasattr(extractor, 'failure_log') and extractor.failure_log:
+        print(f"\n{'='*70}")
+        print("WARNING: NOT 100% SUCCESSFUL")
+        print(extractor.get_failure_report(total_responses=len(filtered_text)))
+        print(f"{'='*70}")
+    else:
+        print(f"\nAll {len(filtered_text)} responses processed successfully (0 PROCESSING_ERROR)")
+
     print(f"\n'Idea extraction experiment' completed in {elapsed_time:.2f} seconds.\n")
 
     # Save prompts to JSON file
