@@ -945,27 +945,8 @@ class ParameterOptimizer:
             return -1.0
 
     def _calculate_coherence(self, labels: np.ndarray, embeddings: np.ndarray) -> float:
-        """Calculate mean intra-cluster cosine similarity."""
-        unique_labels = [l for l in set(labels) if l >= 0]
-        if not unique_labels:
-            return 0.0
-
-        coherences = []
-        for label in unique_labels:
-            mask = labels == label
-            cluster_embeddings = embeddings[mask]
-
-            if len(cluster_embeddings) < 2:
-                coherences.append(1.0)
-                continue
-
-            similarities = cluster_embeddings @ cluster_embeddings.T
-            n = len(cluster_embeddings)
-            upper_tri_indices = np.triu_indices(n, k=1)
-            pairwise_sims = similarities[upper_tri_indices]
-            coherences.append(np.mean(pairwise_sims))
-
-        return np.mean(coherences)
+        """Calculate mean intra-cluster cosine similarity. Delegates to standalone function."""
+        return calculate_coherence_score(labels, embeddings)
 
     def _compute_probability_metrics(
         self,
@@ -2331,6 +2312,43 @@ class ParameterOptimizer:
 # =============================================================================
 # SECTION 4: QUALITY METRICS
 # =============================================================================
+
+
+def calculate_coherence_score(labels: np.ndarray, embeddings: np.ndarray) -> float:
+    """
+    Calculate mean intra-cluster cosine similarity on original embeddings.
+
+    Standalone function usable by both ParameterOptimizer (HDBSCAN) and
+    Clusterer._run_agglomerative() for consistent K selection.
+
+    Args:
+        labels: Cluster labels (noise = -1 is excluded)
+        embeddings: Original (non-UMAP) embeddings, assumed L2-normalized
+
+    Returns:
+        Mean coherence across all clusters (higher = better)
+    """
+    unique_labels = [l for l in set(labels) if l >= 0]
+    if not unique_labels:
+        return 0.0
+
+    coherences = []
+    for label in unique_labels:
+        mask = labels == label
+        cluster_embeddings = embeddings[mask]
+
+        if len(cluster_embeddings) < 2:
+            coherences.append(1.0)
+            continue
+
+        similarities = cluster_embeddings @ cluster_embeddings.T
+        n = len(cluster_embeddings)
+        upper_tri_indices = np.triu_indices(n, k=1)
+        pairwise_sims = similarities[upper_tri_indices]
+        coherences.append(np.mean(pairwise_sims))
+
+    return np.mean(coherences)
+
 
 @dataclass
 class ClusteringMetrics:

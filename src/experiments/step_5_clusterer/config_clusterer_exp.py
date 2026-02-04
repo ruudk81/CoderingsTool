@@ -47,7 +47,7 @@ class ClustererConfig:
 
     # Hard DVC rule: force Agglomerative when DVC < this threshold
     # Set enable_agglomerative_fallback=False to always use HDBSCAN in auto mode
-    enable_agglomerative_fallback: bool = False
+    enable_agglomerative_fallback: bool = True
     force_agglomerative_below_dvc: float = 0.25
 
     # kNN Knee detection parameters
