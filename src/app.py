@@ -24,7 +24,8 @@ sys.path.append(str(project_root / "src"))
 sys.path.append(str(project_root / "src" / "utils"))
 
 import models
-from config import CacheConfig, ModelConfig, SpellCheckConfig,QualityFilterConfig,  SegmentationConfig, EmbeddingConfig, HDBSCANConfig, CodeDesignerConfig, CodeAssignmentConfig
+from config import CacheConfig, ModelConfig, SpellCheckConfig, QualityFilterConfig, EmbeddingConfig, HDBSCANConfig, CodeDesignerConfig, CodeAssignmentConfig
+from config_ideaExtractor import SegmentationConfig
 
 from utils.dataLoader import DataLoader
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
@@ -245,18 +246,22 @@ def _get_verbose_capture():
     # Get current step from session state
     current_step = st.session_state.get('step', 0)
 
-    # Build variable_key
-    config = DatasetConfig.from_session_state()
-    if config:
-        var_name = config.selected_variables[0] if config.selected_variables else "unknown"
-        sample_size = config.sample_size
-    else:
-        var_name = "unknown"
-        sample_size = None
+    # Build variable_key using the same logic as step pages (for cache consistency)
+    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.get('selected_variable', 'unknown')])
+    is_merged = st.session_state.get('is_merged_variable', False)
+    sample_size = st.session_state.get('sample_size_config')
+    merge_config = st.session_state.get('merge_config')
+
+    variable_key = generate_enhanced_variable_key(
+        selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size,
+        merge_config=merge_config
+    )
 
     return VerboseCapture(
         filename=st.session_state.filename,
-        variable_key=var_name,
+        variable_key=variable_key,
         sample_size=sample_size,
         run_until_step=current_step,
         append_mode=True  # Append for each step in Streamlit
@@ -275,6 +280,62 @@ def _run_with_verbose_capture(step_func, *args, **kwargs):
     else:
         # No capture available, run directly
         return step_func(*args, **kwargs)
+
+def show_verbose_log_expander(step: int):
+    """
+    Display verbose log for a completed step in a collapsible expander.
+
+    Only shows the log if:
+    - The step is completed (loaded from cache or just ran)
+    - A matching log file exists
+    - The cache is not invalidated (force_recalculate_from_step > step)
+
+    Args:
+        step: The pipeline step number (1-9)
+    """
+    from utils.saveVerbose import VerboseCapture
+
+    # Check if we should show the log (cache not invalidated for this step)
+    force_recalc_from = st.session_state.get('force_recalculate_from_step', 99)
+    if force_recalc_from <= step:
+        return  # Cache is invalidated, don't show old log
+
+    # Get parameters needed to find the log file
+    if not st.session_state.get('filename'):
+        return
+
+    selected_variables = st.session_state.get('selected_variables_config', [st.session_state.get('selected_variable', 'unknown')])
+    is_merged = st.session_state.get('is_merged_variable', False)
+    sample_size = st.session_state.get('sample_size_config')
+    merge_config = st.session_state.get('merge_config')
+
+    variable_key = generate_enhanced_variable_key(
+        selected_variables,
+        is_merged=is_merged,
+        sample_size=sample_size,
+        merge_config=merge_config
+    )
+
+    # Find the most recent matching log file
+    log_path = VerboseCapture.find_latest_log(
+        filename=st.session_state.filename,
+        variable_key=variable_key,
+        step=step
+    )
+
+    if log_path is None:
+        return  # No log file found
+
+    # Load and display the log
+    log_content = VerboseCapture.load_log_content(log_path)
+    if log_content is None:
+        return  # Failed to load log
+
+    lang = st.session_state.get('language', 'en')
+    expander_label = f"📋 {'Uitvoeringslog' if lang == 'nl' else 'Execution Log'} (Step {step})"
+
+    with st.expander(expander_label, expanded=False):
+        st.code(log_content, language=None)
 
 # Session state ################################################################################################################################
 
@@ -1589,7 +1650,11 @@ def show_preprocessing_page():
                 {summary_info}
                 </div>
                 """, unsafe_allow_html=True)
- 
+
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(1):
+        show_verbose_log_expander(1)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     if is_step_completed(0) and not is_step_completed(1): 
         progress_container = st.empty()
@@ -1704,7 +1769,8 @@ def show_preprocessing_page():
                 # Check if we need to force recalculation due to cache invalidation
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 1)
 
-                preprocessed_text, preprocessing_stats = pipeline.step_1_preprocess(
+                preprocessed_text, preprocessing_stats = _run_with_verbose_capture(
+                        pipeline.step_1_preprocess,
                         raw_text_list=st.session_state.pipeline_results['raw_text_list'],
                         filename=st.session_state.filename,
                         var_lab=st.session_state.pipeline_results['var_lab'],
@@ -1860,6 +1926,10 @@ def show_filtering_page():
             </div>
             """, unsafe_allow_html=True)
 
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(2):
+        show_verbose_log_expander(2)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     if is_step_completed(1) and not is_step_completed(2):
         progress_container = st.empty()
@@ -1949,7 +2019,8 @@ def show_filtering_page():
                 # Set force_recalc flag (respects both global and step-specific invalidation)
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 2)
 
-                quality_filtered_text = pipeline.step_2_quality_filter(
+                quality_filtered_text = _run_with_verbose_capture(
+                    pipeline.step_2_quality_filter,
                     preprocessed_text=st.session_state.pipeline_results['preprocessed_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2057,6 +2128,10 @@ def show_idea_extraction_page():
             </div>
             """, unsafe_allow_html=True)
 
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(3):
+        show_verbose_log_expander(3)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load quality_filtered_text if not already in pipeline_results
     if is_step_completed(2) and not is_step_completed(3):
@@ -2155,7 +2230,8 @@ def show_idea_extraction_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 3)
 
                 # Call pipeline processing function
-                extracted_ideas = pipeline.step_3_extract_ideas(
+                extracted_ideas = _run_with_verbose_capture(
+                    pipeline.step_3_extract_ideas,
                     quality_filtered_text=st.session_state.pipeline_results['quality_filtered_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2244,6 +2320,10 @@ def show_embedding_page():
             sample_info += (f"**Data**: {display_size} {'deelantwoorden te embedden' if lang == 'nl' else 'answer parts to embed'}")
         st.info(sample_info)
 
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(4):
+        show_verbose_log_expander(4)
+
     # ==================== BLOCK 3: DATA LOADING ====================
     # Load encoded_text if not already in pipeline_results
     if is_step_completed(3) and not is_step_completed(4):
@@ -2328,7 +2408,8 @@ def show_embedding_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 4)
 
                 # Call pipeline processing function
-                embedded_text = pipeline.step_4_generate_embeddings(
+                embedded_text = _run_with_verbose_capture(
+                    pipeline.step_4_generate_embeddings,
                     encoded_text=st.session_state.pipeline_results['encoded_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2413,6 +2494,10 @@ def show_clustering_page():
             </div>
             """, unsafe_allow_html=True)
 
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(5):
+        show_verbose_log_expander(5)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load embedded_text if not already in pipeline_results
     if is_step_completed(4) and not is_step_completed(5):
@@ -2490,7 +2575,8 @@ def show_clustering_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or (st.session_state.get('force_recalculate_from_step', 99) <= 5)
 
                 # Call pipeline processing function
-                initial_cluster_results = pipeline.step_5_cluster(
+                initial_cluster_results = _run_with_verbose_capture(
+                    pipeline.step_5_cluster,
                     embedded_text=st.session_state.pipeline_results['embedded_text'],
                     filename=st.session_state.filename,
                     var_lab=st.session_state.pipeline_results['var_lab'],
@@ -2587,7 +2673,11 @@ def show_codebook_generation_page():
 
     # ==================== BLOCK 3: YELLOW BOX ====================
     # skipped / not necesarry
-     
+
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(6):
+        show_verbose_log_expander(6)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load initial_cluster_results if not already in pipeline_results
     if is_step_completed(5) and not is_step_completed(6):
@@ -2720,7 +2810,8 @@ def show_codebook_generation_page():
                                (st.session_state.get('force_recalculate_from_step', 99) <= 6)
 
                 # Call pipeline processing function
-                reasoning_results = pipeline.step_6_generate_codebook(
+                reasoning_results = _run_with_verbose_capture(
+                    pipeline.step_6_generate_codebook,
                     initial_cluster_results=st.session_state.pipeline_results['initial_cluster_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_codebook,
@@ -2800,7 +2891,11 @@ def show_theme_identification_page():
 
     # # ==================== BLOCK 3: YELLOW BOX ====================
     # skipped/not necesarry
-  
+
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(7):
+        show_verbose_log_expander(7)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     # Load reasoning_results if not already in pipeline_results
     if is_step_completed(6) and not is_step_completed(7):
@@ -2917,7 +3012,8 @@ def show_theme_identification_page():
                 force_recalc = st.session_state.get('force_recalculate_all', False) or \
                               (st.session_state.get('force_recalculate_from_step', 99) <= 7)
 
-                refinement_results, theme_enriched_codebook, refinement_report, _ = pipeline.step_7_refine_codebook(
+                refinement_results, theme_enriched_codebook, refinement_report, _ = _run_with_verbose_capture(
+                    pipeline.step_7_refine_codebook,
                     codebook_reasoning=st.session_state.pipeline_results['reasoning_results'],
                     filename=st.session_state.filename,
                     var_name=var_name_for_themes,
@@ -3210,6 +3306,10 @@ def show_code_assignment_page():
             </div>
             """, unsafe_allow_html=True)
 
+    # ==================== VERBOSE LOG EXPANDER ====================
+    if is_step_completed(8):
+        show_verbose_log_expander(8)
+
     # ==================== BLOCK 4: DATA LOADING ====================
     if is_step_completed(7) and not is_step_completed(8):
         progress_container = st.empty()
@@ -3310,7 +3410,8 @@ def show_code_assignment_page():
                                (st.session_state.get('force_recalculate_from_step', 99) <= 8)
 
                 # Call pipeline processing function
-                code_assigned_results, code_assignment_stats, code_assigner_instance = pipeline.step_8_assign_codes(
+                code_assigned_results, code_assignment_stats, code_assigner_instance = _run_with_verbose_capture(
+                    pipeline.step_8_assign_codes,
                     st.session_state.filename,
                     variable_key,
                     _get_cache_manager(),
@@ -3412,18 +3513,30 @@ def show_export_page():
         
         # Add option for enhanced export with reasoning data
         include_reasoning = st.checkbox(
-            "🧠 Inclusief stap 7 redenering data (beslissingen, rechtvaardigingen, validatie)" 
+            "🧠 Inclusief stap 7 redenering data (beslissingen, rechtvaardigingen, validatie)"
             if lang == "nl" else "🧠 Include step 7 reasoning data (decisions, justifications, validation)",
-            help=("Exporteer extra kolommen met LLM redenering uit stap 7 (code generatie)" 
+            help=("Exporteer extra kolommen met LLM redenering uit stap 7 (code generatie)"
                   if lang == "nl" else "Export extra columns with LLM reasoning from step 7 (code generation)"),
             value=True  # Default to enhanced export
+        )
+
+        # Add option for visualizations
+        include_visualizations = st.checkbox(
+            "📊 Inclusief visualisaties (dendrogram, word clouds, netwerk grafiek)"
+            if lang == "nl" else "📊 Include visualizations (dendrogram, word clouds, network graph)",
+            help=("Voeg visualisatie afbeeldingen toe aan de Excel export"
+                  if lang == "nl" else "Add visualization images to the Excel export"),
+            value=True  # Default to include visualizations
         )
         
         # Check if we're waiting for user to continue after export
         if st.session_state.get('waiting_for_continue_export', False):
-            st.success("✅ " + ("Resultaten geëxporteerd! Bekijk de resultaten links en klik dan op doorgaan." 
+            st.success("✅ " + ("Resultaten geëxporteerd! Bekijk de resultaten links en klik dan op doorgaan."
                                if lang == "nl" else "Results exported! Review the results on the left, then click continue."))
-            
+
+            # Show verbose log for step 9
+            show_verbose_log_expander(9)
+
             st.markdown("---")
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
@@ -3449,12 +3562,23 @@ def show_export_page():
                     
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
 
-                    excel_path = pipeline.step_9_export_results(
+                    # Generate variable_key for visualization data loading
+                    variable_key = generate_enhanced_variable_key(
+                        st.session_state.selected_variable,
+                        merge_config=st.session_state.get('merge_config'),
+                        sample_size=st.session_state.get('sample_size')
+                    )
+
+                    excel_path = _run_with_verbose_capture(
+                        pipeline.step_9_export_results,
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
                         var_name=var_name_for_export,
-                        verbose=True
+                        verbose=True,
+                        include_visualizations=include_visualizations,
+                        cache_manager=_get_cache_manager(),
+                        variable_key=variable_key
                     )
 
                     progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}"
@@ -3462,22 +3586,33 @@ def show_export_page():
                 else:
                     # Use regular export without reasoning data (via pipelineRunner for consistency)
                     progress_container.text("🔄 " + ("Resultaten exporteren naar Excel..." if lang == "nl" else "Exporting results to Excel..."))
-                    
+
                     # Determine variable name for export (use meaningful name for merged variables)
                     var_name_for_export = st.session_state.selected_variable
-                    if (st.session_state.get('is_merged_variable', False) and 
+                    if (st.session_state.get('is_merged_variable', False) and
                         st.session_state.get('selected_variables_config')):
                         # Use first variable name or create composite name for merged variables
                         selected_vars = st.session_state.get('selected_variables_config', [])
                         if len(selected_vars) > 1:
                             var_name_for_export = f"merged_{'-'.join(selected_vars[:3])}"  # Limit to first 3 for readability
-                    
-                    excel_path = pipeline.step_9_export_results(
+
+                    # Generate variable_key for visualization data loading
+                    variable_key = generate_enhanced_variable_key(
+                        st.session_state.selected_variable,
+                        merge_config=st.session_state.get('merge_config'),
+                        sample_size=st.session_state.get('sample_size')
+                    )
+
+                    excel_path = _run_with_verbose_capture(
+                        pipeline.step_9_export_results,
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
                         var_name=var_name_for_export,
-                        verbose=True
+                        verbose=True,
+                        include_visualizations=include_visualizations,
+                        cache_manager=_get_cache_manager(),
+                        variable_key=variable_key
                     )
 
                     progress_container.success("✅ " + (f"Code toewijzingen geëxporteerd naar Excel: {excel_path}"
@@ -4862,13 +4997,24 @@ def show_step9_assignment_stats():
                 try:
                     import pipeline
 
-                    # Run pipeline step 9 export
-                    excel_path = pipeline.step_9_export_results(
+                    # Generate variable_key for visualization data loading
+                    variable_key = generate_enhanced_variable_key(
+                        st.session_state.selected_variable,
+                        merge_config=st.session_state.get('merge_config'),
+                        sample_size=st.session_state.get('sample_size')
+                    )
+
+                    # Run pipeline step 9 export with visualizations
+                    excel_path = _run_with_verbose_capture(
+                        pipeline.step_9_export_results,
                         code_assigned_results=code_assigned_results,
                         theme_enriched_codebook=theme_enriched_codebook,
                         filename=st.session_state.filename,
                         var_name=st.session_state.get('var_name', st.session_state.get('selected_variable', 'unknown')),
-                        verbose=True
+                        verbose=True,
+                        include_visualizations=True,
+                        cache_manager=_get_cache_manager(),
+                        variable_key=variable_key
                     )
 
                     st.balloons()  # Celebration!
@@ -4899,7 +5045,7 @@ def show_step9_random_sample():
     
     try:
         # Load code assignment results
-        code_assigned_results = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, None)
+        code_assigned_results = cache_manager.load_from_cache(filename, "code_assignment_direct", variable_key, models.CodeAssignedModel)
         
         if code_assigned_results and len(code_assigned_results) > 0:
             st.write("🎲 **Random Assignment Sample:**")

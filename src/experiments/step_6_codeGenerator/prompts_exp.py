@@ -1,0 +1,909 @@
+"""
+Experimental Prompts for Step 6: Codebook Generation
+
+This file contains the prompts used by codeGenerator.py for the 4-prompt chain.
+Modify these prompts to experiment with different codebook generation approaches.
+
+Original source: src/prompts.py (STEP 6: CODEBOOK GENERATION section)
+"""
+
+# =============================================================================
+# STEP 6: CODEBOOK GENERATION - 4 PROMPT CHAIN
+# =============================================================================
+
+AXIS_LABEL_CONTRACT = {
+  "WHAT": {
+    "theme_head": "topic",  # or "object"
+    "must_be": "topic/object/attribute (a thing being referenced)",
+    "must_not_be": "action/method, intent/outcome, actor, evaluation, time, location"
+  },
+  "WHY": {
+    "theme_head": "motive", # or "intent"
+     "must_be": "intent/purpose/reason (a goal or desired outcome)",
+    "must_not_be": "action/method, topic/object, actor, evaluation, time, location"
+  },
+  "HOW": {
+    "theme_head": "mechanism", # or "practice"
+    "must_be": "action/method/mechanism (a practice or way of doing)",
+    "must_not_be": "intent/outcome, topic/object, actor, evaluation, time, location"
+  },
+  "WHO": {
+    "theme_head": "actor", # or "stakeholder"
+    "must_be": "actor/target group (a person/group/stakeholder)",
+    "must_not_be": "action/method, intent/outcome, topic/object, evaluation, time, location"
+  },
+  "WHEN": {
+    "theme_head": "timing", # or "time-reference"
+    "must_be": "time/urgency/sequence reference",
+    "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, location"
+  },
+  "WHERE": {
+    "theme_head": "context",  #or "setting"
+    "must_be": "location/context/channel/setting",
+    "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, time"
+  }
+}
+
+
+CLUSTER_SUMMARY_PROMPT = """
+You are a qualitative researcher responsible for extracting ATOMIC {taxonomy_actionable_type}-{theme_head} THEMES from descriptive codes representing survey responses to a survey question.
+An ATOMIC {taxonomy_actionable_type}-{theme_head} THEME is a single, indivisible {taxonomy_actionable_type} or {theme_head} present in the data.
+
+Atomicity rules (must all be satisfied):
+- The theme expresses exactly ONE semantic nucleus.
+- The theme label contains exactly ONE head noun.
+- The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
+- If a label could be split into two meaningful labels, it is NOT atomic.
+- If multiple aspects appear in the cluster, you MUST split them into separate atomic themes. Do NOT invent meta-parent or umbrella concepts.
+
+{taxonomy_actionable_type}-{theme_head} rules:
+- Themes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming are {must_be} VALID.
+- Labels naming are {must_not_be} INVALID.
+
+Grounding rules:
+- Themes must be directly supported by the descriptive codes.
+- Do not introduce themes not present in the cluster.
+
+Dimension constraint:
+All themes MUST remain strictly within the specified taxonomy axis: {taxonomy_axis}: {taxonomy_axis_description}.
+
+---
+
+SURVEY CONTEXT
+
+<survey_context>
+Survey question: "{survey_question}"
+Language: {language}
+Domain: {domain}
+Topic: {topic}
+Perspective: {perspective}
+Intent: {intent}
+Entity: {entity}
+</survey_context>
+
+---
+
+CLUSTER DATA
+
+<cluster_id>
+{cluster_id}
+</cluster_id>
+
+<cluster_text>
+{cluster_text}
+</cluster_text>
+
+---
+
+LABEL CONSTRAINTS
+
+Theme labels must:
+- Be a noun phrase of 1-3 words.
+- Exactly one semantic head (one core concept); modifiers allowed
+- no coordination (and/or), no lists, no multi-concept bundles
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
+
+---
+
+DEFINITION CONSTRAINTS
+
+Theme definitions must:
+- Use 30 words or fewer.
+- Describe what belongs in this theme.
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
+
+---
+
+REQUIRED ANALYSIS STEPS
+
+1. Identify distinct {taxonomy_actionable_type}-{theme_head} in light of the survey quesition that is present in the cluster.
+2. List 1-5 candidate {taxonomy_actionable_type}-{theme_head}s. Each must be a 1-3 word noun phrase satisfying atomic label rules.
+3. If more than one {taxonomy_actionable_type}-{theme_head}s is found, treat them as separate potential atomic themes.
+4. For each {taxonomy_actionable_type}-{theme_head}, verify grounding in cluster codes.
+5. Do not merge {taxonomy_actionable_type}-{theme_head}s into umbrella or meta-parent concepts.
+6. Select only {taxonomy_actionable_type}-{theme_head}s that are clearly supported by the data.
+7. Produce final theme entries only for valid atomic {taxonomy_actionable_type}-{theme_head}s.
+
+---
+
+FINAL OUTPUT FORMAT
+
+After analysis, output valid JSON in the following structure.
+Field names must be in English. Values must be written in {language}.
+
+{{
+  "cluster_id": "{cluster_id}",
+  "analysis": "Document your analysis here. State how many COCs were identified and retained. If only one COC: explain why it is sufficient. If multiple COCs: justify why a single COC would violate atomicity or clarity.",
+  "extracted_themes": [
+    {{
+      "theme_id": 1,
+      "theme_label": "1-3 word atomic {taxonomy_actionable_type}-{theme_head} label",
+      "theme_clarification": "<=30-word grounded definition describing what belongs in this theme",
+      "abstraction_level": "L2 -{taxonomy_actionable_type}-{theme_head} theme",
+      "assignment_examples": {{
+        "inclusion": [
+          "Example 1: Observable cue starting with a verb",
+          "Example 2: Observable cue starting with a verb"
+        ],
+        "exclusion": [
+          "Boundary case 1: What must NOT be included",
+          "Boundary case 2: What must NOT be included"
+        ],
+        "near_neighbor": {{
+          "label": "Label of closest potentially-confusable theme, or 'Unknown' if none exists",
+          "tell_apart_rule": "One sentence distinguishing this theme from the neighbor"
+        }}
+      }}
+    }}
+  ]
+}}
+
+Critical requirements:
+- Output must be valid JSON only - no extra commentary or explanation before or after the JSON
+- Keep field names in English; write all values in {language}
+- The cluster_id value must be exactly "{cluster_id}" as provided
+- Conduct your entire analysis in {language}
+- If multiple themes are identified, include each as a separate object in the extracted_themes array with sequential theme_id values
+- Provide 2-3 inclusion examples and 1-2 exclusion examples for each theme
+- Assignment examples should be short, concrete, and start with verbs (for inclusion/exclusion)
+"""
+
+CODING_DECISION_PROMPT = """
+You are a qualitative research assistant responsible for maintaining a parsimonious and structured codebook for thematic analysis following Braun & Clarke (2006) methodology.
+Your task is to classify a newly identified {taxonomy_actionable_type}-{theme_head} theme and decide whether to USE an existing code, MODIFY an existing code, or CREATE a new code.
+You must ensure the codebook remains MECE (Mutually Exclusive, Collectively Exhaustive) by strictly adhering to the specified taxonomy structure.
+
+---
+
+CODEBOOK PARAMETERS
+
+<language>
+{language}
+</language>
+
+<context>
+- Domain: {domain}
+- Topic: {topic}
+- Perspective: {perspective}
+- Entity: {entity}
+Survey Question: "{survey_question}"
+</context>
+
+<taxonomy_parameters>
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
+</taxonomy_parameters>
+
+<new_theme>
+New Theme to Classify:
+- name: "{theme_name}"
+- description: "{theme_description}"
+- what's included:
+    {inclusion}
+</new_theme>
+
+<existing_codes>
+Existing Codes:
+{code_text}
+</existing_codes>
+
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Theme labels must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+DECISION OPTIONS
+
+You must choose one of the following actions:
+
+- **USE** - An existing code fully captures the new theme's meaning; use it as-is without modification
+- **MODIFY_HORIZONTAL** - An existing code needs broader definition and inclusion rules to cover the new theme, but remains at the same abstraction level on the coding dimension ("{taxonomy_axis}:{taxonomy_actionable_type}")
+- **MODIFY_VERTICAL** - The existing code and new theme belong to the same conceptual family but differ in abstraction level; create or reference a parent code for both
+- **CREATE** - Add a new code because the theme represents a distinct {taxonomy_actionable_type}-{theme_head} not covered by existing codes
+
+---
+
+ANALYSIS FRAMEWORK
+
+Follow these steps systematically:
+
+**STEP 0: Initial Matching**
+- Review the new theme and all existing codes
+- Identify the best matching existing code(s) based on core meaning and practical relevance in light of the research question, taxonomy axis, and primary coding dimension
+
+**STEP 1: Conceptual Family Test**
+Ask: Do the new theme and the best matching existing code belong to the same conceptual family, given the research question, taxonomy axis ({taxonomy_axis}), and primary coding dimension ({taxonomy_actionable_type})?
+- If the new theme and best matching existing code share the same core {theme_head} and have the same practical relevance -> SAME FAMILY
+- Otherwise -> DIFFERENT FAMILY
+
+**STEP 2: Abstraction Level Test**
+Ask: Are the new theme and the best matching existing code at the same abstraction level on the taxonomy axis/coding dimension?
+- If the height of generality/specificity is similar -> SAME ABSTRACTION LEVEL
+- Otherwise -> DIFFERENT ABSTRACTION LEVEL
+
+**STEP 3: Decision Logic**
+Apply the following decision rules:
+
+- If the new theme is fully covered in meaning and scope by an existing code -> USE existing code.
+- If the new theme is not fully covered by an existing code:
+  - If it belongs to the same code family and is at the same abstraction level -> MODIFY_HORIZONTAL
+      - Broaden the existing code's definition and inclusion rules to incorporate the new expression, ensuring the original core meaning remains intact.
+  - If it belongs to the same code family but at a different abstraction level -> MODIFY_VERTICAL
+      - Introduce or reference a higher-level parent code, treating the existing code and new theme as related sub-codes.
+  - If it belongs to a different code family -> CREATE a new code for the distinct {taxonomy_actionable_type}-{theme_head}.
+
+**STEP 4: Multi-Concept Theme Check**
+If the new theme contains multiple distinct {taxonomy_actionable_type}-{theme_head}s (e.g., "salt reduction AND mild spices"):
+- Identify which {taxonomy_actionable_type}-{theme_head}(s) semantically match the existing code
+- If only ONE {taxonomy_actionable_type}-{theme_head} matches and MODIFY would require changing the existing code's core meaning to accommodate the other: Decision = **CREATE**
+- A MODIFY should never replace an existing code's central meaning with a different {theme_head}
+- Preserve the existing code unchanged and create a new code for the theme
+
+---
+
+ASSIGNMENT EXAMPLE UPDATE RULES
+
+Based on your decision, update the assignment examples as follows:
+
+If decision is **USE**:
+- Preserve all original assignment_examples unchanged
+
+If decision is **MODIFY_VERTICAL** or **MODIFY_HORIZONTAL**:
+- inclusion: Combine original inclusion examples + new expressions from the theme
+- exclusion: Combine original exclusion examples + new boundary clarifications if needed
+- near_neighbor: Update the label if boundaries shifted due to modification
+- tell_apart_rule: Update if the distinction from neighbor changed
+
+If decision is **CREATE**:
+- Use assignment_examples from the new theme as-is
+
+---
+
+LABEL CONSTRAINTS
+
+When creating theme labels, follow these strict rules:
+- Use a noun phrase of 1-10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+
+---
+
+DEFINITION CONSTRAINTS
+
+When creating theme definitions, follow these strict rules:
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
+
+---
+
+REQUIRED ANALYSIS STEPS
+
+Before providing your final answer, use <scratchpad> tags to work through your analysis systematically:
+
+1. Identify the top candidate code(s) based on semantic similarity to the {taxonomy_actionable_type}-{theme_head}.
+2. Note any cosine similarity scores for top candidates (if provided).
+3. Apply the Conceptual Family Test (STEP 1): Do they share the same core {theme_head}?
+4. Apply the Abstraction Level Test (STEP 2): Same specificity level on {taxonomy_axis}?
+5. Apply the Decision Logic (STEP 3): USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE.
+6. Check for multi-concept themes (STEP 4): Does the theme contain multiple distinct {taxonomy_actionable_type}-{theme_head}s?
+7. Verify label compliance: Ensure the {taxonomy_actionable_type}-{theme_head} rules are satisfied (VALID/INVALID criteria).
+8. Determine your final decision with justification referencing conceptual family and abstraction level analysis.
+9. Plan what updates are needed to assignment examples based on your decision.
+
+After completing your analysis in the scratchpad, provide your final answer as valid JSON only inside <json_output> tags.
+
+The JSON must follow this exact structure:
+
+{{
+  "coding_decision": {{
+    "theme_number": {theme_id},
+    "theme_name": {theme_name},
+    "matched_candidates": [
+        {{"code": "Exact candidate code A", "definition": "Definition in light of the survey question"}},
+        // Add additional candidaties,if there are any
+        ]
+    "decision": "USE | MODIFY_VERTICAL | MODIFY_HORIZONTAL | CREATE",
+    "source_code": "Exact candidate code name if use/modify, or null if create",
+    "modify_parameters":{{
+       "modify_instruction": "vertical_broaden_same_level | hierarchical_parent_diff_level | none",
+       "conceptual_family": "same | different",
+       "abstraction_level": "same | different",
+       "abstraction_level_action": "keep | broaden_to_parent | none",
+       "inclusion_update": "null or concrete additions to inclusion rules",
+       "exclusion_update": "null or concrete boundary clarifications",
+       "parent_theme_label": "null or suggested parent label",
+       "near_neighbor_label_update": "null or updated neighbor label if boundaries changed",
+       "tell_apart_rule_update": "null or updated tell-apart rule if distinction changed"}},
+    "justification": "Explain decision by referencing conceptual family and abstraction level comparison, or null if use/create",
+    "updated_assignment_examples": {{
+      "inclusion": ["[updated or original inclusion examples in {language}]"],
+      "exclusion": ["[updated or original exclusion examples in {language}]"],
+      "near_neighbor": {{
+        "label": "[updated or original neighbor label in {language}]",
+        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
+      }} | null
+    }}.
+  }}
+}}
+
+
+**Requirements:**
+- Output must be valid JSON only inside json_output tags (no additional commentary outside these tags)
+- Keep field names in English; write values in the language specified in codebook_parameters
+- Include conceptual family and abstraction level comparison explicitly in justification
+- Ensure all updates maintain MECE principles and code atomicity
+- Reference any cosine similarity scores (if provided) in your justification
+"""
+
+CODE_CREATION_PROMPT = """
+You are a {language} qualitative research assistant.
+Your task is to CREATE a new code that captures the meaning of a newly identified atomic {taxonomy_actionable_type}-{theme_head} theme from survey responses, using the specified taxonomy framework.
+
+---
+
+ATOMICITY RULES (must all be satisfied)
+
+A code must be:
+- ATOMIC: It expresses exactly ONE semantic nucleus - one indivisible {taxonomy_actionable_type} or {theme_head}.
+- SINGLE-HEADED: The code label contains exactly ONE head noun.
+- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
+- UNSPLITTABLE: If a label could be split into two meaningful labels, it is NOT atomic.
+- ACTIONABLE: Can be clearly identified and address the survey question directly and explicitly.
+
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Codes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+CODEBOOK PARAMETERS
+
+<language>
+{language}
+</language>
+
+<context>
+- Domain: {domain}
+- Topic: {topic}
+- Perspective: {perspective}
+- Entity: {entity}
+Survey Question: "{survey_question}"
+</context>
+
+<new_theme>
+New theme:
+- name: "{theme_name}"
+- description: "{theme_description}"
+- Included expressions (these SHOULD be covered by the code):
+  {inclusion}
+</new_theme>
+
+<taxonomy_parameters>
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
+</taxonomy_parameters>
+
+---
+
+LABEL CONSTRAINTS
+
+- Use a noun phrase of 1-10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+
+---
+
+DEFINITION CONSTRAINTS
+
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
+
+GOOD DEFINITION PATTERNS:
+- "References to..."
+- "Mentions of..."
+- "Expressions of..."
+- "Concerns about..."
+
+AVOID:
+- Broad summaries (e.g., "general dissatisfaction").
+- Multi-part or layered meaning.
+- Psychological interpretation not grounded in wording.
+
+---
+
+ASSIGNMENT EXAMPLES
+
+- Provide concrete, actionable assignment examples to guide future code assignment.
+- inclusion: 2-3 short examples of expressions that SHOULD be coded here.
+- exclusion: 1-2 short examples of what should NOT be included.
+- near_neighbor: Identify closest confusable {taxonomy_actionable_type}-{theme_head} and how to tell them apart.
+
+---
+
+FINAL OUTPUT FORMAT
+
+Output the result in this strict JSON schema (no commentary or explanation):
+{{
+  "generated_code": {{
+    "theme_number": {theme_id},
+    "theme_name": "{cluster_summary}",
+    "source_code": "null",
+    "code_label": "new or modified code label in {language}",
+    "code_definition": "<=25-word operational definition in {language}",
+    "assignment_examples": {{
+      "inclusion": ["[2-3 concrete examples of what to include in {language}]"],
+      "exclusion": ["[1-2 concrete examples of what to exclude in {language}]"],
+      "near_neighbor": {{
+        "label": "[closest confusable concept in {language} or 'Unknown']",
+        "tell_apart_rule": "[1-sentence distinction in {language}]"
+      }}
+    }}
+  }}
+}}
+
+Critical remarks:
+- Use theme_id provided.
+- Use theme_name provided.
+- Use source_code provided
+"""
+
+# Placeholders for CODING_MODIFICATION_PROMPT
+HORIZONTAL_INSTRUCTIONS = """
+   - Keep the abstraction level of the original code.
+   - Create a **single atomic shared concept** that:
+        (a) captures the meaning of both original code and new theme,
+        (b) is grounded in the shared conceptual family and abstraction level,
+        (c) remains expressible as **one idea** in the label.
+   - The modified label must:
+        * reflect the broadened meaning,
+        * NOT introduce multiple aspects or abstraction levels,
+        * NOT be more abstract than necessary.
+   - The modified definition must:
+        * describe the **shared meaning space**,
+        * reflect: original inclusions + inclusion_update,
+        * exclude: original exclusions + exclusion_update.
+   - Do **not** modify assignment rules here."""
+
+VERTICAL_INSTRUCTIONS = """
+   - Shared conceptual family but different abstraction levels -> create hierarchical structure.
+   - Original code and new theme remain **atomic child codes**.
+   - Parent code represents the shared **conceptual family**.
+
+   Parent label:
+        - parent theme = {parent_theme_label}
+        - If parent theme is not None or Null -> use it as-is.
+        - If null -> generate a label at a higher abstraction level (Driver/Why level).
+        - Must:
+            * express shared conceptual family,
+            * NOT describe behaviors/outcomes,
+            * NOT blend child labels,
+            * be broader, not vaguer.
+
+   Structure:
+       - Parent = conceptual anchor (higher abstraction level),
+       - Children = distinct manifestations (different abstraction levels),
+       - Child meanings **do not change**."""
+
+CODING_MODIFICATION_PROMPT = """
+You are a {language} qualitative research assistant updating a codebook.
+Your task is to MODIFY an existing code so that it fully and correctly includes a new {taxonomy_actionable_type}-{theme_head} theme, while preserving **atomic meaning** and **clear conceptual boundaries**.
+
+---
+
+ATOMICITY RULES (must all be satisfied post-modification)
+
+The modified code must remain:
+- ATOMIC: It expresses exactly ONE semantic nucleus - one indivisible {taxonomy_actionable_type} or {theme_head}.
+- SINGLE-HEADED: The code label contains exactly ONE head noun.
+- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
+- UNSPLITTABLE: If a label could be split into two meaningful labels, the modification is INVALID.
+
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Modified codes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+CODEBOOK PARAMETERS
+
+<language>
+{language}
+</language>
+
+<context>
+- Domain: {domain}
+- Topic: {topic}
+- Perspective: {perspective}
+- Entity: {entity}
+Survey Question: "{survey_question}"
+</context>
+
+<new_theme>
+New theme to integrate:
+- name: "{theme_name}"
+- description: "{theme_description}"
+- Included expressions (these SHOULD be covered by the code):
+  {inclusion}
+</new_theme>
+
+<original_code>
+Original code (to be modified):
+- code_label: {source_code}
+- code_definition: {source_definition}
+</original_code>
+
+<current_assignment_examples>
+Current inclusion examples:
+  {current_inclusion}
+</current_assignment_examples>
+
+<required_modifications>
+- inclusion_update (new expressions that must now be included in-scope):
+  {inclusion_update}
+- exclusion_update (boundaries to clarify so scope does not overextend):
+  {exclusion_update}
+</required_modifications>
+
+<taxonomy_parameters>
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
+</taxonomy_parameters>
+
+---
+
+MODIFICATION INSTRUCTIONS
+
+Follow these instructions exactly and in order. Do not skip or reorder any instruction.
+
+{modification_instructions}
+
+---
+
+LABEL CONSTRAINTS
+
+- Use a noun phrase of 1-10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+
+---
+
+DEFINITION CONSTRAINTS
+
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
+
+GOOD DEFINITION PATTERNS:
+- "References to..."
+- "Mentions of..."
+- "Expressions of..."
+- "Concerns about..."
+
+AVOID:
+- Broad summaries (e.g., "general dissatisfaction").
+- Multi-part or layered meaning.
+- Psychological interpretation not grounded in wording.
+
+---
+
+ASSIGNMENT EXAMPLES
+
+- Provide concrete, actionable assignment examples to guide future code assignment.
+- inclusion: Combine original + new expressions from inclusion_update.
+- exclusion: Combine original + new boundaries from exclusion_update.
+- near_neighbor: Update label/rule if boundaries changed due to modification. Identify closest confusable {taxonomy_actionable_type}-{theme_head}.
+
+OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
+
+{{
+  "generated_code": {{
+    "theme_number": {theme_id},
+    "theme_name": "{cluster_summary}",
+    "source_code": {source_code},
+    "code_label": "yur new/modified code label in {language}",
+    "code_definition": "your definition in {language}",
+    "assignment_examples": {{
+      "inclusion": ["[updated inclusion examples combining original + new in {language}]"],
+      "exclusion": ["[updated exclusion examples combining original + new in {language}]"],
+      "near_neighbor": {{
+        "label": "[updated or original neighbor label in {language}]",
+        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
+      }}
+    }}
+  }}
+}}
+
+REQUIREMENTS:
+- Output must be valid JSON only.
+- No commentary outside JSON.
+- If hierarchical_parent_diff_level -> ensure parent label is conceptual, not descriptive or repetitive.
+"""
+
+# =============================================================================
+# VALIDATION INSTRUCTION VARIANTS (for scenario-specific validation)
+# =============================================================================
+
+USE_VALIDATION_INSTRUCTIONS = """
+**Scenario: USE existing code**
+
+Your task is to validate the proposal that an existing code already captures this theme's meaning.
+You must APPROVE or REJECT this proposal. If rejected, provide a corrected final decision.
+
+Scenario-specific validation questions:
+- Does the existing code's definition fully cover the expressions in the new theme?
+- Would assigning this theme to the existing code lose any meaningful distinctions?
+- Are there any expressions in the new theme that the existing code would NOT capture?
+
+General coding validation question:
+- Does the existing code align with these critical rules? A code must be:
+  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
+  * ATOMIC: Express one indivisible {taxonomy_actionable_type}; cannot be split into separate {taxonomy_actionable_type} that are practically meaningful for explaining responses to the survey question
+  * SINGLE-VALUED: Represent one clear concept without blending distinct {taxonomy_actionable_type} from different conceptual families
+  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
+- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
+
+If validation FAILS (the existing code does not fully capture the theme):
+-> Recommend MODIFY (horizontal or vertical refinement) or CREATE (if substantially different)
+"""
+
+
+MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS = """
+**Scenario: MODIFY_HORIZONTAL (broaden at same abstraction level)**
+Your task is to validate the coding proposal that the modification BROADENS the code while PRESERVING its semantic core.
+You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
+
+Scenario-specific validation questions:
+- Does the new label preserve the original code's central meaning?
+- Is the modification genuinely broadening scope, not replacing the concept?
+- Do BOTH the original expressions AND new expressions fit under the unified meaning?
+- Would a coder still recognize this as the same code with expanded coverage?
+
+General coding validation question:
+- Does the existing code align with these critical rules? A code must be:
+  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
+  * ATOMIC: Express one indivisible {taxonomy_actionable_type}; cannot be split into separate {taxonomy_actionable_type} that are practically meaningful for explaining responses to the survey question
+  * SINGLE-VALUED: Represent one clear concept without blending distinct {taxonomy_actionable_type} from different conceptual families
+  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
+- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
+
+CRITICAL: If the new label shifts or replaces the core concept rather than extending it:
+-> REJECT and recommend CREATE instead (preserve original code, create new one)
+"""
+
+MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS = """
+**Scenario:  MODIFY_VERTICAL (create parent at higher abstraction level)**
+Your task is to validate the coding proposal that the modification propely forms hierarchical structure.
+You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
+
+Scenario-specific validation questions:
+- Is the parent code abstract enough to encompass both child codes?
+- Does the parent represent the shared conceptual family, not just a blend of labels?
+- Do the child codes remain atomic and distinct at their abstraction levels?
+- Is there a genuine abstraction-level difference (not just wording variation)?
+
+General coding validation question:
+- Does the existing code align with these critical rules? A code must be:
+  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
+  * ATOMIC: Express one indivisible {taxonomy_actionable_type}; cannot be split into separate {taxonomy_actionable_type} that are practically meaningful for explaining responses to the survey question
+  * SINGLE-VALUED: Represent one clear concept without blending distinct {taxonomy_actionable_type} from different conceptual families
+  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
+- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
+
+If validation FAILS:
+-> Recommend MODIFY_VERTICAL (if same level) or CREATE (if unrelated)
+"""
+
+CREATE_VALIDATION_INSTRUCTIONS = """
+**Scenario: CREATE new code**
+Your task is to validate the coding propoal that this theme represents a genuinely novel concept, requiring a new code.
+You need to APPROVE or REJECT this proposal, and if rejected, provide a corrected final decision.
+
+Scenario-specific validation questions:
+- Is there truly NO existing code that partially or fully covers this theme?
+- Does this fill a real gap in the codebook (not just a wording preference)?
+- Would adding this code improve the codebook's ability to capture distinct meanings?
+- Is the new code sufficiently different from ALL existing codes?
+
+General coding validation question:
+- Does the existing code align with these critical rules? A code must be:
+  * TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
+  * ATOMIC: Express one indivisible {taxonomy_actionable_type}; cannot be split into separate {taxonomy_actionable_type} that are practically meaningful for explaining responses to the survey question
+  * SINGLE-VALUED: Represent one clear concept without blending distinct {taxonomy_actionable_type} from different conceptual families
+  * ACTIONABLE: Be clearly identifiable and address the survey question directly and explicitly
+- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
+
+If validation FAILS (an existing code could cover this):
+-> Recommend USE (if fully covered) or MODIFY (if partial overlap)
+"""
+
+VALIDATION_PROMPT = """
+You are a codebook curator for thematic analysis following Braun & Clarke (2006) methodology.
+Your role is to maintain parsimonious codebooks with non-overlapping and non-redundant codes by reviewing and making final decisions on coding proposals.
+
+Here is the codebook context you will be working with:
+
+<codebook_context>
+- Domain: {domain}
+- Topic: {topic}
+
+Existing codes in codebook:
+{code_text}
+</codebook_context>
+
+Here is the coding proposal you need to evaluate:
+
+<coding_proposal>
+A new theme emerged from analyzing responses to this survey question:
+"{survey_question}"
+
+This is a new theme to be evaluated:
+- name: "{theme_name}"
+- description: "{theme_description}"
+
+The proposal to review:
+{step3_recommendation}
+
+Further information about the new code:
+- The new code should cover these expressions:
+  {inclusion_examples}
+</coding_proposal>
+
+Here is the taxonomy framework guiding your analysis:
+- Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
+- primary Coding Dimension: {taxonomy_actionable_type}
+
+Here are the scenario-specific validation instructions for this decision type:
+
+<scenario_instructions>
+{validation_instructions}
+</scenario_instructions>
+
+<scratchpad>
+Work through your evaluation systematically:
+
+**Apply Scenario-Specific Validation**
+- Review the scenario instructions in <scenario_instructions> above
+- Apply the scenario-specific validation questions for this decision type (USE / MODIFY_HORIZONTAL / MODIFY_VERTICAL / CREATE)
+- Document whether the proposal passes or fails each criterion
+- If the scenario instructions recommend a different action than the proposal, the proposal fails validation
+
+**Provide a correct final decision for the codebook, if proposal is rejected**
+- If the proposal is APPROVED -> final decision = original recommendation
+- If the proposal is REJECTED -> final decision = USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE based on your analysis
+
+**Determine final decision components**
+- validated_decision: Final decision (USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE)
+- source_code:
+   - If USE -> exact code from proposal
+   - If MODIFY_HORIZONTAL or MODIFY_VERTICAL -> exact existing code being modified
+   - If CREATE -> null
+- validated_code: Final compliant label, definition, and assignment examples
+- decision_rationale: Brief explanation of why the proposal was approved or rejected
+
+**Generate final decision codes, labels and descriptions, if proposal is rejected****
+
+CODING RULES:
+A code must be:
+- TAXONOMIC: Aligned with the specified taxonomy axis and coding dimension
+- ATOMIC: Expresses one indivisible  {taxonomy_actionable_type};  cannot be split into separate {taxonomy_actionable_type} that are practically meaningful for explaining responses to the survey question
+- SINGLE-VALUED: Represents one clear concept without blending distinct {taxonomy_actionable_type} from different conceptual families
+- ACTIONABLE: Can be clearly identified and address the survey question directly and explicity
+
+LABEL RULES:
+- Use a short noun phrase of 10 words or fewer
+- Make the semantic core of the theme the head of the noun phrase
+- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
+- All naming and labeling of ATOMIC THEMES must be single-valued
+- No code label may contain conjunctions ("and", "or", "&"), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
+- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+
+DEFINITION RULES:
+- Use 30 words or fewer
+- Ground the definition in the cluster data
+- Describe **what belongs in this code**, not why it happens
+- Align directly with the survey question, taxonomy axis, and coding dimension
+- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
+- Do NOT explain causes, conditions, or interpretations
+- DO NOT repeat the actor, domain, topic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+
+GOOD DEFINITION PATTERNS FOR FINAL DECISION::
+- "References to..."
+- "Mentions of..."
+- "Expressions of..."
+- "Concerns about..."
+</scratchpad>
+
+Now provide your final evaluation as valid JSON in the language specified below. Return ONLY the JSON response with no additional text, comments, or extra fields.
+
+Output schema:
+{{
+  "code_validation": {{
+    "theme_number": {theme_id},
+    "theme_name": {cluster_summary},
+    "original_recommendation": {{
+        "code": "Exact recommended label",
+        "definition": "Exact recommended definition"
+      }},
+    "verdict": "APPROVE" | "REJECT",
+    "decision_rationale": "Brief explanation as to why the recommendation was approved or rejected",
+    "validated_decision" : "USE or MODIFY_HORIZONTAL or MODIFY_VERTICAL or CREATE"
+    "source_code": "If USE, this exact code: {source_code}; If MODIFY_HORIZONTAL or MODIFY_VERTICAL, the exact code from the existing codebook you seek to modify - or null, if CREATE",
+    "validated_code": {{
+      "code": "Final validated label (<=10 words, rule-compliant)",
+      "definition": "Final validated definition (<=25 words, operational, grounded)",
+      "assignment_examples": {{
+        "inclusion": ["[validated/refined inclusion examples in {language}]"],
+        "exclusion": ["[validated/refined exclusion examples in {language}]"],
+        "near_neighbor": {{
+          "label": "[validated neighbor label in {language}]",
+          "tell_apart_rule": "[validated tell-apart rule in {language}]"
+        }}
+      }}
+    }}
+  }}
+}}
+
+**Critical remarks:**
+- Use theme_number and theme_name exactly as provided in the coding proposal
+- For source_code: IIf USE, this exact code: {source_code}; If  MODIFY_HORIZONTAL or MODIFY_VERTICAL, the exact code from the existing codebook you seek to modify - or null, if CREATE
+- All text in assignment_examples, near_neighbor label, and tell_apart_rule must be in the specified output language
+- Return only valid JSON with no additional commentary
+- Ensure all labels and definitions strictly follow the rules above
+"""

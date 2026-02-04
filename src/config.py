@@ -42,18 +42,11 @@ def _get_hunspell_paths() -> Tuple[str, str]:
     Returns:
         Tuple of (hunspell_executable_path, hunspell_dict_directory)
     """
-    # Determine project hunspell directory (for dictionaries and Windows exe)
-    current_dir = os.getcwd()
-    if os.path.basename(current_dir) == 'utils':
-        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'hunspell'))
-    elif os.path.basename(current_dir) == 'modules':
-        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', '..', 'hunspell'))
-    elif os.path.basename(current_dir) == 'src':
-        hunspell_dir = os.path.abspath(os.path.join(current_dir, '..', 'hunspell'))
-    elif os.path.basename(current_dir) == 'Coderingstool':
-        hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
-    else:
-        hunspell_dir = os.path.abspath(os.path.join(current_dir, 'hunspell'))
+    # Determine project root from this file's location (src/config.py -> project root)
+    # This is stable regardless of where the script is run from
+    config_file_dir = Path(__file__).parent  # src/
+    project_root = config_file_dir.parent     # project root
+    hunspell_dir = str(project_root / "hunspell")
 
     system = platform.system()
 
@@ -488,7 +481,7 @@ class ProcessingConfig:
     """Global processing parameters affecting cache validity and performance"""
 
     # Rate limiting
-    rate_limit_headroom: float = 0.9  # Use 90% of API limits for safety
+    rate_limit_headroom: float = 0.9  # Use 80% of API limits for safety
 
     # Concurrency bounds
     concurrency_cap_default: int = 300
@@ -667,27 +660,8 @@ class QualityFilterConfig:
     maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
    
 
-@dataclass
-class SegmentationConfig:
-    """Configuration for segmentation and description step"""
-    max_tokens: int = 16000
-    completion_reserve: int = 1000
-    min_batch_size: int = 5  # Minimum responses per batch for efficiency
-    max_batch_size: int = 20  # Maximum responses per batch for manageability
-    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
-    retry_delay: int = 2
-    max_retries: int = 3
-    spacy_batch_size: int = 32
-    umap_n_jobs: int = 1
-    max_code_examples: int = 5  # For verbose output
-    max_sample_responses: int = 3  # For verbose output
-    # Model configuration - will be overridden by ModelConfig
-    model: str = "gpt-4o-mini"  # Fallback model
-    temperature: float = 0.0  # Temperature for generation
-    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
-    # Timeout configuration for API calls
-    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
-    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
+# SegmentationConfig moved to config_ideaExtractor.py (ideaExtractor-only)
+from config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG  # noqa: F401 - re-export for backward compat
 
 # =============================================================================
 # EMBEDDING CONFIGURATION
@@ -999,7 +973,7 @@ DEFAULT_PROCESSING_CONFIG = ProcessingConfig()
 # Step-specific configurations
 DEFAULT_SPELLCHECK_CONFIG = SpellCheckConfig()
 DEFAULT_QUALITY_FILTER_CONFIG = QualityFilterConfig()
-DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
+# DEFAULT_SEGMENTATION_CONFIG is imported from config_ideaExtractor above
 DEFAULT_EMBEDDING_CONFIG = EmbeddingConfig()
 DEFAULT_UMAP_CONFIG = UMAPConfig()
 DEFAULT_CLUSTERING_CONFIG = ClusteringConfig()

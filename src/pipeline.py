@@ -26,29 +26,29 @@ model_config = ModelConfig()
 #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 #id_column = "DLNMID"
 #var_name = "Q20"
-#sample_size = 500
+#sample_size = 50
 
 #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
 #id_column = "DLNMID"
 #var_name = "Q20"
 #sample_size = 500
 
-filename = "M000000 Associatiemonitor Merk X net databestand.sav"
-id_column = "DLNMID"
-var_name = "Qd1_combined"
-sample_size = 2000 
-
-#filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+#filename = "M000000 Associatiemonitor Merk X net databestand.sav"
 #id_column = "DLNMID"
-#var_name = "Q15"
-#sample_size = 2000
+#var_name = "Qd1_combined"
+#sample_size = 2000 
+
+filename = "M000000 MOJO Bezoekersonderzoek festivalbeleving Pinkpop_153836.sav"
+id_column = "DLNMID"
+var_name = "Q15"
+sample_size = 50
 
 # filename = "M250127 Flitspeiling NAVOtop 0meting_153832.sav"
 # id_column = "DLNMID"
 # var_name = "Q10"
 # sample_size = 50
 
-RUN_UNTIL_STEP = 9
+RUN_UNTIL_STEP = 2
 FORCE_RECALCULATE_ALL = False
 VERBOSE = True
 PROMPT_PRINTER = False
@@ -701,7 +701,7 @@ def step_3_extract_ideas(
                 var_lab=var_lab
             )
             if verbose:
-                verbose_reporter.stat_line(f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}, template='{extraction_metadata.template_prefix[:50]}...'")
+                verbose_reporter.stat_line(f"Cached extraction metadata: taxonomy={extraction_metadata.taxonomy_primary_axis}, template='{extraction_metadata.template_prefix}'")
 
         print(f"\n\n'Idea extraction phase' completed in {elapsed_time:.2f} seconds.\n")
 
@@ -854,12 +854,28 @@ def step_4_generate_embeddings(
             for idea in resp.response_ideas
             if idea.idea_embedding is not None
         )
+        taxonomy_count = sum(
+            1 for resp in embedded_text
+            if resp.response_ideas
+            for idea in resp.response_ideas
+            if getattr(idea, 'taxonomy_embedding', None) is not None
+        )
+        ontology_count = sum(
+            1 for resp in embedded_text
+            if resp.response_ideas
+            for idea in resp.response_ideas
+            if getattr(idea, 'ontology_embedding', None) is not None
+        )
 
         # Print final statistics (matching experiment runner output)
         if verbose:
             print(f"\n📊 Embedding Statistics:")
             print(f"   Responses processed: {len(embedded_text)}")
-            print(f"   Embeddings generated: {embeddings_count}")
+            print(f"   Idea embeddings generated: {embeddings_count}")
+            if taxonomy_count > 0:
+                print(f"   Taxonomy embeddings generated: {taxonomy_count}")
+            if ontology_count > 0:
+                print(f"   Ontology embeddings generated: {ontology_count}")
             print(f"   Elapsed time: {elapsed_time:.2f}s")
             print(f"   Rate: {embeddings_count / elapsed_time:.1f} embeddings/sec" if elapsed_time > 0 else "   Rate: N/A")
 
@@ -2232,15 +2248,7 @@ if __name__ == '__main__':
         prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(1)
-    
-    if False: #debug if true
-        import random
-        n_samples = 5
-        indices = random.sample(range(len(preprocessed_text)), n_samples)
-        for i in indices:
-            print("Raw structured:", raw_text_list[i])
-            print("---")        
-    
+
     # === STEP 2 ====
     """quality filter"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "quality_filter"
@@ -2254,17 +2262,7 @@ if __name__ == '__main__':
         prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(2)
-    
-    # debug if true
-    if False : 
-        import random
-        n_samples = 5
-        filtered_text = [item.response for item in quality_filtered_text if item.quality_filter]
-        indices = random.sample(range(len(filtered_text)), n_samples)
-        for i in indices:
-            print(filtered_text[i])
-    
-    
+
     # === STEP 3 ====
     """Response segments/ideas"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "extracted_ideas"
@@ -2278,20 +2276,7 @@ if __name__ == '__main__':
         prompt_printer_enabled=PROMPT_PRINTER
     )
     check_execution_stop(3)
-    
-    if False : # debug if true
-        import random
-        import re
-        n_samples = 1
-        sampled_items = random.sample(encoded_text, n_samples)
-        for item in sampled_items:
-            print(item.response)
-            for segment in item.response_ideas:
-                idea = segment.idea
-                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
-                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-                print(f"- {cleaned_idea}")
-    
+
     # === STEP 4 ====
     """Generate embeddings"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "embeddings"
@@ -2304,20 +2289,7 @@ if __name__ == '__main__':
         verbose=VERBOSE
     )
     check_execution_stop(4)
-    
-    if False: #debug if true
-        import random
-        import re
-        n_samples = 1
-        sampled_items = random.sample(embedded_text, n_samples)
-        for item in sampled_items:
-            print(f"{item.response}\n")
-            for segment in item.response_ideas:
-                idea = segment.idea
-                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
-                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-                print(f"- {cleaned_idea}")
-    
+
     # === STEP 5 ==== 
     """Reduce data/get clusters"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "initial_clusters"
@@ -2331,55 +2303,6 @@ if __name__ == '__main__':
     )
     check_execution_stop(5)
 
-    # NOTE: Removed #%% cell marker here - was breaking VSCode Python Interactive execution
-    if False: #debug - print random clusters  
-   
-        import random
-        import re
-        cluster_ids = list(set([
-            response_idea.initial_cluster 
-            for result in initial_cluster_results 
-            for response_idea in result.response_ideas   
-            if response_idea.initial_cluster is not None]))
-        sampled_cluster = random.sample(cluster_ids, 1)[0]
-        print(f"\nCluster {sampled_cluster}:\n")
-        cluster_segments = []
-        for result in initial_cluster_results:
-            for response_idea in result.response_ideas:   
-                if response_idea.initial_cluster == sampled_cluster:
-                    idea = response_idea.idea
-                    cleaned_idea = re.sub(r"\[.*?\]", "", idea)
-                    cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-                    cluster_segments.append(cleaned_idea)
-       #sampled_segments = random.sample(cluster_segments, min(10, len(cluster_segments)))
-        sampled_segments = random.sample(cluster_segments, len(cluster_segments))
-        for segment_desc in sampled_segments:
-            print(f"-    {segment_desc}")
-
-    # NOTE: Removed #%% cell marker here - was breaking VSCode Python Interactive execution
-    if False: #debug if true - print all clusters
-        import re
-        cluster_ids = list(set([
-            response_idea.initial_cluster 
-            for result in initial_cluster_results 
-            for response_idea in result.response_ideas  # This has initial_cluster
-            if response_idea.initial_cluster is not None]))
-        for x in range(1, round(len(cluster_ids) / 1) + 1):
-            y = x * 1
-            print(f"\n=== Showing clusters {y-1} to {min(y, len(cluster_ids)-1)} ===\n")
-        
-            for z in range(y - 1, y):
-                if z < len(cluster_ids):
-                    print(f"\nCluster {z}")
-                    for item in initial_cluster_results:
-                        for subitem in item.response_ideas:
-                            if subitem.initial_cluster == z:
-                                idea = subitem.idea
-                                cleaned_idea = re.sub(r"\[.*?\]", "", idea)
-                                cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
-                                print(cleaned_idea)
-            input("\n🔸 Press Enter to continue to the next batch of clusters...")
-    
     # === STEP 6 ====
     """Generate codes"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_generation"
@@ -2390,35 +2313,7 @@ if __name__ == '__main__':
         prompt_printer_enabled=PROMPT_PRINTER, cache_reasoning=True
     )
     check_execution_stop(6)
-    
-    if False: #debug if true (reasoning)
-        if codebook_reasoning is not None:
-            from utils.codegenResults import display_cluster_analysis
-            display_cluster_analysis(codebook_reasoning)
-        else:
-            print("Note: codebook_reasoning not available for display")
-    
-    if False: #debug if true (prompts + reasoning)
-        import random
-        step3_recommendations = getattr(codebook_reasoning, 'step3_recommendations', {})
-        step3_recommendations = codebook_reasoning.step3_recommendations
-        available_ids = list(step3_recommendations.keys())
-        cluster_id = random.choice(available_ids)
-        #cluster_id="30"
-    
-        from utils import codegenPromptTester
-        tester = codegenPromptTester.SimplePromptTester(cluster_id = cluster_id, var_lab=var_lab)
-        tester.test_prompt_1()
-        tester.test_prompt_2()
-        tester.test_prompt_3()
-        tester.test_prompt_4()
-    
-        if codebook_reasoning is not None:
-            from utils.codegenResults import display_cluster_analysis
-            display_cluster_analysis(codebook_reasoning, cluster_id = cluster_id)
-        else:
-            print("Note: codebook_reasoning not available for display")
-    
+
     # === STEP 7 ====
     """Codebook Refinement"""
     force_recalc = FORCE_RECALCULATE_ALL or FORCE_STEP == "codebook_refinement"
@@ -2433,31 +2328,6 @@ if __name__ == '__main__':
         prompt_printer_enabled=False  # Set to True to print prompt with assignment_examples
     )
     check_execution_stop(7)
-    
-    if False: #debug
-        final_codebook = refinement_results.refined_codebook
-        for entry in final_codebook.refined_codebook:
-            print(entry.category)
-            for x in  entry.subcodes:
-                print(f"- {x.code}")
-            print("\n")
-
-    if False: #debug - print step 7 prompts
-        if step7_prompt_printer and step7_prompt_printer.prompts:
-            print(f"\n{'='*80}")
-            print(f"STEP 7: {len(step7_prompt_printer.prompts)} PROMPTS CAPTURED")
-            print(f"{'='*80}\n")
-            
-            prompt_idx = 5 #promt nr / x out of y
-            for i, prompt in enumerate(step7_prompt_printer.prompts, 1):
-                #if i > 0 # show all
-                if i == prompt_idx:
-                    print(f"{'='*80}")
-                    print(f"PROMPT {i}/{len(step7_prompt_printer.prompts)}: {prompt.get('step_name', 'unknown')}")
-                    print(f"Type: {prompt.get('prompt_type', 'unknown')}")
-                    print(f"{'='*80}")
-                    print(prompt['prompt_content'])
-                    print(f"{'='*80}\n")
 
     # === STEP 8 ====
     """Assign codes (and themes)"""
@@ -2475,70 +2345,10 @@ if __name__ == '__main__':
     )
     check_execution_stop(8)
 
-    # initial_clusters
-    # for initial in initial_cluster_results:
-    #     for response in initial.response_ideas:
-    #         if response.initial_cluster == 42:
-    #             print(response.idea)
-
-    
-    # codebook
+    # Print codebook summary
     for idx, entry in enumerate(theme_enriched_codebook.codes, start=1):
         print(f"{idx}) {entry.code}")
-    
-    # assignment stats 
-    if False:
-        from utils.pipelineSummarizer import PipelineSummarizer
-        summarizer = PipelineSummarizer(verbose=True)
-        summarizer.generate_summary(
-            code_assigned_results=code_assigned_results if 'code_assigned_results' in locals() else None,
-            theme_enriched_codebook=theme_enriched_codebook if 'theme_enriched_codebook' in locals() else None)
-        
-    # random assignments with prompts
-    if False: #debug 
-        import random
-        # Sample directly from captured prompts
-        if code_assigner_instance and code_assigner_instance.prompt_responses:
-            
-            #specifieke cluster
-            code = 'ONBEKEND'
-            selection = []
-            for dat in code_assigner_instance.prompt_responses:
-                for key, value in dat.items():
-                    if key == "assigned_codes":
-                        if value == [code]:
-                            selection.append(dat)
-           
-            if False: #selection
-                n_samples = 1
-                sampled = random.sample(selection, n_samples)
-            else:
-                n_samples = 1
-                sampled = random.sample(code_assigner_instance.prompt_responses, n_samples)
 
-            #print(sampled)
-
-            for item in sampled:
-                print("FULL PROMPT:")
-                print(f"{'─'*80}")
-                print(item['prompt'])
-                print(f"{'='*80}\n")
-                
-                print("RANDOM CODE ASSIGNMENT SAMPLE")
-                print(f"{'='*80}")
-                #print(f"Respondent ID: {item['respondent_id']}")
-                print(f"Idea ID: {item['idea_id']}")
-                print(f"\nIdea Text: {item['idea_text']}")
-                code = ''.join(item['assigned_codes'])
-                print(f"\nAssigned Codes: {code}\n")
-                print(f"Confidence: {item['confidence']:.2f}\n")
-                print(f"Rationale: {item['rationale']}")
-                print(f"\n{'─'*80}")
-
-        else:
-            print("⚠️ No prompt data available (verbose mode disabled or cached results)")
-
-    
     # === STEP 9  =====
     """Export Results"""
     excel_path = step_9_export_results(
@@ -2566,72 +2376,3 @@ if __name__ == '__main__':
 
     # Save captured verbose output
     verbose_capture.__exit__(None, None, None)
-
-
-if False: #debug
-     cluster_results = cache_manager.load_from_cache(filename,"expanded_clusters", variable_key, models.ClusterModel) 
-     for result in cluster_results:
-         for dat in result.response_ideas:
-             #print(dat.expanded_cluster)
-             if dat.expanded_cluster == '14':
-                 print(dat.idea)
-     
-         
-     step_name = "codebook_refinement"
-     codebook = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
-       
-     source_cluster_ids = []  
-     for entry in codebook:
-         for dat in entry.original_codebook:
-             for key, value in dat.items():
-                 if key == 'source_cluster_id':
-                     source_cluster_ids.append(value)
-                     print(value)
-             #break
-     print(sorted(source_cluster_ids, key=lambda x: [int(p) for p in x.split('-')]))
-     
- 
-     cluster_ids = []  
-     for entry in codebook_reasoning:
-         key, value = entry
-         for val in value:
-             for k, v in val.items():
-                 # print(k)
-                 if k == "cluster_id":
-                     #cluster_ids.append(v)
-                     print(v)
-                 if k == "final_code":
-                     print(v)
-                     break
-     print(sorted(cluster_ids, key=lambda x: [int(p) for p in x.split('-')]))
-     
-         
-     # for entry in codebook:
-     #     for dat in entry.refined_codebook:
-     #         print(dat[1])
-     #         break
-         
-     step_name = "codebook_refinement"
-     codebook = cache_manager.load_from_cache(filename, step_name, variable_key, models.CodeRefinementResults)
-      
-
-     for entry in codebook:
-        for dat in entry.refined_codebook:
-            key, value = dat
-            # #print(key)
-            # if key == "refined_codebook":
-            #     print(value)
-            
-            for key, value in dat.items():
-                if key == 'source_cluster_id':
-                    source_cluster_ids.append(value)
-                    print(value)
-            #break
-     
-     for entry in codebook_reasoning:  # This is Step 6, not Step 7
-          key, value = entry
-          for val in value:
-              for k, v in val.items():
-                  if k == "source_cluster_id":  # or "cluster_id"
-                      print(v)
-# %%

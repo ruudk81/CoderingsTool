@@ -12,15 +12,53 @@ These settings control:
 - Embedding quality analysis
 """
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
+
+# Shared type for all embedding text format options
+EmbeddingTextFormat = Literal[
+    "idea", "taxonomy_phrase", "idea_without_template_prefix",
+    "both_taxonomy_phrase", "ontology", "both_ontology", "all"
+]
 
 
 # =============================================================================
-# HARDCODED SETTINGS FOR "BOTH" MODE
+# HARDCODED SETTINGS FOR MULTI-PASS MODES
 # =============================================================================
-# Which idea format to use when embedding_text_format="both"
+# Which idea format to use for the idea pass in multi-pass modes
 # Options: "idea" or "idea_without_template_prefix"
 BOTH_MODE_IDEA_FORMAT: Literal["idea", "idea_without_template_prefix"] = "idea_without_template_prefix"
+
+
+# =============================================================================
+# MULTI-PASS EMBEDDING SPECIFICATIONS
+# =============================================================================
+
+@dataclass
+class EmbeddingPass:
+    """Specification for a single embedding pass in multi-pass modes."""
+    text_format: str      # Format key for _get_text_for_embedding
+    target_field: str     # Field on EmbeddingsSubmodel to store result
+    label: str            # Human-readable label for logging
+
+
+# Maps multi-pass mode names to their pass specifications.
+# Single-pass modes ("idea", "taxonomy_phrase", "idea_without_template_prefix", "ontology")
+# are handled directly by _get_text_for_embedding and don't appear here.
+MULTI_PASS_SPECS = {
+    "both_taxonomy_phrase": [
+        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
+        EmbeddingPass("taxonomy_phrase", "taxonomy_embedding", "taxonomy_phrase"),
+    ],
+    "both_ontology": [
+        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
+        EmbeddingPass("ontology", "ontology_embedding", "ontology string"),
+    ],
+    "all": [
+        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
+        EmbeddingPass("taxonomy_phrase", "taxonomy_embedding", "taxonomy_phrase"),
+        EmbeddingPass("ontology", "ontology_embedding", "ontology string"),
+    ],
+}
 
 
 # =============================================================================
@@ -35,9 +73,12 @@ class TextFormatConfig:
     - "idea": Embed the clean idea text (idea.idea field)
     - "taxonomy_phrase": Embed the taxonomy phrase (idea.taxonomy_phrase field)
     - "idea_without_template_prefix": Embed idea text with template_prefix stripped
-    - "both": Embed BOTH idea text AND taxonomy_phrase (dual embeddings)
+    - "both_taxonomy_phrase": Embed BOTH idea text AND taxonomy_phrase (dual embeddings)
+    - "ontology": Embed ontology string "instance - node (category)"
+    - "both_ontology": Embed BOTH idea text AND ontology string
+    - "all": Embed idea text, taxonomy_phrase, AND ontology string
     """
-    embedding_text_format: Literal["idea", "taxonomy_phrase", "idea_without_template_prefix", "both"] = "idea"
+    embedding_text_format: EmbeddingTextFormat = "idea"
 
 
 # =============================================================================
@@ -118,12 +159,12 @@ class EmbedderConfig:
     This is the main config class used by the Embedder.
 
     Default settings match the approved experiment configuration:
-    - embedding_text_format="both" for dual embeddings (idea + taxonomy_phrase)
+    - embedding_text_format="both_taxonomy_phrase" for dual embeddings (idea + taxonomy_phrase)
     - analyze_embeddings=True for quality metrics
     - compute_similarity_stats=True for pairwise similarity analysis
     """
-    # Text format settings - "both" embeds idea text AND taxonomy_phrase separately
-    embedding_text_format: Literal["idea", "taxonomy_phrase", "idea_without_template_prefix", "both"] = "both"
+    # Text format settings - "both_taxonomy_phrase" embeds idea text AND taxonomy_phrase separately
+    embedding_text_format: EmbeddingTextFormat = "both_taxonomy_phrase"
 
     # Provider selection
     provider: str = "openai"                # "openai" or "gemini"
@@ -187,7 +228,7 @@ IDEA_WITHOUT_PREFIX_CONFIG = EmbedderConfig(
 
 # Configuration for dual embedding (both idea and taxonomy_phrase)
 BOTH_EMBEDDINGS_CONFIG = EmbedderConfig(
-    embedding_text_format="both",
+    embedding_text_format="both_taxonomy_phrase",
     analyze_embeddings=True,
     compute_similarity_stats=True,
 )
@@ -199,6 +240,27 @@ QUESTION_AWARE_EMBEDDER_CONFIG = EmbedderConfig(
     question_weight=0.3,
     domain_anchor_weight=0.1,
     analyze_embeddings=True,
+)
+
+# Configuration for ontology embedding (standalone)
+ONTOLOGY_CONFIG = EmbedderConfig(
+    embedding_text_format="ontology",
+    analyze_embeddings=True,
+    compute_similarity_stats=True,
+)
+
+# Configuration for dual embedding (idea + ontology, replaces taxonomy_phrase)
+BOTH_ONTOLOGY_CONFIG = EmbedderConfig(
+    embedding_text_format="both_ontology",
+    analyze_embeddings=True,
+    compute_similarity_stats=True,
+)
+
+# Configuration for triple embedding (idea + taxonomy_phrase + ontology)
+ALL_EMBEDDINGS_CONFIG = EmbedderConfig(
+    embedding_text_format="all",
+    analyze_embeddings=True,
+    compute_similarity_stats=True,
 )
 
 # Configuration for Gemini provider

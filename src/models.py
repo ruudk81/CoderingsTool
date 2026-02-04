@@ -3,33 +3,9 @@ from pydantic import BaseModel, ConfigDict #, Field, RootModel
 import numpy as np
 import numpy.typing as npt
 
-# === GROWING RESULT MODELS ========================================================================================================
-
-class ResponseModel(BaseModel):
-    respondent_id: Any
-    response: Union[str, float, int, None]   
-    response_type: Optional[str] = None   
-    model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
- 
-    def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
-        data = self.model_dump()
-        return model_class(**data)
-
-class PreprocessedModel(ResponseModel):
-    quality_filter: Optional[bool] = None
-    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=don't know, 99999998=no response/empty, 99999999=gibberish
-
-class QualityFilteredModel(PreprocessedModel):
-    pass
-
-
-# === EXTRACTION METADATA MODEL ========================================================================================================
+# ===  METADATA MODEL ========================================================================================================
 
 class ExtractionMetadata(BaseModel):
-    """Extraction-level metadata (one per dataset) - flat structure.
-
-    Cached separately from ideas to avoid duplication and enable independent loading.
-    """
     # File/variable info
     filename: str = ""
     var_name: str = ""
@@ -60,23 +36,44 @@ class ExtractionMetadata(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-# Strict model for LLM response validation (instructor enforces required fields)
+# === GROWING RESULT MODELS ========================================================================================================
+
+class ResponseModel(BaseModel):
+    respondent_id: Any
+    response: Union[str, float, int, None]   
+    response_type: Optional[str] = None   
+    model_config = ConfigDict(arbitrary_types_allowed=True) # for arrays with embeddings
+ 
+    def to_model(self, model_class: Type['BaseModel']) -> 'BaseModel':
+        data = self.model_dump()
+        return model_class(**data)
+
+class PreprocessedModel(ResponseModel):
+    quality_filter: Optional[bool] = None
+    quality_filter_code: Optional[int] = None  # 0=meaningful, 99999997=don't know, 99999998=no response/empty, 99999999=gibberish
+
+class QualityFilteredModel(PreprocessedModel):
+    pass
+
 class QualityFilterLLMResponse(BaseModel):
-    """Strict response model for quality filter LLM calls.
-    Unlike QualityFilteredModel, quality_filter is REQUIRED (not Optional).
-    This ensures instructor enforces True/False and rejects null.
-    """
     respondent_id: Any
     response: Union[str, float, int, None]
     quality_filter: bool  # REQUIRED - instructor will enforce True/False
     quality_filter_code: Optional[int] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class OntologySubmodel(BaseModel):
+    instance: str = ""   # Literal action/object/concept from idea (verbatim)
+    node: str = ""       # Canonical, reusable ontology concept (noun phrase)
+    category: str = ""   # Immediate parent grouping
+    root: str = ""       # Top-level domain framing
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
     idea: str     # Clean text (no embedded specifiers in new format)
     taxonomy_phrase: str = ""         # 2-4 word categorization phrase (separate from idea text)
-    parent_category: str = ""         # Higher-level grouping theme grounded in response content
+    ontology: Optional[OntologySubmodel] = None  # Hierarchical ontology (instance → node → category → root)
     sentiment: str = "neutral"        # "positive", "negative", "neutral"
     sense: str = "factual"            # "factual", "evaluative", "aspirational", "experiential"
     model_config = ConfigDict(arbitrary_types_allowed=True)   
@@ -88,7 +85,8 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of taxonomy_phrase (used in "both" mode)
+    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of taxonomy_phrase (used in "both_taxonomy_phrase" mode)
+    ontology_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of "instance - node (category)" (used in "both_ontology"/"all" mode)
     
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
@@ -131,7 +129,6 @@ class CodebookModel(BaseModel):
     source_variable: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-"""refined_codebook"""
 class RefinedSubcode(BaseModel):
     id: str  # Original code ID(s) - multiple if merged (e.g., "1,2,3")
     code: str
@@ -152,14 +149,43 @@ class RefinedCodebookModel(BaseModel):
     source_variable: Optional[str] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class CodeTransformation(BaseModel):
+    phase: str  # "MAP" or "REDUCE"
+    batch_id: Optional[int] = None
+    transformation_type: str  # "PRESERVED", "MERGED", "DROPPED"
+    input_ids: List[str]  # Original sequential IDs
+    output_id: Optional[str] = None  # Result ID (None if DROPPED)
+    source_cluster_ids: List[str]  # Cluster IDs for traceability
+    final_code_label: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class BatchTransformationRecord(BaseModel):
+    batch_id: int
+    input_ids: List[str]
+    input_cluster_map: Dict[str, str]  # id -> cluster_id
+    output_ids: List[str]
+    transformations: List[CodeTransformation]
+    dropped_ids: List[str]
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class RefinementLineage(BaseModel):
+    original_codes: List[Dict[str, Any]]
+    master_id_to_cluster_map: Dict[str, str]
+    map_batches: List[BatchTransformationRecord]
+    reduce_record: Optional[BatchTransformationRecord] = None
+    orphaned_clusters: List[str] = []
+    reconciled_mappings: Dict[str, str] = {}  # orphaned_cluster -> target_code_source_cluster
+    timestamp: Optional[str] = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 class CodeRefinementResults(BaseModel):
     original_codebook: List[Dict[str, Any]]
     refined_codebook: RefinedCodebookModel
     processing_stats: Dict[str, Any]
     timestamp: str
+    lineage: Optional[RefinementLineage] = None  # Transformation tracking
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-"""speculative codes"""
 class CodeDefinition(BaseModel):
     code: str
     definition: str
@@ -175,7 +201,6 @@ class Codebook(BaseModel):
     near_neighbor_label: Optional[str] = None
     tell_apart_rule: Optional[str] = None   
 
-"""theme enriched_codebook"""
 class ThemeEnrichedCodebookEntry(CodebookEntry):
     code: Optional[str] = None
     definition: Optional[str] = None
@@ -195,7 +220,6 @@ class ThemeEnrichedCodebookModel(CodebookModel):
 # === CLUSTER REPRESENTATION MODELS ========================================================================================================
 
 class ClusterLabelModel(BaseModel):
-    """LLM-generated label for a cluster."""
     cluster_id: int
     theme: str                    # Short atomic label (≤10 words)
     description: str              # 1-2 sentence description
@@ -204,14 +228,12 @@ class ClusterLabelModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ClusterRepresentationModel(BaseModel):
-    """Representation data for a single cluster (keywords + optional LLM label)."""
     cluster_id: int
     keywords: List[Tuple[str, float]]           # c-TF-IDF keywords [(word, score), ...]
     llm_label: Optional[ClusterLabelModel] = None  # LLM-generated label (if enabled)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class ClusterRepresentationsModel(BaseModel):
-    """Container for all cluster representations (for caching)."""
     representations: List[ClusterRepresentationModel]
     generation_metadata: Optional[Dict[str, Any]] = None  # Algorithm, config, timestamps
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -220,7 +242,6 @@ class ClusterRepresentationsModel(BaseModel):
 # === CLUSTERING METADATA CACHE MODELS ========================================================================================================
 
 class ClusterRepresentationCacheModel(BaseModel):
-    """Cached representation data for a single cluster (audit trail + LLM output)."""
     cluster_id: int
     size: int
 
@@ -247,7 +268,6 @@ class ClusterRepresentationCacheModel(BaseModel):
 
 
 class ClusteringMetricsModel(BaseModel):
-    """Serializable version of clustering quality metrics."""
     n_clusters: int
     noise_rate: float
     noise_count: int
@@ -260,7 +280,6 @@ class ClusteringMetricsModel(BaseModel):
 
 
 class LLMContextModel(BaseModel):
-    """Global context provided to LLM for all clusters (audit trail)."""
     survey_question: str
     language: str
 
@@ -280,7 +299,6 @@ class LLMContextModel(BaseModel):
 
 
 class ClusteringMetadataModel(BaseModel):
-    """Full clustering metadata cache - separate from per-idea ClusterModel."""
     # Per-cluster data
     clusters: Dict[int, ClusterRepresentationCacheModel]
 
