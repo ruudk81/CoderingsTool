@@ -846,6 +846,9 @@ class IdeaExtractor:
             'timeouts': 0
         }
 
+        # Failure log: tracks each permanent PROCESSING_ERROR with details
+        self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
+
     def _calculate_avg_tokens(self) -> int:
         """Calculate average tokens per request for rate limiting.
 
@@ -1847,7 +1850,67 @@ class IdeaExtractor:
                             template_prefix=self.template_prefix or ""  # V3: Use extracted template prefix
                         )
                     else:
-                        return self.create_fallback_response(task)
+                        # Empty ideas: retry up to 2 more times before falling back
+                        logger.warning(f"Task {task['respondent_id']}: LLM returned empty ideas, retrying...")
+                        for empty_retry in range(2):
+                            retry_response = await asyncio.wait_for(
+                                llm_create_async(
+                                    client=self.client,
+                                    model=self.model,
+                                    response_model=List[TaxonomyEnrichedIdeaResponse],
+                                    prompt=prompt,
+                                    temperature=self.config.temperature,
+                                    max_tokens=self.config.max_tokens,
+                                    max_retries=3
+                                ),
+                                timeout=timeout
+                            )
+                            retry_ideas = []
+                            for i, idea_response in enumerate(retry_response):
+                                normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
+                                if normalized and normalized not in ["", "NA", "N/A"]:
+                                    taxonomy_phrase = getattr(idea_response, 'taxonomy_phrase', "") or ""
+                                    sentiment = getattr(idea_response, 'sentiment', "neutral") or "neutral"
+                                    sense = getattr(idea_response, 'sense', "factual") or "factual"
+                                    ontology_resp = getattr(idea_response, 'ontology', None)
+                                    ontology = models.OntologySubmodel(
+                                        instance=ontology_resp.instance if ontology_resp else "",
+                                        node=ontology_resp.node if ontology_resp else "",
+                                        category=ontology_resp.category if ontology_resp else "",
+                                        root=ontology_resp.root if ontology_resp else ""
+                                    ) if ontology_resp else None
+                                    idea_text = self._format_idea_text(normalized)
+                                    response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
+                                    retry_ideas.append(models.IdeasExtractedSubmodel(
+                                        idea_id=f"{task['respondent_id']}_{response_idea_id}",
+                                        idea=idea_text,
+                                        taxonomy_phrase=taxonomy_phrase,
+                                        ontology=ontology,
+                                        sentiment=sentiment,
+                                        sense=sense
+                                    ))
+                            if retry_ideas:
+                                logger.info(f"Task {task['respondent_id']}: empty-ideas retry {empty_retry+1} succeeded ({len(retry_ideas)} ideas)")
+                                self.stats['tasks_successful'] += 1
+                                return models.IdeasExtractedModel(
+                                    respondent_id=task['respondent_id'],
+                                    response=task['response'],
+                                    quality_filter=task.get('quality_filter', True),
+                                    quality_filter_code=task.get('quality_filter_code', 0),
+                                    response_ideas=retry_ideas,
+                                    idea_count=len(retry_ideas),
+                                    template_prefix=self.template_prefix or ""
+                                )
+                        # All retries exhausted — log and fall back
+                        self.stats['tasks_failed'] += 1
+                        self.failure_log.append({
+                            'respondent_id': task['respondent_id'],
+                            'reason': 'empty_ideas',
+                            'error_type': None,
+                            'response_preview': task['response'][:80]
+                        })
+                        logger.error(f"Task {task['respondent_id']}: empty ideas after 2 retries, creating PROCESSING_ERROR fallback")
+                        return self.create_fallback_response(task, reason="empty_ideas")
 
         except asyncio.TimeoutError:
             self.stats['timeouts'] += 1
@@ -1878,7 +1941,7 @@ class IdeaExtractor:
             logger.error(f"Task {task['respondent_id']} failed: {type(e).__name__}: {e}")
             raise
 
-    def create_fallback_response(self, task: Dict) -> models.IdeasExtractedModel:
+    def create_fallback_response(self, task: Dict, reason: str = "unknown") -> models.IdeasExtractedModel:
         """Create fallback response for failed tasks"""
         return models.IdeasExtractedModel(
             respondent_id=task['respondent_id'],
@@ -1888,12 +1951,39 @@ class IdeaExtractor:
             response_ideas=[
                 models.IdeasExtractedSubmodel(
                     idea_id=f"{task['respondent_id']}_1",
-                    idea="PROCESSING_ERROR"
+                    idea=f"PROCESSING_ERROR: {reason}"
                 )
             ],
             idea_count=1,
             template_prefix=self.template_prefix or ""  # V3: Use extracted template prefix
         )
+
+    def get_failure_report(self, total_responses: int = None) -> str:
+        """Return a formatted report of all PROCESSING_ERROR failures."""
+        total = total_responses or self.stats.get('tasks_processed', 0)
+        n_failures = len(self.failure_log)
+
+        if n_failures == 0:
+            return f"PROCESSING ERRORS: 0 of {total} responses (0%)"
+
+        lines = [f"PROCESSING ERRORS: {n_failures} of {total} responses ({n_failures/max(total,1)*100:.1f}%)"]
+
+        # Group by reason
+        from collections import Counter
+        reason_counts = Counter()
+        for f in self.failure_log:
+            key = f['error_type'] if f['reason'] == 'exception' else f['reason']
+            reason_counts[key] += 1
+
+        lines.append(f"  Breakdown: {', '.join(f'{count}x {reason}' for reason, count in reason_counts.most_common())}")
+        lines.append("")
+
+        for f in self.failure_log:
+            reason_str = f['error_type'] if f['reason'] == 'exception' else f['reason']
+            preview = f['response_preview']
+            lines.append(f"  Respondent {f['respondent_id']}: {reason_str} | \"{preview}...\"")
+
+        return "\n".join(lines)
 
     def _normalize_idea_text(self, text: str) -> str:
         if not text:
@@ -2192,6 +2282,7 @@ class IdeaExtractor:
             except Exception as e:
                 # Extract concise error info for rate limit errors
                 error_str = str(e)
+                error_type = type(e).__name__
                 if "429" in error_str or "RateLimitReached" in error_str:
                     # Determine if RPM or TPM limit
                     if "token rate limit" in error_str.lower():
@@ -2200,6 +2291,7 @@ class IdeaExtractor:
                         limit_type = "RPM"
                     else:
                         limit_type = "rate"
+                    error_type = f"RateLimit_{limit_type}"
                     task_id = task_data.get('respondent_id', 'unknown') if task else 'unknown'
                     print(f"⚠️ 429 {limit_type} limit hit (task {task_id})")
                 else:
@@ -2208,7 +2300,13 @@ class IdeaExtractor:
                 self.stats['tasks_failed'] += 1
                 if task is not None:
                     task_index, task_data = task
-                    results[task_index] = self.create_fallback_response(task_data)
+                    self.failure_log.append({
+                        'respondent_id': task_data.get('respondent_id', 'unknown'),
+                        'reason': 'exception',
+                        'error_type': error_type,
+                        'response_preview': task_data.get('response', '')[:80]
+                    })
+                    results[task_index] = self.create_fallback_response(task_data, reason=error_type)
             finally:
                 if task is not None:
                     queue.task_done()
@@ -2421,6 +2519,14 @@ class IdeaExtractor:
         print(f"- Timeouts: {self.stats['timeouts']}")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
 
+        # Print PROCESSING_ERROR failure report
+        if self.failure_log:
+            print(f"\n{'='*70}")
+            print(self.get_failure_report(total_responses=len(tasks)))
+            print(f"{'='*70}")
+        else:
+            print(f"\nPROCESSING ERRORS: 0 of {len(tasks)} responses (0%)")
+
         # V3: Print optimal strategy stats
         offset_stats = self.tiktoken_offset_learner.get_stats()
         print(f"\nOPTIMAL STRATEGY STATS:")
@@ -2496,7 +2602,7 @@ class IdeaExtractor:
 
                 valid_ideas = []
                 for idea in resp.response_ideas:
-                    if idea.idea and idea.idea not in ["NA", "PROCESSING_ERROR", "NOT_PROCESSED"]:
+                    if idea.idea and not idea.idea.startswith("PROCESSING_ERROR") and idea.idea not in ["NA", "NOT_PROCESSED"]:
                         unique_ideas.add(idea.idea)
                         idea_words = idea.idea.split()
                         total_idea_length += len(idea_words)
@@ -2559,14 +2665,14 @@ class IdeaExtractor:
         total = len(self._results)
         processed = sum(1 for r in self._results
                        if r.response_ideas and
-                       not any(idea.idea in ["PROCESSING_ERROR", "NOT_PROCESSED"]
+                       not any(idea.idea.startswith("PROCESSING_ERROR") or idea.idea == "NOT_PROCESSED"
                               for idea in r.response_ideas))
         failed = total - processed
 
         total_ideas = sum(r.idea_count for r in self._results)
         unique_ideas = len(set(idea.idea for r in self._results
                               for idea in r.response_ideas
-                              if idea.idea not in ["NA", "PROCESSING_ERROR", "NOT_PROCESSED"]))
+                              if not idea.idea.startswith("PROCESSING_ERROR") and idea.idea not in ["NA", "NOT_PROCESSED"]))
 
         return {
             "total_responses": total,
