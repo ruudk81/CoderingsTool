@@ -347,8 +347,8 @@ class AlgorithmSelector:
         n = len(embeddings)
 
         # Adaptive parameters based on dataset size
-        kneedle_S = max(1.0, n / 100)
-        interp_method = "polynomial" if n < 200 else "interp1d"
+        kneedle_S = max(1.0, n / self.config.knee_s_denominator)
+        interp_method = "polynomial" if n < self.config.knee_interp_threshold else "interp1d"
 
         # Compute kNN distances
         nn = NearestNeighbors(n_neighbors=k + 1, metric='euclidean')
@@ -879,8 +879,8 @@ class ParameterOptimizer:
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             metric='euclidean',
-            cluster_selection_method='eom',
-            gen_min_span_tree=True,
+            cluster_selection_method=self.config.hdbscan_cluster_selection_method,
+            gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
         )
         labels = clusterer.fit_predict(reduced_normalized)
 
@@ -1107,8 +1107,8 @@ class ParameterOptimizer:
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             metric='euclidean',
-            cluster_selection_method='eom',
-            gen_min_span_tree=True,
+            cluster_selection_method=self.config.hdbscan_cluster_selection_method,
+            gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
         )
         best_labels = best_clusterer.fit_predict(reduced_normalized)
 
@@ -1174,8 +1174,8 @@ class ParameterOptimizer:
                     min_cluster_size=sel_min_cluster_size,
                     min_samples=sel_min_samples,
                     metric='euclidean',
-                    cluster_selection_method='eom',
-                    gen_min_span_tree=True,
+                    cluster_selection_method=self.config.hdbscan_cluster_selection_method,
+                    gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
                 )
                 sel_labels = sel_clusterer.fit_predict(sel_reduced)
                 sel_persistence = self._selector.extract_persistence_metrics(sel_clusterer, sel_labels)
@@ -1397,7 +1397,7 @@ class ParameterOptimizer:
 
         # 4. Smooth the curve using moving average
         # Window size: ~20% of data points, minimum 3
-        window_size = max(3, len(coherence_values) // 5)
+        window_size = max(3, len(coherence_values) // self.config.coherence_knee_window_divisor)
         if window_size % 2 == 0:
             window_size += 1  # Make odd for symmetric smoothing
 
@@ -1414,7 +1414,7 @@ class ParameterOptimizer:
                 curve="concave",
                 direction="increasing",
                 interp_method="polynomial",
-                polynomial_degree=3
+                polynomial_degree=self.config.coherence_knee_polynomial_degree
             )
             knee_k = kneedle.knee
             knee_y = kneedle.knee_y
@@ -1605,7 +1605,7 @@ class ParameterOptimizer:
                 min_samples=ms,
                 metric='euclidean',
                 cluster_selection_method=method,
-                gen_min_span_tree=True,
+                gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
             )
             labels = clusterer.fit_predict(reduced_normalized)
 
@@ -1694,7 +1694,7 @@ class ParameterOptimizer:
             min_samples=ms,
             metric='euclidean',
             cluster_selection_method=method,
-            gen_min_span_tree=True,
+            gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
         )
         best_labels = best_clusterer.fit_predict(reduced_normalized)
 
@@ -2178,7 +2178,7 @@ class ParameterOptimizer:
         coherence_values = np.array([k_to_best[k].user_attrs.get('coherence', 0) for k in sorted_k])
 
         # Smooth the curve
-        window_size = max(3, len(coherence_values) // 5)
+        window_size = max(3, len(coherence_values) // self.config.coherence_knee_window_divisor)
         if window_size % 2 == 0:
             window_size += 1
         coherence_smoothed = uniform_filter1d(coherence_values, size=window_size, mode='nearest')
@@ -2194,7 +2194,7 @@ class ParameterOptimizer:
                 curve="concave",
                 direction="increasing",
                 interp_method="polynomial",
-                polynomial_degree=3
+                polynomial_degree=self.config.coherence_knee_polynomial_degree
             )
             knee_k = kneedle.knee
             knee_y = kneedle.knee_y
@@ -2965,7 +2965,7 @@ def recluster_noise(
     noise_mask = labels == -1
     n_total_noise = noise_mask.sum()
 
-    min_total = 10
+    min_total = config.noise_reclustering_min_total
     if n_total_noise < min_total:
         if verbose:
             print(f"  Skipping noise reclustering: only {n_total_noise} noise points (minimum: {min_total})")
@@ -2987,8 +2987,8 @@ def recluster_noise(
         min_cluster_size=noise_mcs,
         min_samples=noise_ms,
         metric='euclidean',
-        cluster_selection_method='leaf',
-        gen_min_span_tree=True
+        cluster_selection_method=config.noise_reclustering_cluster_selection_method,
+        gen_min_span_tree=config.hdbscan_gen_min_span_tree
     )
     noise_labels = noise_hdbscan.fit_predict(U_noise)
 
