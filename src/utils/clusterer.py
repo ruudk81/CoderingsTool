@@ -1339,12 +1339,13 @@ def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[mode
                     idea_id=idea_submodel.idea_id,
                     idea=cleaned_idea,
                     taxonomy_phrase=idea_submodel.taxonomy_phrase,
-                    parent_category=idea_submodel.parent_category,
+                    ontology=idea_submodel.ontology,
                     sentiment=idea_submodel.sentiment,
                     sense=idea_submodel.sense,
                     # From EmbeddingsSubmodel
                     idea_embedding=idea_submodel.idea_embedding,
                     taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
+                    ontology_embedding=getattr(idea_submodel, 'ontology_embedding', None),
                     # From ClusterSubmodel
                     initial_cluster=idea_submodel.initial_cluster,
                     cluster_probability=idea_submodel.cluster_probability,

@@ -1914,14 +1914,24 @@ class CodeAssigner:
             if coded_model.response_ideas:
                 updated_ideas = []
                 for idea_submodel in coded_model.response_ideas:
-                    # Convert to AssignedIdeaSubmodel
+                    # Convert to AssignedIdeaSubmodel (preserve all inherited fields)
                     assigned_idea = models.AssignedIdeaSubmodel(
+                        # From IdeasExtractedSubmodel
                         idea_id=idea_submodel.idea_id,
                         idea=idea_submodel.idea,
+                        taxonomy_phrase=getattr(idea_submodel, 'taxonomy_phrase', ''),
+                        ontology=getattr(idea_submodel, 'ontology', None),
+                        sentiment=getattr(idea_submodel, 'sentiment', 'neutral'),
+                        sense=getattr(idea_submodel, 'sense', 'factual'),
+                        # From EmbeddingsSubmodel
+                        idea_embedding=getattr(idea_submodel, 'idea_embedding', None),
+                        taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
+                        ontology_embedding=getattr(idea_submodel, 'ontology_embedding', None),
+                        # From ClusterSubmodel
                         initial_cluster=getattr(idea_submodel, 'initial_cluster', None),
+                        cluster_probability=getattr(idea_submodel, 'cluster_probability', None),
                         expanded_cluster=getattr(idea_submodel, 'expanded_cluster', None),
-                        cluster_theme=getattr(idea_submodel, 'cluster_theme', None),
-                        idea_embedding=getattr(idea_submodel, 'idea_embedding', None)
+                        cluster_theme=getattr(idea_submodel, 'cluster_theme', None)
                     )
                     
                     # Add assignment data if available

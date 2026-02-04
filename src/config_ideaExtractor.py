@@ -160,6 +160,38 @@ class SpecifierConfig:
 # DEFAULT INSTANCES
 # =============================================================================
 
+# =============================================================================
+# SEGMENTATION CONFIGURATION (moved from config.py - ideaExtractor-only)
+# =============================================================================
+
+@dataclass
+class SegmentationConfig:
+    """Configuration for segmentation and description step"""
+    max_tokens: int = 16000
+    completion_reserve: int = 1000
+    min_batch_size: int = 5  # Minimum responses per batch for efficiency
+    max_batch_size: int = 20  # Maximum responses per batch for manageability
+    target_token_utilization: float = 0.8  # Use 80% of available tokens per batch
+    retry_delay: int = 2
+    max_retries: int = 3
+    spacy_batch_size: int = 32
+    umap_n_jobs: int = 1
+    max_code_examples: int = 5  # For verbose output
+    max_sample_responses: int = 3  # For verbose output
+    # Model configuration - will be overridden by ModelConfig
+    model: str = "gpt-4o-mini"  # Fallback model
+    temperature: float = 0.0  # Temperature for generation
+    max_concurrent_requests: int = 8  # Optimized for better throughput while respecting rate limits
+    # Timeout configuration for API calls
+    minimum_timeout_seconds: float = 15.0  # Minimum timeout for API calls (safety net)
+    maximum_timeout_seconds: float = 60.0  # Maximum timeout for API calls (prevents excessive waits)
+
+
+# =============================================================================
+# DEFAULT INSTANCES
+# =============================================================================
+
+DEFAULT_SEGMENTATION_CONFIG = SegmentationConfig()
 DEFAULT_TOKEN_HISTORY_CONFIG = TokenHistoryConfig()
 DEFAULT_TIKTOKEN_OFFSET_CONFIG = TiktokenOffsetConfig()
 DEFAULT_TIMEOUT_CONFIG = TimeoutConfig()

@@ -5,7 +5,7 @@ Generate embeddings for survey response ideas with configurable text formats
 and quality analysis.
 
 Supports:
-- Configurable text formats: "idea", "taxonomy_phrase", "idea_without_template_prefix", "both"
+- Configurable text formats: "idea", "taxonomy_phrase", "idea_without_template_prefix", "both_taxonomy_phrase"
 - OpenAI and Gemini embedding providers
 - Batch processing with configurable concurrency
 - Text deduplication for efficiency
@@ -38,6 +38,7 @@ from config_embedder import (
     EmbedderConfig,
     DEFAULT_EMBEDDER_CONFIG,
     BOTH_MODE_IDEA_FORMAT,
+    MULTI_PASS_SPECS,
 )
 
 # === UTILS ========================================================================================================
@@ -72,7 +73,7 @@ class Embedder:
     """Generate embeddings for survey response ideas with configurable text formats.
 
     Supports OpenAI and Gemini embedding providers with:
-    - Configurable text format: "idea", "taxonomy_phrase", "idea_without_template_prefix", "both"
+    - Configurable text format: "idea", "taxonomy_phrase", "idea_without_template_prefix", "both_taxonomy_phrase"
     - Batch processing with configurable concurrency
     - Text deduplication for efficiency
     - Optional question-aware embedding transformation
@@ -150,22 +151,53 @@ class Embedder:
             return self.extraction_metadata.template_prefix
         return None
 
+    def _format_ontology_text(self, idea) -> str:
+        """Format ontology fields into embedding text: 'instance - node (category)'.
+
+        Falls back to idea.idea when ontology is None or all fields are empty.
+        """
+        ontology = getattr(idea, 'ontology', None)
+        if ontology is None:
+            return idea.idea
+
+        instance = (getattr(ontology, 'instance', '') or '').strip()
+        node = (getattr(ontology, 'node', '') or '').strip()
+        category = (getattr(ontology, 'category', '') or '').strip()
+
+        parts = []
+        if instance:
+            parts.append(instance)
+        if node:
+            if category:
+                parts.append(f"{node} ({category})")
+            else:
+                parts.append(node)
+        elif category:
+            parts.append(f"({category})")
+
+        result = " - ".join(parts) if parts else ""
+        return result if result else idea.idea
+
     def _get_text_for_embedding(self, idea) -> str:
         """Extract text for embedding based on config.
 
         Args:
-            idea: Idea object with idea text and taxonomy_phrase fields
+            idea: Idea object with idea text, taxonomy_phrase, and ontology fields
 
         Returns:
             Text to embed based on config mode:
             - "idea": The clean idea text (idea.idea)
             - "taxonomy_phrase": The taxonomy phrase (idea.taxonomy_phrase)
             - "idea_without_template_prefix": The idea text with template_prefix stripped
+            - "ontology": Formatted ontology string "instance - node (category)"
         """
         if self.embedding_text_format == "taxonomy_phrase":
             taxonomy_phrase = getattr(idea, 'taxonomy_phrase', '') or ''
             # Fallback to idea text if no taxonomy_phrase
             return taxonomy_phrase if taxonomy_phrase else idea.idea
+
+        if self.embedding_text_format == "ontology":
+            return self._format_ontology_text(idea)
 
         if self.embedding_text_format == "idea_without_template_prefix":
             idea_text = idea.idea
@@ -187,6 +219,8 @@ class Embedder:
         # Log which embedding format is being used
         if self.embedding_text_format == "taxonomy_phrase":
             self.verbose_reporter.stat_line("Embedding format: taxonomy_phrase")
+        elif self.embedding_text_format == "ontology":
+            self.verbose_reporter.stat_line("Embedding format: ontology (instance - node (category))")
         elif self.embedding_text_format == "idea_without_template_prefix":
             prefix = self._get_template_prefix()
             if prefix:
@@ -501,7 +535,7 @@ class Embedder:
                         'idea': response_idea.idea,
                         # Pass through clean fields from input
                         'taxonomy_phrase': getattr(response_idea, 'taxonomy_phrase', '') or '',
-                        'parent_category': getattr(response_idea, 'parent_category', '') or '',
+                        'ontology': getattr(response_idea, 'ontology', None),
                         'sentiment': getattr(response_idea, 'sentiment', 'neutral') or 'neutral',
                         'sense': getattr(response_idea, 'sense', 'factual') or 'factual',
                     }
@@ -541,56 +575,89 @@ class Embedder:
         if var_lab is not None:
             self.var_lab = var_lab
 
-        # Handle "both" mode: run two passes
-        if self.embedding_text_format == "both":
-            return self._process_both_embeddings(data)
+        # Handle multi-pass modes (both_taxonomy_phrase, both_ontology, all)
+        if self.embedding_text_format in MULTI_PASS_SPECS:
+            return self._process_multi_pass_embeddings(
+                data, MULTI_PASS_SPECS[self.embedding_text_format]
+            )
 
         result = asyncio.run(self._process_embeddings_with_id_tracking(data))
 
         return result
 
-    def _process_both_embeddings(self, data: List[models.EmbeddingsModel]) -> List[models.EmbeddingsModel]:
-        """Process dual embeddings for 'both' mode.
+    def _merge_pass_embeddings(
+        self,
+        result: List[models.EmbeddingsModel],
+        pass_result: List[models.EmbeddingsModel],
+        target_field: str
+    ) -> int:
+        """Merge embeddings from a pass result into a specific field on the base result.
 
-        Runs two embedding passes:
-        1. First pass: embed idea text (using BOTH_MODE_IDEA_FORMAT) -> idea_embedding
-        2. Second pass: embed taxonomy_phrase -> taxonomy_embedding
+        Each pass produces embeddings in idea_embedding. This method copies those
+        into the correct target field (e.g. taxonomy_embedding, ontology_embedding).
+
+        Returns:
+            Number of embeddings merged.
+        """
+        merged_count = 0
+        for result_resp, pass_resp in zip(result, pass_result):
+            if result_resp.response_ideas and pass_resp.response_ideas:
+                for result_idea, pass_idea in zip(result_resp.response_ideas, pass_resp.response_ideas):
+                    if pass_idea.idea_embedding is not None:
+                        setattr(result_idea, target_field, pass_idea.idea_embedding)
+                        merged_count += 1
+        return merged_count
+
+    def _process_multi_pass_embeddings(
+        self,
+        data: List[models.EmbeddingsModel],
+        pass_specs: list
+    ) -> List[models.EmbeddingsModel]:
+        """Generic multi-pass embedding processor.
+
+        Runs N embedding passes based on pass_specs, merging each pass's
+        embeddings into the correct target field on the result.
 
         Args:
             data: List of EmbeddingsModel instances
+            pass_specs: List of EmbeddingPass specs defining each pass
 
         Returns:
-            List of EmbeddingsModel with both embedding fields populated
+            List of EmbeddingsModel with all specified embedding fields populated
         """
         original_format = self.embedding_text_format
+        result = None
 
-        # === PASS 1: Embed idea text ===
-        self.verbose_reporter.stat_line(f"\n--- PASS 1: Embedding idea text (format: {BOTH_MODE_IDEA_FORMAT}) ---")
-        self.embedding_text_format = BOTH_MODE_IDEA_FORMAT
-        result = asyncio.run(self._process_embeddings_with_id_tracking(data))
+        for pass_idx, pass_spec in enumerate(pass_specs):
+            self.verbose_reporter.stat_line(
+                f"\n--- PASS {pass_idx + 1}/{len(pass_specs)}: "
+                f"Embedding {pass_spec.label} (format: {pass_spec.text_format}) ---"
+            )
+            self.embedding_text_format = pass_spec.text_format
+            pass_result = asyncio.run(self._process_embeddings_with_id_tracking(data))
 
-        # === PASS 2: Embed taxonomy_phrase ===
-        self.verbose_reporter.stat_line(f"\n--- PASS 2: Embedding taxonomy_phrase ---")
-        self.embedding_text_format = "taxonomy_phrase"
-        taxonomy_result = asyncio.run(self._process_embeddings_with_id_tracking(data))
-
-        # === MERGE: Copy taxonomy embeddings into result's taxonomy_embedding field ===
-        self.verbose_reporter.stat_line(f"\n--- Merging embeddings ---")
-        merged_count = 0
-        for resp_idx, (result_resp, taxonomy_resp) in enumerate(zip(result, taxonomy_result)):
-            if result_resp.response_ideas and taxonomy_resp.response_ideas:
-                for idea_idx, (result_idea, taxonomy_idea) in enumerate(zip(result_resp.response_ideas, taxonomy_resp.response_ideas)):
-                    # The taxonomy_resp has the taxonomy embedding in idea_embedding (since that's what was embedded)
-                    if taxonomy_idea.idea_embedding is not None:
-                        result_idea.taxonomy_embedding = taxonomy_idea.idea_embedding
-                        merged_count += 1
-
-        self.verbose_reporter.stat_line(f"Merged {merged_count} taxonomy embeddings")
+            if result is None:
+                # First pass: use as base result (idea_embedding is already in place)
+                result = pass_result
+                if pass_spec.target_field != "idea_embedding":
+                    # First pass targets a non-default field; move embeddings
+                    merged = self._merge_pass_embeddings(result, pass_result, pass_spec.target_field)
+                    # Clear idea_embedding since it was moved
+                    for resp in result:
+                        if resp.response_ideas:
+                            for idea in resp.response_ideas:
+                                if getattr(idea, pass_spec.target_field, None) is not None:
+                                    idea.idea_embedding = None
+                    self.verbose_reporter.stat_line(f"Stored {merged} {pass_spec.target_field} embeddings")
+            else:
+                # Subsequent passes: merge into target field
+                merged = self._merge_pass_embeddings(result, pass_result, pass_spec.target_field)
+                self.verbose_reporter.stat_line(f"Merged {merged} {pass_spec.target_field} embeddings")
 
         # Restore original format and set it on result models
         self.embedding_text_format = original_format
         for resp in result:
-            resp.embedding_text_format = "both"
+            resp.embedding_text_format = original_format
 
         return result
 

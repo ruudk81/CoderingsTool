@@ -237,85 +237,207 @@ If chunks disagree: choose the most frequently occurring concept (semantic simil
 
 Return ONE consolidated set of GROUP 2 specifiers."""
 
-
 TAXONOMY_CHUNK_SCORING_PROMPT = """
-You are analyzing survey responses to determine the SINGLE PRIMARY TAXONOMY AXIS that should be used to generate MECE (Mutually Exclusive and Collectively Exhaustive) descriptive codes for a chunk of responses.
+You are analyzing a chunk of survey responses to determine the SINGLE PRIMARY TAXONOMY AXIS that should be used to generate MECE (Mutually Exclusive and Collectively Exhaustive) descriptive codes.
 
-Here is the survey question that was asked in {language}:
+Your output will be used downstream to consolidate multiple chunks into a single global code spine, so precision and consistency matter.
+
+---
+
+## INPUTS
+
+Survey question (in {language}):
 
 <survey_question>
 {survey_question}
 </survey_question>
 
-Here are the responses in {language} you need to analyze:
+Survey responses to analyze (in {language}):
 
 <chunk_responses>
-{chunk_size}
+{chunk_responses}
 </chunk_responses>
 
-This chunk contains {chunk_size} sample responses.
+This chunk contains {chunk_size} responses.
+
+---
 
 ## YOUR TASK
 
-Idebtifty ONE dominant organizing principle as the primary taxonomy axis that best differentiates the responses such that a code set built on it will be:
+Identify ONE dominant organizing principle (taxonomy axis) that best differentiates these responses such that a code set built on it will be:
+
 - Mutually exclusive (no overlap between codes)
 - Collectively exhaustive (all responses can be coded)
 
+You must also assess how strongly each possible coding dimension applies.
+
+---
+
 ## CORE PRINCIPLE
 
-Base your decision on COMMUNICATIVE MEANING — what respondents are primarily trying to convey in their responses — not on grammatical form or surface-level word choice.
+Base your decision on COMMUNICATIVE MEANING — what respondents are primarily trying to convey — not on grammatical form, phrasing, or surface-level keywords.
+
+Ask: *What kind of difference between responses actually matters for understanding what people are saying?*
+
+---
 
 ## SIX POSSIBLE CODING DIMENSIONS
 
-You must choose the dimension that produces the CLEANEST MECE PARTITION for this specific question + response set:
+Evaluate all six, then select the ONE that produces the cleanest MECE partition for this specific question and response set:
 
-1) **WHAT** — attributes, features, characteristics, properties, or aspects of something
-   - Use when responses primarily describe different features, qualities, or attributes
+1) **WHAT** — attributes, features, characteristics, properties, or aspects of something  
+2) **WHY** — motivations, goals, reasons, desired outcomes, or value sought  
+3) **HOW** — actions, behaviors, methods, processes, or implementation approaches  
+4) **WHO** — people, groups, roles, stakeholders, or beneficiaries  
+5) **WHEN** — timing, urgency, sequence, frequency, or temporal aspects  
+6) **WHERE** — location, channel, setting, or situational context  
 
-2) **WHY** — goals, motivations, desired outcomes, reasons, purposes, or value sought
-   - Use when responses primarily express different motivations, goals, or reasons
+---
 
-3) **HOW** — actions, steps, processes, methods, behaviors, or implementation approaches
-   - Use when responses primarily describe different actions, methods, or behaviors
+## DEFINING THE PRIMARY TAXONOMY AXIS
 
-4) **WHO** — people, groups, stakeholders, roles, or beneficiaries
-   - Use when responses primarily differ by the person, group, or role involved
+Follow these steps:
 
-5) **WHEN** — timing, urgency, sequence, frequency, or temporal aspects
-   - Use when responses primarily differ by time, timing, or frequency
+1. Understand what the survey question is asking
+2. Review the responses and identify how they meaningfully differ
+3. Evaluate each of the six dimensions as a potential organizing principle
+4. Select the dimension that yields the cleanest MECE partition
+5. Define a specific taxonomy axis within that dimension
 
-6) **WHERE** — place, location, channel, setting, or situational context
-   - Use when responses primarily differ by location, channel, or context
+**Important constraints:**
+- You must select ONLY ONE primary dimension
+- The taxonomy axis you define must clearly fall within the selected dimension
+- The axis should be phrased so that code labels can be directly created from it
 
-## DEFINING THE PRIMARY AXIS
+---
 
-Before providing your final answer, use the scratchpad to:
-1. Review the survey question and understand what is being asked
-2. Read through the responses and identify the main themes or patterns
-3. Consider which of the six dimensions best captures how responses differ from each other
-4. Test your choice: Would codes based on this dimension be mutually exclusive and collectively exhaustive?
-5. Define the specific taxonomy axis within your chosen dimension
+## OUTPUT FORMAT
 
-Use <scratchpad> tags for your thinking process.
-
-## OUTPUT FORMAT After your analysis in the scratchpad, provide your final answer in the following structure:
+After reasoning in the scratchpad, return the following structured output.
+All content must be written in {language}.
 
 <analysis>
+
+<primary_dimension>
+WHAT | WHY | HOW | WHO | WHEN | WHERE
+</primary_dimension>
+
 <taxonomy_axis>
-In 1–2 sentences, define the specific organizing axis within the chosen dimension that will become the MECE code spine.
-It must be phrased so that code labels can be created directly from it.
+In 1–2 sentences, define the specific organizing axis within the chosen dimension.
+Phrase it so downstream code labels can be directly derived from it.
 </taxonomy_axis>
 
+<dimension_scores>
+Provide a confidence score from 0.0 to 1.0 for EACH dimension, reflecting how well it could organize these responses.
+Scores do not need to sum to 1.
+
+WHAT: float
+WHY: float
+HOW: float
+WHO: float
+WHEN: float
+WHERE: float
+</dimension_scores>
+
 <evidence>
-Provide 2–3 brief verbatim snippets from the responses that show why this axis is dominant.
+Provide 2–3 brief verbatim snippets from the responses that demonstrate why the selected axis is dominant.
 </evidence>
 
 <mece_check>
-In 1–2 sentences, explain why codes built on this axis will minimize overlap and cover all responses.
+In 1–2 sentences, explain why codes built on this axis will minimize overlap and fully cover the response set.
 </mece_check>
-</analysis>
 
-All output in your scratchpad and analysis must be written in {language}.
+</analysis>
+"""
+
+TAXONOMY_CONSOLIDATION_PROMPT = """
+You are consolidating multiple chunk-level taxonomy analyses into a SINGLE GLOBAL TAXONOMY AXIS.
+Each chunk analysis evaluated the same survey question and produced:
+- a primary coding dimension
+- a specific taxonomy axis
+- confidence scores for all six dimensions
+- supporting evidence
+
+Your job is to determine the best overall organizing principle for building a MECE
+(Mutually Exclusive, Collectively Exhaustive) descriptive codebook across ALL responses.
+
+---
+
+## INPUTS
+
+Survey question:
+{survey_question}
+
+Chunk-level analyses:
+{chunk_results}
+
+---
+
+## YOUR TASK
+
+### 1. Aggregate dimension evidence
+- Compute evidence-weighted average scores for each of the six dimensions
+- Use each chunk’s dimension_scores as inputs
+- Weight scores by the number of responses in each chunk (e.g., chunk_size or evidence_count)
+
+### 2. Select the PRIMARY taxonomy dimension
+Choose the ONE dimension that:
+- Has strong and consistent weighted scores across chunks
+- Captures the dominant communicative meaning in the full response set
+- Produces the cleanest MECE partition when used as a code spine
+
+Important:
+- Do NOT select a dimension solely because it appears most frequently
+- Favor partition clarity and interpretability over raw score dominance
+
+### 3. Define the GLOBAL taxonomy axis (code spine)
+Write a context-specific taxonomy axis description that:
+- Is specific to THIS survey question and response domain
+- Clearly falls within the selected primary dimension
+- Operates at a mid-level of abstraction (not too narrow, not too broad)
+- Can directly seed downstream code labels
+- Indicates what coders should extract from each response
+
+### 4. Evaluate the need for a SECONDARY dimension (optional)
+Only select a secondary dimension if ALL of the following are true:
+- It is orthogonal to the primary dimension
+- It captures meaningful variation not represented by the primary axis
+- A single response would not typically require multiple secondary codes
+- It does not introduce overlap with primary-axis codes
+
+If no such dimension exists, set secondary_dimension to null.
+
+---
+
+## DECISION RULES
+
+- If chunk analyses converge, follow the consensus
+- If chunk analyses diverge, rely on evidence-weighted dimension scores
+- Optimize for MECE quality and downstream coding usability
+- Prefer clarity and stability over cleverness
+
+---
+
+## OUTPUT FORMAT
+
+Return JSON ONLY. Do not include explanations outside the JSON object.
+
+{{
+  "primary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE",
+  "primary_dimension_rationale": "Brief explanation of why this dimension is dominant",
+  "primary_dimension_description": "Definition of the taxonomy axis (code spine) at proper abstraction level",
+  "primary_dimension_score": float,
+  "secondary_dimension": "WHAT | WHY | HOW | WHO | WHEN | WHERE" or null,
+  "secondary_dimension_rationale": string or null,
+  "all_dimension_scores": {{
+     "WHAT": float,
+     "WHY": float,
+     "HOW": float,
+     "WHO": float,
+     "WHEN": float,
+     "WHERE": float
+  }}
+}}
 """
 
 
@@ -405,156 +527,177 @@ You are a {language} language expert generating a phrasing template for survey r
 Language: {language}
 Survey question: {survey_question}
 Primary taxonomy axis: {primary_axis} ({primary_axis_description})
-Secondary axis (if any): {secondary_axis}
+
+Context (from prior analysis):
+- Domain: {domain}
+- Topic: {topic}
+- Entity: {entity}
+- Type of respondent: {perspective}
+- Intent by response: {intent}
 </input>
 
-<taxonomy_axis_dimensions>
+<definitions>
+- **Canonical subject**: The main product, brand, service, actor, organization, location, topic, issue, or other subject the question is essentially about.
+- **Actionable taxonomy dimension**: A specific dimension type within the primary taxonomy axis that guides code generation (e.g., for WHAT: "attributes" or "features").
+- **Phrasing template**: A flexible sentence structure that can be used to extract ideas aligned with the actionable taxonomy dimension.
+</definitions>
+
+<actionable_taxonomy_dimensions>
 "WHAT": "topic_object - concepts, things, topics, features, attributes"
 "WHY": "intent_purpose - goals, desired outcomes, improvements, reasons"
 "HOW": "action_method - actions, steps, processes, methods, ways"
 "WHO": "actor_target - people, groups, stakeholders, beneficiaries"
 "WHEN": "time_urgency - time references, urgency, sequence, timing"
 "WHERE": "location_context - place, context, channel, location"
-</taxonomy_axis_dimensions>
+</actionable_taxonomy_dimensions>
 
 ## Task 1: Identify the canonical subject
-- Find the main product, brand, service, actor, or topic the question is about
-- Return a concise, normalized noun phrase in {language}
-- Preserve capitalization for proper nouns; otherwise use lowercase
 
-## Task 2: Create a phrasing template
+- Find the main product, brand, service, actor, organization, location, topic, issue, or other subject the question is essentially about.
+- Return a concise, normalized noun phrase in {language}.
+- Preserve capitalization for proper nouns; otherwise use lowercase.
+- If the survey question does not reference a concrete entity, select the most stable abstract noun phrase that responses consistently refer to (e.g., "the experience", "the process", "the service").
+
+## Task 2: Choose the actionable taxonomy dimension
+
+From <actionable_taxonomy_dimensions>, select the SINGLE most relevant dimension type for the {primary_axis} axis.
+- Look at the options for {primary_axis}.
+- Choose ONE specific term that best fits this survey's responses.
+- Choose the term that best supports mutually exclusive, non-overlapping code labels.
+
+## Task 3: Create a phrasing template
 
 Use this flexible structure:
-**"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ATTRIBUTE_OR_ACTION]"**
+**"[CANONICAL_TERM] [VERB/STATE] [SCAFFOLDING_WORDS] [ACTIONABLE_TAXONOMY_DIMENSION]"**
 
 Where:
 - CANONICAL_TERM: the focus entity from Task 1
-- VERB/STATE: appropriate verb in {language} (e.g., "is", "has", "should", "needs", "zijn", "heeft", "moet")
-- SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty if verb alone works)
-- [ATTRIBUTE_OR_ACTION]: placeholder for actual content
+- VERB/STATE: appropriate verb in {language}
+- SCAFFOLDING_WORDS: grammatical words needed for completeness (may be empty)
+- [ACTIONABLE_TAXONOMY_DIMENSION]: placeholder for response content aligned with the selected dimension
 
 ### Axis-aware verb/state guidance
 
-The **{primary_axis}** axis suggests certain verb patterns work best:
+- **WHAT**: "has/heeft", "is characterized by/kenmerkt zich door"
+- **WHY**: "should achieve/moet bereiken", "needs to provide/moet bieden"
+- **HOW**: "should/moet", "can/kan", "needs to/moet"
+- **WHO**: focus on the actor, e.g., "needs/heeft nodig", "should receive/moet krijgen"
+- **WHEN**: include timing context in scaffolding
+- **WHERE**: include location context in scaffolding
 
-- **WHAT** (features, properties): verbs like "has/heeft", "is characterized by/kenmerkt zich door"
-- **WHY** (goals, improvements): verbs like "should achieve/moet bereiken", "needs to provide/moet bieden"
-- **HOW** (actions, methods): verbs like "should/moet", "can/kan", "needs to/moet"
-- **WHO** (stakeholders): focus on the actor, verbs like "needs/heeft nodig", "should receive/moet krijgen"
-- **SENTIMENT** (evaluations): verbs like "is/is", "performs/presteert"
-- **WHEN** (timing): include timing context in scaffolding
-- **WHERE** (location): include location context in scaffolding
-
-Choose the verb/state that sounds MOST NATURAL in {language} for this specific question.
+Choose the verb/state that sounds MOST NATURAL in {language}.
 
 ### Grammatical completeness constraint
 
-The template MUST produce a grammatically complete sentence when [ATTRIBUTE_OR_ACTION] is replaced with a simple word.
+The template MUST produce a natural language response that directly addresses the survey question when [ACTIONABLE_TAXONOMY_DIMENSION] is replaced with a single adjective or noun phrase.
 
-Test your template by filling [ATTRIBUTE_OR_ACTION] with a one-word example (e.g., "better", "quality", "beter", "kwaliteit").
+Test your template with a one-word or short noun-phrase example.
 
-Common scaffolding patterns:
-* For "has/heeft" → often needs: "has the [quality/feature] [ATTRIBUTE_OR_ACTION]" / "heeft de [eigenschap] [ATTRIBUTE_OR_ACTION]"
-* For "should/moet" → often works directly: "should [ATTRIBUTE_OR_ACTION]" / "moet [ATTRIBUTE_OR_ACTION]"
-* For "is/is" → often works directly: "is [ATTRIBUTE_OR_ACTION]"
-
-## Task 3: Choose the actionable taxonomy dimension
-
-From <taxonomy_axis_dimensions>, select the SINGLE most relevant dimension type for the {primary_axis} axis.
-- Look at the options for {primary_axis} (e.g., for WHAT: "concepts, things, topics, features, attributes")
-- Choose ONE specific term that best fits this survey's responses
-- This narrows the taxonomy focus for MECE code generation
-
-Output format (return **only** this JSON object):
-{{
+Output format (return only this JSON object):
+{
   "canonical_term": "main subject/entity from the survey question in {language}",
-  "canonical_phrasing": "natural template ending with [ATTRIBUTE_OR_ACTION] in {language}",
   "taxonomy_axis": "{primary_axis}",
-  "taxonomy_actionable_type": "chosen single dimension (e.g., 'attributes' or 'features')"
-}}
+  "taxonomy_actionable_type": "chosen single dimension (e.g., 'attributes' or 'features')",
+  "canonical_phrasing": "natural template ending with [ACTIONABLE_TAXONOMY_DIMENSION] in {language}"
+}
 """
 
 
 TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """
-You are a {language} language expert extracting structured ideas through the lens of a specified taxonomy axis,
+You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis. Your task is to identify all ideas expressed in a survey response, classify them according to a given taxonomy axis, and format them according to a specific template structure.
 
-<inputs>
+Here is the survey context:
+
+<survey_context>
+language of responses: {language}
 Survey question: {var_lab}
 
-Primary taxonomy axis: {taxonomy_axis}
-Primary taxonomy axis description: {taxonomy_axis_description}
-Taxonomy actionable type: {taxonomy_actionable_type}
+Domain: {domain}
+Topic: {topic}
 
-Domain context: {domain} / {topic} / {entity}
+Type of respondent: {perspective}
+Dominant response frame: {intent}
+Object of intent: {entity}
+</survey_context>
 
+Here is the taxonomy configuration:
+
+<taxonomy_config>
+Taxonomy dimension to be used: {taxonomy_axis}: {taxonomy_actionable_type}
+</taxonomy_config>
+
+Here is the response you need to process:
+
+<response>
 Respondent ID: {respondent_id}
 Response: {response}
-</inputs>
+</response>
 
-<template_rule>
-REQUIRED FORMAT for the "idea" field:
-- Start with EXACTLY: "{template_prefix}"
-- Then add the specific {taxonomy_actionable_type}
+For each idea you identify, you must extract the following information:
 
-Template structure: {canonical_phrasing}
+**1. respondent_id**: Use the respondent ID provided in the response context.
 
-CORRECT examples:
-- "{template_prefix} duurzaamheid"
-- "{template_prefix} goede service"
+**2. idea_id**: Assign a sequential number as a string (e.g., "1", "2", "3") for each idea extracted from this response.
 
-INCORRECT examples:
-- Starting with pronouns: "Ze hebben goede service"
-- Missing prefix: "duurzaamheid"
-- Rephrased prefix: "De bank staat voor duurzaamheid"
-</template_rule>
+**3. idea**: The complete formatted idea statement. This MUST follow these rules:
+   - Begin with EXACTLY this template provided: {template_prefix}
+   - Then replace the placeholder ("[{taxonomy_actionable_type}]") with idea identified in the response.
+   - The replacement text must be a complete, grammatical sentence fragment (5-20 words total)
+   - Must directly address the survey question when combined with the template prefix
+   - Must be concise and specific
+   - Must NOT contain pronouns or references to the respondent
+   - Must NOT contain filler words or unnecessary phrases
+   - Must be written in the {language} specified in the survey context  
 
-<instructions>
-Extract ALL distinct ideas expressed in this response.
+**4. ontology**
+For each idea, identify its position in a conceptual hierarchy for the given taxonomy dimension.
 
-For each idea, produce:
+You must extract:
 
-1. **idea** (5–20 words)
-   REQUIRED FORMAT:
-   - Start with EXACTLY: "{template_prefix}"
-   - Then add the specific {taxonomy_actionable_type}
-   - Written in {language}
+- **instance**: the literal action / object / concept expressed in the idea (verbatim, no paraphrasing)
+- **node**: the canonical, reusable ontology concept instantiated by the instance (noun phrase)
+- **category**: the immediate parent grouping of the node
+- **root**: the top-level domain framing implied by the research question and taxonomy dimension
 
-   The idea MUST begin with the template prefix verbatim.
+Rules:
+- The instance MUST be a contiguous span from the idea text (no rewording or abstraction).
+- The node MUST be reusable across multiple responses.
+- Category and root MUST be consistent with the taxonomy axis ({taxonomy_axis}) and actionable type ({taxonomy_actionable_type}).
+- Do NOT repeat the idea text verbatim at all levels.
+- Prefer stable, domain-relevant concepts over stylistic paraphrases.
+- If multiple interpretations exist, choose the primary one implied by the survey context.
 
-2. **taxonomy_phrase** (1–3 words)
-- A concise noun-phrase that abstracts the idea into a reusable {taxonomy_actionable_type} aligned with the taxonomy axis ({taxonomy_axis}: {taxonomy_axis_description})
-- Phrasing rules:
-   * Make the semantic core of the taxonomy_phrase the head of the noun phrase.
-   * DO NOT repeat the domain entity or product name (e.g., "{entity}", "maaltijden", "product").
-     - BAD: "zoutgehalte maaltijden" → GOOD: "zoutgehalte"
-     - BAD: "voedingswaarde maaltijden" → GOOD: "voedingswaarde"
-   * Prefer single-word attribute nouns over compound action-nouns.
-     - BAD: "assortiment uitbreiding" → GOOD: "assortimentsvariatie"
-     - BAD: "prijs verlaging" → GOOD: "prijsniveau"
-   * Avoid meta-language about perception, opinion, or thought.
-   * Avoid verbs or verb-noun compounds.
--  Written in {language}.
+Write all ontology fields in {language}.
 
-3. **parent_category** (1–2 words)
-- A high-level abstract grouping theme for MECE clustering.
-- Must be a single abstract noun or short noun-phrase (e.g., "samenstelling", "aanbod", "kwaliteit", "prijs").
-- DO NOT add qualifiers like "van ingrediënten" or "van product" — keep it minimal.
-- Written in {language}.
+**5. taxonomy_phrase**: - A concise noun-phrase that abstracts the idea into a reusable {taxonomy_actionable_type}-category on the taxonomy axis ({taxonomy_axis}: {taxonomy_axis_description})
+   - Make the semantic core of the taxonomy_phrase the HEAD of the noun phrase
+   - DO NOT repeat entities already mentioned in the domain context: {domain}, {topic} and {entity}
+   - Prefer single-word attribute nouns over compound action-nouns
+     * Example: Instead of "price reduction" use "price level"
+     * Example: Instead of "assortment expansion" use "assortment variety"
+   - Avoid meta-language about perception, opinion, or thought
+   - Avoid verbs or verb-noun compounds
+   -  Written in {language}.
 
-4. **sentiment** (choose one): positive | negative | neutral
+**6. sentiment**: Choose exactly one of: positive | negative | neutral
+   - positive = praise, approval, satisfaction
+   - negative = complaint, dissatisfaction, criticism
+   - neutral = suggestion without judgment, factual mention
 
-- positive = praise / approval, etc.
-- negative = complaint / dissatisfaction, etc.
-- neutral = suggestion without judgment / factual mention, etc.
+**7. sense**: Choose exactly one of: factual | evaluative | aspirational | experiential
+   - factual = objective statement of fact
+   - evaluative = judgment or assessment
+   - aspirational = desire or wish for something
+   - experiential = description of personal experience
 
-5. **sense** (choose one): factual | evaluative | aspirational | experiential
+**IDEA SPLITTING RULES:**
 
-IDEA SPLITTING RULES
+When a response contains multiple conceptually distinct aspects, split them into separate ideas. Each atomic concept should be extracted as its own idea with its own idea_id.
 
-- Split multi-aspect ideas into separate ideas when conceptually distinct.
-- Example: "Sustaainble investment" can be seperated into two atomic concepts "sustainability" and "investment".
+Example: If a response mentions both "sustainable investment options" and "lower fees", extract these as two separate ideas because sustainability and fees are conceptually distinct aspects.
 
-EXAMPLE
+
+**EXAMPLE:**
 
 Template: {canonical_phrasing}
 Template prefix: "{template_prefix}"
@@ -568,7 +711,12 @@ Extracted ideas:
     "idea_id": "1",
     "idea": "{template_prefix} more shaded seating areas",
     "taxonomy_phrase": "shaded seating",
-    "parent_category": "facilities",
+    "ontology": {{
+      "instance": "more shaded seating areas",
+      "node": "shade provision",
+      "category": "amenity design changes",
+      "root": "environmental intervention"
+    }},
     "sentiment": "positive",
     "sense": "aspirational"
   }},
@@ -577,7 +725,12 @@ Extracted ideas:
     "idea_id": "2",
     "idea": "{template_prefix} better evening lighting",
     "taxonomy_phrase": "evening lighting",
-    "parent_category": "facilities",
+    "ontology": {{
+      "instance": "better evening lighting",
+      "node": "lighting improvement",
+      "category": "amenity design changes",
+      "root": "environmental intervention"
+    }},
     "sentiment": "positive",
     "sense": "aspirational"
   }}
@@ -592,7 +745,12 @@ Return a JSON array. Each item:
   "idea_id": "sequential number as string",
   "idea": "{template_prefix} [specific {taxonomy_actionable_type}]",
   "taxonomy_phrase": string,
-  "parent_category": string,
+  "ontology": {{
+      "instance": string,
+      "node": string,
+      "category": string,
+      "root": string 
+      }}
   "sentiment": "positive|negative|neutral",
   "sense": "factual|evaluative|aspirational|experiential"
 }}
@@ -605,7 +763,6 @@ Edge cases:
 CRITICAL: Make the semantic core of the taxonomy_phrase the head of the noun phrase.
 
 Return ONLY the JSON array. Field names in English; text values in {language}.
-</instructions>
 """
 
 # Helper dict for taxonomy axis descriptions
@@ -687,7 +844,7 @@ You will be working with the following inputs:
 - Number of codes to generate: <n_codes> {n_codes} </n_codes>
 - Survey question to analyze: <survey_question> {survey_question} </survey_question>
 
-Your task is to generate {{n_codes}} diverse, hypothetical codes that might emerge from analyzing responses to the given survey question. Create codes that could apply to ANY survey topic. Do not assume the survey is about education, healthcare, or any specific domain. Let the survey question guide your code generation.
+Your task is to generate {n_codes} diverse, hypothetical codes that might emerge from analyzing responses to the given survey question. Create codes that could apply to ANY survey topic. Do not assume the survey is about education, healthcare, or any specific domain. Let the survey question guide your code generation.
 
 Consider different code types when generating your codes:
 - Attribute codes: Qualities or characteristics mentioned
@@ -724,39 +881,81 @@ Return ONLY the JSON array in {language}. Do not include any additional text or 
 # STEP 6: CODEBOOK GENERATION - 4 PROMPT CHAIN
 # =============================================================================
 
+AXIS_LABEL_CONTRACT = {
+  "WHAT": {
+    "theme_head": "topic",  # or "object"
+    "must_be": "topic/object/attribute (a thing being referenced)",
+    "must_not_be": "action/method, intent/outcome, actor, evaluation, time, location"
+  },
+  "WHY": {
+    "theme_head": "motive", # or "intent"
+     "must_be": "intent/purpose/reason (a goal or desired outcome)",
+    "must_not_be": "action/method, topic/object, actor, evaluation, time, location"
+  },
+  "HOW": {
+    "theme_head": "mechanism", # or "practice"
+    "must_be": "action/method/mechanism (a practice or way of doing)",
+    "must_not_be": "intent/outcome, topic/object, actor, evaluation, time, location"
+  },
+  "WHO": {
+    "theme_head": "actor", # or "stakeholder"
+    "must_be": "actor/target group (a person/group/stakeholder)",
+    "must_not_be": "action/method, intent/outcome, topic/object, evaluation, time, location"
+  },
+  "WHEN": {
+    "theme_head": "timing", # or "time-reference"
+    "must_be": "time/urgency/sequence reference",
+    "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, location"
+  },
+  "WHERE": {
+    "theme_head": "context",  #or "setting"
+    "must_be": "location/context/channel/setting",
+    "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, time"
+  }
+}
+
+
 CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher responsible for extracting central organizing concepts (COCs) from descriptive codes representing survey responses. 
+You are a qualitative researcher responsible for extracting ATOMIC {taxonomy_actionable_type}-{theme_head} THEMES from descriptive codes representing survey responses to a survey question.
+An ATOMIC {taxonomy_actionable_type}-{theme_head} THEME is a single, indivisible {taxonomy_actionable_type} or {theme_head} present in the data. 
 
-A central organizing concept (COC) is a theme that captures the core meaning uniting multiple descriptive codes in a cluster. This theme must be:
-- ATOMIC: It expresses one single, indivisible idea. It cannot be broken into smaller concepts that carry distinct or practical meaning for explaining survey responses in light of the research question.
-- ACTIONABLE: Can be clearly identified and address the survey question directly and explicity
-- GROUNDED: Directly supported by the descriptive codes in the cluster
+Atomicity rules (must all be satisfied): 
+- The theme expresses exactly ONE semantic nucleus. 
+- The theme label contains exactly ONE head noun. 
+- The label must NOT contain “and”, “or”, “/”, commas, or multiple content nouns. 
+- If a label could be split into two meaningful labels, it is NOT atomic. 
+- If multiple aspects appear in the cluster, you MUST split them into separate atomic themes. Do NOT invent meta-parent or umbrella concepts.
 
-CRITICAL: Each theme must be identified and described through the lens of the specified survey question and coding dimension on the taxonomy axis.
+{taxonomy_actionable_type}-{theme_head} rules:
+- Themes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming are {must_be} VALID.
+- Labels naming are {must_not_be} INVALID.
 
-Here is the survey context:
+Grounding rules:
+- Themes must be directly supported by the descriptive codes.
+- Do not introduce themes not present in the cluster.
+
+Dimension constraint:
+All themes MUST remain strictly within the specified taxonomy axis: {taxonomy_axis}: {taxonomy_axis_description}.
+
+---
+
+SURVEY CONTEXT
 
 <survey_context>
 Survey question: "{survey_question}"
 Language: {language}
-
 Domain: {domain}
 Topic: {topic}
 Perspective: {perspective}
 Intent: {intent}
+Entity: {entity}
 </survey_context>
 
-Here is the taxonomy context that defines how you must analyze the data:
+---
 
-<taxonomy_context>
-Taxonomy axis: {taxonomy_axis}
-Axis description: {taxonomy_axis_description}
-primary Coding Dimension: {taxonomy_actionable_type}
-IMPORTANT: All COCs and themes MUST be defined on the taxonomy axis and within the primary coding dimension ONLY.
-</taxonomy_context>
+CLUSTER DATA
 
-
-Here is the cluster data you need to analyze:
 <cluster_id>
 {cluster_id}
 </cluster_id>
@@ -765,45 +964,46 @@ Here is the cluster data you need to analyze:
 {cluster_text}
 </cluster_text>
 
-When creating theme labels, follow these strict constraints:
-- Use a short noun phrase of 10 words or fewer
-- Make the semantic core of the theme the head of the noun phrase
-- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
-- All naming and labeling of ATOMIC THEMES must be single-valued
-- No label may contain conjunctions (“and”, “or”, “&”), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-- Do NOT output multi-labels, spans, or hybrids. If a code mentions multiple aspects, find a shared meta-parent concept or split into separate atomic concepts
-- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+---
 
-When creating theme definitions, follow these strict constraints:
-- Use 30 words or fewer
-- Ground the definition in the cluster data
-- Describe **what belongs in this code**, not why it happens
-- Align directly with the survey question, taxonomy axis, and coding dimension
-- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
-- Do NOT explain causes, conditions, or interpretations
-- DO NOT repeat the actor, domaintopic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+LABEL CONSTRAINTS
 
-Follow these analysis steps in order:
+Theme labels must:
+- Be a noun phrase of 1–3 words.
+- Exactly one semantic head (one core concept); modifiers allowed
+- no coordination (and/or), no lists, no multi-concept bundles
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
 
-1. Review the descriptive codes to identify patterns of shared meaning in light of the taxonomy focus and research question
-2. TEST: If a COC can be split into multiple atomic themes that can be meaningfully or practically differentiated in light of the research question, there is probably more than one COC/atomic theme in the cluster -> split accordingly.
-3. Do not introduce COCs not supported by the descriptive codes
-4. Ensure each theme stays strictly within the taxonomy dimension and follows the taxonomy task guidance
-5. Ensure each theme reads as a short, noun-phrased natural-language answer to the survey question. Use the essence as the head noun; avoid generic language, clutter, and verbs
+---
 
-Before providing your final output, use a scratchpad to work through your analysis:
+DEFINITION CONSTRAINTS
 
-<scratchpad>
-In your scratchpad:
-- Identify the patterns you see in the descriptive codes
-- Test whether the cluster contains one or multiple central organizing, atomic themes
-- For each potential theme, verify it meets the ATOMIC, ACTIONABLE, and GROUNDED criteria
-- Check that your themes align with the taxonomy axis and coding dimension
-- Verify your labels and definitions follow all constraints
-- Plan your JSON output structure
-</scratchpad>
+Theme definitions must:
+- Use 30 words or fewer.
+- Describe what belongs in this theme.
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
 
-After your analysis, provide your output in valid JSON format with the following exact structure. Field names must be in English, but all values should be written in the language specified ({{LANGUAGE}}):
+---
+
+REQUIRED ANALYSIS STEPS
+
+1. Identify distinct {taxonomy_actionable_type}-{theme_head} in light of the survey quesition that is present in the cluster.
+2. List 1–5 candidate {taxonomy_actionable_type}-{theme_head}s. Each must be a 1–3 word noun phrase satisfying atomic label rules.
+3. If more than one {taxonomy_actionable_type}-{theme_head}s is found, treat them as separate potential atomic themes.
+4. For each {taxonomy_actionable_type}-{theme_head}, verify grounding in cluster codes.
+5. Do not merge {taxonomy_actionable_type}-{theme_head}s into umbrella or meta-parent concepts.
+6. Select only {taxonomy_actionable_type}-{theme_head}s that are clearly supported by the data.
+7. Produce final theme entries only for valid atomic {taxonomy_actionable_type}-{theme_head}s.
+
+---
+
+FINAL OUTPUT FORMAT
+
+After analysis, output valid JSON in the following structure.
+Field names must be in English. Values must be written in {language}.
 
 {{
   "cluster_id": "{cluster_id}",
@@ -811,9 +1011,9 @@ After your analysis, provide your output in valid JSON format with the following
   "extracted_themes": [
     {{
       "theme_id": 1,
-      "theme_label": "Short noun phrase (≤10 words) describing the atomic theme",
-      "theme_clarification": "Definition (≤30 words) that describes what belongs in this code, grounded in cluster data with illustrative descriptive codes",
-      "abstraction_level": "Description of the level of abstraction",
+      "theme_label": "1–3 word atomic {taxonomy_actionable_type}-{theme_head} label",
+      "theme_clarification": "≤30-word grounded definition describing what belongs in this theme",
+      "abstraction_level": "L2 —{taxonomy_actionable_type}-{theme_head} theme",
       "assignment_examples": {{
         "inclusion": [
           "Example 1: Observable cue starting with a verb",
@@ -825,7 +1025,7 @@ After your analysis, provide your output in valid JSON format with the following
         ],
         "near_neighbor": {{
           "label": "Label of closest potentially-confusable theme, or 'Unknown' if none exists",
-          "tell_apart_rule": "One sentence explaining how to distinguish this theme from the neighbor (e.g., 'This theme focuses on X, whereas the neighbor focuses on Y.')"
+          "tell_apart_rule": "One sentence distinguishing this theme from the neighbor"
         }}
       }}
     }}
@@ -840,31 +1040,32 @@ Critical requirements:
 - If multiple themes are identified, include each as a separate object in the extracted_themes array with sequential theme_id values
 - Provide 2-3 inclusion examples and 1-2 exclusion examples for each theme
 - Assignment examples should be short, concrete, and start with verbs (for inclusion/exclusion)
-
-Write your scratchpad analysis inside <scratchpad> tags, then provide your final JSON output.
 """
 
 CODING_DECISION_PROMPT = """
-You are a qualitative research assistant responsible for maintaining a parsimonious and structured codebook for thematic analysis following Braun & Clarke (2006) methodology. 
-Your task is to classify a newly identified theme and decide whether to USE an existing code, MODIFY an existing code, or CREATE a new code. 
+You are a qualitative research assistant responsible for maintaining a parsimonious and structured codebook for thematic analysis following Braun & Clarke (2006) methodology.
+Your task is to classify a newly identified {taxonomy_actionable_type}-{theme_head} theme and decide whether to USE an existing code, MODIFY an existing code, or CREATE a new code.
 You must ensure the codebook remains MECE (Mutually Exclusive, Collectively Exhaustive) by strictly adhering to the specified taxonomy structure.
 
-You will be provided with codebook parameters, a new theme to classify, and existing codes to compare against.
+---
 
-<codebook_parameters>
+CODEBOOK PARAMETERS
+
 <language>
- {language}
+{language}
 </language>
 
 <context>
 - Domain: {domain}
 - Topic: {topic}
+- Perspective: {perspective}
+- Entity: {entity}
 Survey Question: "{survey_question}"
 </context>
 
 <taxonomy_parameters>
-Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
-primary Coding Dimension: {taxonomy_actionable_type}
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
 </taxonomy_parameters>
 
 <new_theme>
@@ -879,18 +1080,29 @@ New Theme to Classify:
 Existing Codes:
 {code_text}
 </existing_codes>
-</codebook_parameters>
 
-**Decision Options:**
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Theme labels must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+DECISION OPTIONS
 
 You must choose one of the following actions:
 
 - **USE** — An existing code fully captures the new theme's meaning; use it as-is without modification
-- **MODIFY_HORIZONTAL** - An existing code needs broader definition and inclusion rules to cover the new theme, but remains at the same abstraction level on de coding dimension ("{taxonomy_axis}:{taxonomy_actionable_type}")
+- **MODIFY_HORIZONTAL** — An existing code needs broader definition and inclusion rules to cover the new theme, but remains at the same abstraction level on the coding dimension ("{taxonomy_axis}:{taxonomy_actionable_type}")
 - **MODIFY_VERTICAL** — The existing code and new theme belong to the same conceptual family but differ in abstraction level; create or reference a parent code for both
-- **CREATE** — Add a new code because the theme represents a distinct concept not covered by existing codes
+- **CREATE** — Add a new code because the theme represents a distinct {taxonomy_actionable_type}-{theme_head} not covered by existing codes
 
-**Analysis Framework:**
+---
+
+ANALYSIS FRAMEWORK
 
 Follow these steps systematically:
 
@@ -899,8 +1111,8 @@ Follow these steps systematically:
 - Identify the best matching existing code(s) based on core meaning and practical relevance in light of the research question, taxonomy axis, and primary coding dimension
 
 **STEP 1: Conceptual Family Test**
-Ask: Do the new theme and the best matching existing code belong to the same conceptual family, given the research question, taxonomy axis, and primary coding dimension?
-- If the new theme and best matching existing code share the same core meaning and have the same practical relevance → SAME FAMILY
+Ask: Do the new theme and the best matching existing code belong to the same conceptual family, given the research question, taxonomy axis ({taxonomy_axis}), and primary coding dimension ({taxonomy_actionable_type})?
+- If the new theme and best matching existing code share the same core {theme_head} and have the same practical relevance → SAME FAMILY
 - Otherwise → DIFFERENT FAMILY
 
 **STEP 2: Abstraction Level Test**
@@ -914,19 +1126,22 @@ Apply the following decision rules:
 - If the new theme is fully covered in meaning and scope by an existing code → USE existing code.
 - If the new theme is not fully covered by an existing code:
   - If it belongs to the same code family and is at the same abstraction level → MODIFY_HORIZONTAL
-      - Broaden the existing code’s definition and inclusion rules to incorporate the new expression, ensuring the original core meaning remains intact.
+      - Broaden the existing code's definition and inclusion rules to incorporate the new expression, ensuring the original core meaning remains intact.
   - If it belongs to the same code family but at a different abstraction level → MODIFY_VERTICAL
       - Introduce or reference a higher-level parent code, treating the existing code and new theme as related sub-codes.
-  - If it belongs to a different code family → CREATE a new code for the distinct concept.  
+  - If it belongs to a different code family → CREATE a new code for the distinct {taxonomy_actionable_type}-{theme_head}.
 
 **STEP 4: Multi-Concept Theme Check**
-If the new theme contains multiple distinct concepts (e.g., "salt reduction AND mild spices"):
-- Identify which concept(s) semantically match the existing code
-- If only ONE concept matches and MODIFY would require changing the existing code's core meaning to accommodate the other concept(s): Decision = **CREATE**
-- A MODIFY should never replace an existing code's central meaning with a different concept
+If the new theme contains multiple distinct {taxonomy_actionable_type}-{theme_head}s (e.g., "salt reduction AND mild spices"):
+- Identify which {taxonomy_actionable_type}-{theme_head}(s) semantically match the existing code
+- If only ONE {taxonomy_actionable_type}-{theme_head} matches and MODIFY would require changing the existing code's core meaning to accommodate the other: Decision = **CREATE**
+- A MODIFY should never replace an existing code's central meaning with a different {theme_head}
 - Preserve the existing code unchanged and create a new code for the theme
 
-**Assignment Example Update Rules:**
+---
+
+ASSIGNMENT EXAMPLE UPDATE RULES
+
 Based on your decision, update the assignment examples as follows:
 
 If decision is **USE**:
@@ -941,39 +1156,45 @@ If decision is **MODIFY_VERTICAL** or **MODIFY_HORIZONTAL**:
 If decision is **CREATE**:
 - Use assignment_examples from the new theme as-is
 
-**Theme Labeling Constraints:**
+---
 
-When creating theme labels, follow these strict constraints:
-- Use a short noun phrase of 10 words or fewer
-- Make the semantic core of the theme the head of the noun phrase
-- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
-- All naming and labeling of ATOMIC THEMES must be single-valued
-- No label may contain conjunctions (“and”, “or”, “&”), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+LABEL CONSTRAINTS
 
-**Theme Definition Constraints:**
+When creating theme labels, follow these strict rules:
+- Use a noun phrase of 1–10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
 
-When creating theme definitions, follow these strict constraints:
-- Use 30 words or fewer
-- Ground the definition in the cluster data
-- Describe **what belongs in this code**, not why it happens
-- Align directly with the survey question, taxonomy axis, and coding dimension
-- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
-- Do NOT explain causes, conditions, or interpretations
-- DO NOT repeat the actor, domai§, topic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+---
 
-**Your Response:**
+DEFINITION CONSTRAINTS
+
+When creating theme definitions, follow these strict rules:
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
+
+---
+
+REQUIRED ANALYSIS STEPS
 
 Before providing your final answer, use <scratchpad> tags to work through your analysis systematically:
 
-1. Identify the top candidate code(s) based on semantic similarity
-2. Note any cosine similarity scores for top candidates (if provided)
-3. Apply the Conceptual Family Test from STEP 1
-4. Apply the Abstraction Level Test from STEP 2
-5. Apply the Decision Logic from STEP 3
-6. Check for multi-concept themes (STEP 4)
-7. Determine your decision (USE/MODIFY_VERTICAL/MODIFY_HORIZONTAL/CREATE) and provide justification referencing the conceptual family and abstraction level analysis
-8. Plan what updates are needed to assignment examples based on your decision
+1. Identify the top candidate code(s) based on semantic similarity to the {taxonomy_actionable_type}-{theme_head}.
+2. Note any cosine similarity scores for top candidates (if provided).
+3. Apply the Conceptual Family Test (STEP 1): Do they share the same core {theme_head}?
+4. Apply the Abstraction Level Test (STEP 2): Same specificity level on {taxonomy_axis}?
+5. Apply the Decision Logic (STEP 3): USE, MODIFY_HORIZONTAL, MODIFY_VERTICAL, or CREATE.
+6. Check for multi-concept themes (STEP 4): Does the theme contain multiple distinct {taxonomy_actionable_type}-{theme_head}s?
+7. Verify label compliance: Ensure the {taxonomy_actionable_type}-{theme_head} rules are satisfied (VALID/INVALID criteria).
+8. Determine your final decision with justification referencing conceptual family and abstraction level analysis.
+9. Plan what updates are needed to assignment examples based on your decision.
 
 After completing your analysis in the scratchpad, provide your final answer as valid JSON only inside <json_output> tags.
 
@@ -1022,21 +1243,40 @@ The JSON must follow this exact structure:
 
 CODE_CREATION_PROMPT = """
 You are a {language} qualitative research assistant.
-Your task is to CREATE a new code that captures the meaning of a newly identified atomic theme from survey responses for which you will use the specifed taxonomy framework.
+Your task is to CREATE a new code that captures the meaning of a newly identified atomic {taxonomy_actionable_type}-{theme_head} theme from survey responses, using the specified taxonomy framework.
+
+---
+
+ATOMICITY RULES (must all be satisfied)
 
 A code must be:
-- ATOMIC: It expresses one single, indivisible idea. It cannot be broken into smaller concepts that carry distinct or practical meaning for explaining survey responses in light of the research question.
-- ACTIONABLE: Can be clearly identified and address the survey question directly and explicity
+- ATOMIC: It expresses exactly ONE semantic nucleus — one indivisible {taxonomy_actionable_type} or {theme_head}.
+- SINGLE-HEADED: The code label contains exactly ONE head noun.
+- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
+- UNSPLITTABLE: If a label could be split into two meaningful labels, it is NOT atomic.
+- ACTIONABLE: Can be clearly identified and address the survey question directly and explicitly.
 
-You will be working with the following parameters:
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Codes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+CODEBOOK PARAMETERS
 
 <language>
- {language}
+{language}
 </language>
 
 <context>
 - Domain: {domain}
 - Topic: {topic}
+- Perspective: {perspective}
+- Entity: {entity}
 Survey Question: "{survey_question}"
 </context>
 
@@ -1048,28 +1288,32 @@ New theme:
   {inclusion}
 </new_theme>
 
-Here is the taxonomy framework guiding your analysis:
 <taxonomy_parameters>
-Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
-primary Coding Dimension: {taxonomy_actionable_type}
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
 </taxonomy_parameters>
 
-LABEL RULES (strict):
-- Use a short noun phrase of 10 words or fewer
-- Make the semantic core of the theme the head of the noun phrase
-- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
-- All naming and labeling of ATOMIC THEMES must be single-valued
-- No label may contain conjunctions (“and”, “or”, “&”), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+---
 
-DEFINITION RULES:
--  Use 30 words or fewer
-- Ground the definition in the cluster data
-- Describe **what belongs in this code**, not why it happens
-- Align directly with the survey question, taxonomy axis, and coding dimension
-- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
-- Do NOT explain causes, conditions, or interpretations
-- DO NOT repeat the actor, domai§, topic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+LABEL CONSTRAINTS
+
+- Use a noun phrase of 1–10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+
+---
+
+DEFINITION CONSTRAINTS
+
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
 
 GOOD DEFINITION PATTERNS:
 - "References to…"
@@ -1082,11 +1326,18 @@ AVOID:
 - Multi-part or layered meaning.
 - Psychological interpretation not grounded in wording.
 
-ASSIGNMENT EXAMPLES:
-- Provide concrete, actionable assignment examples to guide future code assignment
-- inclusion: 2-3 short examples of expressions that SHOULD be coded here
-- exclusion: 1-2 short examples of what should NOT be included
-- near_neighbor: Identify closest confusable concept and how to tell them apart
+---
+
+ASSIGNMENT EXAMPLES
+
+- Provide concrete, actionable assignment examples to guide future code assignment.
+- inclusion: 2-3 short examples of expressions that SHOULD be coded here.
+- exclusion: 1-2 short examples of what should NOT be included.
+- near_neighbor: Identify closest confusable {taxonomy_actionable_type}-{theme_head} and how to tell them apart.
+
+---
+
+FINAL OUTPUT FORMAT
 
 Output the result in this strict JSON schema (no commentary or explanation):
 {{
@@ -1152,61 +1403,102 @@ VERTICAL_INSTRUCTIONS = """
 
 CODING_MODIFICATION_PROMPT = """
 You are a {language} qualitative research assistant updating a codebook.
-Your task is to MODIFY an existing code so that it fully and correctly includes a new theme, while preserving **atomic meaning** and **clear conceptual boundaries**.
+Your task is to MODIFY an existing code so that it fully and correctly includes a new {taxonomy_actionable_type}-{theme_head} theme, while preserving **atomic meaning** and **clear conceptual boundaries**.
 
-You will be working with the following parameters:
-- language:  {language}
+---
+
+ATOMICITY RULES (must all be satisfied post-modification)
+
+The modified code must remain:
+- ATOMIC: It expresses exactly ONE semantic nucleus — one indivisible {taxonomy_actionable_type} or {theme_head}.
+- SINGLE-HEADED: The code label contains exactly ONE head noun.
+- NO COORDINATION: The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
+- UNSPLITTABLE: If a label could be split into two meaningful labels, the modification is INVALID.
+
+---
+
+{taxonomy_actionable_type}-{theme_head} RULES
+
+Modified codes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+
+---
+
+CODEBOOK PARAMETERS
+
+<language>
+{language}
+</language>
+
+<context>
 - Domain: {domain}
 - Topic: {topic}
-- Survey Question: "{survey_question}"
+- Perspective: {perspective}
+- Entity: {entity}
+Survey Question: "{survey_question}"
+</context>
 
+<new_theme>
 New theme to integrate:
 - name: "{theme_name}"
 - description: "{theme_description}"
 - Included expressions (these SHOULD be covered by the code):
   {inclusion}
+</new_theme>
 
+<original_code>
 Original code (to be modified):
 - code_label: {source_code}
 - code_definition: {source_definition}
+</original_code>
 
-Current assignment examples (before modification):
-- Current inclusion examples:
+<current_assignment_examples>
+Current inclusion examples:
   {current_inclusion}
+</current_assignment_examples>
 
-Required modifications:
+<required_modifications>
 - inclusion_update (new expressions that must now be included in-scope):
   {inclusion_update}
 - exclusion_update (boundaries to clarify so scope does not overextend):
   {exclusion_update}
+</required_modifications>
 
+<taxonomy_parameters>
+Taxonomy Axis: {taxonomy_axis}: {taxonomy_axis_description}
+Primary Coding Dimension: {taxonomy_actionable_type}
+</taxonomy_parameters>
 
-Follow these instruction exactly and in order. Do not skip or reorder any instruction.
+---
 
-<coding_instructions>
-MODIFICATION INSTRUCTIONS:
+MODIFICATION INSTRUCTIONS
+
+Follow these instructions exactly and in order. Do not skip or reorder any instruction.
+
 {modification_instructions}
 
-Here is the taxonomy framework guiding your analysis:
-- Taxonmy Axis:  {taxonomy_axis}: {taxonomy_axis_description}
-- primary Coding Dimension: {taxonomy_actionable_type}
+---
 
-LABEL RULES (strict):
-- Use a short noun phrase of 10 words or fewer
-- Make the semantic core of the theme the head of the noun phrase
-- The label must describe an ATOMIC theme in light of the research question, taxonomy axis, and coding dimension
-- All naming and labeling of ATOMIC THEMES must be single-valued
-- No label may contain conjunctions (“and”, “or”, “&”), slashes, or compound constructions. If present, split into separate atomic codes unless one part has no independent analytic meaning.
-- DO NOT repeat the actor, domain, topic, or entity in the label (do not repeat: {perspective}, {domain}, {topic} and {entity})
+LABEL CONSTRAINTS
 
-DEFINITION RULES:
--  Use 30 words or fewer
-- Ground the definition in the cluster data
-- Describe **what belongs in this code**, not why it happens
-- Align directly with the survey question, taxonomy axis, and coding dimension
-- Use a clear, observable assignment cue (e.g., behaviors, expressions, judgments)
-- Do NOT explain causes, conditions, or interpretations
-- DO NOT repeat the actor, domai§, topic, or entity in the description (do not repeat: {perspective}, {domain}, {topic} and {entity})
+- Use a noun phrase of 1–10 words.
+- Exactly one semantic head (one core {theme_head}); modifiers allowed.
+- No coordination (and/or), no lists, no multi-concept bundles.
+- Name only the {taxonomy_actionable_type}-{theme_head} present.
+- Labels naming {must_be} are VALID.
+- Labels naming {must_not_be} are INVALID.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the label.
+
+---
+
+DEFINITION CONSTRAINTS
+
+- Use 30 words or fewer.
+- Describe what belongs in this code (not why it happens).
+- Use observable assignment cues (behaviors, expressions, practices).
+- Avoid causes, conditions, interpretations, or outcomes.
+- DO NOT repeat {perspective}, {domain}, {topic}, or {entity} in the definition.
 
 GOOD DEFINITION PATTERNS:
 - "References to…"
@@ -1219,18 +1511,14 @@ AVOID:
 - Multi-part or layered meaning.
 - Psychological interpretation not grounded in wording.
 
-ASSIGNMENT EXAMPLES:
-- Provide concrete, actionable assignment examples to guide future code assignment
-- inclusion: 2-3 short examples of expressions that SHOULD be coded here
-- exclusion: 1-2 short examples of what should NOT be included
-- near_neighbor: Identify closest confusable concept and how to tell them apart
+---
 
-ASSIGNMENT EXAMPLES INSTRUCTIONS:
-    - Update assignment examples to reflect the modified code:
-      • inclusion: Combine original + new expressions from inclusion_update
-      • exclusion: Combine original + new boundaries from exclusion_update
-      • near_neighbor: Update label/rule if boundaries changed due to modification
-</coding_instructions>
+ASSIGNMENT EXAMPLES
+
+- Provide concrete, actionable assignment examples to guide future code assignment.
+- inclusion: Combine original + new expressions from inclusion_update.
+- exclusion: Combine original + new boundaries from exclusion_update.
+- near_neighbor: Update label/rule if boundaries changed due to modification. Identify closest confusable {taxonomy_actionable_type}-{theme_head}.
 
 OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
 

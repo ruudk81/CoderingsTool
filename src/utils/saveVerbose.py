@@ -120,16 +120,13 @@ class VerboseCapture:
         # Clean up base name (remove spaces, special chars)
         base_name_clean = base_name.replace(" ", "_")[:50]
 
-        # Clean variable key
-        var_key_clean = self.variable_key.replace(" ", "_")[:30]
-
-        # Sample size string
-        sample_str = str(self.sample_size) if self.sample_size else "full"
+        # Use full variable key (cache key) - no truncation for exact cache matching
+        var_key_clean = self.variable_key.replace(" ", "_")
 
         # Timestamp
         timestamp = self._start_time.strftime("%Y%m%d_%H%M%S") if self._start_time else datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        return f"{base_name_clean}_{var_key_clean}_{sample_str}_step{self.run_until_step}_{timestamp}.txt"
+        return f"{base_name_clean}_{var_key_clean}_step{self.run_until_step}_{timestamp}.txt"
 
     def _build_header(self) -> str:
         """Build the file header with metadata."""
@@ -189,3 +186,64 @@ class VerboseCapture:
     def get_output_path(self) -> Path:
         """Get the path where the output will be/was saved."""
         return self.output_dir / self._build_output_filename()
+
+    @staticmethod
+    def find_latest_log(
+        filename: str,
+        variable_key: str,
+        step: int,
+        output_dir: Optional[Path] = None
+    ) -> Optional[Path]:
+        """
+        Find the most recent verbose log file matching the given parameters.
+
+        Args:
+            filename: Data filename (e.g., "M250480 Associatiemonitor ASN Bank.sav")
+            variable_key: Cache key (e.g., "Qd1_combined_2000")
+            step: Pipeline step number (0-9)
+            output_dir: Output directory (defaults to exports/verbose_logs/)
+
+        Returns:
+            Path to the most recent matching log file, or None if not found
+        """
+        if output_dir is None:
+            project_root = Path(__file__).parent.parent.parent
+            output_dir = project_root / "exports" / "verbose_logs"
+
+        if not output_dir.exists():
+            return None
+
+        # Build pattern to match: {base_name}_{cache_key}_step{N}_*.txt
+        base_name = Path(filename).stem
+        base_name_clean = base_name.replace(" ", "_")[:50]
+        var_key_clean = variable_key.replace(" ", "_")
+
+        pattern = f"{base_name_clean}_{var_key_clean}_step{step}_*.txt"
+
+        # Find matching files
+        matching_files = list(output_dir.glob(pattern))
+
+        if not matching_files:
+            return None
+
+        # Sort by filename (timestamp is at the end, so alphabetical = chronological)
+        matching_files.sort(reverse=True)
+
+        return matching_files[0]
+
+    @staticmethod
+    def load_log_content(log_path: Path) -> Optional[str]:
+        """
+        Load the content of a verbose log file.
+
+        Args:
+            log_path: Path to the log file
+
+        Returns:
+            Log content as string, or None if failed to load
+        """
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            return None

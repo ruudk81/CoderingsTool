@@ -56,6 +56,119 @@ def _is_reasoning_model(model: str) -> bool:
 
 
 # =============================================================================
+# Debug Logging for LLM Requests
+# =============================================================================
+DEBUG_LLM_REQUESTS = False  # Set to True to print full LLM requests
+DEBUG_LLM_FIRST_ONLY = True  # Only print the first matching request
+DEBUG_LLM_FILTER_MODEL = "TaxonomyChunkResponse"  # Only print requests with specific pydantic / esponse_model name (None = all)
+_debug_request_count = 0
+_debug_filtered_count = 0  # Count of matching requests printed
+
+
+def _debug_print_request(params: dict, provider: str, model: str):
+    """Print the API request parameters for debugging.
+
+    NOTE: This shows what WE send to instructor. Instructor then:
+    1. Takes the response_model
+    2. Converts it to a tool/function definition
+    3. Adds 'tools' and 'tool_choice' to the actual API call
+    4. Removes 'response_model' from the call
+
+    The [RESPONSE_MODEL SCHEMA] section shows the Pydantic JSON schema,
+    which is close to (but not identical to) the tool schema instructor generates.
+    """
+    global _debug_request_count, _debug_filtered_count
+
+    if not DEBUG_LLM_REQUESTS:
+        return
+
+    _debug_request_count += 1
+
+    # Filter by response_model name if specified
+    if DEBUG_LLM_FILTER_MODEL:
+        rm = params.get("response_model")
+        if rm is None:
+            return
+        rm_name = getattr(rm, "__name__", str(rm))
+        if DEBUG_LLM_FILTER_MODEL not in rm_name:
+            return
+
+    # Check if we should only print the first matching request
+    _debug_filtered_count += 1
+    if DEBUG_LLM_FIRST_ONLY and _debug_filtered_count > 1:
+        return
+
+    import json
+
+    print("\n" + "=" * 80)
+    print(f"[DEBUG] LLM REQUEST #{_debug_request_count} - Provider: {provider}, Model: {model}")
+    print("=" * 80)
+
+    # Print messages/input
+    if "messages" in params:
+        print("\n[MESSAGES]")
+        for i, msg in enumerate(params["messages"]):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            print(f"  Message {i} ({role}):")
+            if len(content) > 2000:
+                # Show first 1000 chars and last 500 chars to see both start and end
+                print(f"    {content[:1000]}")
+                print(f"    [...middle truncated...]")
+                print(f"    {content[-500:]}")
+                print(f"    [total {len(content)} chars]")
+            else:
+                print(f"    {content}")
+    elif "input" in params:
+        print("\n[INPUT]")
+        content = params["input"]
+        if len(content) > 1000:
+            print(f"  {content[:1000]}...")
+            print(f"  [...truncated, total {len(content)} chars]")
+        else:
+            print(f"  {content}")
+
+    # Print tools (THE KEY PART - what instructor adds)
+    if "tools" in params:
+        print("\n[TOOLS] (added by instructor)")
+        try:
+            print(json.dumps(params["tools"], indent=2, default=str))
+        except Exception as e:
+            print(f"  Could not serialize tools: {e}")
+            print(f"  Raw: {params['tools']}")
+
+    # Print tool_choice
+    if "tool_choice" in params:
+        print("\n[TOOL_CHOICE]")
+        try:
+            print(json.dumps(params["tool_choice"], indent=2, default=str))
+        except Exception:
+            print(f"  {params['tool_choice']}")
+
+    # Print response_model schema if present
+    if "response_model" in params:
+        print("\n[RESPONSE_MODEL SCHEMA]")
+        rm = params["response_model"]
+        if hasattr(rm, "model_json_schema"):
+            try:
+                schema = rm.model_json_schema()
+                print(json.dumps(schema, indent=2))
+            except Exception as e:
+                print(f"  Could not get schema: {e}")
+        else:
+            print(f"  {rm}")
+
+    # Print other params
+    other_keys = ["model", "max_tokens", "max_output_tokens", "temperature"]
+    other_params = {k: v for k, v in params.items() if k in other_keys}
+    if other_params:
+        print("\n[OTHER PARAMS]")
+        print(json.dumps(other_params, indent=2, default=str))
+
+    print("\n" + "=" * 80 + "\n")
+
+
+# =============================================================================
 # Minimal Response Model for Probe Calls
 # =============================================================================
 class ProbeResponse(BaseModel):
@@ -491,6 +604,11 @@ async def llm_create_async(
             params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
+
+        # DEBUG: Print full request before API call
+        _debug_print_request(params, API_PROVIDER, model)
+
+        if response_model:
             if is_list_response:
                 # For List types, use regular create() as create_with_completion has a bug
                 response = await client.chat.completions.create(**params)
@@ -515,6 +633,11 @@ async def llm_create_async(
             params["temperature"] = temperature
         if response_model:
             params["response_model"] = response_model
+
+        # DEBUG: Print full request before API call
+        _debug_print_request(params, API_PROVIDER, model)
+
+        if response_model:
             if is_list_response:
                 # For List types, use regular create() as create_with_completion has a bug
                 response = await client.responses.create(**params)

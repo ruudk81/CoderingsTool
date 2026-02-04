@@ -41,7 +41,8 @@ from pydantic import BaseModel, Field, field_validator
 import models
 
 # === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+from config_ideaExtractor import SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 
 # === PROMPTS ========================================================================================================
@@ -511,11 +512,30 @@ class SubjectExtractionResponse(BaseModel):
     )
 
 
+class OntologyResponse(BaseModel):
+    """Nested ontology structure for LLM response parsing."""
+    instance: str = Field(default="", description="Literal action/object/concept from idea (verbatim)")
+    node: str = Field(default="", description="Canonical, reusable ontology concept (noun phrase)")
+    category: str = Field(default="", description="Immediate parent grouping")
+    root: str = Field(default="", description="Top-level domain framing")
+
+    @field_validator('instance', 'node', 'category', 'root', mode='before')
+    @classmethod
+    def normalize_field(cls, v: str) -> str:
+        """Normalize ontology fields: lowercase, no trailing punctuation, trimmed."""
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            return str(v).strip().lower()
+        v = v.strip().lower().rstrip('.,;:!?')
+        return v
+
+
 class TaxonomyEnrichedIdeaResponse(BaseModel):
-    """Extended idea response with taxonomy phrase and parent category.
+    """Extended idea response with taxonomy phrase and ontology.
 
     V3: Ideas use template prefix for normalized phrasing to improve clustering.
-    Parent category is a separate field for higher-level grouping.
+    Ontology provides hierarchical classification (instance → node → category → root).
     """
     # Class variable to store template prefix for validation
     _template_prefix: ClassVar[str] = ""
@@ -529,7 +549,7 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     idea_id: str = Field(default="1", alias_choices=['idea_id', 'id'])
     idea: str = Field(description="Standalone natural language idea")
     taxonomy_phrase: str = Field(default="", description="5-12 word abstracted category phrase")
-    parent_category: str = Field(default="", description="Higher-level grouping theme grounded in response content")
+    ontology: Optional[OntologyResponse] = Field(default=None, description="Hierarchical ontology (instance → node → category → root)")
     sentiment: Literal["positive", "negative", "neutral"] = Field(default="neutral", description="Sentiment: positive, negative, or neutral")
     sense: Literal["factual", "evaluative", "aspirational", "experiential"] = Field(default="factual", description="Sense: factual, evaluative, aspirational, experiential")
 
@@ -564,22 +584,6 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
         """Normalize taxonomy_phrase: lowercase, no trailing punctuation, trimmed."""
         if not isinstance(v, str):
             return ""
-        # Strip whitespace
-        v = v.strip()
-        # Lowercase
-        v = v.lower()
-        # Remove trailing punctuation
-        v = v.rstrip('.,;:!?')
-        return v
-
-    @field_validator('parent_category', mode='before')
-    @classmethod
-    def normalize_parent_category(cls, v: str) -> str:
-        """Normalize parent_category: lowercase, no trailing punctuation, trimmed."""
-        if v is None:
-            return ""
-        if not isinstance(v, str):
-            return str(v).strip().lower()
         # Strip whitespace
         v = v.strip()
         # Lowercase
@@ -1248,7 +1252,12 @@ class IdeaExtractor:
                     survey_question=survey_question,
                     primary_axis=taxonomy_axis,
                     primary_axis_description=axis_description,
-                    secondary_axis=secondary_axis or "None"
+                    secondary_axis=secondary_axis or "None",
+                    domain=self.generic_specifiers.get('domain', 'general'),
+                    topic=self.generic_specifiers.get('topic', 'general'),
+                    entity=self.generic_specifiers.get('entity', 'unknown'),
+                    perspective=self.generic_specifiers.get('perspective', 'general'),
+                    intent=self.generic_specifiers.get('intent', 'describe')
                 )
 
                 response = await llm_create_async(
@@ -1340,6 +1349,8 @@ class IdeaExtractor:
             domain=self.generic_specifiers.get('domain', 'general'),
             topic=self.generic_specifiers.get('topic', 'feedback'),
             entity=self.generic_specifiers.get('entity', 'unknown'),
+            perspective=self.generic_specifiers.get('perspective', 'general'),
+            intent=self.generic_specifiers.get('intent', 'describe'),
             language=self.language,
             respondent_id=respondent_id,
             response=response,
@@ -1635,11 +1646,19 @@ class IdeaExtractor:
                     for i, idea_response in enumerate(response):
                         normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if normalized and normalized not in ["", "NA", "N/A"]:
-                            # Extract taxonomy_phrase, parent_category, sentiment, sense as separate fields
+                            # Extract taxonomy_phrase, ontology, sentiment, sense as separate fields
                             taxonomy_phrase = getattr(idea_response, 'taxonomy_phrase', "") or ""
-                            parent_category = getattr(idea_response, 'parent_category', "") or ""
                             sentiment = getattr(idea_response, 'sentiment', "neutral") or "neutral"
                             sense = getattr(idea_response, 'sense', "factual") or "factual"
+
+                            # Extract ontology (nested object)
+                            ontology_resp = getattr(idea_response, 'ontology', None)
+                            ontology = models.OntologySubmodel(
+                                instance=ontology_resp.instance if ontology_resp else "",
+                                node=ontology_resp.node if ontology_resp else "",
+                                category=ontology_resp.category if ontology_resp else "",
+                                root=ontology_resp.root if ontology_resp else ""
+                            ) if ontology_resp else None
 
                             # Clean idea text (metadata stored in separate fields)
                             idea_text = self._format_idea_text(normalized)
@@ -1648,7 +1667,7 @@ class IdeaExtractor:
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
                                 taxonomy_phrase=taxonomy_phrase,
-                                parent_category=parent_category,
+                                ontology=ontology,
                                 sentiment=sentiment,
                                 sense=sense
                             ))
@@ -2326,7 +2345,14 @@ class IdeaExtractor:
                         idea_words = idea.idea.split()
                         total_idea_length += len(idea_words)
                         idea_count += 1
-                        valid_ideas.append(idea.idea)
+                        # Store full idea info including ontology
+                        valid_ideas.append({
+                            'idea': idea.idea,
+                            'taxonomy_phrase': idea.taxonomy_phrase,
+                            'ontology': idea.ontology,
+                            'sentiment': idea.sentiment,
+                            'sense': idea.sense
+                        })
 
                 if valid_ideas and len(response_examples) < self.config.max_code_examples:
                     response_examples.append({
@@ -2357,10 +2383,14 @@ class IdeaExtractor:
             print("\n📋 Sample extracted ideas:")
             for example in response_examples:
                 print(f'  • "{example["response"]}"')
-                for idea in example['ideas']:
-                    cleaned_idea = re.sub(r"\[.*?\]", "", idea)
+                for idea_info in example['ideas']:
+                    cleaned_idea = re.sub(r"\[.*?\]", "", idea_info['idea'])
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     print(f'    → "{cleaned_idea}"')
+                    # Show ontology if available
+                    if idea_info.get('ontology'):
+                        ont = idea_info['ontology']
+                        print(f'      ontology: {ont.node} → {ont.category} → {ont.root}')
                 if example != response_examples[-1]:
                     print()
 
