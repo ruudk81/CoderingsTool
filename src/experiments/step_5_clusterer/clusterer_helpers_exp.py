@@ -46,7 +46,7 @@ from datetime import datetime
 
 import models
 from utils.llm import llm_create_sync, create_client
-from .config_clusterer_exp import ClustererConfig
+from .config_clusterer_exp import ClustererConfig, resolve_embedding_source
 # Toggle: use experimental or production prompts
 # Keep in sync with USE_EXPERIMENTAL_CLUSTERER in run_experiment.py
 USE_EXPERIMENTAL_PROMPTS = True
@@ -99,71 +99,116 @@ def apply_pca(
     return reduced, pca
 
 
+def format_ontology_text(idea) -> str:
+    """Format ontology fields into text: 'instance - node (category)'.
+
+    Mirrors the logic from src/utils/embedder.py _format_ontology_text().
+    Falls back to idea.idea when ontology is None or all fields are empty.
+    """
+    ontology = getattr(idea, 'ontology', None)
+    if ontology is None:
+        return getattr(idea, 'idea', '')
+    instance = (getattr(ontology, 'instance', '') or '').strip()
+    node = (getattr(ontology, 'node', '') or '').strip()
+    category = (getattr(ontology, 'category', '') or '').strip()
+    parts = []
+    if instance:
+        parts.append(instance)
+    if node:
+        if category:
+            parts.append(f"{node} ({category})")
+        else:
+            parts.append(node)
+    elif category:
+        parts.append(f"({category})")
+    result = " - ".join(parts) if parts else ""
+    return result if result else getattr(idea, 'idea', '')
+
+
 def extract_embeddings(
     input_list: List[models.EmbeddingsModel],
     config: ClustererConfig
-) -> Tuple[np.ndarray, List[str], List[str], List[Tuple[int, int]], Optional[str], Optional[str]]:
+) -> Tuple[np.ndarray, List[str], List[str], List[str], List[Tuple[int, int]], Optional[str], Optional[str]]:
     """
     Extract embeddings from EmbeddingsModel list.
 
     Args:
         input_list: List of EmbeddingsModel instances
-        config: ClustererConfig
+        config: ClustererConfig (uses config.embedding_source to select embedding field)
 
     Returns:
         embeddings: Array of shape (n_ideas, embedding_dim)
         idea_texts: List of idea text strings (idea.idea)
         taxonomy_phrases: List of taxonomy phrase strings (idea.taxonomy_phrase)
+        ontology_texts: List of ontology text strings ("instance - node (category)")
         idea_indices: List of (response_idx, idea_idx) tuples for result mapping
         template_prefix: The canonical phrasing prefix (if available)
         embedding_text_format: The text format used for embedding (if available)
     """
+    # Detect embedding_text_format from cached data (first response that has it)
+    embedding_text_format = None
+    template_prefix = None
+    for response in input_list:
+        if embedding_text_format is None and hasattr(response, 'embedding_text_format') and response.embedding_text_format:
+            embedding_text_format = response.embedding_text_format
+        if template_prefix is None and hasattr(response, 'template_prefix') and response.template_prefix:
+            template_prefix = response.template_prefix
+        if embedding_text_format and template_prefix:
+            break
+
+    # Resolve "auto" → concrete field based on cached embedding_text_format
+    embedding_field = resolve_embedding_source(
+        embedding_text_format or "idea",
+        config.embedding_source
+    )
+
+    if config.verbose and config.embedding_source == "auto":
+        print(f"Auto-resolved embedding source: '{embedding_text_format}' → {embedding_field}")
+
     embeddings_list = []
     idea_texts = []
     taxonomy_phrases = []
+    ontology_texts = []
     idea_indices = []
-    template_prefix = None
-    embedding_text_format = None
 
     for resp_idx, response in enumerate(input_list):
-        # Extract template_prefix from first response that has it
-        if template_prefix is None and hasattr(response, 'template_prefix') and response.template_prefix:
-            template_prefix = response.template_prefix
-
-        # Extract embedding_text_format from first response that has it
-        if embedding_text_format is None and hasattr(response, 'embedding_text_format') and response.embedding_text_format:
-            embedding_text_format = response.embedding_text_format
-
         if response.response_ideas:
             for idea_idx, idea in enumerate(response.response_ideas):
-                if idea.idea_embedding is not None:
-                    embeddings_list.append(idea.idea_embedding)
+                emb = getattr(idea, embedding_field, None)
+                if emb is not None:
+                    embeddings_list.append(emb)
                     idea_texts.append(idea.idea if hasattr(idea, 'idea') else str(idea))
                     taxonomy_phrases.append(
                         idea.taxonomy_phrase if hasattr(idea, 'taxonomy_phrase') and idea.taxonomy_phrase else ""
                     )
+                    ontology_texts.append(format_ontology_text(idea))
                     idea_indices.append((resp_idx, idea_idx))
 
     if not embeddings_list:
-        raise ValueError("No embeddings found in input data")
+        raise ValueError(
+            f"No embeddings found for field '{embedding_field}' in input data. "
+            f"Cached embedding_text_format='{embedding_text_format}'. "
+            f"Re-run step 4 with a compatible format or set EMBEDDING_SOURCE explicitly."
+        )
 
     embeddings = np.vstack(embeddings_list)
 
     if config.verbose:
         print(f"Extracted {len(embeddings)} embeddings with dimension {embeddings.shape[1]}")
+        print(f"Embedding source: {embedding_field}")
         if template_prefix:
             prefix_display = template_prefix[:50] + "..." if len(template_prefix) > 50 else template_prefix
             print(f"Template prefix: '{prefix_display}'")
         if embedding_text_format:
             print(f"Embedding text format: {embedding_text_format}")
 
-    return embeddings, idea_texts, taxonomy_phrases, idea_indices, template_prefix, embedding_text_format
+    return embeddings, idea_texts, taxonomy_phrases, ontology_texts, idea_indices, template_prefix, embedding_text_format
 
 
 def preprocess_embeddings(
     input_list: List[models.EmbeddingsModel],
     config: ClustererConfig
-) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[Tuple[int, int]], Optional[PCA], Optional[str], Optional[str]]:
+) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[str], List[Tuple[int, int]], Optional[PCA], Optional[str], Optional[str]]:
     """
     Full preprocessing pipeline: extract, normalize, optionally PCA.
 
@@ -176,13 +221,14 @@ def preprocess_embeddings(
         embeddings_processed: Processed embeddings (may be PCA-reduced)
         idea_texts: List of idea text strings (idea.idea)
         taxonomy_phrases: List of taxonomy phrase strings (idea.taxonomy_phrase)
+        ontology_texts: List of ontology text strings ("instance - node (category)")
         idea_indices: List of (response_idx, idea_idx) tuples
         pca_model: Fitted PCA model (or None if not applied)
         template_prefix: The canonical phrasing prefix (if available)
         embedding_text_format: The text format used for embedding (if available)
     """
     # Extract embeddings
-    embeddings, idea_texts, taxonomy_phrases, idea_indices, template_prefix, embedding_text_format = extract_embeddings(input_list, config)
+    embeddings, idea_texts, taxonomy_phrases, ontology_texts, idea_indices, template_prefix, embedding_text_format = extract_embeddings(input_list, config)
     n_samples = len(embeddings)
 
     # L2 normalize
@@ -208,7 +254,7 @@ def preprocess_embeddings(
     else:
         embeddings_processed = embeddings_normalized
 
-    return embeddings_normalized, embeddings_processed, idea_texts, taxonomy_phrases, idea_indices, pca_model, template_prefix, embedding_text_format
+    return embeddings_normalized, embeddings_processed, idea_texts, taxonomy_phrases, ontology_texts, idea_indices, pca_model, template_prefix, embedding_text_format
 
 
 # =============================================================================
@@ -637,55 +683,101 @@ def n_neighbors_grid(
     return log_spaced_ints(low, high, k=k)
 
 
-def mcs_bounds_sqrt(
+def mcs_bounds(
     N: int,
-    low_mult: float = 0.1,
-    high_mult: float = 0.5,
-    mcs_min: int = 3
+    low_pct: float = 0.05,
+    low_log_mult: float = 2.0,
+    high_mult: float = 1.0,
+    mcs_min: int = 5
 ) -> Tuple[int, int]:
     """
-    Compute min_cluster_size bounds based on sqrt(N).
+    Compute min_cluster_size bounds.
 
     Formula:
-        low = max(mcs_min, 0.1 * sqrt(N))
-        high = 0.5 * sqrt(N)
+        low = max(mcs_min, min(low_pct * N, low_log_mult * ln(N)))
+        high = high_mult * sqrt(N)
 
     Args:
         N: Dataset size
-        low_mult: Low bound multiplier for sqrt(N) (default 0.1)
-        high_mult: High bound multiplier for sqrt(N) (default 0.5)
-        mcs_min: Absolute minimum MCS (default 3)
+        low_pct: Low bound as percentage of N (default 0.05)
+        low_log_mult: Low bound multiplier for ln(N) (default 2.0)
+        high_mult: High bound multiplier for sqrt(N) (default 1.0)
+        mcs_min: Absolute minimum MCS (default 5)
 
     Returns:
         (low, high) bounds for min_cluster_size
     """
+    log_n = math.log(max(N, 2))
     sqrt_n = math.sqrt(N)
-    low = max(mcs_min, int(round(low_mult * sqrt_n)))
+    low = max(mcs_min, int(round(min(low_pct * N, low_log_mult * log_n))))
     high = max(low, int(round(high_mult * sqrt_n)))
     return low, high
 
 
-def mcs_grid_sqrt(
+def mcs_grid(
     N: int,
-    k: int = 3,
-    low_mult: float = 0.1,
-    high_mult: float = 0.5,
-    mcs_min: int = 3
+    k: int = 4,
+    low_pct: float = 0.05,
+    low_log_mult: float = 2.0,
+    high_mult: float = 1.0,
+    mcs_min: int = 5
 ) -> List[int]:
     """
     Generate min_cluster_size grid for dataset of size N.
 
+    Formula: lower=min(0.05*N, 2*ln(N)), upper=sqrt(N), log-spaced.
+
     Args:
         N: Dataset size
-        k: Number of grid points (default 3)
-        low_mult: Low bound multiplier for sqrt(N) (default 0.1)
-        high_mult: High bound multiplier for sqrt(N) (default 0.5)
-        mcs_min: Absolute minimum MCS (default 3)
+        k: Number of grid points (default 4)
+        low_pct: Low bound as percentage of N (default 0.05)
+        low_log_mult: Low bound multiplier for ln(N) (default 2.0)
+        high_mult: High bound multiplier for sqrt(N) (default 1.0)
+        mcs_min: Absolute minimum MCS (default 5)
 
     Returns:
         Log-spaced list of min_cluster_size values
     """
-    low, high = mcs_bounds_sqrt(N, low_mult, high_mult, mcs_min)
+    low, high = mcs_bounds(N, low_pct, low_log_mult, high_mult, mcs_min)
+    return log_spaced_ints(low, high, k=k)
+
+
+def ms_grid(
+    N: int,
+    k: int = 4,
+    low_log_mult: float = 1.0,
+    high_sqrt_mult: float = 0.5,
+    mcs_lower: int = 5
+) -> List[int]:
+    """
+    Generate min_samples grid for dataset of size N.
+
+    Formula: lower=ln(N), upper=sqrt(N)/2, log-spaced.
+    Safety: clamp so min_ms <= max_ms and min_ms <= mcs_lower.
+
+    Args:
+        N: Dataset size
+        k: Number of grid points (default 4)
+        low_log_mult: Low bound multiplier for ln(N) (default 1.0)
+        high_sqrt_mult: High bound multiplier for sqrt(N) (default 0.5)
+        mcs_lower: Lower bound of MCS grid, used to ensure ms <= mcs
+
+    Returns:
+        Log-spaced list of min_samples values
+    """
+    log_n = math.log(max(N, 2))
+    sqrt_n = math.sqrt(N)
+    low = max(1, int(round(low_log_mult * log_n)))
+    high = max(1, int(round(high_sqrt_mult * sqrt_n)))
+
+    # Safety: ensure min_ms <= mcs_lower
+    low = min(low, mcs_lower)
+    high = min(high, mcs_lower) if high > mcs_lower else high
+
+    # Safety: ensure low <= high
+    if low > high:
+        low = high
+
     return log_spaced_ints(low, high, k=k)
 
 
@@ -693,13 +785,24 @@ def create_search_space(N: int, config: ClustererConfig) -> Dict[str, List]:
     """
     Create Optuna search space dict for GridSampler using config values.
 
+    Initial grid search uses ms = mcs // 2 (not a separate grid dimension).
+
     Args:
         N: Dataset size
         config: ClustererConfig with grid parameters
 
     Returns:
-        Dict with 'n_neighbors', 'n_components', 'min_dist', and 'min_cluster_size' grids
+        Dict with 'n_neighbors', 'n_components', 'min_dist', 'min_cluster_size' grids
     """
+    mcs_values = mcs_grid(
+        N,
+        k=config.min_cluster_size_grid_k,
+        low_pct=config.mcs_low_pct,
+        low_log_mult=config.mcs_low_log_mult,
+        high_mult=config.mcs_high_mult,
+        mcs_min=config.mcs_min
+    )
+
     return {
         'n_neighbors': n_neighbors_grid(
             N,
@@ -711,14 +814,295 @@ def create_search_space(N: int, config: ClustererConfig) -> Dict[str, List]:
         ),
         'n_components': list(config.umap_n_components_grid),
         'min_dist': list(config.umap_min_dist_grid),
-        'min_cluster_size': mcs_grid_sqrt(
-            N,
-            k=config.min_cluster_size_grid_k,
-            low_mult=config.mcs_low_mult,
-            high_mult=config.mcs_high_mult,
-            mcs_min=config.mcs_min
-        ),
+        'min_cluster_size': mcs_values,
     }
+
+
+# =============================================================================
+# PARETO FRONTIER SELECTION
+# =============================================================================
+
+
+def compute_pareto_k_min(N: int, config: ClustererConfig) -> int:
+    """
+    Compute minimum allowed k for Pareto filtering.
+
+    Formula: k >= pareto_min_k_sqrt_mult * sqrt(N)  (default 0.5 * sqrt(N))
+
+    Args:
+        N: Dataset size
+        config: ClustererConfig with pareto_min_k_sqrt_mult
+
+    Returns:
+        Minimum allowed number of clusters
+    """
+    return max(1, int(config.pareto_min_k_sqrt_mult * math.sqrt(N)))
+
+
+def compute_pareto_k_max(N: int, config: ClustererConfig) -> int:
+    """
+    Compute maximum allowed k for Pareto filtering.
+
+    Formula:
+    - N < threshold: k <= N / (4 * mcs_lower), where mcs_lower = min(0.05*N, ln(N))
+    - N >= threshold: k <= 0.8 * sqrt(N)
+
+    Args:
+        N: Dataset size
+        config: ClustererConfig with pareto_* and mcs_* parameters
+
+    Returns:
+        Maximum allowed number of clusters
+    """
+    if N < config.pareto_k_small_n_threshold:
+        log_n = math.log(max(N, 2))
+        mcs_lower = max(config.mcs_min, int(round(min(config.mcs_low_pct * N, config.mcs_low_log_mult * log_n))))
+        k_max = int(N / (4 * mcs_lower))
+    else:
+        k_max = int(config.pareto_max_k_sqrt_mult * math.sqrt(N))
+    return max(1, k_max)
+
+
+def filter_candidates_by_hard_constraints(
+    study: optuna.Study,
+    N: int,
+    config: ClustererConfig,
+    verbose: bool = True
+) -> List[optuna.trial.FrozenTrial]:
+    """
+    Filter completed Optuna trials by hard constraints.
+
+    Constraints:
+    - DBCV (relative_validity) > pareto_min_dbcv
+    - k (n_clusters) in [k_min, k_max]
+    - noise_rate <= pareto_max_noise_rate
+    - max_cluster_ratio <= pareto_max_cluster_ratio
+
+    Falls back progressively if no candidates pass:
+    1. Drop DBCV constraint
+    2. Drop noise + max_cluster_ratio constraints
+    3. Use all completed trials
+
+    Args:
+        study: Completed Optuna study
+        N: Dataset size
+        config: ClustererConfig with pareto_* parameters
+        verbose: Print filtering details
+
+    Returns:
+        List of trials passing constraints (with fallback if needed)
+    """
+    k_min = compute_pareto_k_min(N, config)
+    k_max = compute_pareto_k_max(N, config)
+
+    completed = [
+        t for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+    ]
+
+    # Full constraints: DBCV + k range + noise + max_cluster_ratio
+    candidates = [
+        t for t in completed
+        if t.user_attrs.get('relative_validity', -1.0) > config.pareto_min_dbcv
+        and k_min <= t.user_attrs.get('n_clusters', 0) <= k_max
+        and t.user_attrs.get('noise_rate', 1.0) <= config.pareto_max_noise_rate
+        and t.user_attrs.get('max_cluster_ratio', 1.0) <= config.pareto_max_cluster_ratio
+    ]
+
+    if candidates:
+        if verbose:
+            print(f"  {len(candidates)}/{len(completed)} trials pass all hard constraints "
+                  f"(DBCV>{config.pareto_min_dbcv}, k in [{k_min}, {k_max}], "
+                  f"noise<={config.pareto_max_noise_rate}, "
+                  f"max_cluster_ratio<={config.pareto_max_cluster_ratio})")
+        return candidates
+
+    # Fallback 1: drop DBCV, keep k + noise + max_cluster_ratio
+    candidates = [
+        t for t in completed
+        if k_min <= t.user_attrs.get('n_clusters', 0) <= k_max
+        and t.user_attrs.get('noise_rate', 1.0) <= config.pareto_max_noise_rate
+        and t.user_attrs.get('max_cluster_ratio', 1.0) <= config.pareto_max_cluster_ratio
+    ]
+    if candidates:
+        if verbose:
+            print(f"  WARNING: No candidates with DBCV>{config.pareto_min_dbcv}. "
+                  f"Relaxed to k in [{k_min}, {k_max}] + noise<={config.pareto_max_noise_rate} "
+                  f"+ max_cluster_ratio<={config.pareto_max_cluster_ratio}: "
+                  f"{len(candidates)}/{len(completed)} trials")
+        return candidates
+
+    # Fallback 2: drop DBCV + noise + max_cluster_ratio, keep k range only
+    candidates = [
+        t for t in completed
+        if k_min <= t.user_attrs.get('n_clusters', 0) <= k_max
+    ]
+    if candidates:
+        if verbose:
+            print(f"  WARNING: No candidates with noise/max_cluster_ratio constraints. "
+                  f"Relaxed to k in [{k_min}, {k_max}] only: {len(candidates)}/{len(completed)} trials")
+        return candidates
+
+    # Fallback 3: all completed trials
+    if verbose:
+        print(f"  WARNING: No candidates pass any constraints (k in [{k_min}, {k_max}]). "
+              f"Using all {len(completed)} completed trials")
+    return completed
+
+
+def compute_pareto_front(
+    candidates: List[optuna.trial.FrozenTrial]
+) -> List[optuna.trial.FrozenTrial]:
+    """
+    Compute Pareto frontier over 4 objectives.
+
+    Objectives:
+    - relative_validity (DBCV): maximize
+    - n_clusters: minimize
+    - low_prob_ratio: minimize
+    - max_cluster_ratio: minimize
+
+    Coherence and noise are handled as hard constraints, not Pareto objectives.
+
+    A candidate is non-dominated if no other candidate is better on ALL objectives.
+
+    Args:
+        candidates: List of trials passing hard constraints
+
+    Returns:
+        List of non-dominated trials (Pareto front)
+    """
+    if len(candidates) <= 1:
+        return list(candidates)
+
+    def objectives(trial):
+        return (
+            trial.user_attrs.get('relative_validity', 0.0),    # maximize
+            -trial.user_attrs.get('n_clusters', 0),             # minimize -> negate
+            -trial.user_attrs.get('low_prob_ratio', 1.0),       # minimize -> negate
+            -trial.user_attrs.get('max_cluster_ratio', 1.0),    # minimize -> negate
+        )
+
+    def dominates(a_obj, b_obj):
+        """True if a dominates b (a >= b on all, a > b on at least one)."""
+        at_least_as_good = all(ai >= bi for ai, bi in zip(a_obj, b_obj))
+        strictly_better = any(ai > bi for ai, bi in zip(a_obj, b_obj))
+        return at_least_as_good and strictly_better
+
+    obj_values = [objectives(c) for c in candidates]
+    pareto = []
+    for i, c in enumerate(candidates):
+        is_dominated = any(
+            dominates(obj_values[j], obj_values[i])
+            for j in range(len(candidates)) if j != i
+        )
+        if not is_dominated:
+            pareto.append(c)
+
+    return pareto
+
+
+def select_from_pareto_front(
+    pareto_front: List[optuna.trial.FrozenTrial],
+    all_candidates: List[optuna.trial.FrozenTrial],
+    config: ClustererConfig,
+    verbose: bool = True
+) -> optuna.trial.FrozenTrial:
+    """
+    Select best solution from Pareto front using weighted distance to ideal point.
+
+    Each objective is normalized using percentile bounds (p5/p95) from all_candidates
+    for outlier robustness. Values are clipped to [0,1] after normalization.
+    Minimize-objectives are flipped so higher=better for all.
+    The solution closest (weighted Euclidean) to the ideal point [1,1,1,1] is selected.
+
+    4 objectives:
+    - DBCV (relative_validity): maximize
+    - n_clusters: minimize
+    - low_prob_ratio: minimize
+    - max_cluster_ratio: minimize
+
+    Coherence and noise are handled as hard constraints, not Pareto objectives.
+
+    Args:
+        pareto_front: Non-dominated solutions
+        all_candidates: All solutions passing hard constraints (for normalization bounds)
+        config: ClustererConfig with pareto_weight_* and pareto_norm_percentile_* fields
+        verbose: Print selection details
+
+    Returns:
+        Selected trial from Pareto front
+    """
+    if len(pareto_front) == 1:
+        if verbose:
+            t = pareto_front[0]
+            print(f"\n[Pareto] Single solution on front: "
+                  f"DBCV={t.user_attrs.get('relative_validity', 0):.4f}, "
+                  f"k={t.user_attrs.get('n_clusters', 0)}, "
+                  f"low_prob={t.user_attrs.get('low_prob_ratio', 0):.3f}, "
+                  f"max_clust={t.user_attrs.get('max_cluster_ratio', 0):.3f}")
+        return pareto_front[0]
+
+    def extract(trial):
+        return np.array([
+            trial.user_attrs.get('relative_validity', 0.0),
+            trial.user_attrs.get('n_clusters', 0),
+            trial.user_attrs.get('low_prob_ratio', 1.0),
+            trial.user_attrs.get('max_cluster_ratio', 1.0),
+        ])
+
+    # Percentile normalization bounds from all candidates (p5/p95)
+    all_vals = np.array([extract(t) for t in all_candidates])
+    lo = np.percentile(all_vals, config.pareto_norm_percentile_low, axis=0)
+    hi = np.percentile(all_vals, config.pareto_norm_percentile_high, axis=0)
+    ranges = hi - lo
+    ranges[ranges == 0] = 1.0  # avoid division by zero
+
+    weights = np.array([
+        config.pareto_weight_dbcv,
+        config.pareto_weight_k,
+        config.pareto_weight_low_prob_ratio,
+        config.pareto_weight_max_cluster_ratio,
+    ])
+
+    best_dist = float('inf')
+    best_trial = pareto_front[0]
+
+    for trial in pareto_front:
+        vals = extract(trial)
+        normalized = np.clip((vals - lo) / ranges, 0.0, 1.0)
+
+        # Flip minimize-objectives so higher=better for all
+        # [0] DBCV: maximize (keep)
+        # [1] n_clusters: minimize -> flip
+        # [2] low_prob_ratio: minimize -> flip
+        # [3] max_cluster_ratio: minimize -> flip
+        normalized[1] = 1.0 - normalized[1]
+        normalized[2] = 1.0 - normalized[2]
+        normalized[3] = 1.0 - normalized[3]
+
+        dist = np.sqrt(np.sum(weights * (1.0 - normalized) ** 2))
+
+        if dist < best_dist:
+            best_dist = dist
+            best_trial = trial
+
+    if verbose:
+        t = best_trial
+        print(f"\n[Pareto] Selected from {len(pareto_front)} Pareto-optimal solutions "
+              f"(distance to ideal: {best_dist:.4f})")
+        print(f"  DBCV={t.user_attrs.get('relative_validity', 0):.4f}, "
+              f"k={t.user_attrs.get('n_clusters', 0)}, "
+              f"low_prob={t.user_attrs.get('low_prob_ratio', 0):.3f}, "
+              f"max_clust={t.user_attrs.get('max_cluster_ratio', 0):.3f}")
+        print(f"  (coh={t.user_attrs.get('coherence', t.value):.4f}, "
+              f"noise={t.user_attrs.get('noise_rate', 0):.3f})")
+        print(f"  Params: nn={t.params.get('n_neighbors')}, "
+              f"nc={t.params.get('n_components')}, "
+              f"md={t.params.get('min_dist')}, "
+              f"mcs={t.params.get('min_cluster_size')}")
+
+    return best_trial
 
 
 def run_umap(
@@ -794,6 +1178,7 @@ class ParameterOptimizer:
         self._search_space: Dict[str, List] = {}
         self._umap_cache: Dict[Tuple[int, int, float], np.ndarray] = {}
         self._study: Optional[optuna.Study] = None
+        self._extended_study: Optional[optuna.Study] = None
         self._best_result: Optional[Dict[str, Any]] = None
         self._selector = AlgorithmSelector(config)
 
@@ -852,17 +1237,17 @@ class ParameterOptimizer:
 
     def _objective(self, trial: optuna.Trial) -> float:
         """
-        Optuna objective function maximizing coherence.
+        Optuna objective function maximizing DBCV (relative_validity).
 
-        Coherence = mean intra-cluster cosine similarity on original embeddings.
-        This measures how semantically similar items within clusters are.
+        DBCV measures density-based cluster validity — how well-separated
+        and internally dense the clusters are.
 
         Args:
             trial: Optuna trial
 
         Returns:
-            Coherence score (higher is better)
-            Raises TrialPruned if noise constraint violated
+            DBCV score (higher is better)
+            Raises TrialPruned if constraints violated
         """
         # Get grid parameters
         n_neighbors = trial.suggest_categorical('n_neighbors', self._search_space['n_neighbors'])
@@ -895,23 +1280,31 @@ class ParameterOptimizer:
         if noise_rate > self.config.max_noise_rate:
             raise optuna.TrialPruned(f"Noise too high: {noise_rate:.1%}")
 
-        # Calculate coherence (on original embeddings) - this is our primary metric
+        # Calculate coherence (on original embeddings)
         coherence = self._calculate_coherence(labels, self._original_embeddings)
 
-        # Get relative_validity_ (for logging/analysis only)
+        # Get DBCV (relative_validity) - this is our primary optimization metric
         try:
             relative_validity = clusterer.relative_validity_
         except AttributeError:
             relative_validity = self._compute_dbcv(labels, reduced_normalized)
 
-        # Extract persistence metrics (for logging/analysis only)
+        # Extract persistence metrics
         persistence_metrics = self._selector.extract_persistence_metrics(clusterer, labels)
 
-        # Extract probability metrics (for logging/analysis only)
+        # Extract probability metrics
         prob_metrics = self._compute_probability_metrics(clusterer.probabilities_, labels)
 
-        # Extract outlier metrics (for logging/analysis only)
+        # Extract outlier metrics
         outlier_metrics = self._compute_outlier_metrics(clusterer.outlier_scores_)
+
+        # Compute max_cluster_ratio: largest cluster as fraction of all items
+        non_noise_count = (labels >= 0).sum()
+        if non_noise_count > 0:
+            cluster_counts = np.bincount(labels[labels >= 0].astype(int))
+            max_cluster_ratio = float(np.max(cluster_counts)) / len(labels)
+        else:
+            max_cluster_ratio = 1.0
 
         # Log user attributes for analysis and visualization
         trial.set_user_attr('n_clusters', n_clusters)
@@ -919,6 +1312,7 @@ class ParameterOptimizer:
         trial.set_user_attr('coherence', coherence)
         trial.set_user_attr('min_samples', min_samples)
         trial.set_user_attr('relative_validity', relative_validity)
+        trial.set_user_attr('max_cluster_ratio', max_cluster_ratio)
         trial.set_user_attr('mean_persistence', persistence_metrics.get('mean_persistence', np.nan))
         trial.set_user_attr('weighted_persistence', persistence_metrics.get('weighted_persistence', np.nan))
         trial.set_user_attr('mean_probability', prob_metrics['mean_probability'])
@@ -928,7 +1322,7 @@ class ParameterOptimizer:
         trial.set_user_attr('mean_outlier_score', outlier_metrics['mean_outlier_score'])
         trial.set_user_attr('high_outlier_ratio', outlier_metrics['high_outlier_ratio'])
 
-        return coherence
+        return relative_validity
 
     def _compute_dbcv(self, labels: np.ndarray, embeddings: np.ndarray) -> float:
         """Compute DBCV score as fallback for relative_validity_."""
@@ -1094,12 +1488,86 @@ class ParameterOptimizer:
         self._study.optimize(self._objective, n_trials=None, callbacks=[progress_callback])
         pbar.close()
 
-        best = self._study.best_trial
-        n_neighbors = best.params['n_neighbors']
-        n_components = best.params['n_components']
-        min_dist = best.params['min_dist']
-        min_cluster_size = best.params['min_cluster_size']
-        min_samples = max(1, min_cluster_size // 2)
+        if self._verbose:
+            self._print_results_table()
+
+        # --- Pareto frontier selection ---
+        candidates = filter_candidates_by_hard_constraints(
+            self._study, self._N, self.config, verbose=self._verbose
+        )
+
+        # --- Extended search if no candidates pass hard constraints ---
+        if candidates and self._verbose:
+            print(f"\n[Extended Search] Skipped — {len(candidates)} candidates pass hard constraints")
+        elif not candidates and self.config.enable_research:
+            if self._verbose:
+                k_min = compute_pareto_k_min(self._N, self.config)
+                k_max = compute_pareto_k_max(self._N, self.config)
+                print(f"\n[Extended Search] Triggered — no candidates pass hard constraints "
+                      f"(DBCV>{self.config.pareto_min_dbcv}, k in [{k_min}, {k_max}])")
+
+            best_trial = self._study.best_trial
+            initial_result = OptunaResult(
+                best_params=best_trial.params,
+                best_value=best_trial.value,
+                best_labels=np.array([]),  # placeholder
+                best_model=None,
+                n_trials_completed=len([t for t in self._study.trials if t.state == optuna.trial.TrialState.COMPLETE]),
+                n_trials_pruned=len([t for t in self._study.trials if t.state == optuna.trial.TrialState.PRUNED]),
+                study=self._study,
+                umap_embeddings=np.array([]),
+                search_space=self._search_space,
+                persistence_metrics={},
+            )
+            self._run_extended_search(initial_result)
+
+            # Re-filter with extended search trials included
+            candidates = filter_candidates_by_hard_constraints(
+                self._extended_study, self._N, self.config, verbose=self._verbose
+            )
+        elif not candidates:
+            if self._verbose:
+                print(f"\n[Extended Search] Disabled — using all completed trials as fallback")
+
+        if not candidates:
+            # Final fallback: use all completed trials from both studies
+            candidates = [t for t in self._study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+            if hasattr(self, '_extended_study') and self._extended_study:
+                candidates += [t for t in self._extended_study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+            if self._verbose:
+                print(f"  Fallback: using all {len(candidates)} completed trials")
+
+        if not candidates:
+            raise RuntimeError("No completed trials in any study")
+
+        pareto_front = compute_pareto_front(candidates)
+        if self._verbose:
+            print(f"  Pareto front: {len(pareto_front)} non-dominated solutions")
+
+        selected_trial = select_from_pareto_front(
+            pareto_front, candidates, self.config, verbose=self._verbose
+        )
+
+        # Rebuild HDBSCAN model from selected trial's params
+        sel_params = selected_trial.params
+        min_cluster_size = sel_params['min_cluster_size']
+
+        # Extended search trials have ms + cluster_selection_method as params;
+        # initial grid search trials have nn/nc/md and derive ms from mcs
+        is_extended = 'cluster_selection_method' in sel_params
+        if is_extended:
+            best_trial_initial = self._study.best_trial
+            n_neighbors = best_trial_initial.params['n_neighbors']
+            n_components = best_trial_initial.params['n_components']
+            min_dist = best_trial_initial.params['min_dist']
+            min_samples = sel_params['min_samples']
+            sel_method = sel_params['cluster_selection_method']
+        else:
+            n_neighbors = sel_params['n_neighbors']
+            n_components = sel_params['n_components']
+            min_dist = sel_params['min_dist']
+            min_samples = max(1, min_cluster_size // 2)
+            sel_method = self.config.hdbscan_cluster_selection_method
 
         reduced_normalized = self._umap_cache[(n_neighbors, n_components, min_dist)]
 
@@ -1107,19 +1575,17 @@ class ParameterOptimizer:
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             metric='euclidean',
-            cluster_selection_method=self.config.hdbscan_cluster_selection_method,
+            cluster_selection_method=sel_method,
             gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
         )
         best_labels = best_clusterer.fit_predict(reduced_normalized)
-
         persistence_metrics = self._selector.extract_persistence_metrics(best_clusterer, best_labels)
 
         completed = len([t for t in self._study.trials if t.state == optuna.trial.TrialState.COMPLETE])
         pruned = len([t for t in self._study.trials if t.state == optuna.trial.TrialState.PRUNED])
-
-        if self._verbose:
-            self._print_results_table()
-            self._print_best_result_details(best)
+        if hasattr(self, '_extended_study') and self._extended_study:
+            completed += len([t for t in self._extended_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+            pruned += len([t for t in self._extended_study.trials if t.state == optuna.trial.TrialState.PRUNED])
 
         result = OptunaResult(
             best_params={
@@ -1129,7 +1595,7 @@ class ParameterOptimizer:
                 'min_cluster_size': min_cluster_size,
                 'min_samples': min_samples,
             },
-            best_value=best.value,
+            best_value=selected_trial.value,
             best_labels=best_labels,
             best_model=best_clusterer,
             n_trials_completed=completed,
@@ -1140,73 +1606,11 @@ class ParameterOptimizer:
             persistence_metrics=persistence_metrics
         )
 
-        result = self._check_quality_and_research(result)
-
-        # Apply parsimony selection if enabled
-        if self.config.enable_parsimony_selection:
-            # Choose selection method based on config
-            if self.config.parsimony_method == "coherence_knee":
-                selected_trial, selection_analysis = self._select_by_coherence_knee(self._study)
-            else:
-                # Default: delta_log method
-                selected_trial, selection_analysis = self._select_by_max_delta_log(
-                    self._study,
-                    umap_cache_key=(n_neighbors, n_components, min_dist)
-                )
-
-            # Check if parsimony selection chose a different trial
-            if selected_trial != self._study.best_trial:
-                # Rebuild result with the parsimony-selected trial
-                sel_n_neighbors = selected_trial.params['n_neighbors']
-                sel_n_components = selected_trial.params['n_components']
-                sel_min_dist = selected_trial.params['min_dist']
-                sel_min_cluster_size = selected_trial.params['min_cluster_size']
-                sel_min_samples = max(1, sel_min_cluster_size // 2)
-
-                # Get the UMAP embeddings for this configuration
-                sel_reduced = self._umap_cache.get(
-                    (sel_n_neighbors, sel_n_components, sel_min_dist),
-                    reduced_normalized  # Fallback to current if not in cache
-                )
-
-                # Rebuild the HDBSCAN model
-                sel_clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=sel_min_cluster_size,
-                    min_samples=sel_min_samples,
-                    metric='euclidean',
-                    cluster_selection_method=self.config.hdbscan_cluster_selection_method,
-                    gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
-                )
-                sel_labels = sel_clusterer.fit_predict(sel_reduced)
-                sel_persistence = self._selector.extract_persistence_metrics(sel_clusterer, sel_labels)
-
-                # Update result with parsimony-selected configuration
-                result = OptunaResult(
-                    best_params={
-                        'n_neighbors': sel_n_neighbors,
-                        'n_components': sel_n_components,
-                        'min_dist': sel_min_dist,
-                        'min_cluster_size': sel_min_cluster_size,
-                        'min_samples': sel_min_samples,
-                    },
-                    best_value=selected_trial.value,
-                    best_labels=sel_labels,
-                    best_model=sel_clusterer,
-                    n_trials_completed=result.n_trials_completed,
-                    n_trials_pruned=result.n_trials_pruned,
-                    study=self._study,
-                    umap_embeddings=sel_reduced,
-                    search_space=self._search_space,
-                    persistence_metrics=sel_persistence
-                )
-
-            # Generate visualizations if enabled
-            if self.config.enable_elbow_visualization:
-                self.visualize_elbow_analysis(self._study)
-                self.visualize_metric_comparison(self._study)
-                # Also generate coherence knee visualization when using that method
-                if self.config.parsimony_method == "coherence_knee":
-                    self.visualize_coherence_knee(self._study)
+        # Generate Pareto visualization if enabled
+        if self.config.enable_pareto_visualization:
+            self.visualize_pareto_analysis(
+                self._study, candidates, pareto_front, selected_trial
+            )
 
         self._best_result = result
         return result
@@ -1470,6 +1874,7 @@ class ParameterOptimizer:
         print(f"  n_components:     {self._search_space['n_components']}")
         print(f"  min_dist:         {self._search_space['min_dist']}")
         print(f"  min_cluster_size: {self._search_space['min_cluster_size']}")
+        print(f"  min_samples:      mcs // 2")
         print(f"  Total trials:     {n_trials}")
 
     def _print_results_table(self, top_n: int = 5) -> None:
@@ -1484,16 +1889,18 @@ class ParameterOptimizer:
         sorted_trials = sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]
 
         print(f"\n  Top {min(top_n, len(sorted_trials))} Results:")
-        print(f"  {'nn':>4} {'nc':>4} {'md':>5} {'mcs':>4} {'k':>5} {'noise':>6} {'score':>7}")
-        print(f"  {'-'*4} {'-'*4} {'-'*5} {'-'*4} {'-'*5} {'-'*6} {'-'*7}")
+        print(f"  {'nn':>4} {'nc':>4} {'md':>5} {'mcs':>4} {'ms':>4} {'k':>5} {'noise':>6} {'score':>7}")
+        print(f"  {'-'*4} {'-'*4} {'-'*5} {'-'*4} {'-'*4} {'-'*5} {'-'*6} {'-'*7}")
 
         for i, trial in enumerate(sorted_trials):
             marker = "*" if i == 0 else " "
             noise_rate = trial.user_attrs.get('noise_rate', 0)
+            ms_val = trial.params.get('min_samples', trial.user_attrs.get('min_samples', '?'))
             print(f"{marker} {trial.params.get('n_neighbors', '?'):>4} "
                   f"{trial.params.get('n_components', '?'):>4} "
                   f"{trial.params.get('min_dist', '?'):>5} "
                   f"{trial.params.get('min_cluster_size', '?'):>4} "
+                  f"{ms_val:>4} "
                   f"{trial.user_attrs.get('n_clusters', '?'):>5} "
                   f"{noise_rate:>5.0%} "
                   f"{trial.value:>7.3f}")
@@ -1523,12 +1930,12 @@ class ParameterOptimizer:
         noise_rate = best_trial.user_attrs.get('noise_rate', 0.0)
         relative_validity = best_trial.user_attrs.get('relative_validity', result.best_value)
 
-        sqrt_n = math.sqrt(self._N)
+        k_max = compute_pareto_k_max(self._N, self.config)
         max_noise = self.config.research_max_noise_rate
         min_validity = self.config.research_min_validity
         cluster_deviation_threshold = self.config.research_cluster_deviation_threshold
 
-        cluster_deviation = abs(n_clusters - sqrt_n) / sqrt_n if sqrt_n > 0 else 0.0
+        cluster_deviation = abs(n_clusters - k_max) / k_max if k_max > 0 else 0.0
 
         needs_research = False
         reasons = []
@@ -1539,16 +1946,16 @@ class ParameterOptimizer:
 
         if cluster_deviation > cluster_deviation_threshold:
             needs_research = True
-            reasons.append(f"cluster_deviation={cluster_deviation:.1%}>{cluster_deviation_threshold:.0%} (k={n_clusters}, expected~{sqrt_n:.0f})")
+            reasons.append(f"cluster_deviation={cluster_deviation:.1%}>{cluster_deviation_threshold:.0%} (k={n_clusters}, k_max={k_max})")
 
         if not needs_research:
             if self._verbose:
-                print(f"  Quality check PASSED: k={n_clusters} (expected~{sqrt_n:.0f})")
+                print(f"\n[Extended Search] Skipped — quality check passed "
+                      f"(k={n_clusters}, k_max={k_max}, deviation={cluster_deviation:.1%}<={cluster_deviation_threshold:.0%})")
             return result
 
         if self._verbose:
-            print(f"\n[Research] Quality check failed: {', '.join(reasons)}")
-            print(f"  Triggering extended search...")
+            print(f"\n[Extended Search] Triggered — {', '.join(reasons)}")
 
         return self._run_extended_search(result)
 
@@ -1558,24 +1965,21 @@ class ParameterOptimizer:
         best_n_components = initial_result.best_params.get('n_components', self.config.umap_n_components_grid[0])
         best_min_dist = initial_result.best_params.get('min_dist', self.config.umap_min_dist_grid[0])
         best_mcs = initial_result.best_params['min_cluster_size']
-        best_ms = initial_result.best_params.get('min_samples', best_mcs // 2)
         reduced_normalized = self._umap_cache[(best_n_neighbors, best_n_components, best_min_dist)]
 
         mcs_multipliers = self.config.research_mcs_multipliers
         mcs_options = sorted(set(
-            max(3, int(round(best_mcs * mult)))
+            max(self.config.mcs_min, int(round(best_mcs * mult)))
             for mult in mcs_multipliers
         ))
 
-        ms_low_mult, ms_high_mult = self.config.research_ms_range_multipliers
-        ms_low = max(1, int(round(best_ms * ms_low_mult)))
-        ms_high = max(ms_low, int(round(best_ms * ms_high_mult)))
-        ms_options = log_spaced_ints(ms_low, ms_high, k=self.config.research_ms_grid_k)
+        # MS grid for extended search: lower=ln(N), upper=max_mcs/2
+        max_mcs = max(mcs_options)
+        ms_low = max(1, int(round(math.log(max(self._N, 2)))))
+        ms_high = max(ms_low, max_mcs // 2)
+        ms_options = log_spaced_ints(ms_low, ms_high, k=self.config.min_samples_grid_k)
 
         selection_methods = list(self.config.research_selection_methods)
-
-        max_mcs = max(mcs_options)
-        ms_options = [ms for ms in ms_options if ms <= max_mcs]
 
         extended_search_space = {
             'min_cluster_size': mcs_options,
@@ -1623,7 +2027,7 @@ class ParameterOptimizer:
             except AttributeError:
                 validity = self._compute_dbcv(labels, reduced_normalized)
 
-            # Calculate coherence (primary metric)
+            # Calculate coherence
             coherence = self._calculate_coherence(labels, self._original_embeddings)
 
             # Compute other metrics for logging
@@ -1631,11 +2035,20 @@ class ParameterOptimizer:
             prob_metrics = self._compute_probability_metrics(clusterer.probabilities_, labels)
             outlier_metrics = self._compute_outlier_metrics(clusterer.outlier_scores_)
 
+            # Compute max_cluster_ratio: largest cluster as fraction of all items
+            non_noise_count = (labels >= 0).sum()
+            if non_noise_count > 0:
+                cluster_counts = np.bincount(labels[labels >= 0].astype(int))
+                max_cluster_ratio = float(np.max(cluster_counts)) / len(labels)
+            else:
+                max_cluster_ratio = 1.0
+
             trial.set_user_attr('n_clusters', n_clusters)
             trial.set_user_attr('noise_rate', noise_rate)
             trial.set_user_attr('coherence', coherence)
             trial.set_user_attr('labels', labels.tolist())
             trial.set_user_attr('relative_validity', validity)
+            trial.set_user_attr('max_cluster_ratio', max_cluster_ratio)
             trial.set_user_attr('weighted_persistence', persistence_metrics.get('weighted_persistence', 0.0))
             trial.set_user_attr('mean_probability', prob_metrics['mean_probability'])
             trial.set_user_attr('low_prob_ratio', prob_metrics['low_prob_ratio'])
@@ -1644,7 +2057,7 @@ class ParameterOptimizer:
             trial.set_user_attr('mean_outlier_score', outlier_metrics['mean_outlier_score'])
             trial.set_user_attr('high_outlier_ratio', outlier_metrics['high_outlier_ratio'])
 
-            return coherence
+            return validity
 
         extended_sampler = GridSampler(extended_search_space)
         extended_study = optuna.create_study(
@@ -1673,56 +2086,209 @@ class ParameterOptimizer:
         if self._verbose:
             print(f"  {completed} completed, {pruned} pruned")
 
-        if completed == 0:
+        # Store extended study for Pareto selection in optimize()
+        self._extended_study = extended_study
+
+    def visualize_pareto_analysis(
+        self,
+        study: optuna.Study,
+        candidates: List[optuna.trial.FrozenTrial],
+        pareto_front: List[optuna.trial.FrozenTrial],
+        selected_trial: optuna.trial.FrozenTrial,
+        output_dir: Optional[Path] = None,
+        filename_prefix: str = "pareto_analysis"
+    ) -> Optional[Path]:
+        """
+        Visualize Pareto frontier selection.
+
+        2x2 panel:
+        1. DBCV vs k scatter (Pareto objectives, candidates, front, selected)
+        2. Low prob vs Max cluster scatter (Pareto objectives)
+        3. Pareto front table with all metrics
+        4. Summary of selected solution
+        """
+        try:
+            project_root = Path(__file__).parent.parent.parent.parent
+            output_dir = output_dir or (project_root / "exports")
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            def extract_metrics(trial):
+                return {
+                    'dbcv': trial.user_attrs.get('relative_validity', 0.0),
+                    'coherence': trial.user_attrs.get('coherence', trial.value),
+                    'k': trial.user_attrs.get('n_clusters', 0),
+                    'noise': trial.user_attrs.get('noise_rate', 0.0),
+                    'low_prob': trial.user_attrs.get('low_prob_ratio', 0.0),
+                    'max_clust': trial.user_attrs.get('max_cluster_ratio', 0.0),
+                }
+
+            # Get all completed trials for background
+            all_completed = [
+                t for t in study.trials
+                if t.state == optuna.trial.TrialState.COMPLETE
+            ]
+            all_metrics = [extract_metrics(t) for t in all_completed]
+            cand_metrics = [extract_metrics(t) for t in candidates]
+            pareto_metrics = [extract_metrics(t) for t in pareto_front]
+            sel_metrics = extract_metrics(selected_trial)
+
+            pareto_trial_nums = {t.number for t in pareto_front}
+
+            fig, axes = plt.subplots(2, 2, figsize=(14, 11))
+
+            # Panel 1: DBCV vs k (both Pareto objectives)
+            ax = axes[0, 0]
+            ax.scatter(
+                [m['dbcv'] for m in all_metrics],
+                [m['k'] for m in all_metrics],
+                c='lightgrey', s=30, alpha=0.5, label=f'All ({len(all_metrics)})'
+            )
+            ax.scatter(
+                [m['dbcv'] for m in cand_metrics],
+                [m['k'] for m in cand_metrics],
+                c='steelblue', s=40, alpha=0.6, label=f'Candidates ({len(cand_metrics)})'
+            )
+            ax.scatter(
+                [m['dbcv'] for m in pareto_metrics],
+                [m['k'] for m in pareto_metrics],
+                c='darkorange', s=70, edgecolors='black', linewidths=0.8,
+                label=f'Pareto front ({len(pareto_metrics)})', zorder=5
+            )
+            ax.scatter(
+                [sel_metrics['dbcv']], [sel_metrics['k']],
+                c='red', s=200, marker='*', edgecolors='black', linewidths=1,
+                label='Selected', zorder=10
+            )
+            ax.set_xlabel('DBCV (relative validity)')
+            ax.set_ylabel('Number of clusters (k)')
+            ax.set_title('DBCV vs k')
+            ax.legend(fontsize=8, loc='upper right')
+            ax.grid(True, alpha=0.3)
+
+            # Panel 2: Low prob vs Max cluster (both Pareto objectives)
+            ax = axes[0, 1]
+            ax.scatter(
+                [m['low_prob'] for m in all_metrics],
+                [m['max_clust'] for m in all_metrics],
+                c='lightgrey', s=30, alpha=0.5, label=f'All ({len(all_metrics)})'
+            )
+            ax.scatter(
+                [m['low_prob'] for m in cand_metrics],
+                [m['max_clust'] for m in cand_metrics],
+                c='steelblue', s=40, alpha=0.6, label=f'Candidates ({len(cand_metrics)})'
+            )
+            ax.scatter(
+                [m['low_prob'] for m in pareto_metrics],
+                [m['max_clust'] for m in pareto_metrics],
+                c='darkorange', s=70, edgecolors='black', linewidths=0.8,
+                label=f'Pareto front ({len(pareto_metrics)})', zorder=5
+            )
+            ax.scatter(
+                [sel_metrics['low_prob']], [sel_metrics['max_clust']],
+                c='red', s=200, marker='*', edgecolors='black', linewidths=1,
+                label='Selected', zorder=10
+            )
+            ax.set_xlabel('Low probability ratio')
+            ax.set_ylabel('Max cluster ratio')
+            ax.set_title('Low Prob vs Max Cluster')
+            ax.legend(fontsize=8, loc='upper right')
+            ax.grid(True, alpha=0.3)
+
+            # Panel 3: Pareto front table
+            ax = axes[1, 0]
+            ax.axis('off')
+            if pareto_metrics:
+                # Sort by DBCV descending for readability
+                sorted_pareto = sorted(
+                    zip(pareto_front, pareto_metrics),
+                    key=lambda x: x[1]['dbcv'],
+                    reverse=True
+                )
+                col_labels = ['Trial', 'DBCV', 'k', 'LowP', 'MaxCl', 'Coh', 'Noise']
+                n_cols = len(col_labels)
+                table_data = []
+                cell_colors = []
+                for trial, m in sorted_pareto:
+                    is_selected = (trial.number == selected_trial.number)
+                    row = [
+                        f"#{trial.number}{'*' if is_selected else ''}",
+                        f"{m['dbcv']:.4f}",
+                        f"{m['k']}",
+                        f"{m['low_prob']:.3f}",
+                        f"{m['max_clust']:.3f}",
+                        f"{m['coherence']:.4f}",
+                        f"{m['noise']:.3f}",
+                    ]
+                    table_data.append(row)
+                    if is_selected:
+                        cell_colors.append(['#ffcccc'] * n_cols)
+                    else:
+                        cell_colors.append(['white'] * n_cols)
+
+                table = ax.table(
+                    cellText=table_data,
+                    colLabels=col_labels,
+                    cellColours=cell_colors,
+                    colColours=['#e6e6e6'] * n_cols,
+                    loc='center',
+                    cellLoc='center',
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1.0, 1.3)
+                ax.set_title('Pareto Front Solutions (* = selected)', fontsize=11)
+
+            # Panel 4: Summary
+            ax = axes[1, 1]
+            ax.axis('off')
+            summary_lines = [
+                f"Dataset: N = {self._N}",
+                f"Grid trials: {len(all_completed)} completed, "
+                f"{len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])} pruned",
+                f"Hard constraint filter: {len(candidates)} candidates",
+                f"Pareto front: {len(pareto_front)} non-dominated",
+                "",
+                "Selected (Pareto objectives):",
+                f"  DBCV = {sel_metrics['dbcv']:.4f}",
+                f"  k = {sel_metrics['k']}",
+                f"  Low prob = {sel_metrics['low_prob']:.3f}",
+                f"  Max cluster = {sel_metrics['max_clust']:.3f}",
+                "Context (hard constraints):",
+                f"  Coherence = {sel_metrics['coherence']:.4f}",
+                f"  Noise = {sel_metrics['noise']:.3f}",
+                "",
+                f"  nn={selected_trial.params.get('n_neighbors')}, "
+                f"nc={selected_trial.params.get('n_components')}, "
+                f"md={selected_trial.params.get('min_dist')}, "
+                f"mcs={selected_trial.params.get('min_cluster_size')}",
+            ]
+            ax.text(
+                0.05, 0.95, '\n'.join(summary_lines),
+                transform=ax.transAxes,
+                verticalalignment='top',
+                fontfamily='monospace',
+                fontsize=10,
+            )
+            ax.set_title('Selection Summary', fontsize=11)
+
+            fig.suptitle(
+                f'Pareto Frontier Analysis (N={self._N})',
+                fontsize=14, fontweight='bold', y=0.98
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = output_dir / f"{filename_prefix}_{timestamp}.png"
+            fig.savefig(filepath, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+
             if self._verbose:
-                print(f"  No valid trials found, keeping initial result")
-            return initial_result
+                print(f"\n  Pareto visualization saved: {filepath}")
+            return filepath
 
-        best_extended = extended_study.best_trial
-
-        if best_extended.value <= initial_result.best_value:
-            if self._verbose:
-                print(f"  No improvement (extended: {best_extended.value:.4f} <= initial: {initial_result.best_value:.4f})")
-            return initial_result
-
-        mcs = best_extended.params['min_cluster_size']
-        ms = best_extended.params['min_samples']
-        method = best_extended.params['cluster_selection_method']
-
-        best_clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=mcs,
-            min_samples=ms,
-            metric='euclidean',
-            cluster_selection_method=method,
-            gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
-        )
-        best_labels = best_clusterer.fit_predict(reduced_normalized)
-
-        persistence_metrics = self._selector.extract_persistence_metrics(best_clusterer, best_labels)
-
-        if self._verbose:
-            improvement = best_extended.value - initial_result.best_value
-            print(f"  Found better: {method}, mcs={mcs}, ms={ms}, "
-                  f"score={best_extended.value:.4f} (+{improvement:.4f})")
-
-        return OptunaResult(
-            best_params={
-                'n_neighbors': best_n_neighbors,
-                'n_components': best_n_components,
-                'min_cluster_size': mcs,
-                'min_samples': ms,
-                'cluster_selection_method': method,
-            },
-            best_value=best_extended.value,
-            best_labels=best_labels,
-            best_model=best_clusterer,
-            n_trials_completed=initial_result.n_trials_completed + completed,
-            n_trials_pruned=initial_result.n_trials_pruned + pruned,
-            study=self._study,
-            umap_embeddings=reduced_normalized,
-            search_space=self._search_space,
-            persistence_metrics=persistence_metrics
-        )
+        except Exception as e:
+            print(f"  WARNING: Pareto visualization failed: {e}")
+            return None
 
     def visualize_elbow_analysis(
         self,
@@ -3098,11 +3664,14 @@ def extract_text_for_display(idea_text: str, template_prefix: Optional[str] = No
 def extract_text_for_format(
     idea_text: str,
     taxonomy_phrase: str,
-    embedding_text_format: Optional[str]
+    embedding_text_format: Optional[str],
+    ontology_text: str = ""
 ) -> str:
     """Extract text matching what was actually embedded based on embedding_text_format."""
     if embedding_text_format == "taxonomy_phrase":
         return taxonomy_phrase if taxonomy_phrase else idea_text
+    if embedding_text_format == "ontology":
+        return ontology_text if ontology_text else idea_text
     return idea_text
 
 
@@ -3122,7 +3691,7 @@ class RepresentationEngine:
 
     def _get_effective_ngram_range(self, embedding_text_format: Optional[str]) -> Tuple[int, int]:
         """Determine n-gram range based on embedding text format."""
-        if embedding_text_format == "taxonomy_phrase":
+        if embedding_text_format in ("taxonomy_phrase", "ontology"):
             return (1, 1)
         return self.config.ctfidf_ngram_range
 
@@ -3196,6 +3765,7 @@ class RepresentationEngine:
         self,
         cluster_texts: Dict[int, List[str]],
         cluster_taxonomy_phrases: Optional[Dict[int, List[str]]] = None,
+        cluster_ontology_texts: Optional[Dict[int, List[str]]] = None,
         embedding_text_format: Optional[str] = None,
         verbose: bool = False
     ) -> Dict[int, List[Tuple[str, float]]]:
@@ -3208,11 +3778,13 @@ class RepresentationEngine:
         cleaned_clusters = {}
         for cluster_id, texts in cluster_texts.items():
             taxonomy_list = cluster_taxonomy_phrases.get(cluster_id, []) if cluster_taxonomy_phrases else []
+            ontology_list = cluster_ontology_texts.get(cluster_id, []) if cluster_ontology_texts else []
             cleaned_texts = []
             for i, text in enumerate(texts):
                 taxonomy = taxonomy_list[i] if i < len(taxonomy_list) else ""
+                ontology = ontology_list[i] if i < len(ontology_list) else ""
                 cleaned_texts.append(
-                    extract_text_for_format(text, taxonomy, embedding_text_format)
+                    extract_text_for_format(text, taxonomy, embedding_text_format, ontology_text=ontology)
                 )
             cleaned_clusters[cluster_id] = cleaned_texts
 
@@ -3252,24 +3824,30 @@ class RepresentationEngine:
         labels: np.ndarray,
         idea_texts: List[str],
         taxonomy_phrases: Optional[List[str]] = None,
+        ontology_texts: Optional[List[str]] = None,
         embedding_text_format: Optional[str] = None,
         verbose: bool = False
     ) -> Dict[int, List[Tuple[str, float]]]:
         """Extract keywords given cluster labels and idea texts."""
         cluster_texts = {}
         cluster_taxonomy_phrases = {}
+        cluster_ontology_texts = {}
         for i, label in enumerate(labels):
             if label >= 0:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
                     cluster_taxonomy_phrases[label] = []
+                    cluster_ontology_texts[label] = []
                 cluster_texts[label].append(idea_texts[i])
                 taxonomy = taxonomy_phrases[i] if taxonomy_phrases and i < len(taxonomy_phrases) else ""
                 cluster_taxonomy_phrases[label].append(taxonomy)
+                ontology = ontology_texts[i] if ontology_texts and i < len(ontology_texts) else ""
+                cluster_ontology_texts[label].append(ontology)
 
         return self.extract_keywords(
             cluster_texts,
             cluster_taxonomy_phrases=cluster_taxonomy_phrases,
+            cluster_ontology_texts=cluster_ontology_texts,
             embedding_text_format=embedding_text_format,
             verbose=verbose
         )
@@ -3291,6 +3869,7 @@ class RepresentationEngine:
         self,
         cluster_texts: Dict[int, List[str]],
         cluster_taxonomy_phrases: Optional[Dict[int, List[str]]] = None,
+        cluster_ontology_texts: Optional[Dict[int, List[str]]] = None,
         embedding_text_format: Optional[str] = None,
         verbose: bool = False
     ) -> Dict[str, Dict[int, List[Tuple[str, float]]]]:
@@ -3308,6 +3887,7 @@ class RepresentationEngine:
         cleaned_clusters = self._preprocess_texts(
             cluster_texts,
             cluster_taxonomy_phrases,
+            cluster_ontology_texts,
             embedding_text_format,
             verbose
         )
@@ -3337,6 +3917,7 @@ class RepresentationEngine:
         self,
         cluster_texts: Dict[int, List[str]],
         cluster_taxonomy_phrases: Optional[Dict[int, List[str]]],
+        cluster_ontology_texts: Optional[Dict[int, List[str]]],
         embedding_text_format: Optional[str],
         verbose: bool
     ) -> Dict[int, List[str]]:
@@ -3344,11 +3925,13 @@ class RepresentationEngine:
         cleaned_clusters = {}
         for cluster_id, texts in cluster_texts.items():
             taxonomy_list = cluster_taxonomy_phrases.get(cluster_id, []) if cluster_taxonomy_phrases else []
+            ontology_list = cluster_ontology_texts.get(cluster_id, []) if cluster_ontology_texts else []
             cleaned_texts = []
             for i, text in enumerate(texts):
                 taxonomy = taxonomy_list[i] if i < len(taxonomy_list) else ""
+                ontology = ontology_list[i] if i < len(ontology_list) else ""
                 cleaned_texts.append(
-                    extract_text_for_format(text, taxonomy, embedding_text_format)
+                    extract_text_for_format(text, taxonomy, embedding_text_format, ontology_text=ontology)
                 )
             cleaned_clusters[cluster_id] = cleaned_texts
 
@@ -3435,6 +4018,7 @@ class RepresentationEngine:
         labels: np.ndarray,
         idea_texts: List[str],
         taxonomy_phrases: Optional[List[str]] = None,
+        ontology_texts: Optional[List[str]] = None,
         embedding_text_format: Optional[str] = None,
         probabilities: Optional[np.ndarray] = None,
         min_probability: Optional[float] = None,
@@ -3446,6 +4030,7 @@ class RepresentationEngine:
             labels: Cluster assignments for each idea
             idea_texts: Text of each idea
             taxonomy_phrases: Optional taxonomy phrases for each idea
+            ontology_texts: Optional ontology text strings for each idea
             embedding_text_format: Text format used for embeddings
             probabilities: Optional HDBSCAN cluster membership probabilities
             min_probability: Only include ideas with probability > this threshold
@@ -3453,8 +4038,14 @@ class RepresentationEngine:
         """
         cluster_texts = {}
         cluster_taxonomy_phrases = {}
+        cluster_ontology_texts = {}
+
+        # Track filtering stats
+        total_per_cluster = {}
+
         for i, label in enumerate(labels):
             if label >= 0:
+                total_per_cluster[label] = total_per_cluster.get(label, 0) + 1
                 # Filter by probability if provided
                 if probabilities is not None and min_probability is not None:
                     if probabilities[i] <= min_probability:
@@ -3462,13 +4053,29 @@ class RepresentationEngine:
                 if label not in cluster_texts:
                     cluster_texts[label] = []
                     cluster_taxonomy_phrases[label] = []
+                    cluster_ontology_texts[label] = []
                 cluster_texts[label].append(idea_texts[i])
                 taxonomy = taxonomy_phrases[i] if taxonomy_phrases and i < len(taxonomy_phrases) else ""
                 cluster_taxonomy_phrases[label].append(taxonomy)
+                ontology = ontology_texts[i] if ontology_texts and i < len(ontology_texts) else ""
+                cluster_ontology_texts[label].append(ontology)
+
+        # Print probability filtering stats
+        if verbose and probabilities is not None and min_probability is not None:
+            total_before = sum(total_per_cluster.values())
+            total_after = sum(len(texts) for texts in cluster_texts.values())
+            print(f"  Probability filter (>{min_probability}): {total_after}/{total_before} ideas pass threshold")
+            for cluster_id in sorted(total_per_cluster.keys()):
+                kept = len(cluster_texts.get(cluster_id, []))
+                total = total_per_cluster[cluster_id]
+                filtered = total - kept
+                if filtered > 0:
+                    print(f"    Cluster {cluster_id}: {kept}/{total} kept ({filtered} filtered)")
 
         return self.extract_all_keywords(
             cluster_texts,
             cluster_taxonomy_phrases=cluster_taxonomy_phrases,
+            cluster_ontology_texts=cluster_ontology_texts,
             embedding_text_format=embedding_text_format,
             verbose=verbose
         )
@@ -3510,6 +4117,8 @@ class LabelGenerator:
         """Get terminology for samples based on embedding text format."""
         if embedding_text_format == "taxonomy_phrase":
             return ("taxonomy_phrases", "taxonomy phrases")
+        if embedding_text_format == "ontology":
+            return ("ontology_concepts", "ontology concepts")
         return ("response_ideas", "response ideas")
 
     def _build_dataset_context_section(self, dataset_context: Optional[Dict[str, str]]) -> str:

@@ -306,6 +306,12 @@ class Clusterer:
         self._algorithm_used = "HDBSCAN"
         self._algorithm_params = result.best_params
 
+        if self._verbose:
+            dvc_reduced = self._selector.compute_dvc(result.umap_embeddings)
+            dvc_val = dvc_reduced['dvc']
+            if not np.isnan(dvc_val):
+                print(f"  DVC (UMAP-reduced) = {dvc_val:.3f} (mean_dk={dvc_reduced['mean_dk']:.4f}, std_dk={dvc_reduced['std_dk']:.4f})")
+
     def _run_agglomerative(self):
         """Phase 3b: Run Agglomerative clustering."""
         if self._verbose:

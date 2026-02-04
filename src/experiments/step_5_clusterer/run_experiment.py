@@ -25,7 +25,7 @@ Toggle modes:
 import sys
 import io
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional
 from datetime import datetime
 import pickle
 
@@ -51,11 +51,11 @@ if USE_EXPERIMENTAL_CLUSTERER:
     try:
         # Module execution (python -m experiments.step_5_clusterer.run_experiment)
         from .clusterer_exp import Clusterer
-        from .config_clusterer_exp import ClustererConfig, EMBEDDING_SOURCE
+        from .config_clusterer_exp import ClustererConfig
     except ImportError:
         # Direct/notebook execution
         from experiments.step_5_clusterer.clusterer_exp import Clusterer
-        from experiments.step_5_clusterer.config_clusterer_exp import ClustererConfig, EMBEDDING_SOURCE
+        from experiments.step_5_clusterer.config_clusterer_exp import ClustererConfig
 
 else:
     # Use PRODUCTION clusterer (src/utils/clusterer.py)
@@ -95,22 +95,22 @@ def load_step4_embeddings(
     variable: str = VARIABLE,
     sample_size: Optional[int] = SAMPLE_SIZE,
     variable_key: Optional[str] = None,
-    embedding_source: str = EMBEDDING_SOURCE
-) -> Tuple[np.ndarray, List[str], List[models.EmbeddingsModel]]:
+) -> List[models.EmbeddingsModel]:
     """
     Load Step 4 embeddings from cache.
+
+    Embedding field selection (idea_embedding vs taxonomy_embedding etc.) is
+    handled downstream by the Clusterer via auto-resolution from the cached
+    embedding_text_format.  This function only loads and deserializes.
 
     Args:
         filename: Dataset filename
         variable: Variable name
         sample_size: Sample size used for caching
         variable_key: Optional explicit cache key
-        embedding_source: Which embedding to use - "taxonomy_embedding" or "idea_embedding"
 
     Returns:
-        embeddings: numpy array of shape (n_ideas, embedding_dim)
-        texts: list of text strings (taxonomy_phrase or idea depending on source)
-        embeddings_models: list of EmbeddingsModel objects (for pipeline compatibility)
+        embeddings_models: list of EmbeddingsModel objects
     """
     if variable_key is None:
         variable_key = generate_enhanced_variable_key(
@@ -138,48 +138,13 @@ def load_step4_embeddings(
     # Convert serialized data to EmbeddingsModel objects
     embeddings_models = [models.EmbeddingsModel.model_validate(item) for item in serializable_data]
 
-    # Detect embedding_text_format from first response
-    embedding_format = "idea"  # Default fallback
+    # Log cached format for visibility
+    embedding_format = "idea"
     if embeddings_models and hasattr(embeddings_models[0], 'embedding_text_format'):
         embedding_format = embeddings_models[0].embedding_text_format or "idea"
-
     print(f"Cached embedding format: {embedding_format}")
-    print(f"Clustering on: {embedding_source}")
 
-    # Validate embedding_source availability
-    if embedding_source == "taxonomy_embedding" and embedding_format not in ["both", "taxonomy_phrase"]:
-        raise ValueError(
-            f"Cannot use taxonomy_embedding: cached data has embedding_text_format='{embedding_format}'. "
-            f"Re-run embedder with embedding_text_format='both' or 'taxonomy_phrase'."
-        )
-
-    # Build embeddings array and texts list based on source
-    embeddings_list = []
-    texts = []
-
-    for response in embeddings_models:
-        if response.response_ideas:
-            for idea in response.response_ideas:
-                if embedding_source == "taxonomy_embedding":
-                    # Use taxonomy_embedding and taxonomy_phrase text
-                    emb = getattr(idea, 'taxonomy_embedding', None)
-                    text = getattr(idea, 'taxonomy_phrase', '') or idea.idea
-                else:
-                    # Use idea_embedding and idea text
-                    emb = idea.idea_embedding
-                    text = idea.idea
-
-                if emb is not None:
-                    embeddings_list.append(emb)
-                    texts.append(text)
-
-    if not embeddings_list:
-        raise ValueError(f"No {embedding_source} found in cached data")
-
-    embeddings = np.vstack(embeddings_list)
-    print(f"Loaded {len(embeddings)} embeddings with dimension {embeddings.shape[1]}")
-
-    return embeddings, texts, embeddings_models
+    return embeddings_models
 
 
 def load_extraction_metadata(
@@ -238,8 +203,8 @@ def main():
     print(f"Algorithm mode: {CONFIG.algorithm_mode}")
     print()
 
-    # Load embeddings
-    embeddings, idea_texts, embeddings_models = load_step4_embeddings()
+    # Load embeddings (field selection handled by Clusterer via auto-resolution)
+    embeddings_models = load_step4_embeddings()
 
     # Load extraction metadata (optional - for taxonomy context in LLM labels)
     extraction_metadata = load_extraction_metadata()

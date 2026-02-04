@@ -16,10 +16,46 @@ from typing import Optional, Tuple
 # EMBEDDING SOURCE CONFIGURATION
 # =============================================================================
 # Which embedding to use for clustering:
-# - "taxonomy_embedding": Cluster on taxonomy_phrase embeddings (default, recommended)
-# - "idea_embedding": Cluster on idea text embeddings (stripped of template prefix)
-# Note: Requires embeddings cached with embedding_text_format="both"
-EMBEDDING_SOURCE = "ontology_embedding"
+# - "auto": Auto-detect from cached embedding_text_format (recommended)
+# - "idea_embedding": Cluster on idea text embeddings
+# - "taxonomy_embedding": Cluster on taxonomy_phrase embeddings
+# - "ontology_embedding": Cluster on ontology embeddings
+# "auto" reads embedding_text_format from cached data and resolves to the
+# best available field. Override only when cached format is "all" and you
+# want a specific field, or for explicit experimentation.
+EMBEDDING_SOURCE = "auto"
+
+# Mapping from cached embedding_text_format to the primary embedding field.
+# Single-pass formats store everything in idea_embedding.
+# Multi-pass formats populate additional fields per MULTI_PASS_SPECS.
+FORMAT_TO_EMBEDDING_FIELD = {
+    "idea": "idea_embedding",
+    "idea_without_template_prefix": "idea_embedding",
+    "taxonomy_phrase": "idea_embedding",           # single-pass → idea_embedding
+    "ontology": "idea_embedding",                  # single-pass → idea_embedding
+    "both_taxonomy_phrase": "taxonomy_embedding",   # multi-pass → use enriched field
+    "both_ontology": "ontology_embedding",          # multi-pass → use enriched field
+    "all": "taxonomy_embedding",                    # multi-pass → default to taxonomy
+}
+
+
+def resolve_embedding_source(embedding_text_format: str, config_source: str) -> str:
+    """Resolve which embedding field to cluster on.
+
+    If config_source is "auto", derive from cached embedding_text_format.
+    Otherwise, return config_source as-is (explicit override).
+    """
+    if config_source != "auto":
+        return config_source
+
+    resolved = FORMAT_TO_EMBEDDING_FIELD.get(embedding_text_format)
+    if resolved is None:
+        raise ValueError(
+            f"Unknown embedding_text_format '{embedding_text_format}'. "
+            f"Known formats: {list(FORMAT_TO_EMBEDDING_FIELD.keys())}. "
+            f"Set EMBEDDING_SOURCE explicitly in config_clusterer_exp.py."
+        )
+    return resolved
 
 
 @dataclass
@@ -37,6 +73,14 @@ class ClustererConfig:
     - generate_ctfidf=True for keyword extraction
     - generate_llm_labels=True for LLM-generated cluster labels
     """
+
+    # ==========================================================================
+    # EMBEDDING SOURCE
+    # ==========================================================================
+
+    # Which embedding field to cluster on: "auto", "idea_embedding", "taxonomy_embedding", "ontology_embedding"
+    # "auto" resolves from cached embedding_text_format at runtime.
+    embedding_source: str = EMBEDDING_SOURCE
 
     # ==========================================================================
     # ALGORITHM SELECTION
@@ -60,6 +104,9 @@ class ClustererConfig:
     enable_agglomerative_fallback: bool = False
     force_agglomerative_below_dvc: float = 0.25
 
+    # Temporary: bypass all algorithm selection and always use HDBSCAN
+    force_hdbscan: bool = True
+
     # kNN Knee detection parameters
     knee_y_diff_threshold: float = 0.6  # Minimum y_difference for sharp knee
     knee_knn_k: int = 5                 # k for knee detection
@@ -75,7 +122,7 @@ class ClustererConfig:
     # ==========================================================================
 
     # UMAP parameters - optimized for euclidean HDBSCAN
-    umap_n_components_grid: Tuple[int, ...] = (5, 10)
+    umap_n_components_grid: Tuple[int, ...] = (5, 10, 15)
     umap_min_dist_grid: Tuple[float, ...] = (0.0, 0.1)
     umap_min_dist: float = 0.0  # Default for non-grid-search paths
     umap_metric: str = "euclidean"
@@ -102,20 +149,23 @@ class ClustererConfig:
     # Enable Optuna-based grid search
     use_optuna: bool = True
 
-    # MCS (min_cluster_size) grid
+    # MCS (min_cluster_size) grid: lower=min(0.05*N, 2*ln(N)), upper=sqrt(N)
     min_cluster_size_grid_k: int = 4
-    mcs_low_mult: float = 0.05            
-    mcs_high_mult: float = 0.5
-    mcs_min: int = 3
+    mcs_low_pct: float = 0.05       # MCS lower bound option 1: 5% of N
+    mcs_low_log_mult: float = 1.0   # MCS lower bound option 2: 1 * ln(N); take min of both
+    mcs_high_mult: float = 1.0      # MCS upper bound: 1.0 * sqrt(N)
+    mcs_min: int = 5                # Absolute floor for MCS
 
-    # MS (min_samples) strategy
-    min_samples_strategy: str = "half_mcs"
+    # MS (min_samples) grid: lower=ln(N), upper=sqrt(N)/2
+    min_samples_grid_k: int = 4
+    ms_low_log_mult: float = 1.0    # MS lower bound: 1.0 * ln(N)
+    ms_high_sqrt_mult: float = 0.5  # MS upper bound: 0.5 * sqrt(N)
 
-    # Constraints for Optuna pruning
-    max_noise_rate: float = 0.20
-    min_clusters: int = 3
+    # Constraints for Optuna pruning (relaxed — Pareto handles fine-grained selection)
+    max_noise_rate: float = 0.40
+    min_clusters: int = 2
 
-    # Quality thresholds for conditional re-search
+    # Quality thresholds for conditional re-search (disabled — superseded by Pareto)
     enable_research: bool = True
     research_max_noise_rate: float = 0.10
     research_min_validity: float = 0.70
@@ -123,8 +173,6 @@ class ClustererConfig:
 
     # Extended search grid configuration
     research_mcs_multipliers: Tuple[float, ...] = (0.5, 1.0, 1.5)
-    research_ms_range_multipliers: Tuple[float, float] = (0.5, 2.0)
-    research_ms_grid_k: int = 4
     research_selection_methods: Tuple[str, ...] = ('eom', 'leaf')
 
     # ==========================================================================
@@ -174,27 +222,43 @@ class ClustererConfig:
     lambda_fuzzy_count: float = 0.3
 
     # ==========================================================================
-    # PARSIMONY SELECTION (Δlog/Δk criterion)
+    # PARSIMONY SELECTION (legacy — superseded by Pareto frontier)
     # ==========================================================================
 
-    # Enable parsimony-aware trial selection
-    enable_parsimony_selection: bool = True
-
-    # Parsimony selection method:
-    # - "delta_log": max Δlog(score)/Δk criterion (original method)
-    # - "coherence_knee": Kneedle on smoothed coherence curve (recommended)
+    enable_parsimony_selection: bool = False
     parsimony_method: str = "coherence_knee"
-
-    # Coherence knee internals
-    coherence_knee_window_divisor: int = 5   # Smoothing window = len / this
+    coherence_knee_window_divisor: int = 5
     coherence_knee_polynomial_degree: int = 3
-
-    # Minimum score threshold for trials to be considered in parsimony selection
-    # Trials with score <= this value are excluded from Δlog analysis
     parsimony_min_score: float = 0.0
 
-    # Enable elbow visualization export (saves PNG to exports/)
-    enable_elbow_visualization: bool = True
+    # ==========================================================================
+    # PARETO FRONTIER SELECTION
+    # ==========================================================================
+
+    # Hard constraints for candidate filtering
+    pareto_min_dbcv: float = 0.30           # DBCV > this to be a candidate
+    # Min k: k >= 0.5 * sqrt(N)  (= N / (2 * sqrt(N)))
+    pareto_min_k_sqrt_mult: float = 0.5     # k >= 0.5 * sqrt(N)
+    # Max k: if N < pareto_k_small_n_threshold -> N / (2 * mcs_lower), else 0.8 * sqrt(N)
+    pareto_k_small_n_threshold: int = 3000
+    pareto_max_k_sqrt_mult: float = 0.8     # k <= 0.8 * sqrt(N) for large N
+    pareto_max_noise_rate: float = 0.15     # Noise rate <= this to be a candidate
+    pareto_max_cluster_ratio: float = 0.40  # No single cluster > 40% of items
+
+    # Ideal-point selection weights (for picking from the Pareto front)
+    # 4 Pareto objectives: DBCV (max), k (min), low_prob_ratio (min), max_cluster_ratio (min)
+    # Coherence and noise handled as hard constraints, not Pareto objectives
+    pareto_weight_dbcv: float = 1.0
+    pareto_weight_k: float = 1.0
+    pareto_weight_low_prob_ratio: float = 1.0
+    pareto_weight_max_cluster_ratio: float = 1.0
+
+    # Percentile normalization bounds (replace min-max for outlier robustness)
+    pareto_norm_percentile_low: float = 5.0   # p5
+    pareto_norm_percentile_high: float = 95.0  # p95
+
+    # Enable Pareto visualization export (saves PNG to exports/)
+    enable_pareto_visualization: bool = True
 
     # ==========================================================================
     # POST-PROCESSING

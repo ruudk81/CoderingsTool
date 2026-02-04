@@ -24,7 +24,7 @@ class TestDataConfig:
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column = "DLNMID"
     var_name = "Q20"
-    sample_size = 50
+    sample_size = 500
 
     #filename = "M250480 Associatiemonitor ASN Bank net databestand.sav"
     #id_column = "DLNMID"

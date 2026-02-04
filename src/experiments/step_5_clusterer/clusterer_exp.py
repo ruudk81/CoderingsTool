@@ -57,7 +57,7 @@ from .clusterer_helpers_exp import (
     # Algorithm Selection
     AlgorithmSelector, AlgorithmRecommendation,
     # Parameter Optimization
-    ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid_sqrt,
+    ParameterOptimizer, run_umap, n_neighbors_grid, mcs_grid, ms_grid,
     # Quality Metrics
     ClusterQualityMetrics, ClusteringMetrics, calculate_coherence_score,
     # Post-Processing
@@ -126,6 +126,7 @@ class Clusterer:
         self._embeddings_processed: Optional[np.ndarray] = None
         self._idea_texts: Optional[List[str]] = None
         self._taxonomy_phrases: Optional[List[str]] = None
+        self._ontology_texts: Optional[List[str]] = None
         self._idea_indices: Optional[List[Tuple[int, int]]] = None
         self._template_prefix: Optional[str] = None
         self._embedding_text_format: Optional[str] = None  # Text format used for embedding
@@ -212,6 +213,7 @@ class Clusterer:
             self._embeddings_processed,
             self._idea_texts,
             self._taxonomy_phrases,
+            self._ontology_texts,
             self._idea_indices,
             _,
             self._template_prefix,
@@ -283,12 +285,12 @@ class Clusterer:
 
     def _map_recommendation_to_algorithm(self) -> str:
         """Map combined recommendation to algorithm name."""
+        if self.config.force_hdbscan:
+            return "hdbscan"
         rec = self._recommendation.combined_recommendation
         if "HDBSCAN" in rec:
             return "hdbscan"
         elif rec == "AGGLOMERATIVE_OR_KMEANS":
-            # Use DVC to decide between agglomerative and kmeans
-            # (both work similarly on uniform density data)
             return "agglomerative"
         else:
             return "agglomerative"
@@ -312,6 +314,12 @@ class Clusterer:
         self._hdbscan_model = result.best_model
         self._algorithm_used = "HDBSCAN"
         self._algorithm_params = result.best_params
+
+        if self._verbose:
+            dvc_reduced = self._selector.compute_dvc(result.umap_embeddings)
+            dvc_val = dvc_reduced['dvc']
+            if not np.isnan(dvc_val):
+                print(f"  DVC (UMAP-reduced) = {dvc_val:.3f} (mean_dk={dvc_reduced['mean_dk']:.4f}, std_dk={dvc_reduced['std_dk']:.4f})")
 
     def _run_agglomerative(self):
         """Phase 3b: Run Agglomerative clustering."""
@@ -739,6 +747,7 @@ class Clusterer:
             self._labels,
             self._idea_texts,
             taxonomy_phrases=self._taxonomy_phrases,
+            ontology_texts=self._ontology_texts,
             embedding_text_format=self._embedding_text_format,
             probabilities=probabilities,
             min_probability=min_probability,
@@ -801,8 +810,9 @@ class Clusterer:
                     cluster_texts[label] = []
                 text = self._idea_texts[i]
                 taxonomy = self._taxonomy_phrases[i] if self._taxonomy_phrases else ""
+                ontology = self._ontology_texts[i] if self._ontology_texts else ""
                 cleaned_text = extract_text_for_format(
-                    text, taxonomy, self._embedding_text_format
+                    text, taxonomy, self._embedding_text_format, ontology_text=ontology
                 )
                 cluster_texts[label].append(cleaned_text)
 
@@ -994,8 +1004,9 @@ class Clusterer:
         for local_idx, global_idx in enumerate(cluster_indices):
             text = self._idea_texts[global_idx]
             taxonomy = self._taxonomy_phrases[global_idx] if self._taxonomy_phrases else ""
+            ontology = self._ontology_texts[global_idx] if self._ontology_texts else ""
             cleaned_text = extract_text_for_format(
-                text, taxonomy, self._embedding_text_format
+                text, taxonomy, self._embedding_text_format, ontology_text=ontology
             )
 
             if use_dense_region:
