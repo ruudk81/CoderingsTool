@@ -387,8 +387,161 @@ OUTPUT INSTRUCTIONS
 - Return JSON format with keys in English and values in {language}.
 """
 
-
 TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """
+You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis.
+
+Your task is to:
+1) Identify all distinct ideas in the response,
+2) Reformulate each idea using a provided template prefix,
+3) Classify each idea according to the specified taxonomy axis, and
+4) Position each idea within a lightweight conceptual ontology aligned to that axis.
+
+================================================
+SURVEY CONTEXT
+================================================
+
+<survey_context>
+Language of responses: {language}
+Survey question: {var_lab}
+
+Domain: {domain}
+Topic: {topic}
+Main entity of interest: {entity}
+
+Type of respondent: {perspective}
+Dominant response frame: {intent}
+</survey_context>
+
+================================================
+TAXONOMY CONFIGURATION (AUTHORITATIVE)
+================================================
+
+<taxonomy_config>
+Taxonomy dimension (axis): {taxonomy_axis}
+Actionable type: {taxonomy_actionable_type}
+Primary description: {primary_dimension_description}
+
+Lookup-table axis definition:
+- Dimension description: {axis_dimension_description}
+- Required form for slot content: {axis_required_form}
+- Canonical template pattern (reference): {axis_template_pattern}
+
+Slot guidance (reference):
+{axis_slot_guidance}
+
+Axis-specific rules (from lookup table):
+- Node instruction: {axis_node_instruction}
+- Category instruction: {axis_category_instruction}
+- Taxonomy phrase instruction: {axis_taxonomy_phrase_instruction}
+
+Additional focus rules:
+{axis_focus_rules}
+</taxonomy_config>
+
+================================================
+RESPONSE TO PROCESS
+================================================
+
+<response>
+Respondent ID: {respondent_id}
+Response: {response}
+</response>
+
+================================================
+IDEA SPLITTING RULES
+================================================
+
+- Identify all conceptually distinct ideas.
+- If multiple independent aspects are mentioned, split them into separate ideas.
+- Each atomic concept becomes its own idea with its own idea_id.
+- If the response is empty, nonsensical, or irrelevant, return [].
+
+================================================
+OUTPUT FIELDS (FOR EACH IDEA)
+================================================
+
+Return a JSON array of objects. Each object must include:
+
+1) respondent_id
+- Use exactly the respondent ID provided above.
+
+2) idea_id
+- Assign a sequential number as a string ("1", "2", "3", ...).
+
+3) idea (template-based reformulation)
+Construct the complete idea statement. It MUST:
+- Begin EXACTLY with this provided template prefix:
+  "{canonical_phrasing}"
+- Replace [ACTIONABLE_TAXONOMY_DIMENSION] with content consistent with:
+  - Axis dimension description: {axis_dimension_description}
+  - Required form: {axis_required_form}
+- The replacement text must be 5–20 words.
+- Be concise, specific, and grammatical.
+- Directly answer the survey question when combined with the template prefix.
+- Contain NO pronouns or references to the respondent.
+- Contain NO filler phrases.
+- Be written in {language}.
+
+4) ontology
+Provide a lightweight hierarchy aligned with the active axis.
+
+ontology fields:
+- instance:
+  The SHORTEST contiguous verbatim span from the ORIGINAL response that captures the core idea.
+  Rules:
+  - MUST be copied exactly from the response (no paraphrasing).
+  - Prefer minimal span; exclude asides/opinions/explanations unless essential.
+
+- node:
+  A canonical, reusable noun phrase that represents the PRIMARY AXIS CONCEPT.
+  Apply: {axis_node_instruction}
+  Additional rules:
+  - Must be reusable across multiple responses.
+  - Must be written in {language}.
+  - Must not simply repeat the instance verbatim.
+
+- category:
+  The immediate parent grouping of the node suitable for clustering many responses.
+  Apply: {axis_category_instruction}
+  Additional rules:
+  - Must be broader than node and stable across many responses.
+  - Must be written in {language}.
+  - Must not repeat the instance verbatim.
+
+5) taxonomy_phrase
+A concise reusable noun phrase abstracting the idea as a {taxonomy_actionable_type} concept on axis {taxonomy_axis}.
+Apply: {axis_taxonomy_phrase_instruction}
+General rules:
+- Prefer 1–3 words.
+- Do NOT repeat entities already mentioned in: {domain}, {topic}, {entity}.
+- Avoid meta-language about opinions/perceptions/thoughts.
+- Written in {language}.
+
+6) sense
+Choose exactly one of:
+- factual | evaluative | aspirational | experiential
+
+7) sentiment
+Choose exactly one of:
+- positive | negative | neutral
+
+================================================
+OUTPUT INSTRUCTIONS
+================================================
+
+Return valid JSON only.
+- Keys must be in English.
+- Values must be in {language}.
+
+Edge cases:
+- Empty or irrelevant response: return []
+- Single idea: return one item
+- Multiple ideas: return multiple items with sequential idea_id
+"""
+
+
+
+TAXONOMY_ENRICHED_EXTRACTION_PROMPT_old = """
 You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis. 
 Your task is to identify all ideas expressed in a survey response, classify them according to a given taxonomy axis, and format them according to a specific template structure.
 

@@ -148,7 +148,7 @@ class OntologyResponse(BaseModel):
     instance: str = Field(description="Contiguous verbatim span from the idea text (no rewording)")
     node: str = Field(description="Canonical, reusable ontology concept (noun phrase)")
     category: str = Field(description="Immediate parent grouping of the node")
-    root: str = Field(description="Top-level domain framing implied by the survey question")
+    root: str = Field(default="", description="Top-level domain framing implied by the survey question")
 
     @field_validator('instance', 'node', 'category', 'root', mode='before')
     @classmethod
@@ -265,19 +265,21 @@ def _format_lookup_for_axis(axis: str) -> dict:
     """Format TEMPLATE_LOOKUP data for a specific axis.
 
     Looks up the axis-specific data from TEMPLATE_LOOKUP and formats it
-    for injection into TAXONOMY_AWARE_SUBJECT_PROMPT.
+    for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
+    TAXONOMY_ENRICHED_EXTRACTION_PROMPT.
 
     Args:
         axis: Taxonomy axis code (WHAT, WHY, HOW, WHO, WHEN, WHERE)
 
     Returns:
-        dict with:
-        - dimension_description: str
-        - template_pattern: str (escaped for .format())
-        - slot_guidance_json: str (JSON formatted, escaped)
-        - required_form_json: str (JSON formatted, escaped)
-        - verb_frames_json: str or None (JSON formatted, escaped, if present)
-        - marker: str
+        dict with keys for both the subject prompt and the extraction prompt:
+        - dimension_description, template_pattern, slot_guidance_json,
+          required_form_json, verb_frames_json, marker
+          (used by TAXONOMY_AWARE_SUBJECT_PROMPT)
+        - axis_dimension_description, axis_required_form, axis_template_pattern,
+          axis_slot_guidance, axis_node_instruction, axis_category_instruction,
+          axis_taxonomy_phrase_instruction, axis_focus_rules
+          (used by TAXONOMY_ENRICHED_EXTRACTION_PROMPT)
     """
     import json
 
@@ -300,13 +302,41 @@ def _format_lookup_for_axis(axis: str) -> dict:
             json.dumps(axis_data["verb_frames"], indent=2)
         )
 
+    # Extract prompt_rules (axis-specific instructions for extraction prompt)
+    prompt_rules = axis_data.get("prompt_rules", {})
+    focus_rules_list = prompt_rules.get("focus_rules", [])
+    focus_rules_formatted = "\n".join(f"- {r}" for r in focus_rules_list)
+
+    # required_form may be a string or a dict; handle both
+    required_form_raw = axis_data["required_form"]
+    if isinstance(required_form_raw, str):
+        axis_required_form_str = required_form_raw
+    else:
+        axis_required_form_str = json.dumps(required_form_raw, indent=2)
+
     return {
+        # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT (existing)
         "dimension_description": axis_data["dimension_description"],
         "template_pattern": _escape_braces_for_format(axis_data["template_pattern"]),
         "slot_guidance_json": slot_guidance_json,
         "required_form_json": required_form_json,
         "verb_frames_json": verb_frames_json,
-        "marker": marker
+        "marker": marker,
+        # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT (axis-prefixed)
+        "axis_dimension_description": axis_data["dimension_description"],
+        "axis_required_form": _escape_braces_for_format(axis_required_form_str),
+        "axis_template_pattern": _escape_braces_for_format(axis_data["template_pattern"]),
+        "axis_slot_guidance": slot_guidance_json,
+        "axis_node_instruction": _escape_braces_for_format(
+            prompt_rules.get("node_instruction", "")
+        ),
+        "axis_category_instruction": _escape_braces_for_format(
+            prompt_rules.get("category_instruction", "")
+        ),
+        "axis_taxonomy_phrase_instruction": _escape_braces_for_format(
+            prompt_rules.get("taxonomy_phrase_instruction", "")
+        ),
+        "axis_focus_rules": _escape_braces_for_format(focus_rules_formatted),
     }
 
 
@@ -1447,6 +1477,8 @@ class IdeaExtractor:
 
         V3: Restored template prefix for normalized idea phrasing to improve clustering.
         Ideas are expressed using the canonical phrasing template.
+        Injects axis-specific instructions from template_lookup.py for
+        node/category/taxonomy_phrase guidance.
 
         Args:
             respondent_id: Respondent identifier
@@ -1462,13 +1494,12 @@ class IdeaExtractor:
         taxonomy_axis_description = getattr(self, 'taxonomy_axis_description', None) or \
             TAXONOMY_AXIS_DESCRIPTIONS.get(self.taxonomy_axis, "General categorization")
 
-        # Extract template prefix (everything before [ACTIONABLE_TAXONOMY_DIMENSION])
-        template_prefix = phrasing_template.split('[ACTIONABLE_TAXONOMY_DIMENSION]')[0].strip() if '[ACTIONABLE_TAXONOMY_DIMENSION]' in phrasing_template else phrasing_template
+        # Get axis-specific data from template_lookup (includes prompt_rules)
+        lookup_data = _format_lookup_for_axis(self.taxonomy_axis or "WHAT")
 
         return TAXONOMY_ENRICHED_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
             taxonomy_axis=self.taxonomy_axis,
-            taxonomy_axis_description=taxonomy_axis_description,
             taxonomy_actionable_type=taxonomy_actionable_type or "concepts",
             primary_dimension_description=taxonomy_axis_description,
             domain=self.generic_specifiers.get('domain', 'general'),
@@ -1480,7 +1511,15 @@ class IdeaExtractor:
             respondent_id=respondent_id,
             response=response,
             canonical_phrasing=phrasing_template,
-            template_prefix=template_prefix
+            # Axis-specific placeholders from template_lookup
+            axis_dimension_description=lookup_data["axis_dimension_description"],
+            axis_required_form=lookup_data["axis_required_form"],
+            axis_template_pattern=lookup_data["axis_template_pattern"],
+            axis_slot_guidance=lookup_data["axis_slot_guidance"],
+            axis_node_instruction=lookup_data["axis_node_instruction"],
+            axis_category_instruction=lookup_data["axis_category_instruction"],
+            axis_taxonomy_phrase_instruction=lookup_data["axis_taxonomy_phrase_instruction"],
+            axis_focus_rules=lookup_data["axis_focus_rules"],
         )
 
     def estimate_tokens(self, prompt: str) -> int:

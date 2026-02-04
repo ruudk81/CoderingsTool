@@ -4203,6 +4203,7 @@ Note: Do NOT encode sentiment or evaluation into the theme label.
 
         if taxonomy_axis:
             actionable_type = taxonomy_actionable_type or "concepts"
+            entity = dataset_context.get('entity', 'the entity') if dataset_context else 'the entity'
             taxonomy_context = f"""
 <taxonomy_context>
 Primary coding dimension: {taxonomy_axis}
@@ -4214,10 +4215,21 @@ Do NOT include sentiment, evaluation, tone, or respondent intent in the label.
 """
             taxonomy_task_guidance = f" ({taxonomy_axis}: {actionable_type})"
             taxonomy_output_constraint = f" within the {taxonomy_axis} dimension"
+            taxonomy_task_constraint = (
+                f"6. Ensure the theme names a SINGLE {actionable_type} ({taxonomy_axis} dimension)."
+            )
+            taxonomy_alignment_section = f"""
+<taxonomy_alignment_check>
+Before finalizing the theme, confirm in one sentence:
+"This label fits the {taxonomy_axis} dimension because it names a single {actionable_type} attributed to {entity}."
+</taxonomy_alignment_check>
+"""
         else:
             taxonomy_context = ""
             taxonomy_task_guidance = ""
             taxonomy_output_constraint = ""
+            taxonomy_task_constraint = ""
+            taxonomy_alignment_section = ""
 
         if keywords:
             kw_formatted = "\n".join(f"{i+1}. {kw}" for i, (kw, score) in enumerate(keywords[:10]))
@@ -4244,6 +4256,8 @@ Use to refine - but not override - the representative {sample_type}:
             taxonomy_context=taxonomy_context,
             taxonomy_task_guidance=taxonomy_task_guidance,
             taxonomy_output_constraint=taxonomy_output_constraint,
+            taxonomy_task_constraint=taxonomy_task_constraint,
+            taxonomy_alignment_section=taxonomy_alignment_section,
             keywords_section=keywords_section,
             dataset_context_section=dataset_context_section,
             cluster_profile_section=cluster_profile_section,
