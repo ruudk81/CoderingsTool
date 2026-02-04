@@ -16,10 +16,11 @@ from typing import Optional
 @dataclass
 class TestDataConfig:
     """Configuration for the test dataset used in experiments."""
-    #filename: str = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
-    #id_column: str = "DLNMID"
-    #var_name: str = "Q20"
-    #sample_size: Optional[int] = 500
+    
+    #filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
+    #id_column = "DLNMID"
+    #var_name = "Q20"
+    #sample_size = 500
 
     filename = "M241030 Koninklijke Vezet Kant en Klaar 2024 databestand.sav"
     id_column = "DLNMID"

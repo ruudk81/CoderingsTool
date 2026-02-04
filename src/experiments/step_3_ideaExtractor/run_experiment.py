@@ -16,6 +16,7 @@ Toggle:
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
+EXPERIMENT_N  = None  # n or None
 
 import sys
 import time
@@ -78,6 +79,7 @@ class ExperimentConfig:
 
     # Processing settings
     force_recalc: bool = True  # Always recalculate in experiments
+    experiment_n: Optional[int] = EXPERIMENT_N  # Limit responses for experiment (None = use all)
 
 
 EXPERIMENT_CONFIG = ExperimentConfig()
@@ -162,7 +164,14 @@ def run_experiment(config: ExperimentConfig = None):
     # Filter to meaningful responses only
     filtered_text = [item for item in quality_filtered_text if not item.quality_filter]
     verbose_reporter.stat_line(f"Input: {len(quality_filtered_text)} quality-filtered responses")
-    verbose_reporter.stat_line(f"Processing: {len(filtered_text)} meaningful responses")
+    verbose_reporter.stat_line(f"Meaningful responses: {len(filtered_text)}")
+
+    # Optionally limit to experiment_n responses
+    if config.experiment_n is not None and config.experiment_n < len(filtered_text):
+        filtered_text = filtered_text[:config.experiment_n]
+        verbose_reporter.stat_line(f"Experiment subset: {config.experiment_n} responses")
+
+    verbose_reporter.stat_line(f"Processing: {len(filtered_text)} responses")
 
     start_time = time.time()
 
@@ -252,6 +261,7 @@ if __name__ == "__main__":
     print(f"Variable: {config.var_name} - {var_lab}")
     print(f"Sample size: {config.sample_size}")
     print(f"Using experimental: {USE_EXPERIMENTAL}")
+    print(f"Experiment N: {config.experiment_n or 'all'}")
     print(f"Force recalculate: {config.force_recalc}")
     print("=" * 70)
 

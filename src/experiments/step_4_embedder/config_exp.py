@@ -55,7 +55,7 @@ class EmbedderConfigExp:
     """
     # Text format: "idea", "taxonomy_phrase", "idea_without_template_prefix",
     #              "both_taxonomy_phrase", "ontology", "both_ontology", "all"
-    embedding_text_format: EmbeddingTextFormat = "both_taxonomy_phrase"
+    embedding_text_format: EmbeddingTextFormat = "both_ontology"
 
     # Provider: "openai" or "gemini"
     provider: str = "openai"
