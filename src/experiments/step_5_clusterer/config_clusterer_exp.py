@@ -12,6 +12,16 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+# =============================================================================
+# EMBEDDING SOURCE CONFIGURATION
+# =============================================================================
+# Which embedding to use for clustering:
+# - "taxonomy_embedding": Cluster on taxonomy_phrase embeddings (default, recommended)
+# - "idea_embedding": Cluster on idea text embeddings (stripped of template prefix)
+# Note: Requires embeddings cached with embedding_text_format="both"
+EMBEDDING_SOURCE = "ontology_embedding"
+
+
 @dataclass
 class ClustererConfig:
     """
@@ -47,12 +57,18 @@ class ClustererConfig:
 
     # Hard DVC rule: force Agglomerative when DVC < this threshold
     # Set enable_agglomerative_fallback=False to always use HDBSCAN in auto mode
-    enable_agglomerative_fallback: bool = True
+    enable_agglomerative_fallback: bool = False
     force_agglomerative_below_dvc: float = 0.25
 
     # kNN Knee detection parameters
     knee_y_diff_threshold: float = 0.6  # Minimum y_difference for sharp knee
     knee_knn_k: int = 5                 # k for knee detection
+    knee_s_denominator: int = 100       # KneeLocator S = max(1.0, n / this)
+    knee_interp_threshold: int = 200    # n < this → polynomial, else interp1d
+
+    # Index into n_neighbors grid for trial UMAP during algorithm selection
+    # -1 = middle of grid (len//2)
+    trial_umap_nn_index: int = -1
 
     # ==========================================================================
     # UMAP CONFIGURATION
@@ -79,12 +95,16 @@ class ClustererConfig:
     # HDBSCAN / OPTUNA OPTIMIZATION
     # ==========================================================================
 
+    # HDBSCAN model parameters
+    hdbscan_cluster_selection_method: str = "eom"
+    hdbscan_gen_min_span_tree: bool = True
+
     # Enable Optuna-based grid search
     use_optuna: bool = True
 
     # MCS (min_cluster_size) grid
-    min_cluster_size_grid_k: int = 3      
-    mcs_low_mult: float = 0.1            
+    min_cluster_size_grid_k: int = 4
+    mcs_low_mult: float = 0.05            
     mcs_high_mult: float = 0.5
     mcs_min: int = 3
 
@@ -114,6 +134,18 @@ class ClustererConfig:
     k_selection_strategy: str = "sqrt"
     k_grid_multipliers: Tuple[float, ...] = (0.5, 1.0, 2.0)
     agglomerative_linkage: str = "ward"
+
+    # Index into n_neighbors grid for agglomerative/kmeans UMAP
+    agglomerative_nn_index: int = 1
+    kmeans_nn_index: int = 1
+
+    # KMeans model parameters
+    kmeans_random_state: int = 42
+    kmeans_n_init: int = 10
+
+    # Bootstrap CI for small dataset agglomerative path
+    agglomerative_bootstrap_iterations: int = 100
+    agglomerative_bootstrap_confidence: float = 0.95
 
     # ==========================================================================
     # COHERENCE THRESHOLDS
@@ -153,6 +185,10 @@ class ClustererConfig:
     # - "coherence_knee": Kneedle on smoothed coherence curve (recommended)
     parsimony_method: str = "coherence_knee"
 
+    # Coherence knee internals
+    coherence_knee_window_divisor: int = 5   # Smoothing window = len / this
+    coherence_knee_polynomial_degree: int = 3
+
     # Minimum score threshold for trials to be considered in parsimony selection
     # Trials with score <= this value are excluded from Δlog analysis
     parsimony_min_score: float = 0.0
@@ -178,6 +214,8 @@ class ClustererConfig:
     noise_parameter_strategy: str = "adaptive"
     noise_min_cluster_size: int = 3
     noise_cohesion_threshold: float = 0.70
+    noise_reclustering_min_total: int = 10
+    noise_reclustering_cluster_selection_method: str = "leaf"
 
     # ==========================================================================
     # REPRESENTATION (c-TF-IDF) - Enabled by default

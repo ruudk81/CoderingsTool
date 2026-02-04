@@ -51,19 +51,16 @@ if USE_EXPERIMENTAL_CLUSTERER:
     try:
         # Module execution (python -m experiments.step_5_clusterer.run_experiment)
         from .clusterer_exp import Clusterer
-        from .config_clusterer_exp import ClustererConfig
+        from .config_clusterer_exp import ClustererConfig, EMBEDDING_SOURCE
     except ImportError:
         # Direct/notebook execution
         from experiments.step_5_clusterer.clusterer_exp import Clusterer
-        from experiments.step_5_clusterer.config_clusterer_exp import ClustererConfig
-    ClustererV3 = Clusterer  # Alias for backward compatibility
-    ClustererV3Config = ClustererConfig
+        from experiments.step_5_clusterer.config_clusterer_exp import ClustererConfig, EMBEDDING_SOURCE
+
 else:
     # Use PRODUCTION clusterer (src/utils/clusterer.py)
     from utils.clusterer import Clusterer
     from config_clusterer import ClustererConfig
-    ClustererV3 = Clusterer
-    ClustererV3Config = ClustererConfig
 
 # =============================================================================
 # DATASET CONFIGURATION (centralized in experiments/test_data.py)
@@ -82,82 +79,11 @@ SAMPLE_SIZE = TEST_DATA.sample_size
 
 
 # =============================================================================
-# EMBEDDING SOURCE CONFIGURATION
-# =============================================================================
-# Which embedding to use for clustering:
-# - "taxonomy_embedding": Cluster on taxonomy_phrase embeddings (default, recommended)
-# - "idea_embedding": Cluster on idea text embeddings (stripped of template prefix)
-# Note: Requires embeddings cached with embedding_text_format="both"
-EMBEDDING_SOURCE = "ontology_embedding"
-
-# =============================================================================
 # CLUSTERER CONFIGURATION
 # =============================================================================
-
-CONFIG = ClustererV3Config(
-    # Algorithm selection: "auto", "hdbscan", "agglomerative", "kmeans"
-    algorithm_mode="auto",
-
-    # Small dataset threshold: n <= 250 → always Agglomerative, no UMAP
-    # K grid: log(n) to sqrt(n), scored by silhouette
-    small_dataset_threshold=0,
-
-    # DVC thresholds for algorithm selection (for n > small_dataset_threshold)
-    dvc_high_threshold=0.45,    # Above this → HDBSCAN
-    dvc_low_threshold=0.25,     # Below this → Agglomerative
-
-    # Hard rule: force Agglomerative when DVC < this
-    force_agglomerative_below_dvc=0.25,
-
-    # Knee detection
-    knee_y_diff_threshold=0.6,  # Sharp knee threshold
-
-    # Optuna optimization (for HDBSCAN)
-    use_optuna=True,
-    max_noise_rate=0.20,        # Maximum acceptable noise rate
-    min_clusters=3,             # Minimum number of clusters
-
-    # Parsimony selection: prefer fewer clusters via max Δlog(score)/Δk criterion
-    # Selects the k (cluster count) that gives the best proportional improvement
-    enable_parsimony_selection=True,
-    parsimony_min_score=0.0,    # Minimum score for trials to be considered
-
-    # MCS grid expansion: lower minimum and more grid points for better small-k coverage
-    min_cluster_size_grid_k=4,  # 4 points instead of 3
-    mcs_low_mult=0.05,          # Lower minimum (0.05 instead of 0.1)
-
-    # Quality thresholds for conditional re-search
-    # Trigger: (noise > max AND validity < min) OR (cluster_deviation > threshold)
-    enable_research=True,
-    research_max_noise_rate=0.10,
-    research_min_validity=0.70,
-    research_cluster_deviation_threshold=0.15,
-
-    # Post-processing
-    enable_merging=True,
-    merge_centroid_threshold=0.95,
-    merge_pairwise_threshold=0.98,
-
-    # BERTopic-style noise reduction
-    noise_reduction_strategy="embeddings",
-    noise_reduction_threshold=0.5,
-
-    # c-TF-IDF keyword extraction with lemmatization
-    generate_ctfidf=True,
-    ctfidf_top_k=10,
-    ctfidf_use_lemmatization=True,
-
-    # Additional representations (for comparison/display)
-    generate_mmr_keywords=True,
-    mmr_diversity=0.3,  # 0.0 = max diversity, 1.0 = max relevance
-    generate_tfidf_keywords=True,
-
-    # LLM labels (enabled)
-    generate_llm_labels=True,
-
-    # Output
-    verbose=True,
-)
+# All defaults defined in config_clusterer_exp.py (single source of truth).
+# Override individual params here only for one-off experiments.
+CONFIG = ClustererConfig()
 
 
 # =============================================================================
@@ -302,7 +228,7 @@ def load_extraction_metadata(
 # =============================================================================
 
 def main():
-    """Run ClustererV3 on the configured dataset."""
+    """Run Clusterer on the configured dataset."""
     print("=" * 70)
     print("Clustering Pipeline (V3)")
     print("=" * 70)
@@ -319,7 +245,7 @@ def main():
     extraction_metadata = load_extraction_metadata()
 
     # Run clusterer
-    clusterer = ClustererV3(embeddings_models, config=CONFIG, extraction_metadata=extraction_metadata)
+    clusterer = Clusterer(embeddings_models, config=CONFIG, extraction_metadata=extraction_metadata)
     clusterer.run()
 
     # ==========================================================================
