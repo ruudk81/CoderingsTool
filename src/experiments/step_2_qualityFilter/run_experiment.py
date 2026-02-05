@@ -64,7 +64,7 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
-    use_experimental: bool = False
+    use_experimental: bool = True
     verbose: bool = True
     prompt_printer_enabled: bool = False
     force_recalc: bool = True
