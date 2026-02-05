@@ -19,10 +19,35 @@ from aiolimiter import AsyncLimiter
 # === MODELS ========================================================================================================
 import models
 
-# === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
+# === CONFIG (from experimental config_exp.py) ========================================================================================================
+try:
+    from .config_exp import (
+        OPENAI_API_KEY, DEFAULT_LANGUAGE,
+        ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
+        ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+        # Experimental constants
+        INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
+        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
+    )
+    from .prompts_exp import GRADER_INSTRUCTIONS
+except ImportError:
+    from config_exp import (
+        OPENAI_API_KEY, DEFAULT_LANGUAGE,
+        ModelConfig, QualityFilterConfig, DEFAULT_QUALITY_FILTER_CONFIG,
+        ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+        # Experimental constants
+        INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
+        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
+    )
+    from prompts_exp import GRADER_INSTRUCTIONS
+
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
-from prompts import GRADER_INSTRUCTIONS
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
@@ -36,16 +61,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# === CONSTANTS ========================================================================================================
-INPUT_HISTORY_MAXLEN = 3              # EMA input token history window
-OUTPUT_HISTORY_MAXLEN = 5             # EMA output token history window
-ERROR_WINDOW_SIZE = 50                # Token estimation error tracking window
-DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
-DEFAULT_LATENCY_SECONDS = 2.0         # Default latency estimate
-PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
-DIAGNOSTIC_INTERVAL = 30              # Seconds between diagnostic reports
-MAX_TOKEN_ACQUIRE_ATTEMPTS = 1000     # Max attempts to acquire tokens before failing
-# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS now come from ProcessingConfig
+# Note: Constants (INPUT_HISTORY_MAXLEN, etc.) now imported from config_exp.py
+# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS come from ProcessingConfig
 
 # === RATE LIMITING HELPER CLASSES  ========================================================================================================
 
