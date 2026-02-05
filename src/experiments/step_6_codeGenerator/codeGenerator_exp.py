@@ -2134,7 +2134,10 @@ class InductiveCodeGenerator:
                             task['cluster_id'],
                             task['cluster_data']
                         )
-                        theme_results[task['cluster_id']] = result
+                        if result is not None:
+                            theme_results[task['cluster_id']] = result
+                        else:
+                            failed_clusters.append(task['cluster_id'])
                     except Exception as e:
                         # Sanitize exception message for Windows console
                         error_msg = str(e).replace('🤖', '[BOT]').replace('\uFE0F', '')
@@ -3014,22 +3017,16 @@ class InductiveCodeGenerator:
                 self.verbose_reporter.error(f"Response is still a coroutine for cluster {cluster_id}: {type(response)}")
                 return None
 
-            if isinstance(response, dict):
-                result = ClusterSummaryOutput(root=response)
-
-                # Capture theme extraction results
-                cluster_key = str(cluster_id)
-                if cluster_key in response:
-                    cluster_summary_item = response[cluster_key]
-                    if cluster_summary_item.extracted_themes:
-                        first_theme = cluster_summary_item.extracted_themes[0]
-                        self.step1_summaries[cluster_id] = {
-                            'analysis': cluster_summary_item.analysis,
-                            'cluster_summary': first_theme.theme_clarification,
-                            'themes': cluster_summary_item.extracted_themes,
-                        }
-
-                return result
+            if isinstance(response, ClusterSummaryOutput):
+                # Flat format - access fields directly
+                if response.extracted_themes:
+                    first_theme = response.extracted_themes[0]
+                    self.step1_summaries[cluster_id] = {
+                        'analysis': response.analysis,
+                        'cluster_summary': first_theme.theme_clarification,
+                        'themes': response.extracted_themes,
+                    }
+                return response
             else:
                 self.verbose_reporter.error(f"Unexpected response type for cluster {cluster_id}: {type(response)}")
                 return None
@@ -4305,7 +4302,20 @@ class InductiveCodeGenerator:
             decision = None
             if candidate_selection and hasattr(candidate_selection, 'coding_decision'):
                 decision = candidate_selection.coding_decision.decision.lower()
-            
+
+            # GUARD: Return early with error marker if STEP 1 failed (will be retried via error_leaks)
+            if not candidate_selection or not decision:
+                self.verbose_reporter.error(f"C{cluster_id}: STEP1 failed - will retry in final batch")
+                return {
+                    'cluster_id': cluster_id,
+                    'candidate_selection': None,
+                    'code_generation': None,
+                    'validation': None,
+                    'decision': 'ERROR',
+                    'final_code': None,
+                    'error': 'STEP1_FAILED'
+                }
+
             # Skip Steps 2 & 3 for USE decisions
             if decision == "use":
                 if self.verbose_detailed:
@@ -4400,14 +4410,20 @@ class InductiveCodeGenerator:
     def _is_retryable_error(self, error_type: str) -> bool:
         """Determine if error should be retried or is a permanent failure
 
-        Retryable errors: Validation failures, incomplete prompt chains (Steps 3-4)
-        Permanent errors: Empty results, Step 1 complete failures
+        Retryable errors: Step 1 failures (rate limits), validation failures, incomplete prompt chains
+        Permanent errors: Empty results only
         """
-        # DON'T retry: Empty results or Step 1 complete failures
-        non_retryable = ['empty_result', 'missing_candidate_selection', 'missing_coding_decision']
+        # DON'T retry: Only truly permanent failures
+        non_retryable = ['empty_result']
 
-        # DO retry: Step 3/4 failures (validation, incomplete chains)
-        retryable = ['missing_validation_or_generation', 'missing_attributes', 'unknown_decision']
+        # DO retry: Step 1 failures (rate limits), Step 3/4 failures (validation, incomplete chains)
+        retryable = [
+            'missing_candidate_selection',      # Step 1 failure - retry after rate limit clears
+            'missing_coding_decision',          # Step 1 failure - retry after rate limit clears
+            'missing_validation_or_generation', # Step 3/4 failure
+            'missing_attributes',               # Step 3/4 failure
+            'unknown_decision'                  # Prompt issue - retry may help
+        ]
 
         return error_type in retryable
 
@@ -4432,9 +4448,20 @@ class InductiveCodeGenerator:
             
             # Must have candidate_selection for all decisions
             if not result.get('candidate_selection'):
-                self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection in result")
-                # Step 1 complete failure - permanent error, don't retry
-                decision_stats['errors'] += 1
+                self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection - adding to error_leaks for retry")
+                # Step 1 failure - capture for retry (rate limits are temporary)
+                if self._is_retryable_error('missing_candidate_selection'):
+                    error_leak = {
+                        'cluster_id': cluster_id,
+                        'full_result': result,
+                        'error_type': 'missing_candidate_selection',
+                        'reason': 'step1_failed',
+                        'timestamp': time.time()
+                    }
+                    self.error_leaks.append(error_leak)
+                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                else:
+                    decision_stats['errors'] += 1
                 continue
             
             candidate_selection = result['candidate_selection']
@@ -4444,9 +4471,20 @@ class InductiveCodeGenerator:
             if hasattr(candidate_selection, 'coding_decision'):
                 decision_info = candidate_selection.coding_decision
             else:
-                self.verbose_reporter.error(f"C{cluster_id}: Missing candidate_selection coding_decision")
-                # Step 1 failure - permanent error, don't retry
-                decision_stats['errors'] += 1
+                self.verbose_reporter.error(f"C{cluster_id}: Missing coding_decision - adding to error_leaks for retry")
+                # Step 1 failure - capture for retry (rate limits are temporary)
+                if self._is_retryable_error('missing_coding_decision'):
+                    error_leak = {
+                        'cluster_id': cluster_id,
+                        'full_result': result,
+                        'error_type': 'missing_coding_decision',
+                        'reason': 'step1_failed',
+                        'timestamp': time.time()
+                    }
+                    self.error_leaks.append(error_leak)
+                    decision_stats['error_leaks'] = decision_stats.get('error_leaks', 0) + 1
+                else:
+                    decision_stats['errors'] += 1
                 continue
             
             decision = decision_info.decision.lower()
@@ -4868,7 +4906,7 @@ class InductiveCodeGenerator:
             self.verbose_reporter.error(f"C{cluster_id}: STEP1 - Error message: '{error_msg}' (length: {len(error_msg)})")
             if error_msg == '\n' or error_msg == '':
                 self.verbose_reporter.error(f"C{cluster_id}: STEP1 - EMPTY/NEWLINE ERROR DETECTED - API likely returned malformed response")
-            return []
+            return None  # Signal failure properly for retry mechanism
     
     #########################################################################################################
     # Stage 3: Prompt Formatting & LLM Calling for GENERATE CODES
@@ -5129,18 +5167,16 @@ class InductiveCodeGenerator:
             theme_description = self._get_theme_description(theme_data)
             
             #step3_recommendation_json = str(code_generation.model_dump_json(indent=2)) if code_generation else "No recommendations"
-            if code_generation:
-                step3_recommendation = self.step3_recommendations.get(cluster_id, {})
-                if step3_recommendation:
-                    code_to_modify_str = ('' if step3_recommendation.get('coding_proposal', 'unknown').lower() != "modify" else f"-Code to modify: {step3_recommendation.get('source_code', 'None')}\n")
-                    step3_recommendation_text = (
-                        f"-{step3_recommendation.get('coding_proposal', 'unknown')} code\n"
-                        f"{code_to_modify_str}"
-                        f"-Proposed new label: {step3_recommendation.get('code_label_proposal', 'unknown')}\n"
-                        f"-With the following description: {step3_recommendation.get('code_definition_proposal', 'unknown')}\n"
-                    )
-            else:
-                step3_recommendation_text = "No recommendations"
+            step3_recommendation = self.step3_recommendations.get(cluster_id, {})
+            step3_recommendation_text = "No recommendations"  # Default value
+            if code_generation and step3_recommendation:
+                code_to_modify_str = ('' if step3_recommendation.get('coding_proposal', 'unknown').lower() != "modify" else f"-Code to modify: {step3_recommendation.get('source_code', 'None')}\n")
+                step3_recommendation_text = (
+                    f"-{step3_recommendation.get('coding_proposal', 'unknown')} code\n"
+                    f"{code_to_modify_str}"
+                    f"-Proposed new label: {step3_recommendation.get('code_label_proposal', 'unknown')}\n"
+                    f"-With the following description: {step3_recommendation.get('code_definition_proposal', 'unknown')}\n"
+                )
             
             source_code = self.step3_recommendations.get(cluster_id, {}).get('source_code', 'null')
 

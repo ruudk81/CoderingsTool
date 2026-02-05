@@ -442,21 +442,26 @@ class TokenTracker:
 
     def get_summary(self) -> str:
         """Get formatted summary of token usage and costs."""
+        # Get provider info for display
+        provider_label = API_PROVIDER.upper()
+        if API_PROVIDER == "azure":
+            deployment = AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER or AZURE_OPENAI_DEPLOYMENT_NAME
+            provider_label = f"Azure OpenAI (deployment: {deployment})"
+        else:
+            provider_label = "OpenAI"
+
         lines = [
             "=" * 50,
             "LLM USAGE SUMMARY",
             "=" * 50,
+            f"Provider: {provider_label}",
             f"Total API calls: {self.call_count}",
             f"Total tokens: {self.total_input_tokens + self.total_output_tokens:,}",
             f"  - Input: {self.total_input_tokens:,}",
             f"  - Output: {self.total_output_tokens:,}",
             f"Total cost: ${self.total_cost_usd:.4f}",
-            "",
-            "By model:",
+            "=" * 50,
         ]
-        for model, data in sorted(self.costs_by_model.items()):
-            lines.append(f"  {model}: {data['calls']} calls, {data['tokens']:,} tokens, ${data['cost']:.4f}")
-        lines.append("=" * 50)
         return "\n".join(lines)
 
     def reset(self):
