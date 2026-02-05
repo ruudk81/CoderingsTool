@@ -79,7 +79,13 @@ try:
         MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
         AXIS_LABEL_CONTRACT,
         # Response models for Prompt 1 (Theme Extraction)
-        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
+        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput,
+        # Response models for Prompt 2 (Coding Decision)
+        MatchedCandidate, ModifyParameters, CodingDecision, CodingDecisionOutput,
+        # Response models for Prompt 3 (Code Generation)
+        GeneratedCode, CodeGenerationOutput,
+        # Response models for Prompt 4 (Validation)
+        ValidatedCode, OriginalRecommendation, CodeValidation, ValidationResult
     )
 except ImportError:
     from prompts_exp import (
@@ -89,7 +95,13 @@ except ImportError:
         MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
         AXIS_LABEL_CONTRACT,
         # Response models for Prompt 1 (Theme Extraction)
-        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
+        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput,
+        # Response models for Prompt 2 (Coding Decision)
+        MatchedCandidate, ModifyParameters, CodingDecision, CodingDecisionOutput,
+        # Response models for Prompt 3 (Code Generation)
+        GeneratedCode, CodeGenerationOutput,
+        # Response models for Prompt 4 (Validation)
+        ValidatedCode, OriginalRecommendation, CodeValidation, ValidationResult
     )
 from utils.verboseReporter import VerboseReporter
 from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
@@ -140,87 +152,12 @@ class _ClusterData:
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
-# Note: Prompt 1 models (NearNeighbor, AssignmentExamples, ClusterThemeItem,
-# ClusterSummaryOutput) are now in prompts_exp.py
+# Note: Prompt 1-4 response models are now in prompts_exp.py:
+# - Prompt 1: NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
+# - Prompt 2: MatchedCandidate, ModifyParameters, CodingDecision, CodingDecisionOutput
+# - Prompt 3: GeneratedCode, CodeGenerationOutput
+# - Prompt 4: ValidatedCode, OriginalRecommendation, CodeValidation, ValidationResult
 
-"""Prompt 2 : Coding Decision"""
-class MatchedCandidate(BaseModel):
-    code: str
-    definition: Optional[str] = None  # May be inferred by LLM if not provided
-    definition_source: Literal["provided", "inferred"] = "inferred"
-    assignment_examples: Optional[AssignmentExamples] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class ModifyParameters(BaseModel):
-    modify_instruction: Literal["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"]
-    conceptual_family: Literal["same", "different", "none"]
-    abstraction_level: Literal["same", "different", "none"]
-    abstraction_level_action: Literal["keep", "broaden_to_parent", "none"]
-    inclusion_update: Optional[str] = None
-    exclusion_update: Optional[str] = None
-    parent_theme_label: Optional[str] = None
-    near_neighbor_label_update: Optional[str] = None
-    tell_apart_rule_update: Optional[str] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodingDecision(BaseModel):
-    theme_number: int
-    theme_name: str
-    matched_candidates: List[MatchedCandidate]
-    decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HORIZONTAL", "CREATE"]
-    source_code: Optional[str] = None
-    modify_parameters: ModifyParameters
-    justification: str
-    updated_assignment_examples: Optional[AssignmentExamples] = None
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodingDecisionOutput(BaseModel):
-    coding_decision: CodingDecision = Field(validation_alias="coding_devision")
-    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
-
-"""Prompt 3 : Code Generation"""
-class GeneratedCode(BaseModel):
-    theme_number: int
-    theme_name: str
-    source_code: Optional[str] = None
-    code_label: str
-    code_definition: str
-    assignment_examples: Optional[AssignmentExamples] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodeGenerationOutput(BaseModel):
-    generated_code: GeneratedCode
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-"""Prompt 4 : Validation of code label and description"""
-class ValidatedCode(BaseModel):
-    code: str
-    definition: str
-    assignment_examples: Optional[AssignmentExamples] = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class OriginalRecommendation(BaseModel):
-    code: str
-    definition: str
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class CodeValidation(BaseModel):
-    theme_number: int
-    theme_name: str 
-    original_recommendation: OriginalRecommendation
-    verdict: str  # APPROVE | REJECT (renamed from 'decision')
-    decision_rationale: str
-    validated_decision: str  # use | modify | create (NEW - final decision)
-    source_code: Optional[str] = None  # NEW - exact candidate code name if use/modify, or null if create
-    validated_code: ValidatedCode
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class ValidationResult(BaseModel):
-    code_validation: CodeValidation
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
- 
 """Codebook with reasoning"""
 class CodeGeneratorReasoningResults(BaseModel):
     cluster_results: List[Dict[str, Any]]  # Raw results from each cluster
