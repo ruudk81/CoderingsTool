@@ -5,7 +5,14 @@ This file contains the prompts used by codeGenerator.py for the 4-prompt chain.
 Modify these prompts to experiment with different codebook generation approaches.
 
 Original source: src/prompts.py (STEP 6: CODEBOOK GENERATION section)
+
+Response models (Pydantic) are co-located with their prompts following the
+migrate-output-schema pattern - instructor uses Field(description=...) to
+communicate schema to the LLM.
 """
+
+from typing import List
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # =============================================================================
 # STEP 6: CODEBOOK GENERATION - 4 PROMPT CHAIN
@@ -44,6 +51,9 @@ AXIS_LABEL_CONTRACT = {
   }
 }
 
+# -----------------------------------------------------------------------------
+# 1. CLUSTER_SUMMARY_PROMPT
+# -----------------------------------------------------------------------------
 
 CLUSTER_SUMMARY_PROMPT = """
 You are a qualitative researcher responsible for extracting ATOMIC {taxonomy_actionable_type}-{theme_head} THEMES from descriptive codes representing survey responses to a survey question.
@@ -132,45 +142,115 @@ REQUIRED ANALYSIS STEPS
 
 FINAL OUTPUT FORMAT
 
-After analysis, output valid JSON in the following structure.
-Field names must be in English. Values must be written in {language}.
+After analysis, output valid JSON in the response schema provided.
 
-{{
-  "cluster_id": "{cluster_id}",
-  "analysis": "Document your analysis here. State how many COCs were identified and retained. If only one COC: explain why it is sufficient. If multiple COCs: justify why a single COC would violate atomicity or clarity.",
-  "extracted_themes": [
-    {{
-      "theme_id": 1,
-      "theme_label": "1-3 word atomic {taxonomy_actionable_type}-{theme_head} label",
-      "theme_clarification": "<=30-word grounded definition describing what belongs in this theme",
-      "abstraction_level": "L2 -{taxonomy_actionable_type}-{theme_head} theme",
-      "assignment_examples": {{
-        "inclusion": [
-          "Example 1: Observable cue starting with a verb",
-          "Example 2: Observable cue starting with a verb"
-        ],
-        "exclusion": [
-          "Boundary case 1: What must NOT be included",
-          "Boundary case 2: What must NOT be included"
-        ],
-        "near_neighbor": {{
-          "label": "Label of closest potentially-confusable theme, or 'Unknown' if none exists",
-          "tell_apart_rule": "One sentence distinguishing this theme from the neighbor"
-        }}
-      }}
-    }}
-  ]
-}}
+---
 
-Critical requirements:
-- Output must be valid JSON only - no extra commentary or explanation before or after the JSON
-- Keep field names in English; write all values in {language}
-- The cluster_id value must be exactly "{cluster_id}" as provided
+OUTPUT REQUIREMENTS
+
+- All field values must be written in {language}
+- The cluster_id must be exactly "{cluster_id}" as provided
 - Conduct your entire analysis in {language}
-- If multiple themes are identified, include each as a separate object in the extracted_themes array with sequential theme_id values
+- If multiple themes are identified, include each as a separate object with sequential theme_id values
 - Provide 2-3 inclusion examples and 1-2 exclusion examples for each theme
-- Assignment examples should be short, concrete, and start with verbs (for inclusion/exclusion)
+- Assignment examples should be short, concrete, and start with verbs
 """
+
+class NearNeighbor(BaseModel):
+    label: str = Field(
+        ...,
+        min_length=1,
+        description="Label of closest potentially-confusable theme, or 'Unknown' if none exists",
+        examples=["Product Quality", "Unknown"]
+    )
+    tell_apart_rule: str = Field(
+        default="",
+        min_length=0,
+        description="One sentence distinguishing this theme from the neighbor",
+        examples=["This theme focuses on speed, not accuracy"]
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class AssignmentExamples(BaseModel):
+    inclusion: List[str] = Field(
+        ...,
+        min_length=1,
+        description="2-3 observable cues starting with verbs for what to include",
+        examples=[["Mentions waiting time explicitly", "Describes delay in service"]]
+    )
+    exclusion: List[str] = Field(
+        ...,
+        min_length=1,
+        description="1-2 boundary cases for what must NOT be included",
+        examples=[["General complaints without time reference", "Mentions speed positively"]]
+    )
+    near_neighbor: NearNeighbor = Field(
+        ...,
+        description="Closest confusable theme and how to distinguish"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ClusterThemeItem(BaseModel):
+    theme_id: int = Field(
+        ...,
+        description="Sequential theme identifier starting at 1",
+        examples=[1, 2]
+    )
+    theme_label: str = Field(
+        ...,
+        max_length=100,
+        description="1-3 word atomic noun phrase theme label",
+        examples=["Waiting Time", "Product Quality", "Staff Friendliness"]
+    )
+    theme_clarification: str = Field(
+        ...,
+        max_length=300,
+        description="<=30-word grounded definition describing what belongs in this theme",
+        examples=["Responses mentioning the duration of waiting for service or products"]
+    )
+    abstraction_level: str = Field(
+        ...,
+        description="Abstraction level indicator",
+        examples=["L2 -action-mechanism theme", "L1 -topic theme"]
+    )
+    assignment_examples: AssignmentExamples = Field(
+        ...,
+        description="Concrete inclusion/exclusion examples for coding"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator('theme_label')
+    @classmethod
+    def validate_label_length(cls, v):
+        word_count = len(v.split())
+        if word_count > 10:
+            raise ValueError(f"theme_label must be ≤10 words, got {word_count}")
+        return v
+
+
+class ClusterSummaryOutput(BaseModel):
+    cluster_id: str = Field(
+        ...,
+        description="The cluster identifier exactly as provided",
+        examples=["3", "5", "12"]
+    )
+    analysis: str = Field(
+        ...,
+        description="Document analysis: state COCs identified/retained, justify single vs multiple themes",
+        examples=["Identified 2 COCs: 'speed' and 'accuracy'. Retained both as distinct atomic concepts."]
+    )
+    extracted_themes: List[ClusterThemeItem] = Field(
+        ...,
+        description="Final theme entries for valid atomic themes"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+# -----------------------------------------------------------------------------
+# 2. CCODING_DECISION_PROMPT
+# -----------------------------------------------------------------------------
 
 CODING_DECISION_PROMPT = """
 You are a qualitative research assistant responsible for maintaining a parsimonious and structured codebook for thematic analysis following Braun & Clarke (2006) methodology.
@@ -371,6 +451,12 @@ The JSON must follow this exact structure:
 - Reference any cosine similarity scores (if provided) in your justification
 """
 
+
+# -----------------------------------------------------------------------------
+# 3a. CCODE_CREATION_PROMPT
+# -----------------------------------------------------------------------------
+
+
 CODE_CREATION_PROMPT = """
 You are a {language} qualitative research assistant.
 Your task is to CREATE a new code that captures the meaning of a newly identified atomic {taxonomy_actionable_type}-{theme_head} theme from survey responses, using the specified taxonomy framework.
@@ -531,6 +617,12 @@ VERTICAL_INSTRUCTIONS = """
        - Children = distinct manifestations (different abstraction levels),
        - Child meanings **do not change**."""
 
+
+# -----------------------------------------------------------------------------
+# 3b. CODING_MODIFICATION_PROMPT
+# -----------------------------------------------------------------------------
+
+
 CODING_MODIFICATION_PROMPT = """
 You are a {language} qualitative research assistant updating a codebook.
 Your task is to MODIFY an existing code so that it fully and correctly includes a new {taxonomy_actionable_type}-{theme_head} theme, while preserving **atomic meaning** and **clear conceptual boundaries**.
@@ -676,9 +768,10 @@ REQUIREMENTS:
 - If hierarchical_parent_diff_level -> ensure parent label is conceptual, not descriptive or repetitive.
 """
 
-# =============================================================================
-# VALIDATION INSTRUCTION VARIANTS (for scenario-specific validation)
-# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 4. VALIDATION_PROMPT
+# -----------------------------------------------------------------------------
 
 USE_VALIDATION_INSTRUCTIONS = """
 **Scenario: USE existing code**
