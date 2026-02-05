@@ -1,3 +1,5 @@
+#%%
+
 """
 Step 6: Code Generator Experiment Runner
 
@@ -61,7 +63,7 @@ class ExperimentConfig:
     var_name: str = TEST_DATA.var_name
     sample_size: Optional[int] = TEST_DATA.sample_size
     # Experiment-specific settings
-    use_experimental: bool = False
+    use_experimental: bool = True
     use_speculative_starter_codes: bool = True
     verbose: bool = True
     verbose_detailed: bool = False

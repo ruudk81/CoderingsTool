@@ -218,7 +218,12 @@ class ClusterThemeItem(BaseModel):
     )
     assignment_examples: AssignmentExamples = Field(
         ...,
-        description="Concrete inclusion/exclusion examples for coding"
+        description="Concrete inclusion/exclusion examples for coding",
+        examples=[{
+            "inclusion": ["Mentions waiting time explicitly", "Describes delay in service"],
+            "exclusion": ["General complaints without time reference"],
+            "near_neighbor": {"label": "Service Quality", "tell_apart_rule": "This theme focuses on duration, not quality"}
+        }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -434,7 +439,12 @@ class MatchedCandidate(BaseModel):
     )
     assignment_examples: Optional[AssignmentExamples] = Field(
         default=None,
-        description="Assignment examples from existing code"
+        description="Assignment examples from existing code",
+        examples=[{
+            "inclusion": ["References to product quality", "Mentions satisfaction with quality"],
+            "exclusion": ["Price complaints without quality mention"],
+            "near_neighbor": {"label": "Product Value", "tell_apart_rule": "Quality focuses on product attributes, value on price-quality ratio"}
+        }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -525,7 +535,12 @@ class CodingDecision(BaseModel):
     )
     updated_assignment_examples: Optional[AssignmentExamples] = Field(
         default=None,
-        description="Updated assignment examples reflecting the decision"
+        description="Updated assignment examples reflecting the decision",
+        examples=[{
+            "inclusion": ["Updated inclusion example 1", "Updated inclusion example 2"],
+            "exclusion": ["Updated boundary case to exclude"],
+            "near_neighbor": {"label": "Related Code", "tell_apart_rule": "This code focuses on X, neighbor focuses on Y"}
+        }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -843,7 +858,12 @@ class GeneratedCode(BaseModel):
     )
     assignment_examples: Optional[AssignmentExamples] = Field(
         default=None,
-        description="Concrete inclusion/exclusion examples for coding"
+        description="Concrete inclusion/exclusion examples for coding",
+        examples=[{
+            "inclusion": ["Expresses concern about waiting", "Mentions delay as negative"],
+            "exclusion": ["Positive comments about speed"],
+            "near_neighbor": {"label": "Service Speed", "tell_apart_rule": "Waiting focuses on negative delay, speed on positive efficiency"}
+        }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -1075,7 +1095,12 @@ class ValidatedCode(BaseModel):
     )
     assignment_examples: Optional[AssignmentExamples] = Field(
         default=None,
-        description="Validated/refined assignment examples for coding"
+        description="Validated/refined assignment examples for coding",
+        examples=[{
+            "inclusion": ["Validated inclusion example 1", "Validated inclusion example 2"],
+            "exclusion": ["Validated boundary case to exclude"],
+            "near_neighbor": {"label": "Nearby Theme", "tell_apart_rule": "This theme focuses on X, nearby theme focuses on Y"}
+        }]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -1111,7 +1136,7 @@ class CodeValidation(BaseModel):
     )
     verdict: Literal["APPROVE", "REJECT"] = Field(
         ...,
-        description="Whether the proposal passes or fails validation",
+        description="Binary accept/reject of original proposal. APPROVE = proposal is acceptable as-is; REJECT = proposal needs correction. NOT a coding decision - use validated_decision for USE/MODIFY/CREATE.",
         examples=["APPROVE", "REJECT"]
     )
     decision_rationale: str = Field(
