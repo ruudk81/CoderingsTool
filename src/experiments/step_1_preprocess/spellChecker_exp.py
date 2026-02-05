@@ -17,24 +17,44 @@ from pydantic import BaseModel
 from openai import RateLimitError, APIConnectionError, APITimeoutError, InternalServerError
 from aiolimiter import AsyncLimiter
 
-# === CONSTANTS (extracted magic numbers) ========================================================================================================
-MAX_HUNSPELL_PROCESSES = 20          # Max parallel Hunspell processes to prevent resource exhaustion
-MAX_SAFE_BATCH_SIZE = 1000           # Maximum batch size for Hunspell word checking
-SUGGESTION_BATCH_SIZE = 50           # Words per batch for suggestion generation
-MAX_CONCURRENT_SUGGESTION_BATCHES = 6  # Concurrent batches for suggestion processing
-# Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS now come from ProcessingConfig
-OUTPUT_TOKEN_RATIO = 0.15            # Estimated output/input token ratio for spell correction
-SPACY_VECTOR_NORM_THRESHOLD = 5      # Minimum vector norm for valid SpaCy tokens
-
-
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding, get_spacy_nlp_conditional
-
-# === CONFIG ========================================================================================================
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH, DUTCH_DICT_PATH, ENGLISH_DICT_PATH, SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG, ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM, API_PROVIDER
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
-from prompts import SPELLCHECK_INSTRUCTIONS
+
+# === CONFIG (from experimental config_exp.py) ========================================================================================================
+try:
+    from .config_exp import (
+        OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH,
+        DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
+        SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
+        ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+        # Experimental constants
+        MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
+        SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
+        OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
+    )
+except ImportError:
+    from config_exp import (
+        OPENAI_API_KEY, DEFAULT_LANGUAGE, HUNSPELL_PATH,
+        DUTCH_DICT_PATH, ENGLISH_DICT_PATH,
+        SpellCheckConfig, DEFAULT_SPELLCHECK_CONFIG,
+        ModelConfig, ProcessingConfig, DEFAULT_PROCESSING_CONFIG,
+        API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM,
+        AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME,
+        # Experimental constants
+        MAX_HUNSPELL_PROCESSES, MAX_SAFE_BATCH_SIZE,
+        SUGGESTION_BATCH_SIZE, MAX_CONCURRENT_SUGGESTION_BATCHES,
+        OUTPUT_TOKEN_RATIO, SPACY_VECTOR_NORM_THRESHOLD,
+    )
+
+# === PROMPTS (from experimental prompts_exp.py) ========================================================================================================
+try:
+    from .prompts_exp import SPELLCHECK_INSTRUCTIONS
+except ImportError:
+    from prompts_exp import SPELLCHECK_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
