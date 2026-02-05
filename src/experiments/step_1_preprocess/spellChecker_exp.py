@@ -1412,6 +1412,14 @@ Suggested corrections: {task_dict['suggestions']}
                 # Parse structured response with validation (only if response exists)
                 if response and response.corrections and len(response.corrections) > 0:
                     correction = response.corrections[0]  # Single task = single correction
+
+                    # AUDIT: Log if LLM returned different ID (drift detection)
+                    if str(correction.respondent_id) != str(task_dict['respondent_id']):
+                        logger.warning(
+                            f"ID drift detected: LLM returned '{correction.respondent_id}' "
+                            f"but input was '{task_dict['respondent_id']}'"
+                        )
+
                     corrected_text = correction.corrected_response
 
         return {task_dict['response']: corrected_text}
