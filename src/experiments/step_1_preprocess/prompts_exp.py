@@ -5,7 +5,35 @@ This file contains the prompts used by spellChecker.py.
 Modify these prompts to experiment with different spell checking approaches.
 
 Original source: src/prompts.py (STEP 1: SPELL CHECKING section)
+
+Response models (Pydantic) are co-located with their prompts following the
+migrate-output-schema pattern - instructor uses Field(description=...) to
+communicate schema to the LLM.
 """
+
+from typing import List, Any
+from pydantic import BaseModel, Field
+
+# =============================================================================
+# RESPONSE MODELS (co-located with prompts for instructor)
+# =============================================================================
+
+class CorrectionItem(BaseModel):
+    """A single spell correction result."""
+    respondent_id: Any = Field(
+        description="The respondent ID from the correction task"
+    )
+    corrected_response: str = Field(
+        description="The fully corrected response with all spelling mistakes fixed"
+    )
+
+
+class LLMCorrectionResponse(BaseModel):
+    """Structured output for spell check corrections."""
+    corrections: List[CorrectionItem] = Field(
+        description="List of corrections, one for each task in the input"
+    )
+
 
 # =============================================================================
 # STEP 1: SPELL CHECKING
@@ -37,26 +65,10 @@ Here are the correction tasks to process:
 {tasks}
 </correction_tasks>
 
-After processing all tasks, provide your output in the following JSON format:
-{{
-  "corrections": [
-    {{
-      "respondent_id": "ID_FROM_TASK",
-      "corrected_response": "The fully corrected response"
-    }},
-    ...
-  ]
-}}
-
-Ensure that your output is a valid JSON object with a single key "corrections", whose value is an array of objects. Each object in the "corrections" array must have exactly these fields:
-- "respondent_id": "ID_FROM_TASK"
-- "corrected_response": "The fully corrected response"
-
 Additional guidelines:
 - Pay close attention to the context and meaning of each response when making corrections.
 - Ensure that your corrections maintain the original intent of the respondent.
 - If a suggested correction doesn't fit the context, consider alternative corrections that preserve the meaning.
-- Double-check that your JSON output is properly formatted and includes all corrected responses.
 
-Begin processing the correction tasks now, and provide your output in the specified JSON format.
+Begin processing the correction tasks now and provide your output as valid JSON following the response schema provided.
 """

@@ -52,9 +52,17 @@ except ImportError:
 
 # === PROMPTS (from experimental prompts_exp.py) ========================================================================================================
 try:
-    from .prompts_exp import SPELLCHECK_INSTRUCTIONS
+    from .prompts_exp import (
+        SPELLCHECK_INSTRUCTIONS,
+        CorrectionItem,
+        LLMCorrectionResponse,
+    )
 except ImportError:
-    from prompts_exp import SPELLCHECK_INSTRUCTIONS
+    from prompts_exp import (
+        SPELLCHECK_INSTRUCTIONS,
+        CorrectionItem,
+        LLMCorrectionResponse,
+    )
 
 logger = logging.getLogger(__name__)
 DICT_PATH = DUTCH_DICT_PATH if DEFAULT_LANGUAGE == "Dutch" else ENGLISH_DICT_PATH
@@ -74,13 +82,9 @@ class SpellCheckModel(BaseModel):
     original_response: str
     corrected_response: Optional[str] = None
 
-class CorrectionItem(BaseModel):
-    respondent_id: Any 
-    corrected_response: str 
+# Note: CorrectionItem and LLMCorrectionResponse moved to prompts_exp.py
+# (co-located with prompts following instructor schema pattern)
 
-class LLMCorrectionResponse(BaseModel):
-    corrections: List[CorrectionItem] 
-    
 # === RATE LIMITING HELPER CLASSES ========================================================================================================
 class TokenBucket:
     """Simple token bucket for TPM limiting (from qualityFilter.py)"""
