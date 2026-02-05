@@ -32,7 +32,7 @@ try:
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
     )
-    from .prompts_exp import GRADER_INSTRUCTIONS
+    from .prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 except ImportError:
     from config_exp import (
         OPENAI_API_KEY, DEFAULT_LANGUAGE,
@@ -45,7 +45,7 @@ except ImportError:
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
     )
-    from prompts_exp import GRADER_INSTRUCTIONS
+    from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 
@@ -451,7 +451,7 @@ class Grader:
                         llm_create_async(
                             client=self.client,
                             model=self.model,
-                            response_model=List[models.QualityFilterLLMResponse],
+                            response_model=List[QualityFilterLLMResponseExp],
                             prompt=prompt,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens
@@ -495,10 +495,18 @@ class Grader:
                     # Extract result and convert strict LLM response to pipeline model
                     if response and len(response) > 0:
                         llm_result = response[0]
-                        # Convert QualityFilterLLMResponse to QualityFilteredModel
+
+                        # AUDIT: Log if LLM returned different ID (drift detection)
+                        if str(llm_result.respondent_id) != str(task['task_id']):
+                            logger.warning(
+                                f"ID drift detected: LLM returned '{llm_result.respondent_id}' "
+                                f"but input was '{task['task_id']}'"
+                            )
+
+                        # OVERRIDE: Always use original values, only take classification from LLM
                         result = models.QualityFilteredModel(
-                            respondent_id=llm_result.respondent_id,
-                            response=llm_result.response,
+                            respondent_id=task['task_id'],           # FROM ORIGINAL
+                            response=task['response_text'],          # FROM ORIGINAL
                             quality_filter=llm_result.quality_filter,
                             quality_filter_code=llm_result.quality_filter_code
                         )

@@ -5,7 +5,37 @@ This file contains the prompts used by qualityFilter.py.
 Modify these prompts to experiment with different quality filtering approaches.
 
 Original source: src/prompts.py (STEP 2: QUALITY FILTERING section)
+
+Response models (Pydantic) are co-located with their prompts following the
+migrate-output-schema pattern - instructor uses Field(description=...) to
+communicate schema to the LLM.
 """
+
+from typing import Any, Union, Optional
+from pydantic import BaseModel, Field
+
+# =============================================================================
+# RESPONSE MODELS (co-located with prompts for instructor)
+# =============================================================================
+
+class QualityFilterLLMResponseExp(BaseModel):
+    """A single quality filter assessment result."""
+    respondent_id: Any = Field(
+        description="The respondent's ID from the input"
+    )
+    response: Union[str, float, int, None] = Field(
+        description="The exact response text being evaluated"
+    )
+    quality_filter: bool = Field(
+        description="true if response is meaningless (don't know/gibberish), false if meaningful",
+        examples=[True, False]
+    )
+    quality_filter_code: Optional[int] = Field(
+        default=None,
+        description="99999997 for uncertainty/don't know, 99999999 for gibberish/nonsensical, null for meaningful responses",
+        examples=[99999997, 99999999, None]
+    )
+
 
 # =============================================================================
 # STEP 2: QUALITY FILTERING
@@ -41,42 +71,11 @@ Here are the responses you need to evaluate:
 {responses}
 </responses>
 
-Your output should be a JSON array. Each object in the array must contain exactly:
-- "respondent_id": (string or number) The respondent's ID
-- "response": (string) The exact response text
-- "quality_filter": (boolean) true if meaningless, false if meaningful
-- "quality_filter_code": (number or null) 99999997 for uncertainty, 99999999 for gibberish, null for meaningful
-
 Follow these steps for each response:
 1. Read the response carefully.
 2. Determine if the response expresses uncertainty/don't know (code 99999997)
 3. If not uncertainty, determine if it's gibberish/nonsensical (code 99999999)
 4. If neither, it's meaningful (quality_filter = false, quality_filter_code = null)
-5. Create a JSON object with all required fields
 
-After processing all responses, return the complete JSON array.
-
-Remember to use the exact format specified. Here's an example of how entries in your output should look:
-[
-  {{
-    "respondent_id": "1",
-    "response": "I don't know",
-    "quality_filter": true,
-    "quality_filter_code": 99999997
-  }},
-  {{
-    "respondent_id": "2",
-    "response": "The product is easy to use and has great features.",
-    "quality_filter": false,
-    "quality_filter_code": null
-  }},
-  {{
-    "respondent_id": "3",
-    "response": "asdfghjkl",
-    "quality_filter": true,
-    "quality_filter_code": 99999999
-  }}
-]
-
-Ensure that your entire output is a valid JSON array containing all evaluated responses.
+Begin evaluating the responses now and provide your output as valid JSON following the response schema provided.
 """
