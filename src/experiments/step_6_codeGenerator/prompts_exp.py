@@ -11,7 +11,7 @@ migrate-output-schema pattern - instructor uses Field(description=...) to
 communicate schema to the LLM.
 """
 
-from typing import List
+from typing import List, Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # =============================================================================
@@ -142,7 +142,7 @@ REQUIRED ANALYSIS STEPS
 
 FINAL OUTPUT FORMAT
 
-After analysis, output valid JSON in the response schema provided.
+After analysis, output valid JSON as instruced by the response schema provided.
 
 ---
 
@@ -406,50 +406,136 @@ Before providing your final answer, use <scratchpad> tags to work through your a
 8. Determine your final decision with justification referencing conceptual family and abstraction level analysis.
 9. Plan what updates are needed to assignment examples based on your decision.
 
-After completing your analysis in the scratchpad, provide your final answer as valid JSON only inside <json_output> tags.
+After completing your analysis in the scratchpad, provide your final answer as valid JSON following the response schema provided.
 
-The JSON must follow this exact structure:
-
-{{
-  "coding_decision": {{
-    "theme_number": {theme_id},
-    "theme_name": {theme_name},
-    "matched_candidates": [
-        {{"code": "Exact candidate code A", "definition": "Definition in light of the survey question"}},
-        // Add additional candidaties,if there are any
-        ]
-    "decision": "USE | MODIFY_VERTICAL | MODIFY_HORIZONTAL | CREATE",
-    "source_code": "Exact candidate code name if use/modify, or null if create",
-    "modify_parameters":{{
-       "modify_instruction": "vertical_broaden_same_level | hierarchical_parent_diff_level | none",
-       "conceptual_family": "same | different",
-       "abstraction_level": "same | different",
-       "abstraction_level_action": "keep | broaden_to_parent | none",
-       "inclusion_update": "null or concrete additions to inclusion rules",
-       "exclusion_update": "null or concrete boundary clarifications",
-       "parent_theme_label": "null or suggested parent label",
-       "near_neighbor_label_update": "null or updated neighbor label if boundaries changed",
-       "tell_apart_rule_update": "null or updated tell-apart rule if distinction changed"}},
-    "justification": "Explain decision by referencing conceptual family and abstraction level comparison, or null if use/create",
-    "updated_assignment_examples": {{
-      "inclusion": ["[updated or original inclusion examples in {language}]"],
-      "exclusion": ["[updated or original exclusion examples in {language}]"],
-      "near_neighbor": {{
-        "label": "[updated or original neighbor label in {language}]",
-        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
-      }} | null
-    }}.
-  }}
-}}
-
-
-**Requirements:**
-- Output must be valid JSON only inside json_output tags (no additional commentary outside these tags)
-- Keep field names in English; write values in the language specified in codebook_parameters
+**Output Requirements:**
+- Keep field names in English; write values in {language}
 - Include conceptual family and abstraction level comparison explicitly in justification
 - Ensure all updates maintain MECE principles and code atomicity
 - Reference any cosine similarity scores (if provided) in your justification
 """
+
+
+class MatchedCandidate(BaseModel):
+    code: str = Field(
+        ...,
+        description="Exact candidate code name from existing codebook",
+        examples=["Product Quality", "Waiting Time"]
+    )
+    definition: Optional[str] = Field(
+        default=None,
+        description="Code definition in light of the survey question",
+        examples=["References to product quality concerns", "Mentions of waiting duration"]
+    )
+    definition_source: Literal["provided", "inferred"] = Field(
+        default="inferred",
+        description="Whether definition was provided in codebook or inferred"
+    )
+    assignment_examples: Optional[AssignmentExamples] = Field(
+        default=None,
+        description="Assignment examples from existing code"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ModifyParameters(BaseModel):
+    modify_instruction: Literal["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"] = Field(
+        ...,
+        description="Type of modification to apply",
+        examples=["vertical_broaden_same_level", "hierarchical_parent_diff_level", "none"]
+    )
+    conceptual_family: Literal["same", "different", "none"] = Field(
+        ...,
+        description="Whether new theme belongs to same conceptual family as matched code",
+        examples=["same", "different"]
+    )
+    abstraction_level: Literal["same", "different", "none"] = Field(
+        ...,
+        description="Whether theme is at same abstraction level as matched code",
+        examples=["same", "different"]
+    )
+    abstraction_level_action: Literal["keep", "broaden_to_parent", "none"] = Field(
+        ...,
+        description="Action to take regarding abstraction level",
+        examples=["keep", "broaden_to_parent", "none"]
+    )
+    inclusion_update: Optional[str] = Field(
+        default=None,
+        description="Concrete additions to inclusion rules if modifying",
+        examples=["Add expressions about delivery speed", None]
+    )
+    exclusion_update: Optional[str] = Field(
+        default=None,
+        description="Concrete boundary clarifications for exclusion rules",
+        examples=["Exclude mentions of product defects", None]
+    )
+    parent_theme_label: Optional[str] = Field(
+        default=None,
+        description="Suggested parent label for vertical modification",
+        examples=["Service Experience", None]
+    )
+    near_neighbor_label_update: Optional[str] = Field(
+        default=None,
+        description="Updated neighbor label if boundaries changed",
+        examples=["Response Time", None]
+    )
+    tell_apart_rule_update: Optional[str] = Field(
+        default=None,
+        description="Updated tell-apart rule if distinction changed",
+        examples=["This theme focuses on duration, neighbor on frequency", None]
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class CodingDecision(BaseModel):
+    theme_number: int = Field(
+        ...,
+        description="Sequential theme identifier as provided",
+        examples=[1, 2, 3]
+    )
+    theme_name: str = Field(
+        ...,
+        description="Theme name as provided",
+        examples=["Waiting Time", "Product Quality"]
+    )
+    matched_candidates: List[MatchedCandidate] = Field(
+        ...,
+        description="Best matching existing codes from codebook",
+        examples=[[{"code": "Service Speed", "definition": "References to speed of service"}]]
+    )
+    decision: Literal["USE", "MODIFY_VERTICAL", "MODIFY_HORIZONTAL", "CREATE"] = Field(
+        ...,
+        description="Coding decision: USE existing, MODIFY existing, or CREATE new",
+        examples=["USE", "MODIFY_HORIZONTAL", "CREATE"]
+    )
+    source_code: Optional[str] = Field(
+        default=None,
+        description="Exact candidate code name if USE/MODIFY, null if CREATE",
+        examples=["Service Speed", None]
+    )
+    modify_parameters: ModifyParameters = Field(
+        ...,
+        description="Parameters for modification (populate even if not modifying)"
+    )
+    justification: str = Field(
+        ...,
+        description="Decision explanation referencing conceptual family and abstraction level comparison",
+        examples=["Theme belongs to same family (service timing) at same abstraction level - MODIFY_HORIZONTAL to broaden scope"]
+    )
+    updated_assignment_examples: Optional[AssignmentExamples] = Field(
+        default=None,
+        description="Updated assignment examples reflecting the decision"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class CodingDecisionOutput(BaseModel):
+    coding_decision: CodingDecision = Field(
+        ...,
+        validation_alias="coding_devision",
+        description="The coding decision result"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
 
 
 # -----------------------------------------------------------------------------
@@ -553,31 +639,9 @@ ASSIGNMENT EXAMPLES
 
 ---
 
-FINAL OUTPUT FORMAT
+FINAL OUTPUT
 
-Output the result in this strict JSON schema (no commentary or explanation):
-{{
-  "generated_code": {{
-    "theme_number": {theme_id},
-    "theme_name": "{cluster_summary}",
-    "source_code": "null",
-    "code_label": "new or modified code label in {language}",
-    "code_definition": "<=25-word operational definition in {language}",
-    "assignment_examples": {{
-      "inclusion": ["[2-3 concrete examples of what to include in {language}]"],
-      "exclusion": ["[1-2 concrete examples of what to exclude in {language}]"],
-      "near_neighbor": {{
-        "label": "[closest confusable concept in {language} or 'Unknown']",
-        "tell_apart_rule": "[1-sentence distinction in {language}]"
-      }}
-    }}
-  }}
-}}
-
-Critical remarks:
-- Use theme_id provided.
-- Use theme_name provided.
-- Use source_code provided
+Provide valid JSON following the response schema. Use theme_number and theme_name exactly as provided. Set source_code to null for new codes. Write all values in {language}.
 """
 
 # Placeholders for CODING_MODIFICATION_PROMPT
@@ -742,31 +806,53 @@ ASSIGNMENT EXAMPLES
 - exclusion: Combine original + new boundaries from exclusion_update.
 - near_neighbor: Update label/rule if boundaries changed due to modification. Identify closest confusable {taxonomy_actionable_type}-{theme_head}.
 
-OUTPUT FORMAT (valid JSON only, no commentary, in {language}):
+FINAL OUTPUT
 
-{{
-  "generated_code": {{
-    "theme_number": {theme_id},
-    "theme_name": "{cluster_summary}",
-    "source_code": {source_code},
-    "code_label": "yur new/modified code label in {language}",
-    "code_definition": "your definition in {language}",
-    "assignment_examples": {{
-      "inclusion": ["[updated inclusion examples combining original + new in {language}]"],
-      "exclusion": ["[updated exclusion examples combining original + new in {language}]"],
-      "near_neighbor": {{
-        "label": "[updated or original neighbor label in {language}]",
-        "tell_apart_rule": "[updated or original tell-apart rule in {language}]"
-      }}
-    }}
-  }}
-}}
-
-REQUIREMENTS:
-- Output must be valid JSON only.
-- No commentary outside JSON.
-- If hierarchical_parent_diff_level -> ensure parent label is conceptual, not descriptive or repetitive.
+Provide valid JSON following the response schema. Use theme_number, theme_name, and source_code exactly as provided. Write all values in {language}. If hierarchical_parent_diff_level, ensure parent label is conceptual, not descriptive.
 """
+
+
+class GeneratedCode(BaseModel):
+    theme_number: int = Field(
+        ...,
+        description="Sequential theme identifier as provided",
+        examples=[1, 2, 3]
+    )
+    theme_name: str = Field(
+        ...,
+        description="Theme name (cluster_summary) as provided",
+        examples=["Waiting Time", "Product Quality"]
+    )
+    source_code: Optional[str] = Field(
+        default=None,
+        description="Existing code being modified (null for CREATE)",
+        examples=["Service Speed", None]
+    )
+    code_label: str = Field(
+        ...,
+        max_length=100,
+        description="New or modified code label (1-10 word noun phrase)",
+        examples=["Waiting Time", "Service Response"]
+    )
+    code_definition: str = Field(
+        ...,
+        max_length=200,
+        description="<=25-word operational definition describing what belongs in this code",
+        examples=["References to duration of waiting for service or products"]
+    )
+    assignment_examples: Optional[AssignmentExamples] = Field(
+        default=None,
+        description="Concrete inclusion/exclusion examples for coding"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class CodeGenerationOutput(BaseModel):
+    generated_code: GeneratedCode = Field(
+        ...,
+        description="The generated or modified code"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 # -----------------------------------------------------------------------------
@@ -963,40 +1049,95 @@ GOOD DEFINITION PATTERNS FOR FINAL DECISION::
 - "Concerns about..."
 </scratchpad>
 
-Now provide your final evaluation as valid JSON in the language specified below. Return ONLY the JSON response with no additional text, comments, or extra fields.
+Now provide your final evaluation as valid JSON following the response schema.
 
-Output schema:
-{{
-  "code_validation": {{
-    "theme_number": {theme_id},
-    "theme_name": {cluster_summary},
-    "original_recommendation": {{
-        "code": "Exact recommended label",
-        "definition": "Exact recommended definition"
-      }},
-    "verdict": "APPROVE" | "REJECT",
-    "decision_rationale": "Brief explanation as to why the recommendation was approved or rejected",
-    "validated_decision" : "USE or MODIFY_HORIZONTAL or MODIFY_VERTICAL or CREATE"
-    "source_code": "If USE, this exact code: {source_code}; If MODIFY_HORIZONTAL or MODIFY_VERTICAL, the exact code from the existing codebook you seek to modify - or null, if CREATE",
-    "validated_code": {{
-      "code": "Final validated label (<=10 words, rule-compliant)",
-      "definition": "Final validated definition (<=25 words, operational, grounded)",
-      "assignment_examples": {{
-        "inclusion": ["[validated/refined inclusion examples in {language}]"],
-        "exclusion": ["[validated/refined exclusion examples in {language}]"],
-        "near_neighbor": {{
-          "label": "[validated neighbor label in {language}]",
-          "tell_apart_rule": "[validated tell-apart rule in {language}]"
-        }}
-      }}
-    }}
-  }}
-}}
-
-**Critical remarks:**
+**Output Requirements:**
 - Use theme_number and theme_name exactly as provided in the coding proposal
-- For source_code: IIf USE, this exact code: {source_code}; If  MODIFY_HORIZONTAL or MODIFY_VERTICAL, the exact code from the existing codebook you seek to modify - or null, if CREATE
-- All text in assignment_examples, near_neighbor label, and tell_apart_rule must be in the specified output language
-- Return only valid JSON with no additional commentary
+- For source_code: If USE, use exact code from proposal; If MODIFY, use exact existing code being modified; If CREATE, use null
+- Write all values in {language}
 - Ensure all labels and definitions strictly follow the rules above
 """
+
+
+class ValidatedCode(BaseModel):
+    code: str = Field(
+        ...,
+        max_length=100,
+        description="Final validated code label (<=10 words, rule-compliant)",
+        examples=["Waiting Time", "Service Response"]
+    )
+    definition: str = Field(
+        ...,
+        max_length=200,
+        description="Final validated definition (<=25 words, operational, grounded)",
+        examples=["References to duration of waiting for service or products"]
+    )
+    assignment_examples: Optional[AssignmentExamples] = Field(
+        default=None,
+        description="Validated/refined assignment examples for coding"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class OriginalRecommendation(BaseModel):
+    code: str = Field(
+        ...,
+        description="Exact recommended code label from proposal",
+        examples=["Waiting Time", "Product Quality"]
+    )
+    definition: str = Field(
+        ...,
+        description="Exact recommended definition from proposal",
+        examples=["References to time spent waiting"]
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class CodeValidation(BaseModel):
+    theme_number: int = Field(
+        ...,
+        description="Sequential theme identifier as provided in proposal",
+        examples=[1, 2, 3]
+    )
+    theme_name: str = Field(
+        ...,
+        description="Theme name as provided in proposal",
+        examples=["Waiting Time", "Product Quality"]
+    )
+    original_recommendation: OriginalRecommendation = Field(
+        ...,
+        description="The original coding recommendation being validated"
+    )
+    verdict: Literal["APPROVE", "REJECT"] = Field(
+        ...,
+        description="Whether the proposal passes or fails validation",
+        examples=["APPROVE", "REJECT"]
+    )
+    decision_rationale: str = Field(
+        ...,
+        description="Brief explanation of why proposal was approved or rejected",
+        examples=["Proposal maintains atomicity and aligns with taxonomy axis"]
+    )
+    validated_decision: Literal["USE", "MODIFY_HORIZONTAL", "MODIFY_VERTICAL", "CREATE"] = Field(
+        ...,
+        description="Final decision after validation",
+        examples=["USE", "MODIFY_HORIZONTAL", "CREATE"]
+    )
+    source_code: Optional[str] = Field(
+        default=None,
+        description="If USE: exact code from proposal; If MODIFY: exact existing code being modified; If CREATE: null",
+        examples=["Service Speed", None]
+    )
+    validated_code: ValidatedCode = Field(
+        ...,
+        description="Final validated code with label, definition, and assignment examples"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ValidationResult(BaseModel):
+    code_validation: CodeValidation = Field(
+        ...,
+        description="The validation result for the coding proposal"
+    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
