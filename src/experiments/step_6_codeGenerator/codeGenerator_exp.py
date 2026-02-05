@@ -26,15 +26,71 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # === CONFIG & MODELS ========================================================================================================
 from models import ClusterModel
-from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, DEFAULT_CODEDESIGNER_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, API_PROVIDER, AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM
-# Import prompts from production
-from prompts import (
-    CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
-    HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
-    VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
-    MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
-    AXIS_LABEL_CONTRACT
-)
+# Import from experimental config_exp (re-exports production config + experimental overrides)
+try:
+    from .config_exp import (
+        # Re-exported from production config
+        OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig,
+        DEFAULT_PROCESSING_CONFIG, API_PROVIDER,
+        AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM,
+        # Experimental CodeDesigner config (aliased as DEFAULT_CODEDESIGNER_CONFIG)
+        DEFAULT_CODEDESIGNER_CONFIG_EXP as DEFAULT_CODEDESIGNER_CONFIG,
+        # Experimental constants
+        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE,
+        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS, MIN_LATENCY_SECONDS,
+        TOKENS_FOR_BASELINE_LATENCY, TIMEOUT_PER_1000_TOKENS,
+        OUTPUT_TOKEN_ESTIMATE_MARGIN, FALLBACK_TOKEN_ESTIMATE,
+        DEFAULT_SIMILARITY_THRESHOLD, EMBEDDING_BATCH_SIZE, OPENAI_EMBEDDING_DIMENSION,
+        EXPONENTIAL_BACKOFF_BASE, PROGRESSIVE_SIMILARITY_THRESHOLDS,
+        FINAL_SIMILARITY_THRESHOLD, SIMILARITY_ANALYSIS_THRESHOLDS,
+        CONFLICT_THRESHOLD, DEFAULT_SUB_BATCH_MAX_SIZE,
+        MIN_WORKER_CONCURRENCY, MAX_WORKER_CONCURRENCY,
+        INPUT_TOKEN_ESTIMATE_MARGIN, OUTPUT_ESTIMATE_PCT_OF_INPUT,
+        FIRST_PROMPT_ALLOCATION_PCT, ASSUMED_LATENCY_PER_REQUEST,
+        BUCKET_STATUS_RECENT_SAMPLES, LOW_TOKEN_THRESHOLD_PCT,
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL
+    )
+except ImportError:
+    from config_exp import (
+        OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, ProcessingConfig,
+        DEFAULT_PROCESSING_CONFIG, API_PROVIDER,
+        AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER, FALLBACK_TPM, FALLBACK_RPM,
+        DEFAULT_CODEDESIGNER_CONFIG_EXP as DEFAULT_CODEDESIGNER_CONFIG,
+        EXTRA_VERBOSE, STAGE1_TEXT_SOURCE,
+        DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS, MIN_LATENCY_SECONDS,
+        TOKENS_FOR_BASELINE_LATENCY, TIMEOUT_PER_1000_TOKENS,
+        OUTPUT_TOKEN_ESTIMATE_MARGIN, FALLBACK_TOKEN_ESTIMATE,
+        DEFAULT_SIMILARITY_THRESHOLD, EMBEDDING_BATCH_SIZE, OPENAI_EMBEDDING_DIMENSION,
+        EXPONENTIAL_BACKOFF_BASE, PROGRESSIVE_SIMILARITY_THRESHOLDS,
+        FINAL_SIMILARITY_THRESHOLD, SIMILARITY_ANALYSIS_THRESHOLDS,
+        CONFLICT_THRESHOLD, DEFAULT_SUB_BATCH_MAX_SIZE,
+        MIN_WORKER_CONCURRENCY, MAX_WORKER_CONCURRENCY,
+        INPUT_TOKEN_ESTIMATE_MARGIN, OUTPUT_ESTIMATE_PCT_OF_INPUT,
+        FIRST_PROMPT_ALLOCATION_PCT, ASSUMED_LATENCY_PER_REQUEST,
+        BUCKET_STATUS_RECENT_SAMPLES, LOW_TOKEN_THRESHOLD_PCT,
+        PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_REPORT_INTERVAL
+    )
+# Import prompts and response models from experimental prompts_exp
+try:
+    from .prompts_exp import (
+        CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
+        HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
+        VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
+        MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
+        AXIS_LABEL_CONTRACT,
+        # Response models for Prompt 1 (Theme Extraction)
+        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
+    )
+except ImportError:
+    from prompts_exp import (
+        CLUSTER_SUMMARY_PROMPT, CODING_DECISION_PROMPT, CODE_CREATION_PROMPT,
+        HORIZONTAL_INSTRUCTIONS, VERTICAL_INSTRUCTIONS, CODING_MODIFICATION_PROMPT,
+        VALIDATION_PROMPT, USE_VALIDATION_INSTRUCTIONS, MODIFY_VERTICAL_VALIDATION_INSTRUCTIONS,
+        MODIFY_HORIZONTAL_VALIDATION_INSTRUCTIONS, CREATE_VALIDATION_INSTRUCTIONS,
+        AXIS_LABEL_CONTRACT,
+        # Response models for Prompt 1 (Theme Extraction)
+        NearNeighbor, AssignmentExamples, ClusterThemeItem, ClusterSummaryOutput
+    )
 from utils.verboseReporter import VerboseReporter
 from utils.llm import create_client, llm_create_sync, RateLimits, extract_rate_limits_from_response
 
@@ -45,30 +101,21 @@ except ImportError:
     pass
 
 # Create sync client for codeGenerator (supports both OpenAI and Azure)
-# For Azure: uses AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER (e.g., gpt-5.2-chatcomplete)
+# For Azure: uses AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER  
 # For OpenAI: uses the model name directly with responses API
 client = create_client(
-    model=ModelConfig().CODEDESIGNER_MODEL if hasattr(ModelConfig(), 'CODEDESIGNER_MODEL') else "gpt-5.2",
+    model=DEFAULT_CODEDESIGNER_CONFIG.model,
     async_mode=False,
     azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
 )
 
 logger = logging.getLogger(__name__)
 
-EXTRA_VERBOSE = False
+# Configure logging based on EXTRA_VERBOSE from config_exp
 if EXTRA_VERBOSE:
     logging.basicConfig(level=logging.INFO)
 else:
     logging.basicConfig(level=logging.CRITICAL)
-
-# =============================================================================
-# STAGE 1 CONFIGURATION
-# =============================================================================
-# Toggle between "idea" (full response ideas) and "taxonomy_phrase" (2-4 word categorization)
-# for cluster_text in Stage 1 theme extraction (CLUSTER_SUMMARY_PROMPT only).
-# Other stages continue to use idea.idea regardless of this setting.
-STAGE1_TEXT_SOURCE: Literal["idea", "taxonomy_phrase"] = "taxonomy_phrase"    
-    
 
 import warnings
 
@@ -77,34 +124,6 @@ warnings.filterwarnings(
     message=r".*n_jobs value 1 overridden to 1 by setting random_state.*",
     category=UserWarning,
     module=r"umap\.umap_" )
-
-# === CONSTANTS ========================================================================================================
-DEFAULT_TIMEOUT_SECONDS = 30.0        # Default timeout when no latency data
-DEFAULT_LATENCY_SECONDS = 0.5         # Default latency estimate
-MIN_LATENCY_SECONDS = 0.05            # Minimum latency bound
-TOKENS_FOR_BASELINE_LATENCY = 1000    # Token count for baseline latency calculation
-TIMEOUT_PER_1000_TOKENS = 0.1         # Additional timeout per 1000 tokens
-OUTPUT_TOKEN_ESTIMATE_MARGIN = 1.2    # 20% margin for output token estimation
-FALLBACK_TOKEN_ESTIMATE = 400         # Fallback when tiktoken fails
-DEFAULT_SIMILARITY_THRESHOLD = 0.7    # Default similarity threshold for theme embeddings
-EMBEDDING_BATCH_SIZE = 100            # Batch size for embedding generation
-OPENAI_EMBEDDING_DIMENSION = 1536     # OpenAI embedding vector size
-EXPONENTIAL_BACKOFF_BASE = 0.8        # Base for exponential backoff in retries
-PROGRESSIVE_SIMILARITY_THRESHOLDS = [0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8]  # Progressive batching thresholds
-FINAL_SIMILARITY_THRESHOLD = 0.85     # Final fallback similarity threshold
-SIMILARITY_ANALYSIS_THRESHOLDS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]  # Distribution analysis
-CONFLICT_THRESHOLD = 0.9              # Threshold for batch conflict detection
-DEFAULT_SUB_BATCH_MAX_SIZE = 10       # Default max size for sub-batches
-MIN_WORKER_CONCURRENCY = 50           # Minimum worker concurrency
-MAX_WORKER_CONCURRENCY = 200          # Maximum worker concurrency
-INPUT_TOKEN_ESTIMATE_MARGIN = 1.15    # 15% margin for input token estimation
-OUTPUT_ESTIMATE_PCT_OF_INPUT = 0.20   # Output estimate as % of input
-FIRST_PROMPT_ALLOCATION_PCT = 0.85    # First prompt token allocation
-ASSUMED_LATENCY_PER_REQUEST = 2.0     # Assumed latency for rate calculation
-BUCKET_STATUS_RECENT_SAMPLES = 10     # Samples for recent average calculation
-LOW_TOKEN_THRESHOLD_PCT = 0.2         # Low token threshold (20% of capacity)
-PROGRESS_REPORT_INTERVAL = 5          # Seconds between progress reports
-DIAGNOSTIC_REPORT_INTERVAL = 30       # Seconds between diagnostic reports
 
 # ============================================================================
 # INTERNAL DATA STRUCTURES
@@ -121,122 +140,8 @@ class _ClusterData:
 # ============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUTS
 # ============================================================================
-
-"""Prompt 1 : Theme Extraction"""
-class NearNeighbor(BaseModel):
-    label: str = Field(..., min_length=1)
-    tell_apart_rule: str = Field(default="", min_length=0)  # Optional - prevent validation errors
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class AssignmentExamples(BaseModel):
-    inclusion: List[str] = Field(..., min_length=1)
-    exclusion: List[str] = Field(..., min_length=1)
-    near_neighbor: Optional[NearNeighbor] = None  # Nullable when no boundary update needed
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class ClusterThemeItem(BaseModel):
-    theme_id: int
-    theme_label: str = Field(..., max_length=100)
-    theme_clarification: str = Field(..., max_length=300)
-    abstraction_level: Literal["Driver/Motive/Why", "Attribute/What", "Action/How"]
-    assignment_examples: AssignmentExamples
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @field_validator('theme_label')
-    @classmethod
-    def validate_label_length(cls, v):
-        word_count = len(v.split())
-        if word_count > 10:
-            raise ValueError(f"theme_label must be ≤10 words, got {word_count}")
-        return v
-
-
-class ClusterSummaryItem(BaseModel):
-    analysis: str
-    extracted_themes: List[ClusterThemeItem]
-
-class ClusterSummaryOutput(BaseModel):
-    """Output model for cluster theme extraction.
-
-    Handles multiple input formats from LLM responses:
-    1. New format (preferred): {"cluster_id": "3", "analysis": "...", "extracted_themes": [...]}
-    2. Legacy format: {"3": {"analysis": "...", "extracted_themes": [...]}}
-    3. Instructor-wrapped: {"root": {"3": {...}}}
-
-    The `root` property provides backwards compatibility with code that expects
-    Dict[str, ClusterSummaryItem] format.
-    """
-    cluster_id: str = Field(..., description="The cluster identifier (e.g., '3', '5')")
-    analysis: str = Field(..., description="Analysis of the cluster content")
-    extracted_themes: List[ClusterThemeItem] = Field(..., description="List of extracted themes from this cluster")
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @model_validator(mode='before')
-    @classmethod
-    def normalize_input_format(cls, data: Any) -> Dict[str, Any]:
-        """Handle multiple LLM response formats and normalize to expected structure.
-
-        Handles:
-        - {"cluster_id": "3", "analysis": "...", ...} - direct flat format (pass through)
-        - {"3": {"analysis": "...", ...}} - legacy dict-key format (extract and add cluster_id)
-        - {"root": {"3": {...}}} - instructor-wrapped format (unwrap and normalize)
-        - {"root": ClusterSummaryItem(...)} - instructor-wrapped with object (extract data)
-        """
-        if not isinstance(data, dict):
-            return data  # Let Pydantic handle validation errors
-
-        # Already in correct format?
-        if "cluster_id" in data and "analysis" in data:
-            return data
-
-        # Handle instructor's RootModel wrapping: {"root": {...}}
-        if "root" in data:
-            inner = data["root"]
-            # inner could be {"3": ClusterSummaryItem} or {"3": {"analysis": ...}}
-            if isinstance(inner, dict):
-                # Find the first key (cluster_id) and its value
-                for cluster_id_key, value in inner.items():
-                    if isinstance(value, ClusterSummaryItem):
-                        # It's already a ClusterSummaryItem object
-                        return {
-                            "cluster_id": str(cluster_id_key),
-                            "analysis": value.analysis,
-                            "extracted_themes": value.extracted_themes
-                        }
-                    elif isinstance(value, dict):
-                        # It's a dict with analysis/extracted_themes
-                        return {
-                            "cluster_id": str(cluster_id_key),
-                            "analysis": value.get("analysis", ""),
-                            "extracted_themes": value.get("extracted_themes", [])
-                        }
-                    break  # Only process first key
-
-        # Handle legacy dict-key format: {"3": {"analysis": ...}}
-        # Check if data has exactly one key that looks like a cluster ID
-        keys = list(data.keys())
-        if len(keys) == 1 and keys[0] not in ("cluster_id", "analysis", "extracted_themes", "root"):
-            cluster_id_key = keys[0]
-            inner_data = data[cluster_id_key]
-            if isinstance(inner_data, dict) and "analysis" in inner_data:
-                return {
-                    "cluster_id": str(cluster_id_key),
-                    "analysis": inner_data.get("analysis", ""),
-                    "extracted_themes": inner_data.get("extracted_themes", [])
-                }
-
-        return data  # Return as-is, let Pydantic validate
-
-    @property
-    def root(self) -> Dict[str, 'ClusterSummaryItem']:
-        """Backwards compatibility - reconstruct Dict[str, ClusterSummaryItem] format."""
-        return {
-            self.cluster_id: ClusterSummaryItem(
-                analysis=self.analysis,
-                extracted_themes=self.extracted_themes
-            )
-        }
-
+# Note: Prompt 1 models (NearNeighbor, AssignmentExamples, ClusterThemeItem,
+# ClusterSummaryOutput) are now in prompts_exp.py
 
 """Prompt 2 : Coding Decision"""
 class MatchedCandidate(BaseModel):
@@ -632,9 +537,6 @@ async def async_responses_create_with_json_retry(
     )
 
     # Response is already a validated Pydantic model from instructor
-    # For RootModel types (like ClusterSummaryOutput), extract the root
-    if hasattr(response, 'root'):
-        return response.root
     return response
 
 @retry(
@@ -1021,10 +923,9 @@ class SimilarityEngine:
         for cid in cluster_ids:
             theme_output = themes[cid]
             try:
-                # Access the ClusterSummaryItem from the root dict
-                cluster_summary_items = list(theme_output.root.values())
-                if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                    theme_names.append(cluster_summary_items[0].extracted_themes[0].theme_label)
+                # Access extracted_themes directly (flat format)
+                if theme_output.extracted_themes:
+                    theme_names.append(theme_output.extracted_themes[0].theme_label)
                 else:
                     theme_names.append("Unknown")
             except (AttributeError, IndexError):
@@ -1055,10 +956,9 @@ class SimilarityEngine:
 
             for cluster_id, theme in themes.items():
                 try:
-                    # Extract theme_label from ClusterSummaryOutput structure
-                    cluster_summary_items = list(theme.root.values())
-                    if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                        theme_label = cluster_summary_items[0].extracted_themes[0].theme_label
+                    # Extract theme_label directly (flat format)
+                    if theme.extracted_themes:
+                        theme_label = theme.extracted_themes[0].theme_label
                     else:
                         theme_label = "Unknown"
                     embedding = await self._get_embedding(theme_label)
@@ -1201,9 +1101,9 @@ class SimilarityEngine:
                 for cid in batch_cluster_ids:
                     if cid in themes:
                         theme_output = themes[cid]
-                        cluster_summary_items = list(theme_output.root.values())
-                        if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                            theme_label = cluster_summary_items[0].extracted_themes[0].theme_label
+                        # Access extracted_themes directly (flat format)
+                        if theme_output.extracted_themes:
+                            theme_label = theme_output.extracted_themes[0].theme_label
                             theme_labels.append(f"C{cid}: '{theme_label}'")
                         else:
                             theme_labels.append(f"C{cid}: 'unknown'")
@@ -2060,16 +1960,8 @@ class InductiveCodeGenerator:
     
     def _get_theme_id(self, theme_data) -> int:
         """Extract theme_id from theme data structure"""
-        if hasattr(theme_data, 'root'):
-            # Handle ClusterSummaryOutput structure
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                return theme.theme_id
-        elif hasattr(theme_data, 'root') and theme_data.root:
-            # Handle ThemeExtractionResult structure  
-            theme = theme_data.root[0]
-            return theme.theme_id
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            return theme_data.extracted_themes[0].theme_id
         return 1  # Default fallback
     
     def _find_closest_code(self, llm_code_name: str, available_codes: List[str], threshold: float = 0.8) -> Optional[str]:
@@ -2097,100 +1989,62 @@ class InductiveCodeGenerator:
         return matches[0] if matches else None
     
     def _format_theme_for_prompt(self, theme_data) -> str:
-        if hasattr(theme_data, 'root'):
-            # Handle ClusterSummaryOutput structure
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                return f"{theme.theme_label}"
-        elif hasattr(theme_data, 'root') and theme_data.root:
-            # Handle ThemeExtractionResult structure  
-            theme = theme_data.root[0]
-            return f"Theme number: {theme.theme_id}\nTheme name: {theme.theme_label}\nTheme description: {theme.theme_clarification}"
-        return "Unknown theme"
-    
-    def _get_theme_statement(self, theme_data) -> str:  
-        """Safely get theme statement from theme data"""
-        if hasattr(theme_data, 'root'):
-            # Handle ClusterSummaryOutput structure
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                return cluster_summary_items[0].extracted_themes[0].theme_clarification
-        elif hasattr(theme_data, 'root') and theme_data.root:
-            # Handle ThemeExtractionResult structure
-            return theme_data.root[0].theme_clarification
-        return "Unknown theme"
-    
-    def _get_theme_name(self, theme_data) -> str:  
-        """Safely get theme name from theme data"""
-        if hasattr(theme_data, 'root'):
-            # Handle ClusterSummaryOutput structure
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                return f"{theme.theme_label}"
-        elif hasattr(theme_data, 'root') and theme_data.root:
-            # Handle ThemeExtractionResult structure  
-            theme = theme_data.root[0]
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            theme = theme_data.extracted_themes[0]
             return f"{theme.theme_label}"
         return "Unknown theme"
     
-    def _get_theme_description(self, theme_data) -> str:  
+    def _get_theme_statement(self, theme_data) -> str:
+        """Safely get theme statement from theme data"""
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            return theme_data.extracted_themes[0].theme_clarification
+        return "Unknown theme"
+    
+    def _get_theme_name(self, theme_data) -> str:
+        """Safely get theme name from theme data"""
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            return f"{theme_data.extracted_themes[0].theme_label}"
+        return "Unknown theme"
+    
+    def _get_theme_description(self, theme_data) -> str:
         """Safely get theme description from theme data"""
-        if hasattr(theme_data, 'root'):
-            # Handle ClusterSummaryOutput structure
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                return  f"{theme.theme_clarification}"
-        elif hasattr(theme_data, 'root') and theme_data.root:
-            # Handle ThemeExtractionResult structure  
-            theme = theme_data.root[0]
-            return f"{theme.theme_clarification}"
-        return "No theme desciption"
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            return f"{theme_data.extracted_themes[0].theme_clarification}"
+        return "No theme description"
 
     def _get_abstraction_level(self, theme_data) -> str:
         """Extract abstraction level from theme data"""
-        if hasattr(theme_data, 'root'):
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'abstraction_level'):
-                    return theme.abstraction_level
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            theme = theme_data.extracted_themes[0]
+            if hasattr(theme, 'abstraction_level'):
+                return theme.abstraction_level
         return "Unknown"
 
     def _get_inclusion_examples(self, theme_data) -> str:
         """Extract and format inclusion examples from theme data"""
-        if hasattr(theme_data, 'root'):
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_examples'):
-                    examples = theme.assignment_examples.inclusion
-                    return "\n".join([f"• {example}" for example in examples])
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            theme = theme_data.extracted_themes[0]
+            if hasattr(theme, 'assignment_examples'):
+                examples = theme.assignment_examples.inclusion
+                return "\n".join([f"• {example}" for example in examples])
         return "No inclusion examples specified"
 
     def _get_exclusion_examples(self, theme_data) -> str:
         """Extract and format exclusion examples from theme data"""
-        if hasattr(theme_data, 'root'):
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_examples'):
-                    examples = theme.assignment_examples.exclusion
-                    return "\n".join([f"• {example}" for example in examples])
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            theme = theme_data.extracted_themes[0]
+            if hasattr(theme, 'assignment_examples'):
+                examples = theme.assignment_examples.exclusion
+                return "\n".join([f"• {example}" for example in examples])
         return "No exclusion examples specified"
 
     def _get_near_neighbor(self, theme_data) -> str:
         """Extract and format near neighbor info from theme data"""
-        if hasattr(theme_data, 'root'):
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                theme = cluster_summary_items[0].extracted_themes[0]
-                if hasattr(theme, 'assignment_examples') and theme.assignment_examples is not None:
-                    neighbor = theme.assignment_examples.near_neighbor
-                    if neighbor is not None:
-                        return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
+        if hasattr(theme_data, 'extracted_themes') and theme_data.extracted_themes:
+            theme = theme_data.extracted_themes[0]
+            if hasattr(theme, 'assignment_examples') and theme.assignment_examples is not None:
+                neighbor = theme.assignment_examples.near_neighbor
+                return f"{neighbor.label} (Tell apart: {neighbor.tell_apart_rule})"
         return "Unknown"
 
     def _calculate_cosine_similarities(
@@ -2279,10 +2133,9 @@ class InductiveCodeGenerator:
         """Format theme extraction results for early return without 4-prompt chain processing"""
         results = []
         for cluster_id, theme_output in themes.items():
-            # Extract theme information from ClusterSummaryOutput
-            cluster_summary_items = list(theme_output.root.values())
-            if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                for theme in cluster_summary_items[0].extracted_themes:
+            # Extract theme information from ClusterSummaryOutput (flat format)
+            if theme_output.extracted_themes:
+                for theme in theme_output.extracted_themes:
                     results.append({
                         'cluster_id': cluster_id,
                         'theme_id': theme.theme_id,
@@ -2466,13 +2319,12 @@ class InductiveCodeGenerator:
                     expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
                 
                 # Handle step1_summaries for consistency (same as single-theme logic)
-                cluster_summary_items = list(theme_data.root.values())
-                if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                    theme_item = cluster_summary_items[0].extracted_themes[0]
+                if theme_data.extracted_themes:
+                    theme_item = theme_data.extracted_themes[0]
                     expanded_step1_summaries[string_cluster_id] = {
-                        'analysis': cluster_summary_items[0].analysis,
+                        'analysis': theme_data.analysis,
                         'cluster_summary': theme_item.theme_clarification,
-                        'themes': cluster_summary_items[0].extracted_themes,
+                        'themes': theme_data.extracted_themes,
                         'theme_id': theme_item.theme_id,
                         'theme_label': theme_item.theme_label,
                         'theme_description': theme_item.theme_clarification
@@ -2483,44 +2335,40 @@ class InductiveCodeGenerator:
                     expanded_step1_inputs[string_cluster_id] = self.step1_inputs[str(cluster_id)]
                 
                 continue
-            # theme_data is a ClusterSummaryOutput, .root is a dict with cluster_id as key
-            # Get the ClusterSummaryItem and check its extracted_themes
-            cluster_summary_items = list(theme_data.root.values())
-            if cluster_summary_items and len(cluster_summary_items[0].extracted_themes) > 1:
+            # theme_data is a ClusterSummaryOutput with flat structure
+            if theme_data.extracted_themes and len(theme_data.extracted_themes) > 1:
                 # Multi-theme cluster: create sub-clusters
-                extracted_themes = cluster_summary_items[0].extracted_themes
-                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(extracted_themes)} sub-clusters")
-                
+                self.verbose_reporter.stat_line(f"Expanding cluster {cluster_id} into {len(theme_data.extracted_themes)} sub-clusters")
+
                 sub_cluster_ids = []
-                for i, theme_item in enumerate(extracted_themes, 1):
+                for i, theme_item in enumerate(theme_data.extracted_themes, 1):
                     sub_cluster_id = f"{cluster_id}-{i}"
                     sub_cluster_ids.append(sub_cluster_id)
-                    original_analysis = cluster_summary_items[0].analysis
-                    cluster_summary_item = ClusterSummaryItem(
-                        analysis=original_analysis,
+                    # Create ClusterSummaryOutput with flat structure for single theme
+                    single_theme_data = ClusterSummaryOutput(
+                        cluster_id=sub_cluster_id,
+                        analysis=theme_data.analysis,
                         extracted_themes=[theme_item]
                     )
-                    # Create ClusterSummaryOutput with proper structure
-                    single_theme_data = ClusterSummaryOutput(root={sub_cluster_id: cluster_summary_item})
                     expanded_themes[sub_cluster_id] = single_theme_data
-                    
+
                     # Temporarily duplicate cluster data - will be redistributed later
                     if cluster_id in clusters:
                         expanded_clusters[sub_cluster_id] = clusters[cluster_id].copy()
-                    
-                    # Create step1_summary for this sub-cluster with only its single theme (matching single-theme structure)
+
+                    # Create step1_summary for this sub-cluster with only its single theme
                     expanded_step1_summaries[sub_cluster_id] = {
-                        'analysis': cluster_summary_items[0].analysis,
+                        'analysis': theme_data.analysis,
                         'cluster_summary': theme_item.theme_clarification,
                         'themes': [theme_item],
                         'theme_id': theme_item.theme_id,
                         'theme_label': theme_item.theme_label,
                         'theme_description': theme_item.theme_clarification
-                    } 
+                    }
                     # Duplicate step1_inputs for each sub-cluster to maintain key alignment
                     if str(cluster_id) in self.step1_inputs:
                         expanded_step1_inputs[sub_cluster_id] = self.step1_inputs[str(cluster_id)].copy()
-                
+
                 # Track multi-theme mapping for later redistribution
                 multi_theme_mapping[cluster_id] = sub_cluster_ids
                     
@@ -2528,24 +2376,22 @@ class InductiveCodeGenerator:
                 # Single-theme cluster: keep as-is but convert to string ID for consistency
                 string_cluster_id = str(cluster_id)
                 expanded_themes[string_cluster_id] = theme_data
-                
+
                 if cluster_id in clusters:
                     expanded_clusters[string_cluster_id] = clusters[cluster_id].copy()
-                
+
                 # Also convert step1_summaries to string ID
-                # Get the theme data from the single-theme cluster
-                cluster_summary_items = list(theme_data.root.values())
-                if cluster_summary_items and cluster_summary_items[0].extracted_themes:
-                    theme_item = cluster_summary_items[0].extracted_themes[0]  # First (and only) theme
+                if theme_data.extracted_themes:
+                    theme_item = theme_data.extracted_themes[0]  # First (and only) theme
                     expanded_step1_summaries[string_cluster_id] = {
-                        'analysis': cluster_summary_items[0].analysis,
+                        'analysis': theme_data.analysis,
                         'cluster_summary': theme_item.theme_clarification,
-                        'themes': cluster_summary_items[0].extracted_themes,
+                        'themes': theme_data.extracted_themes,
                         'theme_id': theme_item.theme_id,
                         'theme_label': theme_item.theme_label,
                         'theme_description': theme_item.theme_clarification
                     }
-                    
+
                 # Also convert step1_inputs to string ID for consistency
                 if str(cluster_id) in self.step1_inputs:
                     expanded_step1_inputs[string_cluster_id] = self.step1_inputs[str(cluster_id)]
@@ -2981,23 +2827,24 @@ class InductiveCodeGenerator:
             assignment_examples=AssignmentExamples(
                 inclusion=idea_texts[:3],
                 exclusion=["(not applicable - pure core cluster)"],
-                near_neighbor=None
+                near_neighbor=NearNeighbor(label="Unknown", tell_apart_rule="")
             )
         )
 
-        item = ClusterSummaryItem(
-            analysis=f"Pure-core cluster with {len(ideas)} ideas (all prob >= 0.8). Using Step 5 label.",
-            extracted_themes=[theme]
-        )
+        analysis = f"Pure-core cluster with {len(ideas)} ideas (all prob >= 0.8). Using Step 5 label."
 
         # Store in step1_summaries for downstream processing
         self.step1_summaries[cluster_id] = {
-            'analysis': item.analysis,
+            'analysis': analysis,
             'cluster_summary': theme.theme_clarification,
             'themes': [theme],
         }
 
-        return ClusterSummaryOutput(root={str(cluster_id): item})
+        return ClusterSummaryOutput(
+            cluster_id=str(cluster_id),
+            analysis=analysis,
+            extracted_themes=[theme]
+        )
 
     def _sample_ideas_by_probability_band(
         self,
@@ -4004,26 +3851,26 @@ class InductiveCodeGenerator:
         
         # Handle multiple themes per cluster (aggregate approach)
         all_nearest_codes = []
-        
+
         # Check if theme_data has multiple themes
-        if hasattr(theme_data, 'root') and isinstance(theme_data.root, list) and len(theme_data.root) > 1:
+        if hasattr(theme_data, 'extracted_themes') and len(theme_data.extracted_themes) > 1:
             # Multiple themes: get k codes for each theme and aggregate
-            for theme_item in theme_data.root:
+            for theme_item in theme_data.extracted_themes:
                 theme_embedding = await self._get_theme_embedding_for_item(cluster_id, theme_item)
                 if theme_embedding is not None:
                     nearest_codes = await self._get_nearest_codes_by_embedding(theme_embedding, current_codes, k)
                     all_nearest_codes.extend(nearest_codes)
         else:
-            # Single theme: use cached embedding (backward compatibility)
+            # Single theme: use cached embedding
             if not hasattr(self, '_theme_embeddings_cache'):
                 self.verbose_reporter.error(f"No theme embeddings found for cluster {cluster_id}")
                 return []
-                
+
             theme_embedding = self._theme_embeddings_cache.get(cluster_id)
             if theme_embedding is None:
                 self.verbose_reporter.error(f"No theme embedding found for cluster {cluster_id}")
                 return []
-            
+
             all_nearest_codes = await self._get_nearest_codes_by_embedding(theme_embedding, current_codes, k)
         
         # Deduplicate by code name while preserving order
