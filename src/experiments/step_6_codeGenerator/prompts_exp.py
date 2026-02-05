@@ -187,7 +187,8 @@ class AssignmentExamples(BaseModel):
     )
     near_neighbor: NearNeighbor = Field(
         ...,
-        description="Closest confusable theme and how to distinguish"
+        description="Closest confusable theme and how to distinguish",
+        examples=[{"label": "Product Quality", "tell_apart_rule": "This theme focuses on speed, not accuracy"}]
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
