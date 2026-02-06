@@ -23,7 +23,7 @@ import statistics
 import itertools
 import logging
 import unicodedata
-from typing import Dict, List, Optional, Union, Literal, Tuple, ClassVar
+from typing import Dict, List, Optional, Union, Literal, Tuple
 from dataclasses import dataclass
 from collections import deque
 import numpy as np
@@ -37,31 +37,49 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
-from pydantic import BaseModel, Field, field_validator
 import models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, SegmentationConfig, DEFAULT_SEGMENTATION_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, FALLBACK_TPM, FALLBACK_RPM
 from utils.llm import create_client, llm_create_async, ProbeResponse, RateLimits, extract_rate_limits_from_response
 
-# === PROMPTS ========================================================================================================
+# === PROMPTS & RESPONSE MODELS ======================================================================================
 # Use experimental prompts from local prompts_exp.py (not production prompts.py)
+# Response models are co-located with prompts following instructor schema pattern
 try:
     from .prompts_exp import (
+        # Prompts
         CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
         TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
-        TAXONOMY_AXIS_DESCRIPTIONS
+        TAXONOMY_AXIS_DESCRIPTIONS,
+        # Response models
+        GenericSpecifierGroup1Response,
+        GenericSpecifierGroup2Response,
+        TaxonomyChunkResponse,
+        TaxonomyConsolidatedResponse,
+        SubjectExtractionResponse,
+        OntologyResponse,
+        TaxonomyEnrichedIdeaResponse,
     )
 except ImportError:
     # Fallback for direct script execution
     from prompts_exp import (
+        # Prompts
         CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
         TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
-        TAXONOMY_AXIS_DESCRIPTIONS
+        TAXONOMY_AXIS_DESCRIPTIONS,
+        # Response models
+        GenericSpecifierGroup1Response,
+        GenericSpecifierGroup2Response,
+        TaxonomyChunkResponse,
+        TaxonomyConsolidatedResponse,
+        SubjectExtractionResponse,
+        OntologyResponse,
+        TaxonomyEnrichedIdeaResponse,
     )
 
 # === TEMPLATE LOOKUP =============================================================================================
@@ -88,165 +106,6 @@ from utils.verboseReporter import VerboseReporter, ProcessingStats
 from utils.cached_resources import get_openai_client, get_tiktoken_encoding
 
 async_client = get_openai_client(OPENAI_API_KEY)
-
-
-# === PYDANTIC MODELS ========================================================================================================
-class GenericSpecifierGroup1Response(BaseModel):
-    """Group 1: Speaker characteristics"""
-    lang: str = Field(description="Language/dialect code in ISO format (e.g., 'nl-NL', 'en-GB')")
-    perspective: str = Field(description="Stakeholder viewpoint (e.g., 'consumer', 'employee', 'partner')")
-    intent: str = Field(description="Communicative function (e.g., 'evaluate', 'suggest', 'complain')")
-
-class GenericSpecifierGroup2Response(BaseModel):
-    """Group 2: Subject matter"""
-    domain: str = Field(description="Industry/sector domain (e.g., 'finance', 'healthcare')")
-    topic: str = Field(description="Specific subject matter (e.g., 'brand_association', 'customer_service')")
-    entity: str = Field(description="Main entity of interest, lowercase_with_underscores (e.g., 'asn_bank')")
-
-# === TAXONOMY PYDANTIC MODELS ========================================================================================================
-class TaxonomyChunkResponse(BaseModel):
-    """LLM response for single chunk taxonomy scoring."""
-    primary_dimension: Literal["HOW", "WHAT", "WHEN", "WHERE", "WHO", "WHY"] = Field(
-        description="The single best taxonomy axis for organizing responses"
-    )
-    taxonomy_axis: str = Field(
-        description="1-2 sentence description of the organizing axis within the chosen dimension, enabling MECE coding downstream"
-    )
-    evidence: List[str] = Field(
-        description="2-3 verbatim snippets from sample_responses supporting the chosen axis"
-    )
-    clarification: str = Field(
-        description="1-2 sentences explaining why this axis is most appropriate, contrasting with at least one alternative"
-    )
-
-
-class TaxonomyConsolidatedResponse(BaseModel):
-    """Consolidated taxonomy selection after merging all chunks."""
-    primary_axis: str = Field(description="Must be one of: WHAT, WHY, HOW, WHO, WHEN, WHERE")
-    primary_axis_rationale: str = Field(
-        description="2-4 sentence explanation of why this dimension is the dominant organizing principle"
-    )
-    primary_axis_description: str = Field(
-        description="Clear definition of the taxonomy axis at proper abstraction level, specific to this survey question"
-    )
-
-
-class SubjectExtractionResponse(BaseModel):
-    """Response model for subject/actor extraction with axis-aware template."""
-    canonical_term: str = Field(description="The canonical subject (noun phrase) the template sentence is about")
-    taxonomy_axis: str = Field(description="The primary taxonomy dimension (WHAT/WHY/HOW/WHO/WHEN/WHERE)")
-    taxonomy_actionable_type: str = Field(
-        description="The single actionable taxonomy type on the primary axis"
-    )
-    canonical_phrasing: str = Field(
-        description="Template: {SUBJECT} {VERB_STATE} {SCAFFOLD} [ACTIONABLE_TAXONOMY_DIMENSION]."
-    )
-
-
-class OntologyResponse(BaseModel):
-    """Nested ontology structure for LLM response parsing."""
-    instance: str = Field(description="Contiguous verbatim span from the idea text (no rewording)")
-    node: str = Field(description="Canonical, reusable ontology concept (noun phrase)")
-    category: str = Field(description="Immediate parent grouping of the node")
-    root: str = Field(default="", description="Top-level domain framing implied by the survey question")
-
-    @field_validator('instance', 'node', 'category', 'root', mode='before')
-    @classmethod
-    def normalize_field(cls, v: str) -> str:
-        if v is None:
-            return ""
-        if not isinstance(v, str):
-            return str(v).strip().lower()
-        v = v.strip().lower().rstrip('.,;:!?')
-        return v
-
-
-class TaxonomyEnrichedIdeaResponse(BaseModel):
-    # Class variable to store template prefix for validation
-    _template_prefix: ClassVar[str] = ""
-
-    @classmethod
-    def set_template_prefix(cls, prefix: str):
-        """Set template prefix before LLM call for validation."""
-        cls._template_prefix = prefix.strip() if prefix else ""
-
-    respondent_id: str = Field(description="Respondent identifier from the response context")
-    idea_id: str = Field(description="Sequential number as string (e.g., '1', '2', '3')")
-    idea: str = Field(description="Complete idea statement beginning with the canonical_phrasing template")
-    taxonomy_phrase: str = Field(
-        description="Concise noun-phrase abstracting the idea into a reusable taxonomy concept"
-    )
-    ontology: Optional[OntologyResponse] = Field(
-        default=None, description="Hierarchical ontology: instance → node → category → root"
-    )
-    sentiment: Literal["positive", "negative", "neutral"] = Field(
-        default="neutral", description="Sentiment polarity"
-    )
-    sense: Literal["factual", "evaluative", "aspirational", "experiential"] = Field(
-        default="factual", description="Communicative function of the idea"
-    )
-    
-    @field_validator('sentiment', mode='before')
-    @classmethod
-    def normalize_sentiment(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return "neutral"
-        v_lower = v.lower().strip()
-        if v_lower in ("positive", "negative", "neutral"):
-            return v_lower
-        # Tie-break: map invalid values to neutral
-        if v_lower in ("mixed", "evaluative", "aspirational"):
-            return "neutral"
-        return "neutral"
-
-    @field_validator('sense', mode='before')
-    @classmethod
-    def normalize_sense(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return "factual"
-        v_lower = v.lower().strip()
-        if v_lower in ("factual", "evaluative", "aspirational", "experiential"):
-            return v_lower
-        # Map legacy/invalid values to closest canonical sense
-        if v_lower in ("praise", "approval", "satisfaction", "complaint", "dissatisfaction", "criticism"):
-            return "evaluative"
-        if v_lower in ("suggestion", "wish", "desire", "recommendation"):
-            return "aspirational"
-        if v_lower in ("experience", "anecdote", "personal"):
-            return "experiential"
-        return "factual"
-
-    @field_validator('taxonomy_phrase', mode='before')
-    @classmethod
-    def normalize_taxonomy_phrase(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return ""
-        # Strip whitespace
-        v = v.strip()
-        # Lowercase
-        v = v.lower()
-        # Remove trailing punctuation
-        v = v.rstrip('.,;:!?')
-        return v
-
-    @field_validator('idea', mode='before')
-    @classmethod
-    def enforce_template_prefix(cls, v: str) -> str:
-        if not isinstance(v, str) or not v.strip():
-            return v or ""
-
-        v = v.strip()
-        prefix = cls._template_prefix
-
-        if not prefix:
-            return v  # No prefix to enforce
-
-        # Check if already compliant (case-insensitive)
-        if v.lower().startswith(prefix.lower()):
-            return v
-
-        # Fix: prepend template prefix
-        return f"{prefix} {v}"
 
 
 # === TEMPLATE LOOKUP HELPER =============================================================================================
