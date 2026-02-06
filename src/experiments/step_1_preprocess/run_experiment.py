@@ -175,6 +175,20 @@ def run_experiment(config: ExperimentConfig = None):
         normalized_text = text_normalizer.normalize_responses(string_responses)
         normal_no_missing = [item for item in normalized_text if isinstance(item.response, str) and item.response != '<NA>']
         corrected_text = spell_checker.spell_check(normal_no_missing, var_lab)
+
+        # Show detailed correction examples after spell checking
+        if hasattr(spell_checker, 'correction_examples') and spell_checker.correction_examples:
+            print(f"\n  Sample corrections (showing up to 5):")
+            for i, (orig, corrected) in enumerate(spell_checker.correction_examples[:5]):
+                orig_display = orig[:60] + "..." if len(orig) > 60 else orig
+                corr_display = corrected[:60] + "..." if len(corrected) > 60 else corrected
+                print(f'    {i+1}. "{orig_display}" -> "{corr_display}"')
+
+            # Show both metrics
+            responses_corrected = spell_checker.stats.get('responses_corrected', 0)
+            unique_corrections = spell_checker.stats.get('corrections_applied', 0)
+            print(f"\n  Total: {unique_corrections} unique corrections applied to {responses_corrected} responses")
+
         finalized_text = text_finalizer.finalize_responses(corrected_text)
     else:
         finalized_text = []
