@@ -61,6 +61,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Suppress verbose logging from external libraries during retries
+# Our own error handling provides concise, actionable output instead
+logging.getLogger("openai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("instructor").setLevel(logging.ERROR)
+
 # Note: Constants (INPUT_HISTORY_MAXLEN, etc.) now imported from config_exp.py
 # Note: MIN/MAX_CONCURRENCY and MIN/MAX_WORKERS come from ProcessingConfig
 
@@ -278,6 +284,9 @@ class Grader:
             'rate_limits': 0,
             'timeouts': 0
         }
+
+        # Failure log: tracks each permanent failure with details
+        self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
 
     def _calculate_avg_tokens(self) -> int:
         """Calculate average token count for requests"""
@@ -524,7 +533,23 @@ class Grader:
             self.stats['rate_limits'] += 1
             logger.warning(f"Task {task['task_id']} hit rate limit")
             raise  # Let tenacity retry
-            
+
+        except InstructorRetryException as e:
+            # Concise output for 429 errors wrapped in InstructorRetryException
+            error_str = str(e)
+            if "429" in error_str or "RateLimitReached" in error_str:
+                self.stats['rate_limits'] += 1
+                if "token rate limit" in error_str.lower():
+                    limit_type = "TPM"
+                elif "call rate limit" in error_str.lower():
+                    limit_type = "RPM"
+                else:
+                    limit_type = "rate"
+                print(f"429 {limit_type} limit hit (task {task['task_id']})")
+            else:
+                logger.error(f"Task {task['task_id']} failed: {type(e).__name__}")
+            raise  # Let tenacity retry
+
         except Exception as e:
             logger.error(f"Task {task['task_id']} failed: {type(e).__name__}: {e}")
             raise  # Let tenacity retry
@@ -532,11 +557,38 @@ class Grader:
     def create_fallback_response(self, task: Dict) -> models.QualityFilteredModel:
         """Create fallback response for failed tasks"""
         original = task['original_response']
-        # Conservative: assume meaningful if we can't process
+        # Mark as meaningful (conservative) but with error code to track
         original.quality_filter = False
-        original.quality_filter_code = 0
+        original.quality_filter_code = -1  # Distinguishable error code (not 0=meaningful, not 97/99=filtered)
         return original
-    
+
+    def get_failure_report(self, total_responses: int = None) -> str:
+        """Return a formatted report of all processing failures."""
+        total = total_responses or self.stats.get('tasks_processed', 0)
+        n_failures = len(self.failure_log)
+
+        if n_failures == 0:
+            return f"PROCESSING ERRORS: 0 of {total} responses (0%)"
+
+        lines = [f"PROCESSING ERRORS: {n_failures} of {total} responses ({n_failures/max(total,1)*100:.1f}%)"]
+
+        # Group by reason
+        from collections import Counter
+        reason_counts = Counter()
+        for f in self.failure_log:
+            key = f['error_type'] if f['reason'] == 'exception' else f['reason']
+            reason_counts[key] += 1
+
+        lines.append(f"  Breakdown: {', '.join(f'{count}x {reason}' for reason, count in reason_counts.most_common())}")
+        lines.append("")
+
+        for f in self.failure_log:
+            reason_str = f['error_type'] if f['reason'] == 'exception' else f['reason']
+            preview = f['response_preview']
+            lines.append(f"  Respondent {f['respondent_id']}: {reason_str} | \"{preview}...\"")
+
+        return "\n".join(lines)
+
     async def probe_call_no_structured(self, task_dict):
         """Probe call with minimal response model for bootstrap measurement"""
         prompt = self._build_individual_prompt(
@@ -569,6 +621,7 @@ class Grader:
     async def worker(self, queue: asyncio.Queue, results: List) -> None:
         """Worker coroutine that processes tasks from queue"""
         while True:
+            task = None
             try:
                 task = await queue.get()
                 if task is None:  # Sentinel
@@ -578,16 +631,36 @@ class Grader:
                     result = await self.process_task(task)
                     results[task['result_index']] = result
                 except Exception as e:
-                    # After all retries failed
-                    logger.error(f"Task {task['task_id']} failed after retries: {e}")
+                    # Extract concise error info for rate limit errors
+                    error_str = str(e)
+                    error_type = type(e).__name__
+                    if "429" in error_str or "RateLimitReached" in error_str:
+                        # Determine if RPM or TPM limit
+                        if "token rate limit" in error_str.lower():
+                            limit_type = "TPM"
+                        elif "call rate limit" in error_str.lower():
+                            limit_type = "RPM"
+                        else:
+                            limit_type = "rate"
+                        error_type = f"RateLimit_{limit_type}"
+                        print(f"429 {limit_type} limit hit — task {task['task_id']} failed permanently")
+                    else:
+                        # Non-rate-limit errors: show type only (not full str(e) which can be huge)
+                        logger.error(f"Task {task['task_id']} failed after retries: {error_type}")
+
                     self.stats['tasks_failed'] += 1
+                    self.failure_log.append({
+                        'respondent_id': task['task_id'],
+                        'reason': 'exception',
+                        'error_type': error_type,
+                        'response_preview': task.get('response_text', '')[:80]
+                    })
                     results[task['result_index']] = self.create_fallback_response(task)
                 finally:
                     self.stats['tasks_processed'] += 1
                     queue.task_done()
 
             except asyncio.CancelledError:
-                # Normal cancellation during shutdown
                 break
             except Exception as e:
                 logger.error(f"Worker fatal error (will terminate): {e}", exc_info=True)
@@ -680,10 +753,15 @@ class Grader:
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
         little_law_concurrency = compute_optimal_concurrency(api_limits, avg_latency_s, avg_tokens, processing_config=self.processing_config, cap=self.processing_config.concurrency_cap_permissive, min_conc=self.processing_config.concurrency_min_permissive)
 
-        # Use ProcessingConfig for bounds instead of hardcoded constants
+        # Adaptive minimum: don't force high minimum when RPM-limited
+        # (e.g., when Little's Law says 1-5, forcing 100 causes 429s)
+        # Pattern from ideaExtractor_exp.py: 3x calculated optimal for burst headroom, floor of 5
         max_concurrency = self.processing_config.concurrency_cap_default
-        min_concurrency = self.processing_config.concurrency_min_default
-        optimal = min(max_concurrency, max(little_law_concurrency, min_concurrency))
+        adaptive_min = min(
+            self.processing_config.concurrency_min_default,
+            max(little_law_concurrency * 3, 5)
+        )
+        optimal = min(max_concurrency, max(little_law_concurrency, adaptive_min))
 
         # Initialize rate limiting components
         arrival_rate = min(
@@ -714,15 +792,16 @@ class Grader:
         bottleneck = "RPM" if rpm_throughput < tpm_throughput else "TPM"
         print(f"- Expected throughput: {min(rpm_throughput, tpm_throughput):.1f}/s ({bottleneck} limited)")
         print(f"- Optimal by Little's law: {little_law_concurrency}")
-        print(f"- Constrained optimum: {optimal} (min={min_concurrency}, max={max_concurrency})")
+        print(f"- Constrained optimum: {optimal} (adaptive_min={adaptive_min}, max={max_concurrency})")
 
         print(f"- Processing {len(tasks):,} tasks")
 
         # Calculate number of workers using ProcessingConfig bounds
         expected_throughput = min(rpm_throughput, tpm_throughput)
         max_workers = self.processing_config.max_workers if hasattr(self.processing_config, 'max_workers') else 200
-        min_workers = self.processing_config.min_workers if hasattr(self.processing_config, 'min_workers') else 50
-        num_workers = min(max_workers, max(min_workers, int(expected_throughput * avg_latency_s * 2.0)))
+        # Adaptive min workers: 2x optimal concurrency as floor (at least 10)
+        adaptive_min_workers = max(10, optimal * 2)
+        num_workers = min(max_workers, max(adaptive_min_workers, int(expected_throughput * avg_latency_s * 2.0)))
        
         print(f"- Workers launched: (concurrent subroutines): {num_workers}")
         print(f"- API calls in flight (concurrency ceiling/semaphore): {self.optimal_concurrency}")
@@ -814,7 +893,13 @@ class Grader:
         print(f"- Rate limits: {self.stats['rate_limits']}")
         print(f"- Timeouts: {self.stats['timeouts']}")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
-        
+
+        # Failure report
+        if self.failure_log:
+            print(f"\n{'='*70}")
+            print(self.get_failure_report(total_responses=len(tasks)))
+            print(f"{'='*70}")
+
         # Final diagnostic summary (if verbose)
         if self.verbose_reporter.enabled:
             token_stats = self.get_token_estimation_stats()
@@ -969,7 +1054,16 @@ class Grader:
             self.verbose_reporter.sample_list("Sample filtered responses", filtered_examples)
         
         self.verbose_reporter.step_complete("Quality filtering completed")
-        
+
+        # Report any processing failures prominently
+        if self.failure_log:
+            print(f"\n{'='*70}")
+            print("WARNING: NOT 100% SUCCESSFUL")
+            print(self.get_failure_report(total_responses=llm_processed))
+            print(f"{'='*70}")
+        else:
+            print(f"\nAll {llm_processed} responses processed successfully (0 errors)")
+
         return self._results
 
     def filter(self) -> List[models.QualityFilteredModel]:
