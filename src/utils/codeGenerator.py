@@ -48,7 +48,7 @@ except ImportError:
 # For Azure: uses AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER (e.g., gpt-5.2-chatcomplete)
 # For OpenAI: uses the model name directly with responses API
 client = create_client(
-    model=ModelConfig().CODEDESIGNER_MODEL if hasattr(ModelConfig(), 'CODEDESIGNER_MODEL') else "gpt-5.2",
+    model=DEFAULT_CODEDESIGNER_CONFIG.model,
     async_mode=False,
     azure_deployment=AZURE_OPENAI_DEPLOYMENT_NAME_CODEDESIGNER if API_PROVIDER == "azure" else None
 )

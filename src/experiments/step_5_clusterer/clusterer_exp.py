@@ -1416,6 +1416,62 @@ class Clusterer:
             timestamp=datetime.now().isoformat(),
         )
 
+    def get_hdbscan_artifacts(self) -> Dict[str, Any]:
+        """
+        Return HDBSCAN tree structures for external caching and hierarchy analysis.
+
+        These artifacts enable post-hoc analysis of:
+        - Cluster hierarchy (condensed_tree, single_linkage_tree)
+        - Cluster stability (cluster_persistence)
+        - Point outlier scores
+        - Membership probabilities
+
+        Returns:
+            Dict containing HDBSCAN artifacts, or empty dict if HDBSCAN not used.
+            Keys: probabilities, labels, single_linkage_tree, condensed_tree,
+                  cluster_persistence, outlier_scores
+        """
+        if self._hdbscan_model is None:
+            return {}
+
+        return {
+            "probabilities": self._hdbscan_model.probabilities_,
+            "labels": self._hdbscan_model.labels_,
+            "single_linkage_tree": self._hdbscan_model.single_linkage_tree_,
+            "condensed_tree": self._hdbscan_model.condensed_tree_,
+            "cluster_persistence": getattr(self._hdbscan_model, 'cluster_persistence_', None),
+            "outlier_scores": getattr(self._hdbscan_model, 'outlier_scores_', None),
+        }
+
+    def get_umap_embeddings(self) -> Optional[np.ndarray]:
+        """
+        Return UMAP-reduced embeddings for caching.
+
+        These embeddings can be reused for Layer 2 experiments (e.g., running
+        HDBSCAN with different cluster_selection_method) without recomputing UMAP.
+
+        Returns:
+            UMAP-reduced embeddings array, or None if not available.
+        """
+        return self._umap_embeddings
+
+    def get_hdbscan_params(self) -> Dict[str, Any]:
+        """
+        Return the winning HDBSCAN parameters from optimization.
+
+        These parameters can be reused in Layer 2 experiments to ensure
+        consistent clustering configuration.
+
+        Returns:
+            Dict with keys: min_cluster_size, min_samples, n_neighbors,
+            n_components, min_dist, cluster_selection_method
+        """
+        params = dict(self._algorithm_params) if self._algorithm_params else {}
+        # Ensure cluster_selection_method is included
+        if 'cluster_selection_method' not in params:
+            params['cluster_selection_method'] = self.config.hdbscan_cluster_selection_method
+        return params
+
 
 def clean_cluster_ideas(cluster_results: List[models.ClusterModel]) -> List[models.ClusterModel]:
     """Clean cluster idea texts by removing bracketed annotations and normalizing whitespace.

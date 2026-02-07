@@ -406,7 +406,8 @@ Here is the survey question you are analyzing:
 
 Here is the context from prior analysis:
 <context>
-- Domain: {domain}: {entity}
+- Domain: {domain}
+- Entity of interest: {entity}
 - Topic: {topic}
 - Type of respondent: {perspective}
 - Intent by response: {intent}
@@ -414,37 +415,24 @@ Here is the context from prior analysis:
 
 Here is the taxonomy guidance you must follow:
 <taxonomy_guidance>
-Taxonomy axis: {primary_dimension}
-Taxonomy axis description: {primary_dimension_description}
+Taxonomy axis: "{primary_dimension}"?
+In more detail: {primary_dimension_description}
 </taxonomy_guidance>
 
 Here is the template guidance you must use:
 <template_guidance>
-Template pattern (preferred form):
-
-    "{{SUBJECT}} {{VERB_STATE}} [ACTIONABLE_TAXONOMY_DIMENSION]."
-
-SCAFFOLD is OPTIONAL.
-Use a scaffold **only if absolutely required for grammar or clarity**.
-
-If a scaffold is used, it must be **at most two words** and come *after* the verb.
-
-Allowed minimal scaffold examples (non-exhaustive):
-- "about"  →  "The app is about [ACTIONABLE_TAXONOMY_DIMENSION]."
-- "in"     →  "Service happens in [ACTIONABLE_TAXONOMY_DIMENSION]."
-- "on"     →  "The feature works on [ACTIONABLE_TAXONOMY_DIMENSION]."
-- "for"    →  "The tool is for [ACTIONABLE_TAXONOMY_DIMENSION]."
-
-BANNED scaffolds (do NOT use):
-"in terms of", "with regard to", "as it relates to",
-"characterized by", "when it comes to", "overall",
-"from the perspective of", "aspects of".
-
 Required form (json format):
 {required_form_json}
 
-Slot guidance in (json format):
-{slot_guidance_json}
+Template pattern:
+
+    "{template_structure_pattern}"
+
+Slot definitions (express these concepts in {language}):
+{template_structure_slots}
+
+NOTE: The allowed slot values above are semantic concepts. Express them in {language}.
+For example: "must" → "moet" (Dutch), "should" → "zou moeten" (Dutch), etc.
 </template_guidance>
 
 Your task has three parts:
@@ -454,15 +442,16 @@ Your task has three parts:
 Goal: choose the noun phrase that the template sentence should be about — the central entity being evaluated or described.
 
 Rules:
-- It must be a noun or noun phrase (not a full clause).
-- Avoid placeholder subjects (e.g., "it," "there").
-- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
-- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
 - If multiple entities appear, select the one most aligned with:
   (a) Primary focus: {entity}
   (b) Primary taxonomy axis: {primary_dimension}
+- It must be a noun or noun phrase (not a full clause).
 - Return a concise, normalized noun phrase in {language}.
 - Preserve capitalization for proper nouns; otherwise use lowercase.
+- Avoid placeholder subjects (e.g., "it," "there").
+- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
+- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
+
 
 --------------------------------------------------
 **TASK 2 — Choose the actionable taxonomy dimension (TYPE)**  
@@ -471,25 +460,21 @@ Select **exactly one** actionable taxonomy type on the primary axis that best ca
 Use this as your guide:
 {primary_dimension_description}
 
-This is a **type label only** (e.g., "attribute", "reason", "action", "timing", "location").
-
 --------------------------------------------------
 **TASK 3 — Create a direct phrasing template**
 
 Your output field **canonical_phrasing** MUST:
 
-1) Follow **this preferred pattern**:
+1) Follow **this axis-specific pattern**:
 
-   "{{SUBJECT}} {{VERB_STATE}} [ACTIONABLE_TAXONOMY_DIMENSION]."
+   "{template_structure_pattern}"
 
-2) Use:
-   - SUBJECT from Task 1  
-   - VERB_STATE must be **one of**:
-     ["is", "are", "has", "needs", "lacks", "offers", "shows", "happens"]  
-   - SCAFFOLD is **optional**.  
-     If used, it must be **1–2 words max** and drawn from a simple preposition.
+2) Use the slot definitions provided above:
+   - Fill each required slot according to the allowed values
+   - Use SUBJECT/entity if interest from Task 1 for the subject slot
+   - Optional slots may be omitted if not needed for grammar
 
-3) **CRITICAL: Do NOT replace the marker.**  
+3) **CRITICAL: Do NOT replace the marker.**
    The literal token **[ACTIONABLE_TAXONOMY_DIMENSION]** must appear exactly as written, as the final bracketed term in the sentence (a period may follow).
 
 4) Brevity constraints:
@@ -497,9 +482,7 @@ Your output field **canonical_phrasing** MUST:
    - Single clause only — no commas, no relative clauses ("which/that"), no hedging.
 
 5) Directness check:
-   If the marker were replaced with a short noun phrase (e.g.,  
-   "battery life", "wait time", "price", "friendliness"),  
-   the sentence should read like a **direct, natural answer** to the survey question.
+   If the marker were replaced with a short noun phrase (e.g.,"battery life", "wait time", "price", "friendliness"),the sentence should read like a **direct, natural answer** to the survey question.
 
 All output values must be in {language}.
 
@@ -555,14 +538,15 @@ Goal: choose the noun phrase that the template sentence should be about — the 
 
 Rules:
 - It must be a noun or noun phrase (not a full clause).
-- Avoid placeholder subjects (e.g., "it," "there").
-- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
-- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
 - If multiple entities appear, select the one most aligned with:
   (a) Primary focus: {entity}
   (b) Primary taxonomy axis: {primary_dimension}
 - Return a concise, normalized noun phrase in {language}.
 - Preserve capitalization for proper nouns; otherwise use lowercase.
+- Avoid placeholder subjects (e.g., "it," "there").
+- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
+- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
+
 
 --------------------------------------------------
 **TASK 2 — Choose the actionable taxonomy dimension**
@@ -612,11 +596,12 @@ class SubjectExtractionResponse(BaseModel):
         examples=["attribute", "reason", "action", "actor", "timing", "location"]
     )
     canonical_phrasing: str = Field(
-        description="Template: {SUBJECT} {VERB_STATE} [ACTIONABLE_TAXONOMY_DIMENSION]. SCAFFOLD is optional (1-2 words max).",
+        description="Axis-specific template ending with [ACTIONABLE_TAXONOMY_DIMENSION]. Pattern varies by axis.",
         examples=[
             "The product has [ACTIONABLE_TAXONOMY_DIMENSION].",
-            "De kant-en-klare maaltijd is [ACTIONABLE_TAXONOMY_DIMENSION].",
-            "Customer service needs [ACTIONABLE_TAXONOMY_DIMENSION]."
+            "The producer must [ACTIONABLE_TAXONOMY_DIMENSION].",
+            "The choice is due to [ACTIONABLE_TAXONOMY_DIMENSION].",
+            "The meal is intended for [ACTIONABLE_TAXONOMY_DIMENSION]."
         ]
     )
 

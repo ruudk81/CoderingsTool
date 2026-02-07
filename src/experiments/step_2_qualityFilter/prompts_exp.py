@@ -11,71 +11,171 @@ migrate-output-schema pattern - instructor uses Field(description=...) to
 communicate schema to the LLM.
 """
 
-from typing import Any, Union, Optional
-from pydantic import BaseModel, Field
-
-# =============================================================================
-# RESPONSE MODELS (co-located with prompts for instructor)
-# =============================================================================
-
-class QualityFilterLLMResponseExp(BaseModel):
-    """A single quality filter assessment result."""
-    respondent_id: Any = Field(
-        description="The respondent's ID from the input"
-    )
-    response: Union[str, float, int, None] = Field(
-        description="The exact response text being evaluated"
-    )
-    quality_filter: bool = Field(
-        description="true if response is meaningless (don't know/gibberish), false if meaningful",
-        examples=[True, False]
-    )
-    quality_filter_code: Optional[int] = Field(
-        default=None,
-        description="99999997 for uncertainty/don't know, 99999999 for gibberish/nonsensical, null for meaningful responses",
-        examples=[99999997, 99999999, None]
-    )
-
+from typing import Any, Optional, Union, Literal, List
+from pydantic import BaseModel, Field, model_validator
 
 # =============================================================================
 # STEP 2: QUALITY FILTERING
 # =============================================================================
 
 GRADER_INSTRUCTIONS = """
-You are a {language} language grader evaluating open-ended survey responses.
-Your task is to determine whether each response is meaningless and assign appropriate quality filter codes.
+You are a {language} language grader evaluating open-ended survey responses.  
+Your task is to determine whether each response provides **usable, on-topic content in relation to the specific survey question**, and assign appropriate quality filter codes.
 
-Task Description:
-Analyze each response and classify it based on the following criteria:
+You will classify each response into one of three practical outcomes:
 
-Decision Criteria:
-1. **Don't Know/Uncertainty (Code 99999997)**: Responses that express "don't know", "not applicable", or only express uncertainty
-   - Examples: "I don't know", "N/A", "Not applicable", "No idea", "?"
+==================================================
+OUTCOME A — Don't Know / Uncertainty  
+CODE: 99999997 | quality_filter = true
+==================================================
 
-2. **Nonsensical/Gibberish (Code 99999999)**: Responses that are meaningless, gibberish, or simply repeat the question
-   - Examples: "asdfkj", "lorem ipsum", random characters, just repeating the question
+Use this code if the respondent explicitly expresses uncertainty, lack of knowledge, or non-applicability.
 
-3. **Meaningful Response (No Code)**: Responses that provide actual content, opinions, or information
-   - These should have quality_filter = false and quality_filter_code = null
+This includes any response whose clear meaning in {language} is equivalent to:
+- "I don't know"
+- "N/A"
+- "Not applicable"
+- "No idea"
+- "Unsure"
+- "Can't say"
+- "?"
 
-Input:
-You will be provided with a survey question and a list of responses to evaluate.
+If a response fits this pattern → set:
+quality_filter = true  
+quality_filter_code = 99999997  
 
-Survey question:
+==================================================
+OUTCOME B — Nonsensical/Gibberish OR completely Off-topic  
+CODE: 99999999 | quality_filter = true
+==================================================
+
+Use this code for **two different kinds of unusable responses**:
+
+A) Pure gibberish / nonsensical  
+   Examples:
+   - Random characters: "asdfkj", "jjjjj", "x!@#%"
+   - Placeholder text: "lorem ipsum", "test test"
+   - Verbatim repetition of the question with no added content
+   - Completely unintelligible text 
+
+B) Intelligible but completely off-topic / totally irrelevant  
+   The response is understandable {language} , BUT:
+   - It does NOT address the actual survey question ({var_lab}) even remotely, OR  
+   - It obviously avoids the question.
+
+Illustractive examples in English (if the question is about public transport):
+- "Nothing" 
+- "I love dogs."
+- "The weather is nice today."
+- "Pizza is better than pasta."
+- "I work in finance."
+- A personal story that has nothing to do with transportation.
+
+These are NOT "I don’t know" — they are simply irrelevant to the question.
+
+If a response fits **either A or B** → set:
+quality_filter = true  
+quality_filter_code = 99999999  
+
+
+==================================================
+OUTCOME C — Meaningful / On-topic Response  
+quality_filter = false | quality_filter_code = null
+==================================================
+
+A response is meaningful if:
+- It is understandable in {language}, AND  
+- It engages with or relates to the survey question ({var_lab}), even if:
+  - It is very short  
+  - It is vague  
+  - It is opinionated  
+  - It is critical  
+  - It is poorly written  
+  - It is partially incomplete  
+
+Examples (if the question is about public transport):
+- "Buses are always late."
+- "Too crowded."
+- "Tickets are expensive."
+- "The metro is unreliable."
+
+For this category → set:
+quality_filter = false  
+quality_filter_code = null  
+
+==================================================
+SURVEY QUESTION
 <survey_question>
 {var_lab}
 </survey_question>
 
-Here are the responses you need to evaluate:
+RESPONSES TO EVALUATE
 <responses>
 {responses}
 </responses>
 
-Follow these steps for each response:
-1. Read the response carefully.
-2. Determine if the response expresses uncertainty/don't know (code 99999997)
-3. If not uncertainty, determine if it's gibberish/nonsensical (code 99999999)
-4. If neither, it's meaningful (quality_filter = false, quality_filter_code = null)
+==================================================
+DECISION RULE (FOLLOW EXACTLY)
 
-Begin evaluating the responses now and provide your output as valid JSON following the response schema provided.
+For each response, apply these steps in order:
+
+1. Does the response explicitly express uncertainty or "I don't know"?  
+   - If YES → quality_filter = true, quality_filter_code = 99999997  
+   - If NO → go to Step 2
+
+2. Ask:  
+   "Does this response provide usable content that addresses the survey question, even remotely?"
+
+   - If NO (because it is gibberish OR off-topic) →  
+     quality_filter = true, quality_filter_code = 99999999  
+
+   - If YES →  
+     quality_filter = false, quality_filter_code = null  
 """
+
+
+QualityCode = Optional[Literal[99999997, 99999999]]
+
+class QualityFilterLLMResponseExp(BaseModel):
+    """A single quality filter assessment result."""
+
+    respondent_id: Any = Field(
+        description="The respondent's ID from the input (preserve exact type and format)"
+    )
+
+    response: Union[str, float, int, None] = Field(
+        description="The exact response text being evaluated"
+    )
+
+    quality_filter: bool = Field(
+        description=(
+            "true if the response is unusable (don't know OR gibberish/off-topic), "
+            "false if the response is meaningful and addresses the question"
+        ),
+        examples=[True, False],
+    )
+
+    quality_filter_code: QualityCode = Field(
+        default=None,
+        description=(
+            "99999997 = uncertainty / don't know; "
+            "99999999 = gibberish OR completely off-topic; "
+            "null = meaningful response"
+        ),
+        examples=[99999997, 99999999, None],
+    )
+
+    @model_validator(mode="after")
+    def check_consistency(self):
+        if self.quality_filter and self.quality_filter_code is None:
+            raise ValueError(
+                "If quality_filter=true, quality_filter_code must be 99999997 or 99999999"
+            )
+        if not self.quality_filter and self.quality_filter_code is not None:
+            raise ValueError(
+                "If quality_filter=false, quality_filter_code must be null"
+            )
+
+        return self
+
+

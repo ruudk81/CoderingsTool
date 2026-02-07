@@ -173,6 +173,28 @@ def _format_lookup_for_axis(axis: str) -> dict:
     else:
         axis_required_form_str = json.dumps(required_form_raw, indent=2)
 
+    # Format template_structure for prompt injection
+    template_structure = axis_data.get("template_structure", {})
+    template_structure_pattern = template_structure.get("pattern", "")
+    template_structure_slots = template_structure.get("slots", {})
+    template_structure_examples = template_structure.get("examples", [])
+
+    # Format slots as human-readable text
+    slots_formatted_lines = []
+    for slot_name, slot_config in template_structure_slots.items():
+        required_str = "required" if slot_config.get("required", True) else "optional"
+        if "allowed" in slot_config:
+            allowed_str = ", ".join(f'"{v}"' for v in slot_config["allowed"])
+            slots_formatted_lines.append(f"- {slot_name} ({required_str}): one of [{allowed_str}]")
+        elif slot_config.get("type") == "noun_phrase":
+            slots_formatted_lines.append(f"- {slot_name} ({required_str}): noun phrase")
+        else:
+            slots_formatted_lines.append(f"- {slot_name} ({required_str})")
+    slots_formatted = "\n".join(slots_formatted_lines)
+
+    # Format examples
+    examples_formatted = "\n".join(f"- {ex}" for ex in template_structure_examples)
+
     return {
         # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT (existing)
         "dimension_description": axis_data["dimension_description"],
@@ -181,6 +203,10 @@ def _format_lookup_for_axis(axis: str) -> dict:
         "required_form_json": required_form_json,
         "verb_frames_json": verb_frames_json,
         "marker": marker,
+        # Keys for axis-specific template structure
+        "template_structure_pattern": _escape_braces_for_format(template_structure_pattern),
+        "template_structure_slots": _escape_braces_for_format(slots_formatted),
+        "template_structure_examples": _escape_braces_for_format(examples_formatted),
         # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT (axis-prefixed)
         "axis_dimension_description": axis_data["dimension_description"],
         "axis_required_form": _escape_braces_for_format(axis_required_form_str),
@@ -1262,6 +1288,10 @@ class IdeaExtractor:
                     primary_dimension=taxonomy_axis,
                     primary_dimension_rationale=getattr(self, 'taxonomy_rationale', 'Not available'),
                     primary_dimension_description=self.taxonomy_axis_description or lookup_data["dimension_description"],
+                    # Axis-specific template structure (from lookup)
+                    template_structure_pattern=lookup_data["template_structure_pattern"],
+                    template_structure_slots=lookup_data["template_structure_slots"],
+                    template_structure_examples=lookup_data["template_structure_examples"],
                     # Template guidance (from lookup)
                     slot_guidance_json=lookup_data["slot_guidance_json"],
                     required_form_json=lookup_data["required_form_json"],

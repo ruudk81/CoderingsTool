@@ -30,6 +30,19 @@ from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.preprocessing import normalize
 
 project_root = Path(__file__).parent.parent.parent.parent.parent
+
+
+@dataclass
+class GlobalCtfidfArtifacts:
+    """Frozen global c-TF-IDF artifacts for consistent term weighting.
+
+    This dataclass holds pre-computed vocabulary and IDF weights from the
+    full corpus, enabling consistent term weighting across all EOM clusters.
+    """
+    vocabulary: np.ndarray           # Frozen vocabulary terms (1D array)
+    vocabulary_index: Dict[str, int] # Term -> column index mapping
+    global_idf: np.ndarray           # Frozen IDF weights (1D array, same size as vocabulary)
+    n_total_documents: int           # Total document count used for IDF computation
 sys.path.insert(0, str(project_root / "src"))
 
 from utils.cacheManager import generate_enhanced_variable_key
@@ -80,10 +93,12 @@ class HdbscanLexicalConfig:
     # c-TF-IDF settings
     text_source: str = "idea"  # Use idea text for c-TF-IDF
     ctfidf_ngram_range: Tuple[int, int] = (1, 2)
-    ctfidf_min_df: int = 1
-    ctfidf_max_df: float = 1.0
     ctfidf_use_lemmatization: bool = True
     ctfidf_spacy_model: str = "nl_core_news_lg"
+
+    # Global c-TF-IDF settings (for full corpus vocabulary + IDF)
+    global_ctfidf_min_df: int = 2       # Higher for global (filter rare terms)
+    global_ctfidf_max_df: float = 0.8   # Lower for global (filter very common terms)
 
     # Lexical HDBSCAN settings (for clustering c-TF-IDF vectors)
     lexical_min_cluster_size: int = 2
@@ -505,27 +520,123 @@ def lemmatize_adj_noun_only(
     return processed
 
 
+#%% PHASE 2B: GLOBAL c-TF-IDF ARTIFACTS
+def build_global_ctfidf_artifacts(
+    point_mapping: List[Dict],
+    config: HdbscanLexicalConfig = CONFIG
+) -> GlobalCtfidfArtifacts:
+    """
+    Build global c-TF-IDF artifacts (frozen vocabulary + IDF) from ALL texts.
+
+    This function runs ONCE at startup to establish a consistent vocabulary
+    and IDF weighting across all EOM clusters, eliminating IDF drift.
+
+    Args:
+        point_mapping: List of dicts with text data for each point
+        config: Configuration object
+
+    Returns:
+        GlobalCtfidfArtifacts with frozen vocabulary and IDF
+    """
+    text_key_map = {
+        "ontology": "ontology_text",
+        "idea": "display_text",
+        "display_text": "display_text",
+        "taxonomy": "taxonomy_phrase"
+    }
+    text_key = text_key_map.get(config.text_source, "display_text")
+
+    # Step 1: Collect ALL texts from ALL points
+    all_texts = []
+    for pt in point_mapping:
+        text = pt.get(text_key, "")
+        if text:
+            all_texts.append(text)
+
+    if not all_texts:
+        # Return empty artifacts
+        return GlobalCtfidfArtifacts(
+            vocabulary=np.array([]),
+            vocabulary_index={},
+            global_idf=np.array([]),
+            n_total_documents=0
+        )
+
+    # Step 2: Apply lemmatization
+    if config.ctfidf_use_lemmatization:
+        lemmatized_texts = lemmatize_adj_noun_only(all_texts, model_name=config.ctfidf_spacy_model)
+    else:
+        lemmatized_texts = all_texts
+
+    # Step 3: Fit global CountVectorizer with corpus-appropriate filtering
+    cv = CountVectorizer(
+        ngram_range=config.ctfidf_ngram_range,
+        min_df=config.global_ctfidf_min_df,
+        max_df=config.global_ctfidf_max_df
+    )
+
+    try:
+        X = cv.fit_transform(lemmatized_texts)
+        vocabulary = np.array(cv.get_feature_names_out())
+    except ValueError:
+        # No terms survived filtering
+        return GlobalCtfidfArtifacts(
+            vocabulary=np.array([]),
+            vocabulary_index={},
+            global_idf=np.array([]),
+            n_total_documents=len(lemmatized_texts)
+        )
+
+    # Step 4: Compute global IDF
+    # df = number of documents containing each term
+    df = np.asarray((X > 0).sum(axis=0)).ravel()
+    n_docs = X.shape[0]
+    global_idf = np.log((n_docs + 1) / (df + 1)) + 1.0
+
+    # Build vocabulary index for fast lookups
+    vocab_index = {term: idx for idx, term in enumerate(vocabulary)}
+
+    print(f"  Global c-TF-IDF: {len(vocabulary)} terms from {n_docs} documents")
+
+    return GlobalCtfidfArtifacts(
+        vocabulary=vocabulary,
+        vocabulary_index=vocab_index,
+        global_idf=global_idf,
+        n_total_documents=n_docs
+    )
+
+
+#%% PHASE 3: c-TF-IDF ON HDBSCAN SUB-CLUSTERS
 def build_subcluster_ctfidf_matrix(
     subcluster_ids: List[int],
     global_subcluster_labels: np.ndarray,
     point_mapping: List[Dict],
+    global_artifacts: GlobalCtfidfArtifacts,
     config: HdbscanLexicalConfig = CONFIG
 ) -> Tuple[np.ndarray, np.ndarray, List[int]]:
     """
     Build c-TF-IDF matrix where each sub-cluster is a "class".
 
+    Uses frozen global vocabulary and IDF from global_artifacts to ensure
+    consistent term weighting across all EOM clusters.
+
     Args:
         subcluster_ids: List of global sub-cluster IDs to include
         global_subcluster_labels: Full array of global sub-cluster labels
         point_mapping: Global point-to-text mapping
+        global_artifacts: Frozen vocabulary and IDF from build_global_ctfidf_artifacts()
         config: Configuration object
 
     Returns:
         Tuple of (ctfidf_matrix, vocabulary, subcluster_ids_ordered)
         - ctfidf_matrix: shape (n_subclusters, n_terms)
-        - vocabulary: array of term strings
+        - vocabulary: array of term strings (from global_artifacts)
         - subcluster_ids_ordered: list of sub-cluster IDs in matrix row order
     """
+    # Check for empty global artifacts
+    if len(global_artifacts.vocabulary) == 0:
+        return np.array([]), np.array([]), []
+
     # Map text_source to point_mapping key
     text_key_map = {
         "ontology": "ontology_text",
@@ -554,40 +665,36 @@ def build_subcluster_ctfidf_matrix(
             subcluster_ids_ordered.append(subcluster_id)
 
     if not subcluster_docs:
-        return np.array([]), np.array([]), []
+        return np.array([]), global_artifacts.vocabulary, []
 
     # Apply lemmatization if requested
     if config.ctfidf_use_lemmatization:
         subcluster_docs = lemmatize_adj_noun_only(subcluster_docs, model_name=config.ctfidf_spacy_model)
 
-    # Build count matrix
+    # Use FROZEN vocabulary from global artifacts
+    cv = CountVectorizer(
+        ngram_range=config.ctfidf_ngram_range,
+        vocabulary=global_artifacts.vocabulary_index  # FROZEN vocab
+    )
+
     try:
-        cv = CountVectorizer(
-            ngram_range=config.ctfidf_ngram_range,
-            min_df=config.ctfidf_min_df,
-            max_df=config.ctfidf_max_df
-        )
-        X = cv.fit_transform(subcluster_docs)
-        vocab = np.array(cv.get_feature_names_out())
+        X = cv.transform(subcluster_docs)  # transform, NOT fit_transform
     except ValueError:
-        return np.array([]), np.array([]), subcluster_ids_ordered
+        return np.array([]), global_artifacts.vocabulary, subcluster_ids_ordered
 
     if X.shape[1] == 0:
-        return np.array([]), np.array([]), subcluster_ids_ordered
+        return np.array([]), global_artifacts.vocabulary, subcluster_ids_ordered
 
-    # Compute c-TF-IDF
+    # Compute LOCAL TF (L1 normalized per sub-cluster)
     tf = X.astype(float)
     row_sums = np.asarray(tf.sum(axis=1)).ravel()
     row_sums[row_sums == 0] = 1e-12
     tf = tf.multiply(1.0 / row_sums[:, np.newaxis])
 
-    df = np.asarray((X > 0).sum(axis=0)).ravel()
-    n_classes = X.shape[0]
-    idf = np.log((n_classes + 1) / (df + 1)) + 1.0
+    # Apply GLOBAL IDF (frozen from global_artifacts)
+    ctfidf = tf.multiply(global_artifacts.global_idf).tocsr()
 
-    ctfidf = tf.multiply(idf).tocsr()
-
-    return ctfidf.toarray(), vocab, subcluster_ids_ordered
+    return ctfidf.toarray(), global_artifacts.vocabulary, subcluster_ids_ordered
 
 
 #%% PHASE 4: HDBSCAN ON c-TF-IDF VECTORS
@@ -636,6 +743,7 @@ def analyze_eom_lexical_grouping(
     global_subcluster_labels: np.ndarray,
     id_mapping: Dict[int, Tuple[int, int]],
     point_mapping: List[Dict],
+    global_artifacts: GlobalCtfidfArtifacts,
     config: HdbscanLexicalConfig = CONFIG,
     min_subclusters_for_clustering: int = 3
 ) -> Dict:
@@ -648,6 +756,7 @@ def analyze_eom_lexical_grouping(
         global_subcluster_labels: Global sub-cluster label array
         id_mapping: Dict mapping global_id -> (eom_id, local_id)
         point_mapping: Global point-to-text mapping
+        global_artifacts: Frozen vocabulary and IDF from build_global_ctfidf_artifacts()
         config: Configuration object
         min_subclusters_for_clustering: Minimum sub-clusters to attempt HDBSCAN
 
@@ -686,7 +795,8 @@ def analyze_eom_lexical_grouping(
             global_id = local_to_global.get(local_id)
             if global_id is not None:
                 kws = extract_keywords_for_lexical_group(
-                    [global_id], global_subcluster_labels, point_mapping, config
+                    [global_id], global_subcluster_labels, point_mapping,
+                    global_artifacts, config
                 )
                 result["keywords"][i] = kws
         result["message"] = f"only {n_subclusters} sub-clusters (no HDBSCAN clustering)"
@@ -694,7 +804,8 @@ def analyze_eom_lexical_grouping(
 
     # Step 1: Build c-TF-IDF matrix for just this EOM's sub-clusters
     ctfidf_matrix, vocab, ordered_global_ids = build_subcluster_ctfidf_matrix(
-        global_ids_this_eom, global_subcluster_labels, point_mapping, config
+        global_ids_this_eom, global_subcluster_labels, point_mapping,
+        global_artifacts, config
     )
 
     result["ctfidf_matrix"] = ctfidf_matrix
@@ -730,7 +841,8 @@ def analyze_eom_lexical_grouping(
                 global_id = local_to_global.get(local_id)
                 if global_id:
                     kws = extract_keywords_for_lexical_group(
-                        [global_id], global_subcluster_labels, point_mapping, config
+                        [global_id], global_subcluster_labels, point_mapping,
+                        global_artifacts, config
                     )
                     result["keywords"][noise_group_id] = kws
         else:
@@ -740,7 +852,8 @@ def analyze_eom_lexical_grouping(
 
             # Extract keywords for this lexical group
             kws = extract_keywords_for_lexical_group(
-                group_global_ids, global_subcluster_labels, point_mapping, config
+                group_global_ids, global_subcluster_labels, point_mapping,
+                global_artifacts, config
             )
             result["keywords"][group_id] = kws
 
@@ -753,10 +866,19 @@ def run_lexical_grouping_all_eoms(
     global_subcluster_labels: np.ndarray,
     id_mapping: Dict[int, Tuple[int, int]],
     point_mapping: List[Dict],
+    global_artifacts: GlobalCtfidfArtifacts,
     config: HdbscanLexicalConfig = CONFIG
 ) -> Dict[int, Dict]:
     """
     Run lexical grouping per EOM cluster.
+
+    Args:
+        fragmentation_results: Results from HDBSCAN fragmentation per EOM
+        global_subcluster_labels: Global sub-cluster label array
+        id_mapping: Dict mapping global_id -> (eom_id, local_id)
+        point_mapping: Global point-to-text mapping
+        global_artifacts: Frozen vocabulary and IDF from build_global_ctfidf_artifacts()
+        config: Configuration object
 
     Returns:
         Dict mapping eom_id -> lexical grouping result
@@ -778,7 +900,7 @@ def run_lexical_grouping_all_eoms(
         local_ids = [lid for lid in set(frag_result["labels"]) if lid >= 0]
         result = analyze_eom_lexical_grouping(
             eom_id, local_ids, global_subcluster_labels,
-            id_mapping, point_mapping, config
+            id_mapping, point_mapping, global_artifacts, config
         )
         results[eom_id] = result
 
@@ -793,20 +915,29 @@ def extract_keywords_for_lexical_group(
     subcluster_ids: List[int],
     global_subcluster_labels: np.ndarray,
     point_mapping: List[Dict],
+    global_artifacts: GlobalCtfidfArtifacts,
     config: HdbscanLexicalConfig = CONFIG
 ) -> List[str]:
     """
-    Extract TF-IDF keywords for a lexical group (set of sub-clusters).
+    Extract c-TF-IDF keywords for a lexical group (set of sub-clusters).
+
+    Uses frozen global vocabulary and IDF from global_artifacts to ensure
+    consistent term weighting across all lexical groups.
 
     Args:
         subcluster_ids: List of sub-cluster IDs in this lexical group
         global_subcluster_labels: Full array of global sub-cluster labels
         point_mapping: Global point-to-text mapping
+        global_artifacts: Frozen vocabulary and IDF from build_global_ctfidf_artifacts()
         config: Configuration object
 
     Returns:
         List of top keywords
     """
+    # Check for empty global artifacts
+    if len(global_artifacts.vocabulary) == 0:
+        return []
+
     text_key_map = {
         "ontology": "ontology_text",
         "idea": "display_text",
@@ -832,26 +963,38 @@ def extract_keywords_for_lexical_group(
     if config.ctfidf_use_lemmatization:
         all_texts = lemmatize_adj_noun_only(all_texts, model_name=config.ctfidf_spacy_model)
 
-    # Build TF-IDF and get top terms
+    # Aggregate all texts into single document for this lexical group
+    combined_doc = " ".join(all_texts)
+
+    # Use FROZEN vocabulary from global artifacts
+    cv = CountVectorizer(
+        ngram_range=config.ctfidf_ngram_range,
+        vocabulary=global_artifacts.vocabulary_index
+    )
+
     try:
-        vec = TfidfVectorizer(
-            ngram_range=config.ctfidf_ngram_range,
-            min_df=1,
-            max_df=1.0
-        )
-        X = vec.fit_transform(all_texts)
-        vocab = vec.get_feature_names_out()
+        X = cv.transform([combined_doc])
     except ValueError:
         return []
 
     if X.shape[1] == 0:
         return []
 
-    # Average TF-IDF scores across all documents
-    avg_scores = np.array(X.mean(axis=0)).flatten()
-    top_indices = np.argsort(avg_scores)[-config.top_keywords:][::-1]
+    # Compute TF (L1 normalized)
+    tf = X.astype(float)
+    row_sum = tf.sum()
+    if row_sum == 0:
+        return []
+    tf = tf / row_sum
 
-    return [vocab[i] for i in top_indices if avg_scores[i] > 0]
+    # Apply GLOBAL IDF - convert sparse to dense array
+    ctfidf_sparse = tf.multiply(global_artifacts.global_idf)
+    ctfidf_scores = np.asarray(ctfidf_sparse.toarray()).ravel()
+
+    # Get top keywords
+    top_indices = np.argsort(ctfidf_scores)[-config.top_keywords:][::-1]
+
+    return [global_artifacts.vocabulary[i] for i in top_indices if ctfidf_scores[i] > 0]
 
 
 def extract_keywords_from_ctfidf_row(
@@ -922,6 +1065,7 @@ def display_per_eom_results(
     global_subcluster_labels: np.ndarray,
     id_mapping: Dict[int, Tuple[int, int]],
     point_mapping: List[Dict],
+    global_artifacts: GlobalCtfidfArtifacts,
     config: HdbscanLexicalConfig = CONFIG
 ) -> None:
     """Display full results: EOM -> HDBSCAN sub-clusters -> Lexical groups."""
@@ -996,7 +1140,8 @@ def display_per_eom_results(
                 # Extract keywords on-the-fly if not pre-computed
                 if group_global_ids:
                     kws = extract_keywords_for_lexical_group(
-                        group_global_ids, global_subcluster_labels, point_mapping, config
+                        group_global_ids, global_subcluster_labels, point_mapping,
+                        global_artifacts, config
                     )
                     if kws:
                         print(f"    TF-IDF keywords: {', '.join(kws[:config.top_keywords])}")
@@ -1059,6 +1204,11 @@ def main():
     point_mapping = build_point_mapping(data["cluster_models"], template_prefix)
     print(f"  Point mapping: {len(point_mapping)} points")
 
+    # Phase 1b: Build global c-TF-IDF artifacts (frozen vocabulary + IDF)
+    print(f"\n[Phase 1b] Building global c-TF-IDF artifacts...")
+    global_artifacts = build_global_ctfidf_artifacts(point_mapping, CONFIG)
+    print(f"  Vocabulary size: {len(global_artifacts.vocabulary)}")
+
     # Phase 2: HDBSCAN fragmentation on UMAP embeddings
     print(f"\n[Phase 2] Running HDBSCAN fragmentation on UMAP embeddings...")
     print(f"  Grid: ms/mcs from ceil({CONFIG.ms_low_log_mult}*log(n)) to ceil({CONFIG.ms_high_log_mult}*log(n)), k={CONFIG.grid_k}")
@@ -1072,13 +1222,15 @@ def main():
     # Phase 3 & 4: Per-EOM lexical grouping (c-TF-IDF + HDBSCAN)
     print("\n[Phase 3-4] Running lexical grouping per EOM cluster...")
     lexical_results = run_lexical_grouping_all_eoms(
-        fragmentation_results, global_subcluster_labels, id_mapping, point_mapping, CONFIG
+        fragmentation_results, global_subcluster_labels, id_mapping, point_mapping,
+        global_artifacts, CONFIG
     )
 
     # Phase 5 & 6: Display results
     display_per_eom_results(
         labels_eom, fragmentation_results, lexical_results,
-        global_subcluster_labels, id_mapping, point_mapping, CONFIG
+        global_subcluster_labels, id_mapping, point_mapping,
+        global_artifacts, CONFIG
     )
 
     return {
@@ -1087,6 +1239,7 @@ def main():
         "id_mapping": id_mapping,
         "lexical_results": lexical_results,
         "point_mapping": point_mapping,
+        "global_artifacts": global_artifacts,
     }
 
 

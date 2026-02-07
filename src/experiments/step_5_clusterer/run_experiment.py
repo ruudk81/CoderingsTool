@@ -250,6 +250,31 @@ def main():
         var_lab=var_lab
     )
 
+    # Layer 3: HDBSCAN artifacts (trees for hierarchy analysis in label experiments)
+    # Use direct pickle since these are numpy arrays and HDBSCAN objects, not Pydantic models
+    hdbscan_artifacts = clusterer.get_hdbscan_artifacts()
+    if hdbscan_artifacts:
+        base_name = Path(FILENAME).stem
+        artifacts_path = project_root / "data" / "cache" / f"hdbscan_artifacts_{base_name}_{variable_key}.pkl"
+        with open(artifacts_path, 'wb') as f:
+            pickle.dump(hdbscan_artifacts, f)
+        print(f"CACHED: HDBSCAN artifacts to '{artifacts_path.name}'")
+
+    # Layer 4: UMAP embeddings + winning params (for Layer 2 leaf overlay experiments)
+    # This enables analyze_leaf_overlay.py to run HDBSCAN with 'leaf' method
+    # without recomputing the expensive UMAP step
+    umap_embeddings = clusterer.get_umap_embeddings()
+    hdbscan_params = clusterer.get_hdbscan_params()
+    if umap_embeddings is not None:
+        base_name = Path(FILENAME).stem
+        umap_path = project_root / "data" / "cache" / f"umap_embeddings_{base_name}_{variable_key}.pkl"
+        with open(umap_path, 'wb') as f:
+            pickle.dump({
+                "embeddings": umap_embeddings,
+                "params": hdbscan_params,
+            }, f)
+        print(f"CACHED: UMAP embeddings + params to '{umap_path.name}'")
+
     # Print summary
     print("\n" + "=" * 70)
     print("SUMMARY")
