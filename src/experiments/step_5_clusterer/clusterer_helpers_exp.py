@@ -1552,22 +1552,23 @@ class ParameterOptimizer:
         sel_params = selected_trial.params
         min_cluster_size = sel_params['min_cluster_size']
 
-        # Extended search trials have ms + cluster_selection_method as params;
+        # Extended search trials have min_samples as a tuned param;
         # initial grid search trials have nn/nc/md and derive ms from mcs
-        is_extended = 'cluster_selection_method' in sel_params
+        is_extended = 'min_samples' in sel_params and 'n_neighbors' not in sel_params
         if is_extended:
             best_trial_initial = self._study.best_trial
             n_neighbors = best_trial_initial.params['n_neighbors']
             n_components = best_trial_initial.params['n_components']
             min_dist = best_trial_initial.params['min_dist']
             min_samples = sel_params['min_samples']
-            sel_method = sel_params['cluster_selection_method']
         else:
             n_neighbors = sel_params['n_neighbors']
             n_components = sel_params['n_components']
             min_dist = sel_params['min_dist']
             min_samples = max(1, min_cluster_size // 2)
-            sel_method = self.config.hdbscan_cluster_selection_method
+
+        # cluster_selection_method is always fixed from config (Layer 1 = EOM)
+        sel_method = self.config.hdbscan_cluster_selection_method
 
         reduced_normalized = self._umap_cache[(n_neighbors, n_components, min_dist)]
 
@@ -1979,27 +1980,25 @@ class ParameterOptimizer:
         ms_high = max(ms_low, max_mcs // 2)
         ms_options = log_spaced_ints(ms_low, ms_high, k=self.config.min_samples_grid_k)
 
-        selection_methods = list(self.config.research_selection_methods)
-
+        # NOTE: cluster_selection_method is fixed to 'eom' for Layer 1.
+        # Layer 2 (analyze_leaf_overlay.py) can experiment with 'leaf' method.
         extended_search_space = {
             'min_cluster_size': mcs_options,
             'min_samples': ms_options,
-            'cluster_selection_method': selection_methods,
         }
 
-        n_trials_total = len(mcs_options) * len(ms_options) * len(selection_methods)
+        n_trials_total = len(mcs_options) * len(ms_options)
 
         if self._verbose:
             print(f"\n[Extended Search] Based on best: nn={best_n_neighbors}, mcs={best_mcs}")
             print(f"  MCS grid:      {mcs_options}")
             print(f"  MS grid:       {ms_options}")
-            print(f"  Methods:       {selection_methods}")
+            print(f"  Method:        {self.config.hdbscan_cluster_selection_method} (fixed)")
             print(f"  Total trials:  {n_trials_total}")
 
         def extended_objective(trial: optuna.Trial) -> float:
             mcs = trial.suggest_categorical('min_cluster_size', extended_search_space['min_cluster_size'])
             ms = trial.suggest_categorical('min_samples', extended_search_space['min_samples'])
-            method = trial.suggest_categorical('cluster_selection_method', extended_search_space['cluster_selection_method'])
 
             if ms > mcs:
                 raise optuna.TrialPruned(f"Invalid: ms={ms} > mcs={mcs}")
@@ -2008,7 +2007,7 @@ class ParameterOptimizer:
                 min_cluster_size=mcs,
                 min_samples=ms,
                 metric='euclidean',
-                cluster_selection_method=method,
+                cluster_selection_method=self.config.hdbscan_cluster_selection_method,
                 gen_min_span_tree=self.config.hdbscan_gen_min_span_tree,
             )
             labels = clusterer.fit_predict(reduced_normalized)

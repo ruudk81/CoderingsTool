@@ -660,7 +660,10 @@ FINAL OUTPUT
 Provide valid JSON following the response schema. Use theme_number and theme_name exactly as provided. Set source_code to null for new codes. Write all values in {language}.
 """
 
-# Placeholders for CODING_MODIFICATION_PROMPT
+# -----------------------------------------------------------------------------
+# 3b. CODING_MODIFICATION_PROMPT
+# -----------------------------------------------------------------------------
+
 HORIZONTAL_INSTRUCTIONS = """
    - Keep the abstraction level of the original code.
    - Create a **single atomic shared concept** that:
@@ -696,11 +699,6 @@ VERTICAL_INSTRUCTIONS = """
        - Parent = conceptual anchor (higher abstraction level),
        - Children = distinct manifestations (different abstraction levels),
        - Child meanings **do not change**."""
-
-
-# -----------------------------------------------------------------------------
-# 3b. CODING_MODIFICATION_PROMPT
-# -----------------------------------------------------------------------------
 
 
 CODING_MODIFICATION_PROMPT = """

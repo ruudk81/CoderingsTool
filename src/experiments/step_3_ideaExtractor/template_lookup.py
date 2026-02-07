@@ -37,6 +37,18 @@ TEMPLATE_LOOKUP = {
                     "Prefer attribute nouns over full clauses."
                 ],
             },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_STATE} {SCAFFOLD} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_STATE": {"required": True, "allowed": ["is", "are", "has"]},
+                    "SCAFFOLD": {"required": False, "allowed": ["with", "about", "for", "of"]}
+                },
+                "examples": [
+                    "The meal is [taste].",
+                    "The packaging has [recyclability]."
+                ]
+            },
         },
 
         "WHY": {
@@ -77,6 +89,18 @@ TEMPLATE_LOOKUP = {
                     "Prefer the underlying driver over surface justifications."
                 ],
             },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_STATE} {CAUSE_PREP} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_STATE": {"required": True, "allowed": ["is", "comes", "exists"]},
+                    "CAUSE_PREP": {"required": True, "allowed": ["because of", "due to", "on account of"]}
+                },
+                "examples": [
+                    "Dissatisfaction comes because of [price].",
+                    "The choice is due to [health concerns]."
+                ]
+            },
         },
 
         "HOW": {
@@ -105,8 +129,6 @@ TEMPLATE_LOOKUP = {
                     "'enrichment with X', 'avoidance of X'). "
                     "Do NOT use only the affected feature name as the node."
                 ),
-
-                
                 "category_instruction": (
                     "Category MUST be a stable broader class of interventions (HOW), suitable for clustering many nodes, "
                     "e.g., 'ingredient changes', 'recipe adjustments', 'portion size changes', 'packaging redesign', "
@@ -121,6 +143,17 @@ TEMPLATE_LOOKUP = {
                     "Instance must be the shortest verbatim span that still captures the core recommendation/action.",
                     "If the response is only a noun (e.g., 'Salt.'), keep INSTANCE verbatim but encode an actionable HOW in NODE via a nominalized change."
                 ],
+            },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_DIRECTIVE} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_DIRECTIVE": {"required": True, "allowed": ["must", "must not", "should"]}
+                },
+                "examples": [
+                    "The product must [increase portion sizes].",
+                    "The company must not [use too much salt]."
+                ]
             },
         },
 
@@ -161,6 +194,18 @@ TEMPLATE_LOOKUP = {
                     "Prefer explicit groups over implied audiences unless clearly stated."
                 ],
             },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_STATE} {WHO_PREP} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_STATE": {"required": True, "allowed": ["is made", "is intended"]},
+                    "WHO_PREP": {"required": True, "allowed": ["by", "for"]}
+                },
+                "examples": [
+                    "The decision is made by [the head chef].",
+                    "The meal is intended for [older adults]."
+                ]
+            },
         },
 
         "WHEN": {
@@ -199,6 +244,18 @@ TEMPLATE_LOOKUP = {
                     "Prefer explicit temporal expressions over inferred ones."
                 ],
             },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_EVENT} {TIME_PREP} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_EVENT": {"required": True, "allowed": ["occurs", "happens"]},
+                    "TIME_PREP": {"required": True, "allowed": ["during", "at", "after", "before", "in"]}
+                },
+                "examples": [
+                    "The problem occurs during [reheating].",
+                    "Delivery happens in [the evening]."
+                ]
+            },
         },
 
         "WHERE": {
@@ -236,6 +293,18 @@ TEMPLATE_LOOKUP = {
                     "Instance should be the shortest verbatim span that contains the context cue.",
                     "Prefer concrete contexts over abstract 'situations'."
                 ],
+            },
+            "template_structure": {
+                "pattern": "{SUBJECT} {VERB_EVENT} {PLACE_PREP} [ACTIONABLE_TAXONOMY_DIMENSION].",
+                "slots": {
+                    "SUBJECT": {"required": True, "type": "noun_phrase"},
+                    "VERB_EVENT": {"required": True, "allowed": ["happens", "takes place"]},
+                    "PLACE_PREP": {"required": True, "allowed": ["in", "on", "at", "via"]}
+                },
+                "examples": [
+                    "The purchase happens via [the online store].",
+                    "Consumption takes place at [home]."
+                ]
             },
         },
     },
