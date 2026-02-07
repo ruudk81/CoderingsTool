@@ -53,7 +53,6 @@ try:
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
         TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
-        TAXONOMY_AXIS_DESCRIPTIONS,
         # Response models
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
@@ -62,6 +61,9 @@ try:
         SubjectExtractionResponse,
         OntologyResponse,
         TaxonomyEnrichedIdeaResponse,
+        # Model factories (axis-specific response models)
+        create_subject_extraction_model,
+        create_taxonomy_enriched_model,
     )
 except ImportError:
     # Fallback for direct script execution
@@ -71,7 +73,6 @@ except ImportError:
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
         TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
-        TAXONOMY_AXIS_DESCRIPTIONS,
         # Response models
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
@@ -80,6 +81,9 @@ except ImportError:
         SubjectExtractionResponse,
         OntologyResponse,
         TaxonomyEnrichedIdeaResponse,
+        # Model factories (axis-specific response models)
+        create_subject_extraction_model,
+        create_taxonomy_enriched_model,
     )
 
 # === TEMPLATE LOOKUP =============================================================================================
@@ -123,95 +127,89 @@ def _escape_braces_for_format(s: str) -> str:
 def _format_lookup_for_axis(axis: str) -> dict:
     """Format TEMPLATE_LOOKUP data for a specific axis.
 
-    Looks up the axis-specific data from TEMPLATE_LOOKUP and formats it
-    for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
+    Looks up the axis-specific data from TEMPLATE_LOOKUP (V2_1 structure)
+    and formats it for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
     TAXONOMY_ENRICHED_EXTRACTION_PROMPT.
+
+    V2_1 structure: each axis has anchor, schema (ref to template_schemas),
+    allowed_concepts, excluded_concepts, noun_phrase_descriptor, slot_guidance,
+    prompt_rules.
 
     Args:
         axis: Taxonomy axis code (WHAT, WHY, HOW, WHO, WHEN, WHERE)
 
     Returns:
-        dict with keys for both the subject prompt and the extraction prompt:
-        - dimension_description, template_pattern, slot_guidance_json,
-          required_form_json, verb_frames_json, marker
-          (used by TAXONOMY_AWARE_SUBJECT_PROMPT)
-        - axis_dimension_description, axis_required_form, axis_template_pattern,
-          axis_slot_guidance, axis_node_instruction, axis_category_instruction,
-          axis_taxonomy_phrase_instruction, axis_focus_rules
-          (used by TAXONOMY_ENRICHED_EXTRACTION_PROMPT)
+        dict with keys for both prompts:
+        - Subject prompt: axis_anchor, axis_dimension_description,
+          axis_included_concepts, axis_excluded_concepts, schema_name,
+          schema_pattern, axis_slot_guidance, noun_phrase_descriptor, schema_slots
+        - Extraction prompt: axis_anchor, axis_dimension_description,
+          axis_allowed_concepts, axis_excluded_concepts, axis_disambiguation_rules,
+          marker, axis_slot_guidance, axis_node_instruction,
+          axis_category_instruction, axis_taxonomy_phrase_instruction, axis_focus_rules
     """
     import json
 
     # Fallback to WHAT if axis not found
     axis_data = TEMPLATE_LOOKUP["axes"].get(axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-    marker = TEMPLATE_LOOKUP["marker"]
 
-    # Serialize to JSON and escape braces for .format() compatibility
+    # Resolve schema reference (e.g., "DESCRIBE_ENTITY_ATTRIBUTE" → schema dict)
+    schema_name = axis_data["schema"]
+    schema_data = TEMPLATE_LOOKUP["template_schemas"][schema_name]
+    schema_pattern = schema_data["pattern"]
+
+    # Serialize slot_guidance to JSON and escape braces for .format()
     slot_guidance_json = _escape_braces_for_format(
         json.dumps(axis_data["slot_guidance"], indent=2)
     )
-    required_form_json = _escape_braces_for_format(
-        json.dumps(axis_data["required_form"], indent=2)
-    )
 
-    # verb_frames is optional (only on WHY and HOW)
-    verb_frames_json = None
-    if "verb_frames" in axis_data:
-        verb_frames_json = _escape_braces_for_format(
-            json.dumps(axis_data["verb_frames"], indent=2)
-        )
+    # Format schema slots as human-readable text
+    slots_formatted_lines = []
+    for slot_name, slot_config in schema_data["slots"].items():
+        required_str = "required" if slot_config.get("required", True) else "optional"
+        slot_type = slot_config.get("type", "")
+        if "relation_examples" in slot_config:
+            examples_str = ", ".join(f'"{v}"' for v in slot_config["relation_examples"])
+            slots_formatted_lines.append(
+                f"- {slot_name} ({required_str}, {slot_type}): e.g. [{examples_str}]"
+            )
+        elif slot_type == "noun_phrase":
+            slots_formatted_lines.append(f"- {slot_name} ({required_str}): noun phrase")
+        else:
+            slots_formatted_lines.append(f"- {slot_name} ({required_str}): {slot_type}")
+    slots_formatted = "\n".join(slots_formatted_lines)
 
     # Extract prompt_rules (axis-specific instructions for extraction prompt)
     prompt_rules = axis_data.get("prompt_rules", {})
     focus_rules_list = prompt_rules.get("focus_rules", [])
     focus_rules_formatted = "\n".join(f"- {r}" for r in focus_rules_list)
 
-    # required_form may be a string or a dict; handle both
-    required_form_raw = axis_data["required_form"]
-    if isinstance(required_form_raw, str):
-        axis_required_form_str = required_form_raw
-    else:
-        axis_required_form_str = json.dumps(required_form_raw, indent=2)
+    # Disambiguation rules (optional, only on HOW axis)
+    disambiguation_rules = axis_data.get("disambiguation_rules", [])
+    disambiguation_formatted = "\n".join(f"- {r}" for r in disambiguation_rules) if disambiguation_rules else "None"
 
-    # Format template_structure for prompt injection
-    template_structure = axis_data.get("template_structure", {})
-    template_structure_pattern = template_structure.get("pattern", "")
-    template_structure_slots = template_structure.get("slots", {})
-    template_structure_examples = template_structure.get("examples", [])
+    # Concepts as comma-separated strings
+    allowed_concepts_str = ", ".join(axis_data.get("allowed_concepts", []))
+    excluded_concepts_str = ", ".join(axis_data.get("excluded_concepts", []))
 
-    # Format slots as human-readable text
-    slots_formatted_lines = []
-    for slot_name, slot_config in template_structure_slots.items():
-        required_str = "required" if slot_config.get("required", True) else "optional"
-        if "allowed" in slot_config:
-            allowed_str = ", ".join(f'"{v}"' for v in slot_config["allowed"])
-            slots_formatted_lines.append(f"- {slot_name} ({required_str}): one of [{allowed_str}]")
-        elif slot_config.get("type") == "noun_phrase":
-            slots_formatted_lines.append(f"- {slot_name} ({required_str}): noun phrase")
-        else:
-            slots_formatted_lines.append(f"- {slot_name} ({required_str})")
-    slots_formatted = "\n".join(slots_formatted_lines)
-
-    # Format examples
-    examples_formatted = "\n".join(f"- {ex}" for ex in template_structure_examples)
+    # Marker token
+    marker = TEMPLATE_LOOKUP["marker"]
 
     return {
-        # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT (existing)
-        "dimension_description": axis_data["dimension_description"],
-        "template_pattern": _escape_braces_for_format(axis_data["template_pattern"]),
-        "slot_guidance_json": slot_guidance_json,
-        "required_form_json": required_form_json,
-        "verb_frames_json": verb_frames_json,
-        "marker": marker,
-        # Keys for axis-specific template structure
-        "template_structure_pattern": _escape_braces_for_format(template_structure_pattern),
-        "template_structure_slots": _escape_braces_for_format(slots_formatted),
-        "template_structure_examples": _escape_braces_for_format(examples_formatted),
-        # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT (axis-prefixed)
+        # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT
+        "axis_anchor": axis_data["anchor"],
         "axis_dimension_description": axis_data["dimension_description"],
-        "axis_required_form": _escape_braces_for_format(axis_required_form_str),
-        "axis_template_pattern": _escape_braces_for_format(axis_data["template_pattern"]),
+        "axis_included_concepts": allowed_concepts_str,
+        "axis_excluded_concepts": excluded_concepts_str,
+        "schema_name": schema_name,
+        "schema_pattern": _escape_braces_for_format(schema_pattern),
         "axis_slot_guidance": slot_guidance_json,
+        "noun_phrase_descriptor": axis_data.get("noun_phrase_descriptor", ""),
+        "schema_slots": _escape_braces_for_format(slots_formatted),
+        # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT
+        "axis_allowed_concepts": allowed_concepts_str,
+        "axis_disambiguation_rules": disambiguation_formatted,
+        "marker": marker,
         "axis_node_instruction": _escape_braces_for_format(
             prompt_rules.get("node_instruction", "")
         ),
@@ -711,6 +709,9 @@ class IdeaExtractor:
 
         # PID throughput controller (continuous adjustment)
         self.pid_controller = PIDThroughputController()
+
+        # Bootstrap avg_tokens preserved for diagnostics (set after bootstrap, never updated)
+        self.bootstrap_avg_tokens = None
 
         # V3 stats tracking
         self.v3_stats = {
@@ -1284,31 +1285,35 @@ class IdeaExtractor:
                 prompt = TAXONOMY_AWARE_SUBJECT_PROMPT.format(
                     language=self.language,
                     survey_question=survey_question,
-                    # Taxonomy guidance (from consolidation)
-                    primary_dimension=taxonomy_axis,
-                    primary_dimension_rationale=getattr(self, 'taxonomy_rationale', 'Not available'),
-                    primary_dimension_description=self.taxonomy_axis_description or lookup_data["dimension_description"],
-                    # Axis-specific template structure (from lookup)
-                    template_structure_pattern=lookup_data["template_structure_pattern"],
-                    template_structure_slots=lookup_data["template_structure_slots"],
-                    template_structure_examples=lookup_data["template_structure_examples"],
-                    # Template guidance (from lookup)
-                    slot_guidance_json=lookup_data["slot_guidance_json"],
-                    required_form_json=lookup_data["required_form_json"],
-                    verb_frames_json=lookup_data["verb_frames_json"] or "No verb frames for this axis",
-                    dimension_description=lookup_data["dimension_description"],
                     # Context specifiers
                     domain=self.generic_specifiers.get('domain', 'general'),
                     topic=self.generic_specifiers.get('topic', 'general'),
                     entity=self.generic_specifiers.get('entity', 'unknown'),
                     perspective=self.generic_specifiers.get('perspective', 'general'),
-                    intent=self.generic_specifiers.get('intent', 'describe')
+                    intent=self.generic_specifiers.get('intent', 'describe'),
+                    # Taxonomy guidance (from lookup)
+                    taxonomy_axis=taxonomy_axis,
+                    axis_anchor=lookup_data["axis_anchor"],
+                    axis_dimension_description=lookup_data["axis_dimension_description"],
+                    axis_included_concepts=lookup_data["axis_included_concepts"],
+                    axis_excluded_concepts=lookup_data["axis_excluded_concepts"],
+                    # Schema (from lookup)
+                    schema_name=lookup_data["schema_name"],
+                    schema_pattern=lookup_data["schema_pattern"],
+                    axis_slot_guidance=lookup_data["axis_slot_guidance"],
+                    noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
+                    schema_slots=lookup_data["schema_slots"],
                 )
+
+                # Create axis-specific response model with tailored Field descriptions
+                axis_data = TEMPLATE_LOOKUP["axes"].get(taxonomy_axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
+                schema_data = TEMPLATE_LOOKUP["template_schemas"][axis_data["schema"]]
+                AxisSubjectModel = create_subject_extraction_model(taxonomy_axis, axis_data, schema_data)
 
                 response = await llm_create_async(
                     client=self.client,
                     model=self.model,
-                    response_model=SubjectExtractionResponse,
+                    response_model=AxisSubjectModel,
                     prompt=prompt,
                     temperature=0.0
                 )
@@ -1382,10 +1387,6 @@ class IdeaExtractor:
         Returns:
             Formatted prompt string
         """
-        # Use dynamic description if available, fall back to static dict
-        taxonomy_axis_description = getattr(self, 'taxonomy_axis_description', None) or \
-            TAXONOMY_AXIS_DESCRIPTIONS.get(self.taxonomy_axis, "General categorization")
-
         # Get axis-specific data from template_lookup (includes prompt_rules)
         lookup_data = _format_lookup_for_axis(self.taxonomy_axis or "WHAT")
 
@@ -1393,7 +1394,6 @@ class IdeaExtractor:
             var_lab=self.var_lab,
             taxonomy_axis=self.taxonomy_axis,
             taxonomy_actionable_type=taxonomy_actionable_type or "concepts",
-            primary_dimension_description=taxonomy_axis_description,
             domain=self.generic_specifiers.get('domain', 'general'),
             topic=self.generic_specifiers.get('topic', 'feedback'),
             entity=self.generic_specifiers.get('entity', 'unknown'),
@@ -1404,9 +1404,12 @@ class IdeaExtractor:
             response=response,
             canonical_phrasing=phrasing_template,
             # Axis-specific placeholders from template_lookup
+            axis_anchor=lookup_data["axis_anchor"],
             axis_dimension_description=lookup_data["axis_dimension_description"],
-            axis_required_form=lookup_data["axis_required_form"],
-            axis_template_pattern=lookup_data["axis_template_pattern"],
+            axis_allowed_concepts=lookup_data["axis_allowed_concepts"],
+            axis_excluded_concepts=lookup_data["axis_excluded_concepts"],
+            axis_disambiguation_rules=lookup_data["axis_disambiguation_rules"],
+            marker=lookup_data["marker"],
             axis_slot_guidance=lookup_data["axis_slot_guidance"],
             axis_node_instruction=lookup_data["axis_node_instruction"],
             axis_category_instruction=lookup_data["axis_category_instruction"],
@@ -1488,7 +1491,11 @@ class IdeaExtractor:
             "avg_input_tokens": avg_input,
             "avg_output_tokens": avg_output,
             "avg_actual_total_tokens": avg_actual_total,
-            "initial_avg_tokens": self.avg_tokens,
+            "initial_avg_tokens": self.bootstrap_avg_tokens if self.bootstrap_avg_tokens is not None else self.avg_tokens,
+            "current_avg_tokens": self.avg_tokens,
+            "adjustments_made": self.v3_stats['adjustments_made'],
+            "threshold_adjustments": self.v3_stats['threshold_adjustments'],
+            "pid_adjustments": self.v3_stats['pid_adjustments'],
             "input_samples": len(self.input_token_history),
             "output_samples": len(self.output_token_history),
             "actual_samples": len(self.actual_total_tokens),
@@ -1640,8 +1647,14 @@ class IdeaExtractor:
 
             timeout = self.latency_tracker.get_timeout(est_tokens)
 
-            # Set template prefix for Pydantic validation
-            TaxonomyEnrichedIdeaResponse.set_template_prefix(template_prefix)
+            # Create axis-specific response model with tailored Field descriptions
+            current_axis = self.taxonomy_axis or "WHAT"
+            axis_data = TEMPLATE_LOOKUP["axes"].get(current_axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
+            AxisExtractionModel = create_taxonomy_enriched_model(current_axis, axis_data)
+
+            # Inject runtime context for validators
+            AxisExtractionModel.set_template_prefix(template_prefix)
+            AxisExtractionModel.set_axis_context(current_axis, axis_data)
 
             async with self.semaphore:
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
@@ -1650,7 +1663,7 @@ class IdeaExtractor:
                         llm_create_async(
                             client=self.client,
                             model=self.model,
-                            response_model=List[TaxonomyEnrichedIdeaResponse],
+                            response_model=List[AxisExtractionModel],
                             prompt=prompt,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
@@ -1746,7 +1759,7 @@ class IdeaExtractor:
                                 llm_create_async(
                                     client=self.client,
                                     model=self.model,
-                                    response_model=List[TaxonomyEnrichedIdeaResponse],
+                                    response_model=List[AxisExtractionModel],
                                     prompt=prompt,
                                     temperature=self.config.temperature,
                                     max_tokens=self.config.max_tokens,
@@ -1803,7 +1816,7 @@ class IdeaExtractor:
 
         except asyncio.TimeoutError:
             self.stats['timeouts'] += 1
-            logger.warning(f"Task {task['respondent_id']} timed out")
+            logger.warning(f"Task {task['respondent_id']} timed out (retrying)")
             raise
 
         except RateLimitError:
@@ -1993,10 +2006,7 @@ class IdeaExtractor:
             limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60,
             limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60)
 
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/arrival_rate)
 
         self.semaphore = asyncio.Semaphore(min(num_tasks, optimal))
         self.optimal_concurrency = min(num_tasks, optimal)
@@ -2027,10 +2037,7 @@ class IdeaExtractor:
             limits.tokens_per_minute * 0.5 / conservative_tokens / 60
         )
 
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/max(arrival_rate, 0.1))
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/max(arrival_rate, 0.1))
 
         self.semaphore = asyncio.Semaphore(min(num_tasks, optimal))
         self.optimal_concurrency = min(num_tasks, optimal)
@@ -2078,10 +2085,7 @@ class IdeaExtractor:
             return False
 
         # Update rate limiter
-        if new_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/new_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(new_rate), time_period=1.0)
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/new_rate)
 
         self.current_arrival_rate = new_rate
         self.v3_stats['pid_adjustments'] += 1
@@ -2120,10 +2124,7 @@ class IdeaExtractor:
         new_arrival_rate = min(rpm_throughput, new_tpm_throughput)
 
         # Reinstall rate limiter with adjusted rate
-        if new_arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/new_arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(new_arrival_rate), time_period=1.0)
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/new_arrival_rate)
 
         # V3: Track current arrival rate for PID
         self.current_arrival_rate = new_arrival_rate
@@ -2288,6 +2289,7 @@ class IdeaExtractor:
         # V3: Apply tiktoken offset to bootstrap estimate
         # The bootstrap measures actual API tokens, so we use this to calibrate
         self.avg_tokens = int(avg_tokens)
+        self.bootstrap_avg_tokens = self.avg_tokens
 
         # === PHASE 6: Initialize PRODUCTION rate limiters with measured data ===
         optimal = self._initialize_rate_limiters(avg_latency_s, avg_tokens, limits, len(tasks))
@@ -2368,12 +2370,8 @@ class IdeaExtractor:
                 elapsed = now - start_time
                 rate = completed / elapsed if elapsed > 0 else 0
 
-                # V3: Show real-time TPM utilization in progress
-                current_tpm = await self.tpm_tracker.get_current_tpm()
-                tpm_util = (current_tpm / self.rate_limits.tokens_per_minute * 100) if self.rate_limits.tokens_per_minute > 0 else 0
-
                 print(f"Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%), "
-                      f"Rate: {rate:.1f}/s, Queue: {remaining}, TPM: {tpm_util:.0f}%")
+                      f"Rate: {rate:.1f}/s, Queue: {remaining}")
                 last_report = now
 
             # V3: PID adjustment every ADJUSTMENT_INTERVAL (more frequent than diagnostics)
@@ -2390,7 +2388,32 @@ class IdeaExtractor:
                 offset_stats = self.tiktoken_offset_learner.get_stats()
 
                 if bucket_status['low_tokens']:
-                    self.verbose_reporter.stat_line(f"⚠️ Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
+                    self.verbose_reporter.stat_line(f"Token bucket low: {bucket_status['available_tokens']:,} tokens ({bucket_status['utilization_pct']:.1f}% utilized)")
+
+                # Token drift and threshold context diagnostics
+                if token_stats['status'] == 'learning' and token_stats['actual_samples'] >= 10:
+                    actual_avg = token_stats['avg_actual_total_tokens']
+                    initial_avg = token_stats['initial_avg_tokens']
+                    current_avg = token_stats['current_avg_tokens']
+                    difference = actual_avg - current_avg
+
+                    learned_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                    current_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(current_avg, 1) / 60
+
+                    pct_change = (difference / current_avg * 100) if current_avg > 0 else 0
+                    threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
+                    threshold_note = f"below {threshold_pct}% threshold" if abs(pct_change) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
+
+                    adj_total = token_stats['adjustments_made']
+                    if adj_total > 0:
+                        self.verbose_reporter.stat_line(f"Token usage: Bootstrap {initial_avg:.0f}, Adjusted {current_avg:.0f}, Actual {actual_avg:.0f} "
+                                                      f"({difference:+.0f} from current, {pct_change:+.1f}%) -- {threshold_note}")
+                        self.verbose_reporter.stat_line(f"Throughput: pacing at {self.current_arrival_rate:.2f}/s "
+                                                      f"(T:{token_stats['threshold_adjustments']}, PID:{token_stats['pid_adjustments']})")
+                    else:
+                        self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
+                                                      f"({difference:+.0f} tokens, {pct_change:+.1f}%) -- {threshold_note}")
+                        self.verbose_reporter.stat_line(f"Throughput: pacing at {current_throughput:.1f}/s (bootstrap), optimal {learned_throughput:.1f}/s (learned)")
 
                 last_diagnostics = now
 
@@ -2405,8 +2428,15 @@ class IdeaExtractor:
         print(f"- Successful: {self.stats['tasks_successful']}")
         print(f"- Failed: {self.stats['tasks_failed']}")
         print(f"- Rate limits: {self.stats['rate_limits']}")
-        print(f"- Timeouts: {self.stats['timeouts']}")
+        timeouts = self.stats['timeouts']
+        if timeouts > 0 and self.stats['tasks_failed'] == 0:
+            print(f"- Timeouts: {timeouts} (all retried successfully)")
+        else:
+            print(f"- Timeouts: {timeouts}")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
+        if self.v3_stats['threshold_adjustments'] > 0:
+            print(f"- Throughput adjustments: {self.v3_stats['adjustments_made']} (T:{self.v3_stats['threshold_adjustments']}, PID:{self.v3_stats['pid_adjustments']})")
+            print(f"  - Bootstrap avg_tokens: {self.bootstrap_avg_tokens}, Final avg_tokens: {self.avg_tokens}")
 
         # Print PROCESSING_ERROR failure report
         if self.failure_log:
@@ -2425,7 +2455,6 @@ class IdeaExtractor:
         print(f"- Total adjustments: {self.v3_stats['adjustments_made']}")
         print(f"  - Threshold adjustments: {self.v3_stats['threshold_adjustments']}")
         print(f"  - PID adjustments: {self.v3_stats['pid_adjustments']}")
-        print(f"- TPM utilization range: {self.v3_stats['min_tpm_utilization']:.0f}% - {self.v3_stats['max_tpm_utilization']:.0f}%")
         if self.current_arrival_rate:
             print(f"- Final arrival rate: {self.current_arrival_rate:.2f}/s")
 
@@ -2441,15 +2470,25 @@ class IdeaExtractor:
                 if token_stats['actual_samples'] >= 10:
                     actual_avg = token_stats['avg_actual_total_tokens']
                     initial_avg = token_stats['initial_avg_tokens']
+                    current_avg = token_stats['current_avg_tokens']
                     difference = actual_avg - initial_avg
 
                     optimal_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
                     initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
-                    pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
 
-                    self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
+                    pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
+                    threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
+                    residual = actual_avg - current_avg
+                    residual_pct = (residual / current_avg * 100) if current_avg > 0 else 0
+                    residual_note = f"below {threshold_pct}% threshold" if abs(residual_pct) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
+
+                    self.verbose_reporter.stat_line(f"Token usage summary: Bootstrap {initial_avg:.0f} -> Actual {actual_avg:.0f} "
                                                   f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
-                    self.verbose_reporter.stat_line(f"Throughput analysis: Expected {initial_throughput:.1f}/s → Optimal {optimal_throughput:.1f}/s with perfect estimation")
+                    if token_stats['adjustments_made'] > 0:
+                        self.verbose_reporter.stat_line(f"Adjustments applied: {token_stats['adjustments_made']} "
+                                                      f"(T:{token_stats['threshold_adjustments']}, PID:{token_stats['pid_adjustments']}) "
+                                                      f"final avg_tokens: {current_avg}, residual drift {residual_pct:+.1f}% -- {residual_note}")
+                    self.verbose_reporter.stat_line(f"Throughput analysis: Bootstrap {initial_throughput:.1f}/s -> Optimal {optimal_throughput:.1f}/s with perfect estimation")
 
         return results
 
