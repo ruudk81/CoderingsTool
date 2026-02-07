@@ -31,6 +31,7 @@ try:
         INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
+        THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
     )
     from .prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 except ImportError:
@@ -44,6 +45,7 @@ except ImportError:
         INPUT_HISTORY_MAXLEN, OUTPUT_HISTORY_MAXLEN, ERROR_WINDOW_SIZE,
         DEFAULT_TIMEOUT_SECONDS, DEFAULT_LATENCY_SECONDS,
         PROGRESS_REPORT_INTERVAL, DIAGNOSTIC_INTERVAL, MAX_TOKEN_ACQUIRE_ATTEMPTS,
+        THROUGHPUT_ADJUSTMENT_THRESHOLD, THROUGHPUT_ADJUSTMENT_MIN_SAMPLES, ADJUSTMENT_INTERVAL,
     )
     from prompts_exp import GRADER_INSTRUCTIONS, QualityFilterLLMResponseExp
 
@@ -288,6 +290,14 @@ class Grader:
         # Failure log: tracks each permanent failure with details
         self.failure_log = []  # List of {respondent_id, reason, error_type, response_preview}
 
+        # Throughput adjustment state
+        self.current_arrival_rate = None      # Set after bootstrap, updated on adjustment
+        self.bootstrap_avg_tokens = None      # Preserved original bootstrap value for diagnostics
+        self.adjustment_stats = {
+            'adjustments_made': 0,
+            'last_avg_tokens': None,
+        }
+
     def _calculate_avg_tokens(self) -> int:
         """Calculate average token count for requests"""
         sample_size = min(10, len(self.responses))
@@ -370,7 +380,9 @@ class Grader:
             "avg_input_tokens": avg_input,
             "avg_output_tokens": avg_output,
             "avg_actual_total_tokens": avg_actual_total,
-            "initial_avg_tokens": self.avg_tokens,
+            "initial_avg_tokens": self.bootstrap_avg_tokens if self.bootstrap_avg_tokens is not None else self.avg_tokens,
+            "current_avg_tokens": self.avg_tokens,
+            "adjustments_made": self.adjustment_stats['adjustments_made'],
             "input_samples": len(self.input_token_history),
             "output_samples": len(self.output_token_history),
             "actual_samples": len(self.actual_total_tokens)
@@ -399,6 +411,55 @@ class Grader:
             "low_tokens": available_pct < 10,
             "consumption_rate": consumption_rate_per_sec if len(self.actual_total_tokens) >= 10 else 0
         }
+
+    def _adjust_throughput_if_needed(self) -> bool:
+        """Threshold-based throughput adjustment.
+
+        When actual token usage significantly exceeds bootstrap estimate,
+        reinstall rate_limiter and token bucket with corrected values.
+        Pattern ported from ideaExtractor_exp.py.
+
+        Returns True if adjustment was made, False otherwise.
+        """
+        if len(self.actual_total_tokens) < THROUGHPUT_ADJUSTMENT_MIN_SAMPLES:
+            return False
+
+        actual_avg = sum(self.actual_total_tokens) / len(self.actual_total_tokens)
+        bootstrap_avg = self.avg_tokens
+        ratio = actual_avg / bootstrap_avg if bootstrap_avg > 0 else 1.0
+
+        if ratio <= THROUGHPUT_ADJUSTMENT_THRESHOLD:
+            return False
+
+        # Calculate new arrival rate using actual tokens
+        rpm_throughput = self.rate_limits.requests_per_minute * self.processing_config.rate_limit_headroom / 60
+        new_tpm_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / actual_avg / 60
+        new_arrival_rate = min(rpm_throughput, new_tpm_throughput)
+
+        # Reinstall rate limiter with adjusted rate
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/new_arrival_rate)
+
+        # Reinitialize token bucket with fresh state
+        old_bucket_available = self.tpm_bucket.available
+        self.tpm_bucket = TokenBucket(int(self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom))
+
+        # Update avg_tokens for future estimation and rate calculations
+        old_avg = self.avg_tokens
+        old_arrival_rate = self.current_arrival_rate or 0
+        self.avg_tokens = int(actual_avg)
+        self.current_arrival_rate = new_arrival_rate
+
+        # Track adjustment
+        self.adjustment_stats['last_avg_tokens'] = old_avg
+        self.adjustment_stats['adjustments_made'] += 1
+
+        print(f"\n>> THROUGHPUT ADJUSTMENT #{self.adjustment_stats['adjustments_made']}")
+        print(f"   Actual tokens ({actual_avg:.0f}) exceeded estimate ({bootstrap_avg:.0f}) by {(ratio-1)*100:.0f}%")
+        print(f"   Arrival rate: {old_arrival_rate:.2f}/s -> {new_arrival_rate:.2f}/s")
+        print(f"   avg_tokens: {old_avg} -> {self.avg_tokens}")
+        print(f"   Token bucket reset (was {old_bucket_available:,.0f} available)")
+
+        return True
 
     @retry(
         retry=retry_if_exception_type((
@@ -748,6 +809,7 @@ class Grader:
 
         # Update avg_tokens with bootstrap measurement
         self.avg_tokens = int(avg_tokens)
+        self.bootstrap_avg_tokens = self.avg_tokens
 
         # Calculate optimal concurrency using Little's Law
         api_limits = ApiLimits(limits.tokens_per_minute, limits.requests_per_minute)
@@ -769,13 +831,11 @@ class Grader:
             limits.tokens_per_minute * self.processing_config.rate_limit_headroom / avg_tokens / 60
         )
 
-        if arrival_rate < 1:
-            self.rate_limiter = AsyncLimiter(1, time_period=1/arrival_rate)
-        else:
-            self.rate_limiter = AsyncLimiter(int(arrival_rate), time_period=1.0)
+        self.rate_limiter = AsyncLimiter(1, time_period=1.0/arrival_rate)
 
         self.semaphore = asyncio.Semaphore(min(len(tasks), optimal))
         self.optimal_concurrency = min(len(tasks), optimal)
+        self.current_arrival_rate = arrival_rate
 
         # Re-initialize TokenBucket with actual rate limits
         self.tpm_bucket = TokenBucket(limits.tokens_per_minute * self.processing_config.rate_limit_headroom)
@@ -826,11 +886,17 @@ class Grader:
         start_time = time.time()
         last_report = start_time
         last_diagnostics = start_time
-        
+        last_adjustment = start_time
+
         while not queue.empty():
             await asyncio.sleep(1)
             now = time.time()
-            
+
+            # Throughput adjustment check
+            if now - last_adjustment >= ADJUSTMENT_INTERVAL:
+                self._adjust_throughput_if_needed()
+                last_adjustment = now
+
             # Regular progress report
             if now - last_report >= PROGRESS_REPORT_INTERVAL:
                 completed = self.stats['tasks_processed']
@@ -861,19 +927,23 @@ class Grader:
                     if token_stats['actual_samples'] >= 10:
                         actual_avg = token_stats['avg_actual_total_tokens']
                         initial_avg = token_stats['initial_avg_tokens']
-                        difference = actual_avg - initial_avg
-                        
-                        # Calculate theoretical throughput with learned average (with zero-division guards)
-                        # Use dynamically fetched rate limits stored on self
-                        learned_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
-                        initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
+                        current_avg = token_stats['current_avg_tokens']
+                        difference = actual_avg - current_avg
 
-                        pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
-                        throughput_change = ((learned_throughput - initial_throughput) / initial_throughput * 100) if initial_throughput > 0 else 0
-                        self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
-                                                      f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
-                        self.verbose_reporter.stat_line(f"Throughput impact: {initial_throughput:.1f}/s → {learned_throughput:.1f}/s "
-                                                      f"({throughput_change:+.1f}%)")
+                        learned_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
+                        current_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(current_avg, 1) / 60
+
+                        pct_change = (difference / current_avg * 100) if current_avg > 0 else 0
+                        threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
+                        threshold_note = f"below {threshold_pct}% threshold" if abs(pct_change) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
+                        if token_stats['adjustments_made'] > 0:
+                            self.verbose_reporter.stat_line(f"Token usage: Bootstrap {initial_avg:.0f}, Adjusted {current_avg:.0f}, Actual {actual_avg:.0f} "
+                                                          f"({difference:+.0f} from current, {pct_change:+.1f}%) — {threshold_note}")
+                            self.verbose_reporter.stat_line(f"Throughput: pacing at {current_throughput:.1f}/s (adjusted from {self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60:.1f}/s bootstrap)")
+                        else:
+                            self.verbose_reporter.stat_line(f"Token usage: Initial estimate {initial_avg:.0f}, Learned average {actual_avg:.0f} "
+                                                          f"({difference:+.0f} tokens, {pct_change:+.1f}%) — {threshold_note}")
+                            self.verbose_reporter.stat_line(f"Throughput: pacing at {current_throughput:.1f}/s (bootstrap), optimal {learned_throughput:.1f}/s (learned)")
                 
                 last_diagnostics = now
         
@@ -893,6 +963,9 @@ class Grader:
         print(f"- Rate limits: {self.stats['rate_limits']}")
         print(f"- Timeouts: {self.stats['timeouts']}")
         print(f"- Average: {elapsed/len(tasks):.2f}s/task")
+        if self.adjustment_stats['adjustments_made'] > 0:
+            print(f"- Throughput adjustments: {self.adjustment_stats['adjustments_made']}")
+            print(f"  - Bootstrap avg_tokens: {self.bootstrap_avg_tokens}, Final avg_tokens: {self.avg_tokens}")
 
         # Failure report
         if self.failure_log:
@@ -913,17 +986,22 @@ class Grader:
                 if token_stats['actual_samples'] >= 10:
                     actual_avg = token_stats['avg_actual_total_tokens']
                     initial_avg = token_stats['initial_avg_tokens']
+                    current_avg = token_stats['current_avg_tokens']
                     difference = actual_avg - initial_avg
 
-                    # Calculate what throughput would have been with perfect estimation (with zero-division guards)
-                    # Use dynamically fetched rate limits stored on self
                     optimal_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(actual_avg, 1) / 60
                     initial_throughput = self.rate_limits.tokens_per_minute * self.processing_config.rate_limit_headroom / max(initial_avg, 1) / 60
 
                     pct_change = (difference / initial_avg * 100) if initial_avg > 0 else 0
-                    self.verbose_reporter.stat_line(f"Token usage summary: Initial {initial_avg:.0f} → Actual {actual_avg:.0f} "
+                    threshold_pct = int((THROUGHPUT_ADJUSTMENT_THRESHOLD - 1) * 100)
+                    residual = actual_avg - current_avg
+                    residual_pct = (residual / current_avg * 100) if current_avg > 0 else 0
+                    residual_note = f"below {threshold_pct}% threshold" if abs(residual_pct) <= threshold_pct else f"exceeds {threshold_pct}% threshold"
+                    self.verbose_reporter.stat_line(f"Token usage summary: Bootstrap {initial_avg:.0f} -> Actual {actual_avg:.0f} "
                                                   f"({difference:+.0f} tokens, {pct_change:+.1f}%)")
-                    self.verbose_reporter.stat_line(f"Throughput analysis: Expected {initial_throughput:.1f}/s → Optimal {optimal_throughput:.1f}/s with perfect estimation")
+                    if token_stats['adjustments_made'] > 0:
+                        self.verbose_reporter.stat_line(f"Adjustments applied: {token_stats['adjustments_made']} (final avg_tokens: {current_avg}, residual drift {residual_pct:+.1f}% — {residual_note})")
+                    self.verbose_reporter.stat_line(f"Throughput analysis: Bootstrap {initial_throughput:.1f}/s -> Optimal {optimal_throughput:.1f}/s with perfect estimation")
         
         return results
 
