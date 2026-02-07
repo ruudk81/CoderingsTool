@@ -48,6 +48,11 @@ DIAGNOSTIC_INTERVAL = 30              # Seconds between diagnostic reports
 # Rate limiting
 MAX_TOKEN_ACQUIRE_ATTEMPTS = 1000     # Max attempts to acquire tokens before failing
 
+# Throughput adjustment (feedback loop)
+THROUGHPUT_ADJUSTMENT_THRESHOLD = 1.1     # Trigger when actual > 110% of estimate
+THROUGHPUT_ADJUSTMENT_MIN_SAMPLES = 10    # Min data points before adjusting
+ADJUSTMENT_INTERVAL = 15                  # Seconds between adjustment checks
+
 
 # =============================================================================
 # EXPERIMENTAL CONFIG CLASS (for future use)
