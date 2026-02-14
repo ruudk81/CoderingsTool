@@ -558,166 +558,154 @@ def create_subject_extraction_model(axis: str, axis_data: dict, schema_data: dic
 # TAXONOMY-ENRICHED IDEA EXTRACTION
 # -----------------------------------------------------------------------------
 
-TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """ 
-You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis. 
-Your task is to identify distinct ideas in a survey response, reformulate each idea using a canonical template and produce a lightweight taxonomy classification.
+TAXONOMY_ENRICHED_EXTRACTION_PROMPT ="""You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis. 
+Your task is to identify distinct ideas in a survey response, reformulate each idea using a canonical template, and produce a lightweight taxonomy classification for each idea.
 
-You will be working in the following language:
-<language>
-{language}
-</language>
+You will be provided with three key pieces of information:
 
-Here is the survey question being analyzed:
-<survey_question>
-{var_lab}
-</survey_question>
+**SURVEY CONTEXT**
+<survey_context>
+You will be working in the following language: {language}
+
+Here is the survey question being analyzed: "{var_lab}"
 
 Here is the context for the survey:
-<context>
-Type of respondent: {perspective}
-Domain: {domain}
-Entity of interest: {entity}
-Topic: {topic}
-Intent by response: {intent}
-</context>
+- Type of respondent: {perspective}
+- Domain: {domain}
+- Entity of interest: {entity}
+- Topic: {topic}
+- Intent by response: {intent}
+</survey_context>
 
+**TAXONOMY FRAMEWORK**
+<taxonomy_framework>
 Here is the taxonomy lens you need to apply:
-<taxonomy_lens>
-Global dimension {taxonomy_axis}; {axis_dimension_description}
-Anchor: {axis_anchor} -> {taxonomy_actionable_type}
-</taxonomy_lens>
+- Global dimension {taxonomy_axis}; {axis_dimension_description}
+- Anchor: {axis_anchor} -> {taxonomy_actionable_type}
+= taxonomy_actionable_type {taxonomy_actionable_type}
 
 Here is the canonical template you should use:
-<canonical_template>
-Template pattern: {axis_slot_pattern}
-
-Slot guidance:
+- Template pattern: {axis_slot_pattern}
+- Slot guidance:
 {axis_slot_guidance}
-</canonical_template>
+</taxonomy_framework>
 
-Here is the response you need to process:
+
+**RESPONSE TO ANALYZE**
 <response>
 Respondent ID: {respondent_id}
 Response: {response}
 </response>
 
+---
 
-Follow these steps to complete the task:
+Now follow these five steps to complete the extraction:
 
 **STEP 1: IDENTIFY AND SPLIT IDEAS**
 
-Identify all conceptually distinct instances in which the response describes or refers to an unique “{taxonomy_actionable_type}”-instance, interpreted in light of the survey question.
-Assign each unique concept a unique idea_id.
+Identify all conceptually distinct instances in which the response describes or refers to a unique instance of the taxonomy_actionable_type (="{taxonomy_actionable_type}”), interpreted in light of the survey question.
 
-SPLITTING RULES:
-- Items joined by conjunctions ("and", "en", "und", "et", ...) or commas that refer to different concepts MUST be split into separate ideas.
-  Example: "faster and cheaper" → TWO ideas: "faster" (idea 1) and "cheaper" (idea 2)
-- Each split idea gets its OWN template instantiation and its OWN ontology hierarchy.
-- Even very short responses (2-5 words) can contain multiple ideas if they enumerate distinct concepts.
-- When in doubt about whether to split, split. Over-splitting is preferable to under-splitting.
+CRITICAL SPLITTING RULES:
+- Items joined by conjunctions (such as "and", "or", "en", "und", "et", "y", "ou") or commas that refer to different concepts MUST be split into separate ideas
+- Example: If the response is "faster and cheaper" → this contains TWO ideas: "faster" (idea 1) and "cheaper" (idea 2)
+- Each split idea will get its OWN template instantiation and its OWN taxonomy hierarchy
+- Even very short responses (2-5 words) can contain multiple ideas if they enumerate distinct concepts
+- When in doubt about whether to split, err on the side of splitting. Over-splitting is preferable to under-splitting
+- Assign each unique concept a sequential idea_id starting from "1"
 
-If the response is empty, nonsensical, or irrelevant to the survey question, you will return an empty array [].
+If the response is empty, nonsensical, or irrelevant to the survey question, you will ultimately return an empty JSON array [].
 
 **STEP 2: EXTRACT THE INSTANCE**
 
-For each unique idea, identify the shortest verbatim span from the response in which a unique "{taxonomy_actionable_type}”-instance is expressed, interpreted in light of the survey question.
-When ideas have been split from a compound phrase, the instance for each idea is the portion of the original text that belongs to THAT specific idea, not the entire compound.
+For each unique idea identified in Step 1, extract the shortest verbatim span from the original response text that expresses that specific idea.
 
-**STEP 3: COMPLETE THE TEMPLATE**
+Important: When ideas have been split from a compound phrase, the instance for each idea is ONLY the portion of the original text that belongs to that specific idea, not the entire compound phrase.
 
-Reformulate the verbatim span following the canonical_template. The template contains a marker token (shown in square brackets) that you must replace:
+**STEP 3: COMPLETE THE CANONICAL TEMPLATE**
 
-- The template will begin with this fixed prefix (do NOT alter this):  "{canonical_phrasing}"
-- You MUST replace ONLY the marker token with content that is: {axis_anchor}
-  * Consistent with the axis description and allowed concepts
-  * NOT one of the excluded concepts
+For each idea, reformulate it using the canonical template provided in the taxonomy framework.
+
+Rules for template completion:
+- Begin with the fixed canonical_phrasing prefix exactly as provided (do NOT alter this)
+    - Remember, this is the canonical_phrasing prefix: "{canonical_phrasing}"
+- The template contains a marker token (shown in square brackets) that you must replace
+- Replace ONLY the marker token with content that aligns with the axis_anchor
+    - Remember, this is the axis_anchor: {axis_anchor}
+- The replacement content must be:
+  * Consistent with the axis_dimension_description and allowed concepts
+  * NOT one of any excluded concepts mentioned in the axis_slot_guidance
   * Written in the language specified in the survey context
- 
-  
-**STEP 4 — LIGHTWEIGHT TAXONOMY HIERARCHY**
+- Follow any additional guidance provided in axis_slot_guidance
 
-For each idea, construct a four-level lightweight taxonomy (in {language}) about: {topic}.
 
-Each level serves a distinct analytical purpose and must follow the rules below.
+**STEP 4: BUILD LIGHTWEIGHT TAXONOMY HIERARCHY**
 
-LEVEL 1 — INSTANCE (normalized mention)
-A normalized version of the original expression from Step 1.
+For each idea, construct a four-level taxonomy hierarchy in the specified language. Each level serves a distinct analytical purpose:
 
-Requirements:
-- Must stay close to what the respondent said.
-- Should be cleaned, simplified, and standardized in wording.
-- Must still be clearly traceable to the original text.
+**LEVEL 1 — INSTANCE (normalized mention)**
+A cleaned and standardized version of the respondent's original wording.
+- Must remain traceable to the original phrasing
+- May simplify adjectives or qualifiers for clarity
+- Should not introduce new abstraction beyond what was stated
+- Think: "What did the respondent literally mention?"
 
-Think of this as:
-"What did the respondent basically say, in a normalized form?"
+**LEVEL 2 — NODE (reusable semantic concept)**
+The core semantic unit referenced in the instance.
+- Remove qualifiers and descriptors
+- Reduce to the base object or concept
+- Must be reusable across different responses
+- Represents what is being referred to, not how it is described
+- Think: "What object or concept is being mentioned?"
 
-LEVEL 2 — CONCEPT (reusable semantic concept)
-A generalized, reusable concept representing the "{taxonomy_actionable_type}"-instance in relation to {topic}.
+**LEVEL 3 — CLASS (type of node)**
+A structural grouping that categorizes the node into a broader type.
+- Groups together similar nodes
+- Describes what kind of thing the node is
+- Should be descriptive of structure, not evaluation or sentiment
+- Think: "What type of thing is this node?"
 
-The concept should:
-- Be broader than the exact wording of the instance.
-- Generalize beyond this single case.
-- Be reusable across many similar responses.
-- Describe WHAT is being proposed or changed (the substance), not how it is phrased rhetorically.
-- Be specific enough to be analytically meaningful.
-
-Think of this as:
-"What concrete {taxonomy_actionable_type} does this instance point to in conceptual terms?"
-
-LEVEL 3 — CLASS (aspect of the entity)
-A broader class that identifies which aspect or object of the entity-of-interest ("{language}") the concept relates to.
-
-The class should:
-- Generalize across multiple concepts.
-- Group together ideas that affect the same part or aspect of the entity.
-- Describe WHAT part of the entity is impacted, not why or how.
-
-Think of this as:
-"Which specific part or aspect of the entity-of-interest is being affected?"
-
-LEVEL 4 — DOMAIN (root / topic-of-interest)
-The highest-level domain that gives meaning to all other levels.
-
-- Must align with the survey topic: {topic}.
-- Represents the shared "universe of meaning" for all ideas in this taxonomy.
-
-Think of this as:
-"Within what overarching domain do all these classes make sense?"
+**LEVEL 4 — ROOT (overarching dimension)**
+The fixed analytical dimension under which all classes fall.
+- This should be the topic from the survey context
+- Represents the overarching analytical attribute or dimension
+- Must align with the predefined analytical framework
+- All classes must logically fit under this root
+- Think: "Within which analytical dimension does this class belong?"
 
 STRUCTURAL SUMMARY:
-DOMAIN (topic)
-  -> CLASS (aspect of the entity)
-     -> CONCEPT (reusable idea)
-        -> INSTANCE (normalized mention)
-
+```
+ROOT (topic of study)
+  └─> CLASS (structural grouping of what is said)
+      └─> NODE (core semantic unit of what is said)
+          └─> INSTANCE (normalized mention of what is said)
+```
 
 **STEP 5: ASSIGN IDs**
 
 - Use the exact respondent_id provided in the response
-- Assign sequential idea_id values as strings: "1", "2", "3", etc.
+- Assign sequential idea_id values as strings: "1", "2", "3", etc., for each distinct idea
 
-**OUTPUT FORMAT**
-
-Return a valid JSON array of objects. Each object must contain:
-- respondent_id (string)
-- idea_id (string)
-- idea (string, the template-completed reformulation)
-- ontology (object with instance, node, category, root fields, or null)
+---
 
 **EDGE CASES**
 - If the response is empty, irrelevant, or nonsensical: return []
 - If there is one idea: return an array with one object
-- If there are multiple ideas: return an array with multiple objects, each with sequential idea_id
+- If there are multiple ideas: return an array with multiple objects, each with its own sequential idea_id
+
+**OUTPUT**
 
 Begin processing now and provide your output as valid JSON matching the required response schema.
+CRITICAL: all output fields must be in {language}
 """
 
 class OntologyResponse(BaseModel):
     """Base ontology — provides normalize_field validator.
     Field descriptions and examples are set per-axis in create_taxonomy_enriched_model()."""
+    model_config = ConfigDict(populate_by_name=True)
+
     instance: str = ""
     node: str = ""
-    category: str = ""
+    category: str = Field(default="", alias="class")
     root: str = ""
 
     @field_validator('instance', 'node', 'category', 'root', mode='before')
@@ -768,7 +756,7 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     )
     ontology: Optional[OntologyResponse] = Field(
         default=None,
-        description="Hierarchical ontology: instance → node → category → root"
+        description="Hierarchical ontology: instance → node → class → root"
     )
 
     @field_validator('idea', mode='before')
@@ -910,6 +898,7 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
             examples=ex.get("node", [])
         )),
         category=(str, Field(
+            alias="class",
             description=prompt_rules.get(
                 "category_instruction",
                 "Immediate parent grouping of the node"
@@ -938,7 +927,7 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
         )),
         ontology=(Optional[AxisOntologyResponse], Field(
             default=None,
-            description="Hierarchical ontology: instance -> node -> category -> root"
+            description="Hierarchical ontology: instance -> node -> class -> root"
         )),
     )
 

@@ -16,7 +16,7 @@ Toggle:
 
 USE_EXPERIMENTAL = True  # Toggle between production and experimental
 PRINT_PROMPTS = False  # Toggle prompt printing
-EXPERIMENT_N  = None  # n or None
+EXPERIMENT_N  = 20  # n or None
 
 import sys
 import time
@@ -293,6 +293,29 @@ if __name__ == "__main__":
                 ont_parts = [v for v in (idea.instance, idea.node, idea.category, idea.root) if v]
                 if ont_parts:
                     print(f"    ontology: {' → '.join(ont_parts)}")
+            print("=" * 70)
+
+        # Print all ontologies
+        if results:
+            print("\n" + "=" * 70)
+            print("ALL ONTOLOGIES  (instance → node → class → root)")
+            print("=" * 70)
+            ont_count = 0
+            for item in results:
+                if not item.response_ideas:
+                    continue
+                for idea in item.response_ideas:
+                    parts = {
+                        "instance": idea.instance or "",
+                        "node": idea.node or "",
+                        "class": idea.category or "",
+                        "root": idea.root or "",
+                    }
+                    chain = " → ".join(f"{v}" for v in parts.values() if v)
+                    if chain:
+                        ont_count += 1
+                        print(f"  {ont_count:3d}. {chain}")
+            print(f"\nTotal: {ont_count} ontologies")
             print("=" * 70)
 
         # Print token usage
