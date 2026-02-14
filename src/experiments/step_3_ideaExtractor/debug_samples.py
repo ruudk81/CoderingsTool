@@ -90,19 +90,10 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     cleaned = clean_idea(idea.idea)
     print(f"{indent}Idea: {cleaned}")
 
-    # Taxonomy phrase
-    if idea.taxonomy_phrase:
-        print(f"{indent}  taxonomy_phrase: \"{idea.taxonomy_phrase}\"")
-
-    # Sentiment and sense
-    print(f"{indent}  sentiment: {idea.sentiment}  |  sense: {idea.sense}")
-
-    # Ontology (if present)
-    if idea.ontology:
-        ont = idea.ontology
-        ontology_str = " → ".join(filter(None, [ont.instance, ont.node, ont.category, ont.root]))
-        if ontology_str:
-            print(f"{indent}  ontology: {ontology_str}")
+    # Ontology (flat fields)
+    ont_parts = [v for v in (idea.instance, idea.node, idea.category, idea.root) if v]
+    if ont_parts:
+        print(f"{indent}  ontology: {' → '.join(ont_parts)}")
 
 
 def main():
@@ -123,19 +114,6 @@ def main():
     total_ideas = sum(item.idea_count for item in encoded_text)
     print(f"Total ideas: {total_ideas}")
     print(f"Average ideas per response: {total_ideas / len(encoded_text):.2f}")
-
-    # Sentiment/sense distribution
-    sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
-    sense_counts = {"factual": 0, "evaluative": 0, "aspirational": 0, "experiential": 0}
-
-    for item in encoded_text:
-        if item.response_ideas:
-            for idea in item.response_ideas:
-                sentiment_counts[idea.sentiment] = sentiment_counts.get(idea.sentiment, 0) + 1
-                sense_counts[idea.sense] = sense_counts.get(idea.sense, 0) + 1
-
-    print(f"\nSentiment distribution: {sentiment_counts}")
-    print(f"Sense distribution: {sense_counts}")
 
     # Sample and display
     print("\n" + "=" * 70)

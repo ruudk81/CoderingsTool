@@ -285,9 +285,14 @@ if __name__ == "__main__":
             print("SAMPLE OUTPUT")
             print("=" * 70)
             print(f"Response: {sample.response}")
+            if sample.template_prefix:
+                print(f"Template prefix: \"{sample.template_prefix}\"")
             print(f"Ideas ({sample.idea_count}):")
             for idea in sample.response_ideas:
                 print(f"  - {idea.idea}")
+                ont_parts = [v for v in (idea.instance, idea.node, idea.category, idea.root) if v]
+                if ont_parts:
+                    print(f"    ontology: {' → '.join(ont_parts)}")
             print("=" * 70)
 
         # Print token usage
@@ -302,3 +307,5 @@ if __name__ == "__main__":
     finally:
         # Save verbose output
         verbose_capture.__exit__(None, None, None)
+
+# %%

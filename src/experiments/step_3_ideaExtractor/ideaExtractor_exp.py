@@ -124,25 +124,79 @@ def _escape_braces_for_format(s: str) -> str:
     return s.replace("{", "{{").replace("}", "}}")
 
 
-def _format_lookup_for_axis(axis: str) -> dict:
+def _resolve_slot_type(type_name: str) -> dict:
+    """Resolve a slot type name against the type_system in TEMPLATE_LOOKUP.
+
+    If the type is an alias (e.g. 'noun_like_phrase'), expands to all member
+    definitions. If it's a concrete type, returns its single definition.
+
+    Returns:
+        dict with keys: type_name, is_alias, description, short_label
+    """
+    ts = TEMPLATE_LOOKUP.get("type_system", {})
+    definitions = ts.get("definitions", {})
+    aliases = ts.get("aliases", {})
+
+    if type_name in aliases:
+        concrete_types = aliases[type_name]
+        descs = [definitions[t] for t in concrete_types if t in definitions]
+        return {
+            "type_name": type_name,
+            "is_alias": True,
+            "description": " | ".join(descs),
+            "short_label": ", ".join(concrete_types),
+        }
+
+    if type_name in definitions:
+        return {
+            "type_name": type_name,
+            "is_alias": False,
+            "description": definitions[type_name],
+            "short_label": type_name,
+        }
+
+    return {"type_name": type_name, "is_alias": False, "description": "", "short_label": type_name}
+
+
+def _resolve_schema_data(axis_data: dict) -> dict:
+    """Resolve template_schema data from an axis's schema reference.
+
+    Handles HOW's conditional dict schema (default + prescriptive variant)
+    and regular string schema references on other axes.
+
+    Args:
+        axis_data: Axis definition from TEMPLATE_LOOKUP["axes"][axis]
+
+    Returns:
+        The matching template_schema dict, or {} if not found.
+    """
+    schema_ref = axis_data.get("schema", "")
+    if isinstance(schema_ref, dict):
+        schema_name = schema_ref.get("default", "")
+    else:
+        schema_name = schema_ref
+    return TEMPLATE_LOOKUP.get("template_schemas", {}).get(schema_name, {})
+
+
+def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     """Format TEMPLATE_LOOKUP data for a specific axis.
 
-    Looks up the axis-specific data from TEMPLATE_LOOKUP (V2_1 structure)
-    and formats it for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
+    Reads axis-specific data from TEMPLATE_LOOKUP["axes"] and resolves the
+    linked template_schema to get structural_forms and notes.  Formats
+    everything for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
     TAXONOMY_ENRICHED_EXTRACTION_PROMPT.
-
-    V2_1 structure: each axis has anchor, schema (ref to template_schemas),
-    allowed_concepts, excluded_concepts, noun_phrase_descriptor, slot_guidance,
-    prompt_rules.
 
     Args:
         axis: Taxonomy axis code (WHAT, WHY, HOW, WHO, WHEN, WHERE)
+        language: Response language (e.g. "Dutch") — substituted into
+            slot_guidance descriptions that contain {language}.
 
     Returns:
         dict with keys for both prompts:
         - Subject prompt: axis_anchor, axis_dimension_description,
-          axis_included_concepts, axis_excluded_concepts, schema_name,
-          schema_pattern, axis_slot_guidance, noun_phrase_descriptor, schema_slots
+          axis_included_concepts, axis_excluded_concepts, axis_pattern,
+          axis_slot_guidance, noun_phrase_descriptor, axis_slots,
+          axis_structural_forms, axis_instruction
         - Extraction prompt: axis_anchor, axis_dimension_description,
           axis_allowed_concepts, axis_excluded_concepts, axis_disambiguation_rules,
           marker, axis_slot_guidance, axis_node_instruction,
@@ -153,31 +207,66 @@ def _format_lookup_for_axis(axis: str) -> dict:
     # Fallback to WHAT if axis not found
     axis_data = TEMPLATE_LOOKUP["axes"].get(axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
 
-    # Resolve schema reference (e.g., "DESCRIBE_ENTITY_ATTRIBUTE" → schema dict)
-    schema_name = axis_data["schema"]
-    schema_data = TEMPLATE_LOOKUP["template_schemas"][schema_name]
-    schema_pattern = schema_data["pattern"]
+    # Pattern lives directly on the axis
+    axis_pattern = axis_data["pattern"]
 
-    # Serialize slot_guidance to JSON and escape braces for .format()
+    # Resolve schema reference to get structural_forms and notes from template_schemas.
+    schema_data = _resolve_schema_data(axis_data)
+
+    # Substitute {language} in slot_guidance descriptions before formatting.
+    # Some descriptions (e.g. WHAT's ANCHOR_SUBJECT) reference {language}.
+    slot_guidance = {
+        k: v.replace("{language}", language) if language else v
+        for k, v in axis_data["slot_guidance"].items()
+    }
+
+    # Resolve type_system for each slot (position-based: anchor first, dimension second)
+    schema_slots = schema_data.get("slots", {})
+    schema_slot_items = list(schema_slots.items())
+    slot_type_map = {"anchor": {}, "dimension": {}}
+
+    # Enrich slot_guidance with type hints, then serialize both formats
+    enriched_slot_guidance = {}
+    slots_formatted_lines = []
+    for idx, (slot_name, slot_desc) in enumerate(slot_guidance.items()):
+        # Match by position: idx 0 = anchor, idx 1 = dimension
+        if idx < len(schema_slot_items):
+            _schema_slot_name, schema_slot_meta = schema_slot_items[idx]
+            slot_type_name = schema_slot_meta.get("type", "")
+            resolved = _resolve_slot_type(slot_type_name) if slot_type_name else {}
+            role = "anchor" if idx == 0 else "dimension"
+            slot_type_map[role] = resolved
+
+            if resolved.get("is_alias"):
+                type_hint = f"Form: {resolved['short_label']}."
+            elif resolved.get("description"):
+                type_hint = f"Form: {resolved['description']}"
+            else:
+                type_hint = ""
+
+            if type_hint:
+                enriched_desc = f"{slot_desc} {type_hint}"
+            else:
+                enriched_desc = slot_desc
+            enriched_slot_guidance[slot_name] = enriched_desc
+            slots_formatted_lines.append(f"- {slot_name}: {enriched_desc}")
+        else:
+            enriched_slot_guidance[slot_name] = slot_desc
+            slots_formatted_lines.append(f"- {slot_name}: {slot_desc}")
+    slots_formatted = "\n".join(slots_formatted_lines)
+
+    # Serialize enriched slot_guidance to JSON and escape braces for .format()
     slot_guidance_json = _escape_braces_for_format(
-        json.dumps(axis_data["slot_guidance"], indent=2)
+        json.dumps(enriched_slot_guidance, indent=2)
     )
 
-    # Format schema slots as human-readable text
-    slots_formatted_lines = []
-    for slot_name, slot_config in schema_data["slots"].items():
-        required_str = "required" if slot_config.get("required", True) else "optional"
-        slot_type = slot_config.get("type", "")
-        if "relation_examples" in slot_config:
-            examples_str = ", ".join(f'"{v}"' for v in slot_config["relation_examples"])
-            slots_formatted_lines.append(
-                f"- {slot_name} ({required_str}, {slot_type}): e.g. [{examples_str}]"
-            )
-        elif slot_type == "noun_phrase":
-            slots_formatted_lines.append(f"- {slot_name} ({required_str}): noun phrase")
-        else:
-            slots_formatted_lines.append(f"- {slot_name} ({required_str}): {slot_type}")
-    slots_formatted = "\n".join(slots_formatted_lines)
+    # Structural forms from template_schema (not from axis)
+    structural_forms = schema_data.get("structural_forms", [])
+    forms_formatted = "\n".join(f"  {f}" for f in structural_forms)
+
+    # Schema notes (optional additional guidance)
+    schema_notes = schema_data.get("notes", [])
+    notes_formatted = "\n".join(f"- {n}" for n in schema_notes)
 
     # Extract prompt_rules (axis-specific instructions for extraction prompt)
     prompt_rules = axis_data.get("prompt_rules", {})
@@ -192,7 +281,9 @@ def _format_lookup_for_axis(axis: str) -> dict:
     allowed_concepts_str = ", ".join(axis_data.get("allowed_concepts", []))
     excluded_concepts_str = ", ".join(axis_data.get("excluded_concepts", []))
 
-    # Marker token
+    # Marker token: axis-specific dimension slot name (e.g., [OUTCOME_ENABLER] for HOW)
+    slot_guidance_keys = list(slot_guidance.keys())
+    dimension_marker = slot_guidance_keys[1] if len(slot_guidance_keys) > 1 else TEMPLATE_LOOKUP["marker"]
     marker = TEMPLATE_LOOKUP["marker"]
 
     return {
@@ -201,11 +292,13 @@ def _format_lookup_for_axis(axis: str) -> dict:
         "axis_dimension_description": axis_data["dimension_description"],
         "axis_included_concepts": allowed_concepts_str,
         "axis_excluded_concepts": excluded_concepts_str,
-        "schema_name": schema_name,
-        "schema_pattern": _escape_braces_for_format(schema_pattern),
+        "axis_pattern": _escape_braces_for_format(axis_pattern),
         "axis_slot_guidance": slot_guidance_json,
         "noun_phrase_descriptor": axis_data.get("noun_phrase_descriptor", ""),
-        "schema_slots": _escape_braces_for_format(slots_formatted),
+        "axis_slots": slots_formatted,
+        "axis_structural_forms": _escape_braces_for_format(forms_formatted),
+        "axis_instruction": axis_data.get("instruction", ""),
+        "schema_notes": _escape_braces_for_format(notes_formatted),
         # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT
         "axis_allowed_concepts": allowed_concepts_str,
         "axis_disambiguation_rules": disambiguation_formatted,
@@ -220,6 +313,16 @@ def _format_lookup_for_axis(axis: str) -> dict:
             prompt_rules.get("taxonomy_phrase_instruction", "")
         ),
         "axis_focus_rules": _escape_braces_for_format(focus_rules_formatted),
+        "axis_instance_instruction": _escape_braces_for_format(
+            prompt_rules.get("instance_instruction", "")
+        ),
+        "axis_root_instruction": _escape_braces_for_format(
+            prompt_rules.get("root_instruction", "")
+        ),
+        # Resolved type_system info for factory functions
+        "slot_type_map": slot_type_map,
+        # Axis-specific dimension marker (e.g., [OUTCOME_ENABLER] for HOW)
+        "dimension_marker": dimension_marker,
     }
 
 
@@ -1280,7 +1383,7 @@ class IdeaExtractor:
 
             try:
                 # Get lookup data for this axis (template pattern, slot guidance, completion spec, verb frames)
-                lookup_data = _format_lookup_for_axis(taxonomy_axis)
+                lookup_data = _format_lookup_for_axis(taxonomy_axis, language=self.language)
 
                 prompt = TAXONOMY_AWARE_SUBJECT_PROMPT.format(
                     language=self.language,
@@ -1295,20 +1398,23 @@ class IdeaExtractor:
                     taxonomy_axis=taxonomy_axis,
                     axis_anchor=lookup_data["axis_anchor"],
                     axis_dimension_description=lookup_data["axis_dimension_description"],
-                    axis_included_concepts=lookup_data["axis_included_concepts"],
-                    axis_excluded_concepts=lookup_data["axis_excluded_concepts"],
-                    # Schema (from lookup)
-                    schema_name=lookup_data["schema_name"],
-                    schema_pattern=lookup_data["schema_pattern"],
-                    axis_slot_guidance=lookup_data["axis_slot_guidance"],
-                    noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
-                    schema_slots=lookup_data["schema_slots"],
+                    axis_dimension_allowed_concepts=lookup_data["axis_included_concepts"],
+                    # Axis pattern, slots, and instruction (from lookup)
+                    axis_pattern=lookup_data["axis_pattern"],
+                    axis_slots=lookup_data["axis_slots"],
+                    dimension_marker=lookup_data["dimension_marker"],
                 )
 
                 # Create axis-specific response model with tailored Field descriptions
                 axis_data = TEMPLATE_LOOKUP["axes"].get(taxonomy_axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-                schema_data = TEMPLATE_LOOKUP["template_schemas"][axis_data["schema"]]
-                AxisSubjectModel = create_subject_extraction_model(taxonomy_axis, axis_data, schema_data)
+                schema_data = _resolve_schema_data(axis_data)
+                dim_marker = lookup_data["dimension_marker"]
+                AxisSubjectModel = create_subject_extraction_model(
+                    taxonomy_axis, axis_data, schema_data,
+                    slot_type_map=lookup_data.get("slot_type_map"),
+                    dimension_marker=dim_marker,
+                )
+                AxisSubjectModel.set_dimension_marker(dim_marker)
 
                 response = await llm_create_async(
                     client=self.client,
@@ -1341,18 +1447,21 @@ class IdeaExtractor:
                 raise
             except Exception as e:
                 logger.warning(f"Taxonomy-aware subject extraction failed: {e}. Using fallback.", exc_info=True)
-                # Generate axis-appropriate fallback template
+                # Generate axis-appropriate fallback template with axis-specific marker
+                fb_keys = list(TEMPLATE_LOOKUP["axes"].get(taxonomy_axis, {}).get("slot_guidance", {}).keys())
+                fb_marker = fb_keys[1] if len(fb_keys) > 1 else TEMPLATE_LOOKUP["marker"]
                 axis_templates = {
-                    "WHAT": "the subject has [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "WHY": "the subject should achieve [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "HOW": "the subject should [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "WHO": "the stakeholder needs [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "SENTIMENT": "the subject is [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "WHEN": "the subject should [ACTIONABLE_TAXONOMY_DIMENSION]",
-                    "WHERE": "the subject at [ACTIONABLE_TAXONOMY_DIMENSION]"
+                    "WHAT": f"the subject has {fb_marker}",
+                    "WHY": f"the subject should achieve {fb_marker}",
+                    "HOW": f"the subject should {fb_marker}",
+                    "WHO": f"the stakeholder needs {fb_marker}",
+                    "SENTIMENT": f"the subject is {fb_marker}",
+                    "WHEN": f"the subject should {fb_marker}",
+                    "WHERE": f"the subject at {fb_marker}",
                 }
-                fallback_template = axis_templates.get(taxonomy_axis, "the subject [ACTIONABLE_TAXONOMY_DIMENSION]")
+                fallback_template = axis_templates.get(taxonomy_axis, f"the subject {fb_marker}")
 
+                SubjectExtractionResponse.set_dimension_marker(fb_marker)
                 fallback = SubjectExtractionResponse(
                     canonical_term="the subject",
                     taxonomy_axis=taxonomy_axis,
@@ -1388,7 +1497,7 @@ class IdeaExtractor:
             Formatted prompt string
         """
         # Get axis-specific data from template_lookup (includes prompt_rules)
-        lookup_data = _format_lookup_for_axis(self.taxonomy_axis or "WHAT")
+        lookup_data = _format_lookup_for_axis(self.taxonomy_axis or "WHAT", language=self.language)
 
         return TAXONOMY_ENRICHED_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
@@ -1410,11 +1519,16 @@ class IdeaExtractor:
             axis_excluded_concepts=lookup_data["axis_excluded_concepts"],
             axis_disambiguation_rules=lookup_data["axis_disambiguation_rules"],
             marker=lookup_data["marker"],
+            axis_slot_pattern=lookup_data["axis_pattern"],
             axis_slot_guidance=lookup_data["axis_slot_guidance"],
             axis_node_instruction=lookup_data["axis_node_instruction"],
             axis_category_instruction=lookup_data["axis_category_instruction"],
             axis_taxonomy_phrase_instruction=lookup_data["axis_taxonomy_phrase_instruction"],
             axis_focus_rules=lookup_data["axis_focus_rules"],
+            axis_instance_instruction=lookup_data["axis_instance_instruction"],
+            axis_root_instruction=lookup_data["axis_root_instruction"],
+            noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
+            canonical_term=subject,
         )
 
     def estimate_tokens(self, prompt: str) -> int:
@@ -1601,8 +1715,11 @@ class IdeaExtractor:
             phrasing_template = subject_response.canonical_phrasing
             taxonomy_actionable_type = subject_response.taxonomy_actionable_type or "concepts"
 
-            # Extract template prefix for consistent use (everything before [ACTIONABLE_TAXONOMY_DIMENSION])
-            template_prefix = phrasing_template.split('[ACTIONABLE_TAXONOMY_DIMENSION]')[0].strip() if '[ACTIONABLE_TAXONOMY_DIMENSION]' in phrasing_template else phrasing_template
+            # Extract template prefix for consistent use (everything before the dimension marker)
+            current_axis = self.taxonomy_axis or "WHAT"
+            dim_lookup = _format_lookup_for_axis(current_axis, language=self.language)
+            dim_marker = dim_lookup["dimension_marker"]
+            template_prefix = phrasing_template.split(dim_marker)[0].strip() if dim_marker in phrasing_template else phrasing_template
             if self.template_prefix is None:
                 self.template_prefix = template_prefix
 
@@ -1650,11 +1767,19 @@ class IdeaExtractor:
             # Create axis-specific response model with tailored Field descriptions
             current_axis = self.taxonomy_axis or "WHAT"
             axis_data = TEMPLATE_LOOKUP["axes"].get(current_axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-            AxisExtractionModel = create_taxonomy_enriched_model(current_axis, axis_data)
+            schema_data = _resolve_schema_data(axis_data)
+            extraction_lookup = _format_lookup_for_axis(current_axis, language=self.language)
+            AxisExtractionModel = create_taxonomy_enriched_model(
+                current_axis, axis_data, schema_data,
+                slot_type_map=extraction_lookup.get("slot_type_map")
+            )
 
             # Inject runtime context for validators
             AxisExtractionModel.set_template_prefix(template_prefix)
-            AxisExtractionModel.set_axis_context(current_axis, axis_data)
+            AxisExtractionModel.set_axis_context(
+                current_axis, axis_data,
+                dimension_marker=extraction_lookup.get("dimension_marker", "")
+            )
 
             async with self.semaphore:
                 await self.tpm_bucket.wait_and_acquire(est_tokens)
@@ -1714,30 +1839,19 @@ class IdeaExtractor:
                     for i, idea_response in enumerate(response):
                         normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if normalized and normalized not in ["", "NA", "N/A"]:
-                            # Extract taxonomy_phrase, ontology, sentiment, sense as separate fields
-                            taxonomy_phrase = getattr(idea_response, 'taxonomy_phrase', "") or ""
-                            sentiment = getattr(idea_response, 'sentiment', "neutral") or "neutral"
-                            sense = getattr(idea_response, 'sense', "factual") or "factual"
-
-                            # Extract ontology (nested object)
+                            # Extract ontology fields (flat)
                             ontology_resp = getattr(idea_response, 'ontology', None)
-                            ontology = models.OntologySubmodel(
-                                instance=ontology_resp.instance if ontology_resp else "",
-                                node=ontology_resp.node if ontology_resp else "",
-                                category=ontology_resp.category if ontology_resp else "",
-                                root=ontology_resp.root if ontology_resp else ""
-                            ) if ontology_resp else None
 
-                            # Clean idea text (metadata stored in separate fields)
+                            # Clean idea text
                             idea_text = self._format_idea_text(normalized)
                             response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                             ideas.append(models.IdeasExtractedSubmodel(
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
-                                taxonomy_phrase=taxonomy_phrase,
-                                ontology=ontology,
-                                sentiment=sentiment,
-                                sense=sense
+                                instance=ontology_resp.instance if ontology_resp else "",
+                                node=ontology_resp.node if ontology_resp else "",
+                                category=ontology_resp.category if ontology_resp else "",
+                                root=ontology_resp.root if ontology_resp else "",
                             ))
 
                     if ideas:
@@ -1771,25 +1885,16 @@ class IdeaExtractor:
                             for i, idea_response in enumerate(retry_response):
                                 normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                                 if normalized and normalized not in ["", "NA", "N/A"]:
-                                    taxonomy_phrase = getattr(idea_response, 'taxonomy_phrase', "") or ""
-                                    sentiment = getattr(idea_response, 'sentiment', "neutral") or "neutral"
-                                    sense = getattr(idea_response, 'sense', "factual") or "factual"
                                     ontology_resp = getattr(idea_response, 'ontology', None)
-                                    ontology = models.OntologySubmodel(
-                                        instance=ontology_resp.instance if ontology_resp else "",
-                                        node=ontology_resp.node if ontology_resp else "",
-                                        category=ontology_resp.category if ontology_resp else "",
-                                        root=ontology_resp.root if ontology_resp else ""
-                                    ) if ontology_resp else None
                                     idea_text = self._format_idea_text(normalized)
                                     response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                                     retry_ideas.append(models.IdeasExtractedSubmodel(
                                         idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                         idea=idea_text,
-                                        taxonomy_phrase=taxonomy_phrase,
-                                        ontology=ontology,
-                                        sentiment=sentiment,
-                                        sense=sense
+                                        instance=ontology_resp.instance if ontology_resp else "",
+                                        node=ontology_resp.node if ontology_resp else "",
+                                        category=ontology_resp.category if ontology_resp else "",
+                                        root=ontology_resp.root if ontology_resp else "",
                                     ))
                             if retry_ideas:
                                 logger.info(f"Task {task['respondent_id']}: empty-ideas retry {empty_retry+1} succeeded ({len(retry_ideas)} ideas)")
@@ -2538,10 +2643,10 @@ class IdeaExtractor:
                         # Store full idea info including ontology
                         valid_ideas.append({
                             'idea': idea.idea,
-                            'taxonomy_phrase': idea.taxonomy_phrase,
-                            'ontology': idea.ontology,
-                            'sentiment': idea.sentiment,
-                            'sense': idea.sense
+                            'instance': idea.instance,
+                            'node': idea.node,
+                            'category': idea.category,
+                            'root': idea.root,
                         })
 
                 if valid_ideas and len(response_examples) < self.config.max_code_examples:
@@ -2578,9 +2683,9 @@ class IdeaExtractor:
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     print(f'    → "{cleaned_idea}"')
                     # Show ontology if available
-                    if idea_info.get('ontology'):
-                        ont = idea_info['ontology']
-                        print(f'      ontology: {ont.node} → {ont.category} → {ont.root}')
+                    ont_parts = [idea_info[f] for f in ('instance', 'node', 'category', 'root') if idea_info.get(f)]
+                    if ont_parts:
+                        print(f'      ontology: {" → ".join(ont_parts)}')
                 if example != response_examples[-1]:
                     print()
 
