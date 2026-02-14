@@ -10,7 +10,7 @@ Original source: src/prompts.py (STEP 3: IDEA EXTRACTION section)
 """
 
 from typing import Any, ClassVar, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, create_model
 
 # =============================================================================
 # STEP 3: IDEA EXTRACTION
@@ -315,17 +315,6 @@ Here is contextual information from prior analysis:
 - Intent by response: {intent}
 </context>
 
-There are six possible taxonomy axes (organizing dimensions) that can structure how responses are coded:
-
-<taxonomy_axes>
-1) **WHAT** — attributes, features, properties, or aspects used to describe someone or something
-2) **WHY** — underlying reason, motivation, rationale, goal, values sought or concern that explain preference, behaviour or response
-3) **HOW** — concrete recommendations, suggestions, actions or interventions to carry out an activity or enable a desired outcome
-4) **WHO** — people, groups, roles, stakeholders, or beneficiaries who are involved, affected, responsible, or addressed
-5) **WHEN** — timing, urgency, sequence, or frequency associated with when something occurs or is expected
-6) **WHERE** — physical or digital location, channel, setting, or situational context in which something occurs or is encountered
-</taxonomy_axes>
-
 Here are the chunk-level analyses you need to consolidate:
 <chunk_level_analyses>
 {chunk_results}
@@ -391,10 +380,10 @@ class TaxonomyConsolidatedResponse(BaseModel):
 # -----------------------------------------------------------------------------
 
 TAXONOMY_AWARE_SUBJECT_PROMPT = """
-You are a language expert tasked with generating a precise phrasing template for survey response analysis.
-You will be given context about a survey question and must produce a structured output that follows all constraints exactly.
+You are a language expert tasked with generating a precise phrasing template for survey response analysis. 
+Your template must fit the survey question and the selected taxonomy axis.
 
-Here is the language you will be working in:
+You will be working in the following language:
 <language>
 {language}
 </language>
@@ -404,205 +393,164 @@ Here is the survey question you are analyzing:
 {survey_question}
 </survey_question>
 
-Here is the context from prior analysis:
+Here is the context for the survey:
 <context>
-- Domain: {domain}
-- Entity of interest: {entity}
-- Topic: {topic}
-- Type of respondent: {perspective}
-- Intent by response: {intent}
+Type of respondent: {perspective}
+Domain: {domain}
+Entity of interest: {entity}
+Topic: {topic}
+Intent by response: {intent}
 </context>
 
-Here is the taxonomy guidance you must follow:
+Here is the taxonomy guidance for the selected axis:
 <taxonomy_guidance>
-Taxonomy axis: "{primary_dimension}"?
-In more detail: {primary_dimension_description}
+Selected axis: {taxonomy_axis}: {axis_dimension_description}
+Axis anchor: {axis_anchor}
 </taxonomy_guidance>
 
-Here is the template guidance you must use:
-<template_guidance>
-Required form (json format):
-{required_form_json}
+Here is the template pattern and slot definitions you must follow:
+<template>
+Axis pattern: "{axis_pattern}"
 
-Template pattern:
+Slot descriptions:
+{axis_slots}
+</template>
 
-    "{template_structure_pattern}"
+================================================
+GLOBAL RULES  
+================================================
 
-Slot definitions (express these concepts in {language}):
-{template_structure_slots}
+You must follow these rules when creating your template:
+- Semantic framing: normalize meaning, not style.
+- Keep it generic: do NOT use domain-specific examples or domain nouns unless required by the survey question itself.
+- Do NOT introduce new entities, motives, outcomes, comparisons, or evaluations not present in the survey question framing.
+- Use minimal inference only to create a well-formed template and to select an axis-consistent anchor.
+- Single clause only. Concise.
 
-NOTE: The allowed slot values above are semantic concepts. Express them in {language}.
-For example: "must" → "moet" (Dutch), "should" → "zou moeten" (Dutch), etc.
-</template_guidance>
+================================================
+TASK
+================================================
 
-Your task has three parts:
+You must complete three steps:
 
---------------------------------------------------
-**TASK 1 — Identify the canonical subject (entity-of-interest)**  
-Goal: choose the noun phrase that the template sentence should be about — the central entity being evaluated or described.
+**Step 1: Choose the canonical_term (ANCHOR slot)**
+- Pick a short noun phrase in the specified language that matches the axis anchor described in the taxonomy guidance
+- Avoid respondent pronouns unless the survey question explicitly requires first-person framing
+- This term will serve as the anchor concept for the template
 
-Rules:
-- If multiple entities appear, select the one most aligned with:
-  (a) Primary focus: {entity}
-  (b) Primary taxonomy axis: {primary_dimension}
-- It must be a noun or noun phrase (not a full clause).
-- Return a concise, normalized noun phrase in {language}.
-- Preserve capitalization for proper nouns; otherwise use lowercase.
-- Avoid placeholder subjects (e.g., "it," "there").
-- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
-- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
+**Step 2: Choose the taxonomy_actionable_type**
+- Select the single most fitting concept type from the allowed concepts listed here:
+  {axis_dimension_allowed_concepts}
+- This should be the concept that best captures the dimension being analyzed
 
+**Step 3: Construct the canonical_phrasing (template sentence)**
+- Follow the axis pattern provided in the template section
+- Replace the ANCHOR slot with your chosen canonical_term from Step 1
+- Keep the DIMENSION slot with the literal marker token: {dimension_marker}
+- Must be a single grammatical clause in the specified language
+- Must read as a direct, natural answer to the survey question once the marker is replaced
+- Keep it short (aim for ≤ 10 words excluding the marker)
+- Ensure the phrasing flows naturally and grammatically in the target language
 
---------------------------------------------------
-**TASK 2 — Choose the actionable taxonomy dimension (TYPE)**  
-Select **exactly one** actionable taxonomy type on the primary axis that best captures what is being evaluated or varied in the survey question.
-
-Use this as your guide:
-{primary_dimension_description}
-
---------------------------------------------------
-**TASK 3 — Create a direct phrasing template**
-
-Your output field **canonical_phrasing** MUST:
-
-1) Follow **this axis-specific pattern**:
-
-   "{template_structure_pattern}"
-
-2) Use the slot definitions provided above:
-   - Fill each required slot according to the allowed values
-   - Use SUBJECT/entity if interest from Task 1 for the subject slot
-   - Optional slots may be omitted if not needed for grammar
-
-3) **CRITICAL: Do NOT replace the marker.**
-   The literal token **[ACTIONABLE_TAXONOMY_DIMENSION]** must appear exactly as written, as the final bracketed term in the sentence (a period may follow).
-
-4) Brevity constraints:
-   - The full sentence must be **≤ 9 words total** (excluding the marker).
-   - Single clause only — no commas, no relative clauses ("which/that"), no hedging.
-
-5) Directness check:
-   If the marker were replaced with a short noun phrase (e.g.,"battery life", "wait time", "price", "friendliness"),the sentence should read like a **direct, natural answer** to the survey question.
-
-All output values must be in {language}.
-
+================================================
+OUTPUT FORMAT
+================================================
 Begin processing now and provide your output as valid JSON following the response schema provided.
 """
 
-
-
-TAXONOMY_AWARE_SUBJECT_PROMPT_OLD = """
-You are a language expert tasked with generating a precise phrasing template for survey response analysis.
-You will be given context about a survey question and must produce a structured output that follows all constraints exactly.
-
-Here is the language you will be working in:
-<language>
-{language}
-</language>
-
-Here is the survey question you are analyzing:
-<survey_question>
-{survey_question}
-</survey_question>
-
-Here is the context from prior analysis:
-<context>
-- Domain: {domain}: {entity}
-- Topic: {topic}
-- Type of respondent: {perspective}
-- Intent by response: {intent}
-</context>
-
-Here is the taxonomy guidance you must follow:
-<taxonomy_guidance>
-Taxonomy axis: {primary_dimension}
-Taxonomy axis description: {primary_dimension_description}
-</taxonomy_guidance>
-
-Here is the template guidance you must use:
-<template_guidance>
-Template pattern: "{{SUBJECT}} {{VERB_STATE}} {{SCAFFOLD}} [ACTIONABLE_TAXONOMY_DIMENSION]."
-
-Required form (json format):
-{required_form_json}
-
-Slot guidance in (json format):
-{slot_guidance_json}
-</template_guidance>
-
-Your task has three parts:
-
---------------------------------------------------
-**TASK 1 — Identify the canonical subject (entity-of-interest)**
-Goal: choose the noun phrase that the template sentence should be about — the central entity being evaluated or described.
-
-Rules:
-- It must be a noun or noun phrase (not a full clause).
-- If multiple entities appear, select the one most aligned with:
-  (a) Primary focus: {entity}
-  (b) Primary taxonomy axis: {primary_dimension}
-- Return a concise, normalized noun phrase in {language}.
-- Preserve capitalization for proper nouns; otherwise use lowercase.
-- Avoid placeholder subjects (e.g., "it," "there").
-- Avoid pronouns ("I," "you," "we") unless the survey perspective explicitly requires them.
-- If the question is framed around the respondent (e.g., "How satisfied are you with X?"), choose **X**, not "you."
-
-
---------------------------------------------------
-**TASK 2 — Choose the actionable taxonomy dimension**
-Select **exactly one** actionable taxonomy type on the primary axis that best captures what is being evaluated or varied in the survey question.
-
-Use this as your guide:
-{primary_dimension_description}
-
---------------------------------------------------
-**TASK 3 — Create a phrasing template**
-
-Your output field **canonical_phrasing** MUST:
-
-1) Follow this pattern exactly:
-   "{{SUBJECT}} {{VERB_STATE}} {{SCAFFOLD}} [ACTIONABLE_TAXONOMY_DIMENSION]."
-
-2) Use:
-   - SUBJECT from Task 1
-   - an appropriate minimal VERB_STATE (e.g., "is," "are," "has," etc.). Do not use modal verbs.
-   - a SCAFFOLD that naturally connects the subject to the marker
-
-3) **CRITICAL: Do NOT replace the marker.**
-   The literal token **[ACTIONABLE_TAXONOMY_DIMENSION]** must appear exactly as written, as the final bracketed term in the sentence (a period may follow).
-
-4) The full sentence must read like a **natural {language} answer** to the survey question.
-
-Mental check:
-If the marker were replaced with a short phrase (e.g., "battery life," "price," "speed"), the sentence should sound like a direct, grammatical answer to the question.
-
-All output values must be in {language}.
-
-Begin processing now and provide your output as valid JSON following the response schema provided."""
-
-
 class SubjectExtractionResponse(BaseModel):
     """Response model for subject/actor extraction with axis-aware template."""
+    # ClassVar: axis-specific dimension marker (set before LLM call)
+    _dimension_marker: ClassVar[str] = "[ACTIONABLE_TAXONOMY_DIMENSION]"
+
+    @classmethod
+    def set_dimension_marker(cls, marker: str):
+        """Set the axis-specific dimension marker before LLM call."""
+        cls._dimension_marker = marker
+
     canonical_term: str = Field(
-        description="The canonical subject (noun phrase) the template sentence is about",
-        examples=["ASN Bank", "the product", "customer service"]
+        description="Short noun phrase identifying the anchor subject (entity-of-interest) chosen for the template"
     )
-    taxonomy_axis: str = Field(
-        description="The primary taxonomy dimension",
-        examples=["WHAT", "WHY", "HOW", "WHO", "WHEN", "WHERE"]
+    taxonomy_axis: Literal["WHAT", "WHY", "HOW", "WHO", "WHEN", "WHERE"] = Field(
+        description="The primary taxonomy dimension"
     )
     taxonomy_actionable_type: str = Field(
         description="The single actionable taxonomy type on the primary axis",
-        examples=["attribute", "reason", "action", "actor", "timing", "location"]
     )
     canonical_phrasing: str = Field(
-        description="Axis-specific template ending with [ACTIONABLE_TAXONOMY_DIMENSION]. Pattern varies by axis.",
-        examples=[
-            "The product has [ACTIONABLE_TAXONOMY_DIMENSION].",
-            "The producer must [ACTIONABLE_TAXONOMY_DIMENSION].",
-            "The choice is due to [ACTIONABLE_TAXONOMY_DIMENSION].",
-            "The meal is intended for [ACTIONABLE_TAXONOMY_DIMENSION]."
-        ]
+        description=(
+            "Single grammatical clause containing the axis-specific dimension marker token, "
+            "reading as a natural answer to the survey question"
+        )
+    )
+
+    @field_validator('canonical_phrasing', mode='before')
+    @classmethod
+    def ensure_marker_present(cls, v: str) -> str:
+        """Ensure the axis-specific dimension marker is present in the canonical phrasing."""
+        marker = cls._dimension_marker
+        if isinstance(v, str) and marker not in v:
+            v = v.rstrip('.') + f" {marker}."
+        return v
+
+
+def create_subject_extraction_model(axis: str, axis_data: dict, schema_data: dict = None, slot_type_map: dict = None, dimension_marker: str = "[ACTIONABLE_TAXONOMY_DIMENSION]"):
+    """Create axis-specific SubjectExtractionResponse with tailored Field descriptions."""
+    allowed = ", ".join(axis_data["allowed_concepts"])
+    excluded = ", ".join(axis_data["excluded_concepts"])
+    slot_type_map = slot_type_map or {}
+
+    # Extract structural forms and notes from schema for canonical_phrasing hint
+    schema_data = schema_data or {}
+    structural_forms = schema_data.get("structural_forms", [])
+    forms_hint = " or ".join(f'"{f}"' for f in structural_forms[:2]) if structural_forms else ""
+    notes = schema_data.get("notes", [])
+    notes_hint = "; ".join(notes[:2]) if notes else ""
+
+    # Build canonical_phrasing description with schema enrichments
+    phrasing_desc = (
+        f"Single grammatical clause following the axis pattern: "
+        f"{axis_data['pattern']}. "
+    )
+    if forms_hint:
+        phrasing_desc += f"Expected forms: {forms_hint}. "
+    if notes_hint:
+        phrasing_desc += f"Note: {notes_hint}. "
+    phrasing_desc += f"Must contain the literal marker token {dimension_marker}."
+
+    # Enrich descriptions with type_system constraints
+    anchor_type = slot_type_map.get("anchor", {})
+    anchor_type_hint = f" {anchor_type['description']}" if anchor_type.get("description") else ""
+
+    dimension_type = slot_type_map.get("dimension", {})
+    if dimension_type.get("is_alias"):
+        dimension_type_hint = f" Dimension slot must be a {dimension_type['type_name']}."
+    else:
+        dimension_type_hint = ""
+
+    # Type glossary for model-level description (definitions appear once, fields reference by name)
+    glossary = _build_type_glossary()
+    config_kwargs = {"__config__": ConfigDict(json_schema_extra={"description": glossary})} if glossary else {}
+
+    # Using create_model() so $defs key and title match in JSON Schema
+    return create_model(
+        f"SubjectExtractionResponse_{axis}",
+        __base__=SubjectExtractionResponse,
+        **config_kwargs,
+        canonical_term=(str, Field(
+            description=f"Short noun phrase: {axis_data['noun_phrase_descriptor']}.{anchor_type_hint}"
+        )),
+        taxonomy_axis=(Literal[axis], Field(
+            description=f"Taxonomy axis (must be '{axis}')"
+        )),
+        taxonomy_actionable_type=(str, Field(
+            description=(
+                f"The actionable taxonomy type on the {axis} axis. "
+                f"Must be one of: {allowed}. "
+                f"Must NOT be: {excluded}."
+            )
+        )),
+        canonical_phrasing=(str, Field(description=phrasing_desc + dimension_type_hint)),
     )
 
 
@@ -610,134 +558,167 @@ class SubjectExtractionResponse(BaseModel):
 # TAXONOMY-ENRICHED IDEA EXTRACTION
 # -----------------------------------------------------------------------------
 
-TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """
-You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis.
+TAXONOMY_ENRICHED_EXTRACTION_PROMPT = """ 
+You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis. 
+Your task is to identify distinct ideas in a survey response, reformulate each idea using a canonical template and produce a lightweight taxonomy classification.
 
-Your task is to:
-1) Identify all distinct ideas in the response,
-2) Reformulate each idea using a provided template prefix,
-3) Classify each idea according to the specified taxonomy axis, and
-4) Position each idea within a lightweight conceptual ontology aligned to that axis.
+You will be working in the following language:
+<language>
+{language}
+</language>
 
-================================================
-SURVEY CONTEXT
-================================================
+Here is the survey question being analyzed:
+<survey_question>
+{var_lab}
+</survey_question>
 
-<survey_context>
-Language of responses: {language}
-Survey question: {var_lab}
-
-Domain: {domain}
-Topic: {topic}
-Main entity of interest: {entity}
-
+Here is the context for the survey:
+<context>
 Type of respondent: {perspective}
-Dominant response frame: {intent}
-</survey_context>
+Domain: {domain}
+Entity of interest: {entity}
+Topic: {topic}
+Intent by response: {intent}
+</context>
 
-================================================
-TAXONOMY CONFIGURATION (AUTHORITATIVE)
-================================================
+Here is the taxonomy lens you need to apply:
+<taxonomy_lens>
+Global dimension {taxonomy_axis}; {axis_dimension_description}
+Anchor: {axis_anchor} -> {taxonomy_actionable_type}
+</taxonomy_lens>
 
-<taxonomy_config>
-Taxonomy dimension (axis): {taxonomy_axis}
-Actionable type: {taxonomy_actionable_type}
-Primary description: {primary_dimension_description}
+Here is the canonical template you should use:
+<canonical_template>
+Template pattern: {axis_slot_pattern}
 
-Lookup-table axis definition:
-- Dimension description: {axis_dimension_description}
-- Required form for slot content: {axis_required_form}
-- Canonical template pattern (reference): {axis_template_pattern}
-
-Slot guidance (reference):
+Slot guidance:
 {axis_slot_guidance}
+</canonical_template>
 
-Axis-specific rules (from lookup table):
-- Node instruction: {axis_node_instruction}
-- Category instruction: {axis_category_instruction}
-- Taxonomy phrase instruction: {axis_taxonomy_phrase_instruction}
-
-Additional focus rules:
-{axis_focus_rules}
-</taxonomy_config>
-
-================================================
-RESPONSE TO PROCESS
-================================================
-
+Here is the response you need to process:
 <response>
 Respondent ID: {respondent_id}
 Response: {response}
 </response>
 
-================================================
-IDEA SPLITTING RULES
-================================================
 
-- Identify all conceptually distinct ideas.
-- If multiple independent aspects are mentioned, split them into separate ideas.
-- Each atomic concept becomes its own idea with its own idea_id.
-- If the response is empty, nonsensical, or irrelevant, return [].
+Follow these steps to complete the task:
 
-================================================
-OUTPUT FIELD CONSTRAINTS
-================================================
+**STEP 1: IDENTIFY AND SPLIT IDEAS**
 
-For each idea extracted, ensure:
+Identify all conceptually distinct instances in which the response describes or refers to an unique “{taxonomy_actionable_type}”-instance, interpreted in light of the survey question.
+Assign each unique concept a unique idea_id.
 
-1) **respondent_id**: Use exactly the respondent ID provided above.
+SPLITTING RULES:
+- Items joined by conjunctions ("and", "en", "und", "et", ...) or commas that refer to different concepts MUST be split into separate ideas.
+  Example: "faster and cheaper" → TWO ideas: "faster" (idea 1) and "cheaper" (idea 2)
+- Each split idea gets its OWN template instantiation and its OWN ontology hierarchy.
+- Even very short responses (2-5 words) can contain multiple ideas if they enumerate distinct concepts.
+- When in doubt about whether to split, split. Over-splitting is preferable to under-splitting.
 
-2) **idea_id**: Assign a sequential number as a string ("1", "2", "3", ...).
+If the response is empty, nonsensical, or irrelevant to the survey question, you will return an empty array [].
 
-3) **idea** (template-based reformulation):
-   - Begin EXACTLY with this provided template prefix: "{canonical_phrasing}"
-   - Replace [ACTIONABLE_TAXONOMY_DIMENSION] with content consistent with the axis dimension description and required form.
-   - The replacement text must be 5–20 words.
-   - Be concise, specific, and grammatical.
-   - Directly answer the survey question when combined with the template prefix.
-   - Contain NO pronouns or references to the respondent.
-   - Contain NO filler phrases.
-   - Be written in {language}.
+**STEP 2: EXTRACT THE INSTANCE**
 
-4) **ontology** fields:
-   - **instance**: The SHORTEST contiguous verbatim span from the ORIGINAL response that captures the core idea. MUST be copied exactly (no paraphrasing).
-   - **node**: A canonical, reusable noun phrase representing the PRIMARY AXIS CONCEPT. Apply: {axis_node_instruction}. Must be reusable across responses and not repeat the instance verbatim.
-   - **category**: The immediate parent grouping of the node. Apply: {axis_category_instruction}. Must be broader than node and stable across many responses.
+For each unique idea, identify the shortest verbatim span from the response in which a unique "{taxonomy_actionable_type}”-instance is expressed, interpreted in light of the survey question.
+When ideas have been split from a compound phrase, the instance for each idea is the portion of the original text that belongs to THAT specific idea, not the entire compound.
 
-5) **taxonomy_phrase**: A concise reusable noun phrase (1-3 words) abstracting the idea as a {taxonomy_actionable_type} concept on axis {taxonomy_axis}. Apply: {axis_taxonomy_phrase_instruction}. Do NOT repeat entities from: {domain}, {topic}, {entity}. Avoid meta-language about opinions/perceptions.
+**STEP 3: COMPLETE THE TEMPLATE**
 
-6) **sense**: Choose exactly one of: factual | evaluative | aspirational | experiential
+Reformulate the verbatim span following the canonical_template. The template contains a marker token (shown in square brackets) that you must replace:
 
-7) **sentiment**: Choose exactly one of: positive | negative | neutral
+- The template will begin with this fixed prefix (do NOT alter this):  "{canonical_phrasing}"
+- You MUST replace ONLY the marker token with content that is: {axis_anchor}
+  * Consistent with the axis description and allowed concepts
+  * NOT one of the excluded concepts
+  * Written in the language specified in the survey context
+ 
+  
+**STEP 4 — LIGHTWEIGHT TAXONOMY HIERARCHY**
 
-All values must be in {language}.
+For each idea, construct a four-level lightweight taxonomy (in {language}) about: {topic}.
 
-Edge cases:
-- Empty or irrelevant response: return []
-- Single idea: return one item
-- Multiple ideas: return multiple items with sequential idea_id
+Each level serves a distinct analytical purpose and must follow the rules below.
 
-Begin processing now and provide your output as valid JSON following the response schema provided."""
+LEVEL 1 — INSTANCE (normalized mention)
+A normalized version of the original expression from Step 1.
 
+Requirements:
+- Must stay close to what the respondent said.
+- Should be cleaned, simplified, and standardized in wording.
+- Must still be clearly traceable to the original text.
+
+Think of this as:
+"What did the respondent basically say, in a normalized form?"
+
+LEVEL 2 — CONCEPT (reusable semantic concept)
+A generalized, reusable concept representing the "{taxonomy_actionable_type}"-instance in relation to {topic}.
+
+The concept should:
+- Be broader than the exact wording of the instance.
+- Generalize beyond this single case.
+- Be reusable across many similar responses.
+- Describe WHAT is being proposed or changed (the substance), not how it is phrased rhetorically.
+- Be specific enough to be analytically meaningful.
+
+Think of this as:
+"What concrete {taxonomy_actionable_type} does this instance point to in conceptual terms?"
+
+LEVEL 3 — CLASS (aspect of the entity)
+A broader class that identifies which aspect or object of the entity-of-interest ("{language}") the concept relates to.
+
+The class should:
+- Generalize across multiple concepts.
+- Group together ideas that affect the same part or aspect of the entity.
+- Describe WHAT part of the entity is impacted, not why or how.
+
+Think of this as:
+"Which specific part or aspect of the entity-of-interest is being affected?"
+
+LEVEL 4 — DOMAIN (root / topic-of-interest)
+The highest-level domain that gives meaning to all other levels.
+
+- Must align with the survey topic: {topic}.
+- Represents the shared "universe of meaning" for all ideas in this taxonomy.
+
+Think of this as:
+"Within what overarching domain do all these classes make sense?"
+
+STRUCTURAL SUMMARY:
+DOMAIN (topic)
+  -> CLASS (aspect of the entity)
+     -> CONCEPT (reusable idea)
+        -> INSTANCE (normalized mention)
+
+
+**STEP 5: ASSIGN IDs**
+
+- Use the exact respondent_id provided in the response
+- Assign sequential idea_id values as strings: "1", "2", "3", etc.
+
+**OUTPUT FORMAT**
+
+Return a valid JSON array of objects. Each object must contain:
+- respondent_id (string)
+- idea_id (string)
+- idea (string, the template-completed reformulation)
+- ontology (object with instance, node, category, root fields, or null)
+
+**EDGE CASES**
+- If the response is empty, irrelevant, or nonsensical: return []
+- If there is one idea: return an array with one object
+- If there are multiple ideas: return an array with multiple objects, each with sequential idea_id
+
+Begin processing now and provide your output as valid JSON matching the required response schema.
+"""
 
 class OntologyResponse(BaseModel):
-    """Nested ontology structure for LLM response parsing."""
-    instance: str = Field(
-        description="Contiguous verbatim span from the original response (no rewording)",
-        examples=["goede service", "te duur", "vriendelijk personeel"]
-    )
-    node: str = Field(
-        description="Canonical, reusable ontology concept (noun phrase)",
-        examples=["klantenservice", "prijsstelling", "personeel"]
-    )
-    category: str = Field(
-        description="Immediate parent grouping of the node",
-        examples=["service aspecten", "financiële aspecten", "menselijke factoren"]
-    )
-    root: str = Field(
-        default="",
-        description="Top-level domain framing implied by the survey question (optional)"
-    )
+    """Base ontology — provides normalize_field validator.
+    Field descriptions and examples are set per-axis in create_taxonomy_enriched_model()."""
+    instance: str = ""
+    node: str = ""
+    category: str = ""
+    root: str = ""
 
     @field_validator('instance', 'node', 'category', 'root', mode='before')
     @classmethod
@@ -752,13 +733,28 @@ class OntologyResponse(BaseModel):
 
 class TaxonomyEnrichedIdeaResponse(BaseModel):
     """Response model for taxonomy-enriched idea extraction."""
-    # Class variable to store template prefix for validation
+    # Class variables for axis-aware validation
     _template_prefix: ClassVar[str] = ""
+    _allowed_concepts: ClassVar[list] = []
+    _excluded_concepts: ClassVar[list] = []
+    _axis: ClassVar[str] = ""
+    _node_instruction: ClassVar[str] = ""
+    _dimension_marker: ClassVar[str] = "[ACTIONABLE_TAXONOMY_DIMENSION]"
 
     @classmethod
     def set_template_prefix(cls, prefix: str):
         """Set template prefix before LLM call for validation."""
         cls._template_prefix = prefix.strip() if prefix else ""
+
+    @classmethod
+    def set_axis_context(cls, axis: str, axis_data: dict, dimension_marker: str = ""):
+        """Inject axis-specific rules for post-parse validation."""
+        cls._axis = axis
+        cls._allowed_concepts = axis_data.get("allowed_concepts", [])
+        cls._excluded_concepts = axis_data.get("excluded_concepts", [])
+        cls._node_instruction = axis_data.get("prompt_rules", {}).get("node_instruction", "")
+        if dimension_marker:
+            cls._dimension_marker = dimension_marker
 
     respondent_id: str = Field(
         description="Respondent identifier from the response context"
@@ -770,65 +766,10 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     idea: str = Field(
         description="Complete idea statement beginning with the canonical_phrasing template"
     )
-    taxonomy_phrase: str = Field(
-        description="Concise noun-phrase (1-3 words) abstracting the idea into a reusable taxonomy concept",
-        examples=["klantenservice", "duurzaamheid", "prijs-kwaliteit"]
-    )
     ontology: Optional[OntologyResponse] = Field(
         default=None,
         description="Hierarchical ontology: instance → node → category → root"
     )
-    sentiment: Literal["positive", "negative", "neutral"] = Field(
-        default="neutral",
-        description="Sentiment polarity"
-    )
-    sense: Literal["factual", "evaluative", "aspirational", "experiential"] = Field(
-        default="factual",
-        description="Communicative function of the idea"
-    )
-
-    @field_validator('sentiment', mode='before')
-    @classmethod
-    def normalize_sentiment(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return "neutral"
-        v_lower = v.lower().strip()
-        if v_lower in ("positive", "negative", "neutral"):
-            return v_lower
-        # Tie-break: map invalid values to neutral
-        if v_lower in ("mixed", "evaluative", "aspirational"):
-            return "neutral"
-        return "neutral"
-
-    @field_validator('sense', mode='before')
-    @classmethod
-    def normalize_sense(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return "factual"
-        v_lower = v.lower().strip()
-        if v_lower in ("factual", "evaluative", "aspirational", "experiential"):
-            return v_lower
-        # Map legacy/invalid values to closest canonical sense
-        if v_lower in ("praise", "approval", "satisfaction", "complaint", "dissatisfaction", "criticism"):
-            return "evaluative"
-        if v_lower in ("suggestion", "wish", "desire", "recommendation"):
-            return "aspirational"
-        if v_lower in ("experience", "anecdote", "personal"):
-            return "experiential"
-        return "factual"
-
-    @field_validator('taxonomy_phrase', mode='before')
-    @classmethod
-    def normalize_taxonomy_phrase(cls, v: str) -> str:
-        if not isinstance(v, str):
-            return ""
-        # Strip whitespace
-        v = v.strip()
-        # Lowercase
-        v = v.lower()
-        # Remove trailing punctuation
-        v = v.rstrip('.,;:!?')
-        return v
 
     @field_validator('idea', mode='before')
     @classmethod
@@ -844,169 +785,161 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
 
         # Check if already compliant (case-insensitive)
         if v.lower().startswith(prefix.lower()):
-            return v
+            pass  # prefix OK
+        else:
+            # Fix: prepend template prefix
+            v = f"{prefix} {v}"
 
-        # Fix: prepend template prefix
-        return f"{prefix} {v}"
+        # Check that marker token was replaced (should not appear in final idea)
+        if cls._dimension_marker and cls._dimension_marker in v:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Marker token not replaced in idea: {v[:80]}..."
+            )
 
-
-# -----------------------------------------------------------------------------
-# LEGACY PROMPT (preserved for reference/backwards compatibility)
-# -----------------------------------------------------------------------------
-
-TAXONOMY_ENRICHED_EXTRACTION_PROMPT_old = """
-You are an expert in extracting structured ideas from survey responses using taxonomy-aware analysis.
-Your task is to identify all ideas expressed in a survey response, classify them according to a given taxonomy axis, and format them according to a specific template structure.
-
-Here is the survey context:
-
-<survey_context>
-language of responses: {language}
-Survey question: {var_lab}
-
-Domain: {domain}
-Topic: {topic}
-Main entity of intererst: {entity}
-
-Type of respondent: {perspective}
-Dominant response frame: {intent}
-</survey_context>
-
-Here is the taxonomy configuration:
-
-<taxonomy_config>
-Taxonomy dimension to be used: {taxonomy_axis}: {taxonomy_actionable_type}
-Descriptopm: {primary_dimension_description}
-</taxonomy_config>
-
-Here is the response you need to process:
-
-<response>
-Respondent ID: {respondent_id}
-Response: {response}
-</response>
-
-For each idea you identify, you must extract the following information:
-
-**1. respondent_id**: Use the respondent ID provided in the response context.
-
-**2. idea_id**: Assign a sequential number as a string (e.g., "1", "2", "3") for each idea extracted from this response.
-
-**3. idea**: The complete formatted idea statement. This MUST follow these rules:
-   - Begin with EXACTLY this template provided: "{canonical_phrasing}"
-   - Then replace the placeholder ACTIONABLE_TAXONOMY_DIMENSION] with the idea identified in the response.
-   - The replacement text must be a complete, grammatical sentence fragment (5-20 words total)
-   - Must directly address the survey question when combined with the template prefix
-   - Must be concise and specific
-   - Must NOT contain pronouns or references to the respondent
-   - Must NOT contain filler words or unnecessary phrases
-   - Must be written in the {language} specified in the survey context
-
-**4. ontology**
-For each idea, identify its position in a conceptual hierarchy for the given taxonomy dimension: {taxonomy_axis} - {taxonomy_actionable_type}
-
-You must extract:
-
-- **instance**: the literal idea expressed in the response (verbatim, no paraphrasing)
-- **node**: the canonical, reusable ontology concept instantiated by the instance (noun phrase)
-- **category**: the immediate parent grouping of the node
-- **root**: the top-level domain framing implied by the research question and taxonomy dimension
-
-Rules:
-- The instance MUST be a contiguous span from the idea text (no rewording or abstraction).
-- The node MUST be reusable across multiple responses.
-- Category and root MUST be consistent with the taxonomy axis ({taxonomy_axis}) and actionable type ({taxonomy_actionable_type}).
-- Do NOT repeat the idea text verbatim at all levels.
-- Prefer stable, domain-relevant concepts over stylistic paraphrases.
-- If multiple interpretations exist, choose the primary one implied by the survey context.
-
-Write all ontology fields in {language}.
-
-**5. taxonomy_phrase**: - A concise noun-phrase that abstracts the idea into a reusable {taxonomy_actionable_type}-concept on the taxonomy axis ({taxonomy_axis}: {taxonomy_actionable_type})
-   - Make the semantic core of the taxonomy_phrase the HEAD of the noun phrase
-   - DO NOT repeat entities already mentioned in the domain context: {domain}, {topic} and {entity}
-   - Prefer single-word attribute nouns over compound action-nouns
-   - Avoid meta-language about perception, opinion, or thought
-   - Avoid verbs or verb-noun compounds
-   - Written in {language}.
-
-**6. sense**: Choose exactly one of: factual | evaluative | aspirational | experiential
-   - **factual**: objective observation, factual mention, neutral statement
-   - **evaluative**: praise, approval, satisfaction, complaint, dissatisfaction, criticism
-   - **aspirational**: suggestion, wish, desire, recommendation for improvement
-   - **experiential**: personal experience, anecdote, lived encounter
-
-**7. sentiment**: Choose exactly one of: positive | negative | neutral
-
-**IDEA SPLITTING RULES:**
-
-When a response contains multiple conceptually distinct aspects, split them into separate ideas. Each atomic concept should be extracted as its own idea with its own idea_id.
-
-Example: If a response mentions both "sustainable investment options" and "lower fees", extract these as two separate ideas because sustainability and fees are conceptually distinct aspects.
+        return v
 
 
-**EXAMPLE:**
+def _build_type_glossary() -> str | None:
+    """Build a noun_like_phrase glossary string for schema-level description.
 
-EXAMPLE
+    Reads type_system from TEMPLATE_LOOKUP. Returns a string like:
+      "noun_like_phrase = noun_phrase (...) | gerund_nominal (...) | ..."
+    or None if no aliases exist.
+    """
+    from experiments.step_3_ideaExtractor.template_lookup import TEMPLATE_LOOKUP
+    ts = TEMPLATE_LOOKUP.get("type_system", {})
+    aliases = ts.get("aliases", {})
+    definitions = ts.get("definitions", {})
+    if not aliases:
+        return None
+    parts = []
+    for alias_name, concrete_types in aliases.items():
+        entries = []
+        for t in concrete_types:
+            defn = definitions.get(t, t)
+            entries.append(f"{t}: {defn}")
+        parts.append(f"{alias_name} = {' | '.join(entries)}")
+    return " ".join(parts) if parts else None
 
-Survey question: "What improvements would you like to see in our public parks?"
-Template: "The public park should have {{VERB_STATE}} {{SCAFFOLD}} [ACTIONABLE_TAXONOMY_DIMENSION]"
 
-Response: "I'd love more shaded seating areas and better evening lighting for safety."
-
-Extracted ideas:
-
-[
-  {{
-    "respondent_id": "{{respondent_id}}",
-    "idea_id": "1",
-    "idea": "The public park should have more shaded seating areas.",
-    "taxonomy_phrase": "shaded seating",
-    "ontology": {{
-      "instance": "more shaded seating areas",
-      "node": "shade provision",
-      "category": "amenity design changes",
-      "root": "environmental intervention"
-    }},
-    "sentiment": "neutral",
-    "sense": "aspirational"
-  }},
-  {{
-    "respondent_id": "{{respondent_id}}",
-    "idea_id": "2",
-    "idea": "The public park should have better evening lighting for safety.",
-    "taxonomy_phrase": "evening lighting",
-    "ontology": {{
-      "instance": "better evening lighting for safety",
-      "node": "lighting improvement",
-      "category": "amenity design changes",
-      "root": "environmental intervention"
-    }},
-    "sentiment": "neutral",
-    "sense": "aspirational"
-  }}
-]
-
-OUTPUT INSTRUCTIONS
-Return JSON format with keys in English and values in {language}.
-
-Edge cases:
-- Empty or irrelevant response: return []
-- Single idea: return one item
-- Multiple ideas: return multiple items with sequential idea_id
-
-"""
-
-# -----------------------------------------------------------------------------
-# HELPER DICT
-# -----------------------------------------------------------------------------
-
-# Helper dict for taxonomy axis descriptions
-TAXONOMY_AXIS_DESCRIPTIONS = {
-    "WHAT": "attributes, features, properties, or aspects being described or evaluated of someone or something ",
-    "WHY": "underlying reason, motivation, rationale, goal, values sougt or concern that explain preference, behaviour or response",
-    "HOW": "concrete actions, methods, behaviors, or implementation approaches that are proposed or implied to carry out an activity or enable a desired outcome",
-    "WHO": "peoople, groups, roles, stakeholders, or beneficiaries who are involved, affected, responsible, or addressed ",
-    "WHEN": "timing, urgency, sequence, or frequency associated with when something occurs or is expected",
-    "WHERE": "physical or digital location, channel, setting, or situational context in which something occurs or is encountered"
+# Axis-specific Dutch examples for ontology fields.
+# These reach the LLM via JSON Schema (unlike base class examples which get overridden).
+_ONTOLOGY_EXAMPLES = {
+    "WHAT": {
+        "instance": ["goede service", "te dure producten", "modern design"],
+        "node": ["klantenservice", "prijsniveau", "productontwerp"],
+        "category": ["service", "kosten", "productkenmerken"],
+        "root": ["klanttevredenheid"],
+    },
+    "HOW": {
+        "instance": ["meer personeel inzetten", "sneller reageren"],
+        "node": ["personeelsbezetting", "reactiesnelheid"],
+        "category": ["personeelsbeleid", "communicatie"],
+        "root": ["dienstverlening"],
+    },
+    "WHY": {
+        "instance": ["te lang wachten", "geen alternatief"],
+        "node": ["wachttijd", "beperkt aanbod"],
+        "category": ["tijdsfactoren", "marktfactoren"],
+        "root": ["klanttevredenheid"],
+    },
+    "WHO": {
+        "instance": ["oudere klanten", "nieuw personeel"],
+        "node": ["senioren", "medewerkers"],
+        "category": ["leeftijdsgroepen", "personeel"],
+        "root": ["betrokken partijen"],
+    },
+    "WHERE": {
+        "instance": ["op de website", "in de winkel"],
+        "node": ["website", "fysieke winkel"],
+        "category": ["digitale kanalen", "fysieke locaties"],
+        "root": ["contactkanalen"],
+    },
+    "WHEN": {
+        "instance": ["in het weekend", "tijdens piekuren"],
+        "node": ["weekendperiode", "piekbelasting"],
+        "category": ["weekpatronen", "capaciteitsdruk"],
+        "root": ["tijdspatronen"],
+    },
 }
+
+
+def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict = None, slot_type_map: dict = None):
+    """Create axis-specific TaxonomyEnrichedIdeaResponse with tailored Field descriptions."""
+    prompt_rules = axis_data.get("prompt_rules", {})
+    schema_data = schema_data or {}
+    slot_type_map = slot_type_map or {}
+
+    # Build type-enriched slot description for the idea field
+    slots = schema_data.get("slots", {})
+    slot_names = " + ".join(slots.keys()) if slots else "axis-specific content"
+
+    # Enrich node description with dimension type constraint
+    node_desc = prompt_rules.get(
+        "node_instruction",
+        "Canonical, reusable ontology concept (noun phrase)"
+    )
+    dimension_type = slot_type_map.get("dimension", {})
+    if dimension_type.get("is_alias"):
+        node_desc += f" Must be a {dimension_type['type_name']}."
+
+    # Type glossary for model-level description (definitions appear once, fields reference by name)
+    glossary = _build_type_glossary()
+    ontology_config = ConfigDict(json_schema_extra={"description": glossary}) if glossary else None
+
+    # Axis-specific examples (these actually reach the LLM via JSON Schema)
+    ex = _ONTOLOGY_EXAMPLES.get(axis, {})
+
+    # Create axis-specific OntologyResponse with tailored field descriptions
+    # Using create_model() so $defs key and title match in JSON Schema
+    config_kwargs = {"__config__": ontology_config} if ontology_config else {}
+    AxisOntologyResponse = create_model(
+        f"OntologyResponse_{axis}",
+        __base__=OntologyResponse,
+        **config_kwargs,
+        instance=(str, Field(
+            description=prompt_rules.get(
+                "instance_instruction",
+                "Contiguous verbatim span from the original response (no rewording)"
+            ),
+            examples=ex.get("instance", [])
+        )),
+        node=(str, Field(
+            description=node_desc,
+            examples=ex.get("node", [])
+        )),
+        category=(str, Field(
+            description=prompt_rules.get(
+                "category_instruction",
+                "Immediate parent grouping of the node"
+            ),
+            examples=ex.get("category", [])
+        )),
+        root=(str, Field(
+            default="",
+            description=prompt_rules.get(
+                "root_instruction",
+                "Top-level domain framing implied by the survey question (optional)"
+            ),
+            examples=ex.get("root", [])
+        )),
+    )
+
+    AxisTaxonomyEnrichedIdeaResponse = create_model(
+        f"TaxonomyEnrichedIdeaResponse_{axis}",
+        __base__=TaxonomyEnrichedIdeaResponse,
+        idea=(str, Field(
+            description=(
+                f"Idea following the {axis} pattern: {axis_data['pattern']}. "
+                f"Slot structure: {slot_names}. "
+                f"Must begin with the canonical_phrasing template."
+            )
+        )),
+        ontology=(Optional[AxisOntologyResponse], Field(
+            default=None,
+            description="Hierarchical ontology: instance -> node -> category -> root"
+        )),
+    )
+
+    return AxisTaxonomyEnrichedIdeaResponse
