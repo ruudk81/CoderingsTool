@@ -176,7 +176,7 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     """Format TEMPLATE_LOOKUP data for a specific axis.
 
     Reads axis-specific data from TEMPLATE_LOOKUP["axes"] and resolves the
-    linked template_schema to get structural_forms and notes.  Formats
+    linked template_schema to resolve slot types.  Formats
     everything for injection into TAXONOMY_AWARE_SUBJECT_PROMPT and
     TAXONOMY_ENRICHED_EXTRACTION_PROMPT.
 
@@ -187,10 +187,10 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
 
     Returns:
         dict with keys for both prompts:
-        - Subject prompt: axis_anchor, axis_dimension_description,
-          axis_included_concepts, axis_pattern, noun_phrase_descriptor,
-          axis_slots, axis_instruction, dimension_marker, slot_type_map
-        - Extraction prompt: axis_anchor, marker, noun_phrase_descriptor,
+        - Subject prompt: axis_dimension_description, axis_included_concepts,
+          axis_pattern, noun_phrase_descriptor, axis_slots, axis_instruction,
+          dimension_marker, slot_type_map
+        - Extraction prompt: dimension_marker, noun_phrase_descriptor,
           slot_guidance_second, axis_instruction, semantic_category_table,
           priority_rules
     """
@@ -201,7 +201,7 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     # Pattern lives directly on the axis
     axis_pattern = axis_data["pattern"]
 
-    # Resolve schema reference to get structural_forms and notes from template_schemas.
+    # Resolve schema reference to get slot type metadata from template_schemas.
     schema_data = _resolve_schema_data(axis_data)
 
     # Substitute {language} in slot_guidance descriptions before formatting.
@@ -252,7 +252,6 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     # Marker token: axis-specific dimension slot name (e.g., [OUTCOME_ENABLER] for HOW)
     slot_guidance_keys = list(slot_guidance.keys())
     dimension_marker = slot_guidance_keys[1] if len(slot_guidance_keys) > 1 else TEMPLATE_LOOKUP["marker"]
-    marker = TEMPLATE_LOOKUP["marker"]
 
     # --- Dimension taxonomy data (semantic category table + priority rules) ---
     dim_tax = TEMPLATE_LOOKUP.get("dimension_taxonomy", {})
@@ -271,15 +270,12 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
 
     return {
         # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT
-        "axis_anchor": axis_data["anchor"],
         "axis_dimension_description": axis_data["dimension_description"],
         "axis_included_concepts": allowed_concepts_str,
         "axis_pattern": _escape_braces_for_format(axis_pattern),
         "noun_phrase_descriptor": axis_data.get("noun_phrase_descriptor", ""),
         "axis_slots": slots_formatted,
         "axis_instruction": axis_data.get("instruction", ""),
-        # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT
-        "marker": marker,
         # Resolved type_system info for factory functions
         "slot_type_map": slot_type_map,
         # Axis-specific dimension marker (e.g., [OUTCOME_ENABLER] for HOW)
@@ -1307,11 +1303,9 @@ class IdeaExtractor:
                     perspective=self.generic_specifiers.get('perspective', 'general'),
                     intent=self.generic_specifiers.get('intent', 'describe'),
                     # Taxonomy guidance (from lookup)
-                    taxonomy_axis=taxonomy_axis,
-                    axis_anchor=lookup_data["axis_anchor"],
                     axis_dimension_description=lookup_data["axis_dimension_description"],
                     axis_dimension_allowed_concepts=lookup_data["axis_included_concepts"],
-                    # Axis pattern, slots, and instruction (from lookup)
+                    # Axis pattern, slots, and marker (from lookup)
                     axis_pattern=lookup_data["axis_pattern"],
                     axis_slots=lookup_data["axis_slots"],
                     dimension_marker=lookup_data["dimension_marker"],
@@ -1319,10 +1313,9 @@ class IdeaExtractor:
 
                 # Create axis-specific response model with tailored Field descriptions
                 axis_data = TEMPLATE_LOOKUP["axes"].get(taxonomy_axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
-                schema_data = _resolve_schema_data(axis_data)
                 dim_marker = lookup_data["dimension_marker"]
                 AxisSubjectModel = create_subject_extraction_model(
-                    taxonomy_axis, axis_data, schema_data,
+                    taxonomy_axis, axis_data,
                     slot_type_map=lookup_data.get("slot_type_map"),
                     dimension_marker=dim_marker,
                 )
@@ -1375,7 +1368,6 @@ class IdeaExtractor:
                 SubjectExtractionResponse.set_dimension_marker(fb_marker)
                 fallback = SubjectExtractionResponse(
                     canonical_term="the subject",
-                    taxonomy_axis=taxonomy_axis,
                     canonical_phrasing=fallback_template,
                     taxonomy_actionable_type=taxonomy_axis.lower()
                 )
@@ -1388,12 +1380,9 @@ class IdeaExtractor:
         response: str,
         subject: str,
         phrasing_template: str,
-        taxonomy_actionable_type: str = ""
     ) -> str:
         """Build taxonomy-enriched prompt for idea extraction.
 
-        V3: Restored template prefix for normalized idea phrasing to improve clustering.
-        Ideas are expressed using the canonical phrasing template.
         Injects axis-specific instructions from template_lookup.py for
         node/category/taxonomy_phrase guidance.
 
@@ -1401,8 +1390,7 @@ class IdeaExtractor:
             respondent_id: Respondent identifier
             response: The response text to extract ideas from
             subject: The canonical subject/entity from survey question
-            phrasing_template: Template with [ACTIONABLE_TAXONOMY_DIMENSION] placeholder
-            taxonomy_actionable_type: Chosen narrow dimension type for taxonomy
+            phrasing_template: Template with dimension marker placeholder
 
         Returns:
             Formatted prompt string
@@ -1413,7 +1401,6 @@ class IdeaExtractor:
         return TAXONOMY_ENRICHED_EXTRACTION_PROMPT.format(
             var_lab=self.var_lab,
             taxonomy_axis=self.taxonomy_axis,
-            taxonomy_actionable_type=taxonomy_actionable_type or "concepts",
             domain=self.generic_specifiers.get('domain', 'general'),
             topic=self.generic_specifiers.get('topic', 'feedback'),
             entity=self.generic_specifiers.get('entity', 'unknown'),
@@ -1424,8 +1411,7 @@ class IdeaExtractor:
             response=response,
             canonical_phrasing=phrasing_template,
             # Axis-specific placeholders from template_lookup
-            axis_anchor=lookup_data["axis_anchor"],
-            marker=lookup_data["marker"],
+            dimension_marker=lookup_data["dimension_marker"],
             noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
             slot_guidance_second=lookup_data["slot_guidance_second"],
             instruction=lookup_data["axis_instruction"],
@@ -1636,7 +1622,6 @@ class IdeaExtractor:
                 task['response'],
                 subject,
                 phrasing_template,
-                self.taxonomy_actionable_type
             )
 
             if self.prompt_printer and not self._captured_prompt:
