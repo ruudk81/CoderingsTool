@@ -63,19 +63,24 @@ class QualityFilterLLMResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class OntologySubmodel(BaseModel):
-    instance: str = ""   # Literal action/object/concept from idea (verbatim)
-    node: str = ""       # Canonical, reusable ontology concept (noun phrase)
-    category: str = ""   # Immediate parent grouping
-    root: str = ""       # Top-level domain framing
+    instance: str = ""          # Verbatim span from response
+    node: str = ""              # Canonical, reusable concept (noun phrase)
+    semantic_category: str = "" # One of: identity, attribute, function, state, evaluation, relation
+    category_label: str = ""    # Concise descriptive label within the category
+    root: str = ""              # Top-level domain framing
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class IdeasExtractedSubmodel(BaseModel):
     idea_id: str  # Format: {respondent_id}_{sequence_number}
     idea: str     # Clean text (no embedded specifiers in new format)
-    taxonomy_phrase: str = ""         # 2-4 word categorization phrase (separate from idea text)
-    ontology: Optional[OntologySubmodel] = None  # Hierarchical ontology (instance → node → category → root)
-    sentiment: str = "neutral"        # "positive", "negative", "neutral"
-    sense: str = "factual"            # "factual", "evaluative", "aspirational", "experiential"
+    instance: str = ""          # Verbatim span from response
+    node: str = ""              # Canonical, reusable concept (noun phrase)
+    semantic_category: str = "" # One of: identity, attribute, function, state, evaluation, relation
+    category_label: str = ""    # Concise descriptive label within the category
+    root: str = ""              # Top-level domain framing
+    taxonomy_phrase: str = ""         # (legacy, kept for downstream compat)
+    sentiment: str = "neutral"        # (legacy, kept for downstream compat)
+    sense: str = "factual"            # (legacy, kept for downstream compat)
     model_config = ConfigDict(arbitrary_types_allowed=True)   
     
 class IdeasExtractedModel(QualityFilteredModel):
@@ -85,12 +90,13 @@ class IdeasExtractedModel(QualityFilteredModel):
 
 class EmbeddingsSubmodel(IdeasExtractedSubmodel):
     idea_embedding: Optional[npt.NDArray[np.float32]] = None
-    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of taxonomy_phrase (used in "both_taxonomy_phrase" mode)
-    ontology_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of "instance - node (category)" (used in "both_ontology"/"all" mode)
-    
+    node_embedding: Optional[npt.NDArray[np.float32]] = None      # Embedding of node (canonical ontology concept)
+    taxonomy_embedding: Optional[npt.NDArray[np.float32]] = None  # (deprecated, kept for cache compat)
+    ontology_embedding: Optional[npt.NDArray[np.float32]] = None  # Embedding of "instance → node → semantic_category (category_label) → root"
+
 class EmbeddingsModel(IdeasExtractedModel):
     response_ideas: Optional[List[EmbeddingsSubmodel]] = None
-    embedding_text_format: str = "idea"  # "idea" or "taxonomy_phrase"
+    embedding_text_format: str = "idea"  # "idea", "node", "ontology", "idea_node", "idea_ontology", "all"
 
 class ClusterSubmodel(EmbeddingsSubmodel):
     initial_cluster: Optional[Union[int, str]] = None

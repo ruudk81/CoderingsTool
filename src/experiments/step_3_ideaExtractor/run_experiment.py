@@ -290,17 +290,17 @@ if __name__ == "__main__":
             print(f"Ideas ({sample.idea_count}):")
             for idea in sample.response_ideas:
                 print(f"  - {idea.idea}")
-                ont_parts = [v for v in (idea.instance, idea.node, idea.category, idea.root) if v]
-                if ont_parts:
-                    print(f"    ontology: {' → '.join(ont_parts)}")
+                tax_parts = [v for v in (idea.instance, idea.node, idea.semantic_category, idea.category_label, idea.root) if v]
+                if tax_parts:
+                    print(f"    taxonomy: {' → '.join(tax_parts)}")
             print("=" * 70)
 
-        # Print all ontologies
+        # Print all taxonomies
         if results:
             print("\n" + "=" * 70)
-            print("ALL ONTOLOGIES  (instance → node → class → root)")
+            print("ALL TAXONOMIES  (instance → node → semantic_category [category_label] → root)")
             print("=" * 70)
-            ont_count = 0
+            tax_count = 0
             for item in results:
                 if not item.response_ideas:
                     continue
@@ -308,14 +308,15 @@ if __name__ == "__main__":
                     parts = {
                         "instance": idea.instance or "",
                         "node": idea.node or "",
-                        "class": idea.category or "",
+                        "semantic_category": idea.semantic_category or "",
+                        "category_label": idea.category_label or "",
                         "root": idea.root or "",
                     }
                     chain = " → ".join(f"{v}" for v in parts.values() if v)
                     if chain:
-                        ont_count += 1
-                        print(f"  {ont_count:3d}. {chain}")
-            print(f"\nTotal: {ont_count} ontologies")
+                        tax_count += 1
+                        print(f"  {tax_count:3d}. {chain}")
+            print(f"\nTotal: {tax_count} taxonomies")
             print("=" * 70)
 
         # Print token usage

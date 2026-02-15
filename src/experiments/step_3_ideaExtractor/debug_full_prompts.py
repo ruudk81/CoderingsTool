@@ -37,8 +37,8 @@ try:
     from experiments.step_3_ideaExtractor.prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        TaxonomyChunkResponse,
-        TaxonomyConsolidatedResponse,
+        CodingDimensionChunkResponse,
+        CodingDimensionConsolidatedResponse,
         create_subject_extraction_model,
         create_taxonomy_enriched_model,
     )
@@ -48,8 +48,8 @@ except ImportError:
     from prompts_exp import (
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        TaxonomyChunkResponse,
-        TaxonomyConsolidatedResponse,
+        CodingDimensionChunkResponse,
+        CodingDimensionConsolidatedResponse,
         create_subject_extraction_model,
         create_taxonomy_enriched_model,
     )
@@ -90,8 +90,8 @@ STATIC_PROMPT_MODELS = {
     "context_specifier_group2": GenericSpecifierGroup2Response,
     "consolidate_specifiers_group1": GenericSpecifierGroup1Response,
     "consolidate_specifiers_group2": GenericSpecifierGroup2Response,
-    "taxonomy_chunk_scoring": TaxonomyChunkResponse,
-    "taxonomy_consolidation": TaxonomyConsolidatedResponse,
+    "taxonomy_chunk_scoring": CodingDimensionChunkResponse,
+    "taxonomy_consolidation": CodingDimensionConsolidatedResponse,
 }
 
 

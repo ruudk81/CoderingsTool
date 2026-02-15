@@ -37,7 +37,7 @@ Extract these GROUP 1 specifiers (speaker characteristics):
 
 2. **perspective**: Stakeholder viewpoint
    - From whose perspective are these responses given?
-   - Common values: "consumer", "employee", "partner", "expert", "general_public"
+   - Common values: "consumer", "client", "employee", "partner", "expert", "general_public", "beneficiary"
    - Examples: "consumer" (customer feedback), "employee" (internal survey)
 
 3. **intent**: Purpose/communicative function
@@ -58,11 +58,11 @@ class GenericSpecifierGroup1Response(BaseModel):
     )
     perspective: str = Field(
         description="Stakeholder viewpoint from whose perspective responses are given",
-        examples=["consumer", "employee", "partner", "expert"]
+        examples=["consumer", "employee", "partner", "expert","general_public", "beneficiary"]
     )
     intent: str = Field(
         description="Communicative function - what respondents are trying to do",
-        examples=["evaluate", "suggest", "complain", "describe"]
+        examples=["evaluate", "suggest", "complain", "describe", "explain", "clarify"]
     )
 
 
@@ -106,7 +106,7 @@ class GenericSpecifierGroup2Response(BaseModel):
     )
     entity: str = Field(
         description="Main entity of interest, lowercase_with_underscores",
-        examples=["asn_bank", "tesla_model_3", "albert_heijn"]
+        examples=["abnamro_bank", "tesla_model_3", "albert_heijn"]
     )
 
 
@@ -164,11 +164,11 @@ Return ONE consolidated set of GROUP 2 specifiers as valid JSON following the re
 # TAXONOMY CHUNK SCORING
 # -----------------------------------------------------------------------------
 
-TAXONOMY_CHUNK_SCORING_PROMPT = """
-You are selecting the SINGLE best taxonomy axis for organizing a set of survey responses.
+CODING_DIMENSION_SCORING_PROMPT = """
+You are selecting the SINGLE best coding dimension for organizing a set of survey responses.
 
 Your task is NOT to summarize responses, judge quality, or assign labels to each response.
-Your ONLY goal is to decide which ONE axis — WHAT, WHY, HOW, WHO, WHEN, or WHERE — best explains the MAIN way the responses DIFFER from one another.
+Your ONLY goal is to decide which ONE dimension — WHAT, WHY, HOW, WHO, WHEN, or WHERE — best explains the MAIN way the responses DIFFER from one another.
 
 Here is the language you will be working in:
 <language>
@@ -177,7 +177,8 @@ Here is the language you will be working in:
 
 Here is contextual information about the survey question:
 <context>
-- Domain: {domain}: {entity}
+- Domain: {domain}
+- Entity of interest: {entity}
 - Topic: {topic}
 </context>
 
@@ -205,17 +206,16 @@ Here is a sample of SHORT, COARSE responses for you to analyze:
 HOW TO THINK ABOUT THE TASK
 ------------------------------
 Ask yourself:
-"If I had to cluster these responses into groups, which axis would create the most meaningful separation, given the intent ("{intent}") in answering the survey question?"
+"If I had to cluster these responses into groups, which dimension would create the most meaningful separation in answering the survey question?"
 
-Choose the axis that explains the LARGEST share of meaningful variation across MOST responses (not just edge cases).
-Prefer the axis that yields the cleanest MECE coding scheme downstream (mutually exclusive and collectively exhaustive).
+Choose the dimension that explains the LARGEST share of meaningful variation across MOST responses (not just edge cases).
 
 If multiple axes seem plausible:
-- Choose the axis that would be used as the *top-level folder* to organize these responses.
-- If still tied, choose the axis that applies to a larger fraction of responses.
+- Choose the dimension that would be used as the *top-level folder* to organize these responses.
+- If still tied, choose the dimension that applies to a larger fraction of responses.
 
 ------------------------------
-TAXONOMY AXES (choose exactly one)
+Coding dimensions (choose exactly one)
 ------------------------------
 
 1) WHY (reason_driver)
@@ -257,10 +257,9 @@ ANALYSIS PROCESS (internal)
 Do NOT output your step-by-step reasoning.
 You MUST still follow this process internally:
 1) Identify the dominant pattern of variation across the sample, in light of the intent ("{intent}") in answering the survey question.
-2) Score each axis for explanatory power over the variation: 0 = absent, 1 = present but secondary, 2 = primary.
-3) Choose the single axis with the highest score (break ties using the rules above).
-4) Extract 2–3 verbatim snippets from <sample_responses> that support the chosen axis.
-5) Write a 1–2 sentence axis description that enables MECE coding downstream.
+2) Score each dimension for explanatory power over the variation: 0 = absent, 1 = present but secondary, 2 = primary.
+3) Choose the single dimension with the highest score (break ties using the rules above).
+4) Extract 2–3 verbatim snippets from <sample_responses> that support the chosen dimension.
 
 All string values (including evidence snippets) must be in {language}.
 Evidence snippets must be copied verbatim from <sample_responses>.
@@ -270,21 +269,17 @@ Clarification must explicitly contrast the chosen dimension with at least one pl
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 
-class TaxonomyChunkResponse(BaseModel):
-    """LLM response for single chunk taxonomy scoring."""
+class CodingDimensionChunkResponse(BaseModel):
+    """LLM response for single chunk coding dimension scoring."""
     primary_dimension: Literal["HOW", "WHAT", "WHEN", "WHERE", "WHO", "WHY"] = Field(
-        description="The single best taxonomy axis for organizing responses"
-    )
-    taxonomy_axis: str = Field(
-        description="1-2 sentence description of the organizing axis within the chosen dimension, enabling MECE coding downstream",
-        examples=["Reasons why respondents prefer or avoid this brand", "Specific product attributes being evaluated"]
+        description="The single best coding dimension for organizing responses"
     )
     evidence: List[str] = Field(
-        description="2-3 verbatim snippets from sample_responses supporting the chosen axis",
+        description="2-3 verbatim snippets from sample_responses supporting the chosen dimension",
         examples=[["good service", "too expensive", "friendly staff"]]
     )
     clarification: str = Field(
-        description="1-2 sentences explaining why this axis is most appropriate, contrasting with at least one alternative"
+        description="1-2 sentences explaining why this dimension is most appropriate, contrasting with at least one alternative"
     )
 
 
@@ -292,10 +287,9 @@ class TaxonomyChunkResponse(BaseModel):
 # TAXONOMY CONSOLIDATION
 # -----------------------------------------------------------------------------
 
-TAXONOMY_CONSOLIDATION_PROMPT = """
+CODING_DIMENSION_CONSOLIDATION_PROMPT = """
 You are a taxonomy consolidation specialist.
-Your task is to analyze multiple chunk-level taxonomy analyses and consolidate them into a single, coherent global taxonomy axis for a survey question.
-
+Your task is to analyze multiple chunk-level coding dimension analyses and consolidate them into a single, coherent global coding dimension for a survey question.
 
 Here is the language the survey responses are written in:
 <language>
@@ -322,7 +316,7 @@ Here are the chunk-level analyses you need to consolidate:
 
 ## YOUR TASK
 
-You must consolidate these chunk-level analyses into a single global taxonomy axis. Each chunk analysis evaluated the same survey question and produced a primary coding dimension, a specific taxonomy axis, and supporting evidence. Your job is to synthesize these into one coherent framework.
+You must consolidate these chunk-level analyses into a single global coding dimension. Each chunk analysis evaluated the same survey question and produced a primary coding dimension and supporting evidence. Your job is to synthesize these into one coherent framework.
 
 ## ANALYSIS STEPS
 
@@ -331,7 +325,7 @@ Follow these steps in order:
 **Step 1: Review and consolidate chunk-level analyses**
 Examine all chunk-level analyses carefully. Note areas of convergence and divergence. Identify which dimensions appear across multiple chunks and assess the quality of evidence supporting each.
 
-**Step 2: Select the PRIMARY taxonomy dimension**
+**Step 2: Select the PRIMARY coding dimension**
 Choose the ONE dimension (WHAT, WHY, HOW, WHO, WHEN, or WHERE) that:
 - Shows strong and consistent support across chunks
 - Provides the clearest partition boundaries for coding responses
@@ -339,8 +333,8 @@ Choose the ONE dimension (WHAT, WHY, HOW, WHO, WHEN, or WHERE) that:
 
 Important: Do NOT select a dimension solely because it appears most frequently. Favor partition clarity, boundary stability, and interpretability over raw frequency counts.
 
-**Step 3: Define the GLOBAL taxonomy axis**
-Write a taxonomy axis description that:
+**Step 3: Define the GLOBAL coding dimension**
+Write a coding dimension description that:
 - Is specific to THIS survey question and response domain
 - Clearly falls within the selected primary dimension
 - Reconciles and generalizes the chunk-level axes without introducing new organizing principles
@@ -361,17 +355,17 @@ All output values must be in {language}.
 Begin processing now and provide your output as valid JSON following the response schema provided."""
 
 
-class TaxonomyConsolidatedResponse(BaseModel):
-    """Consolidated taxonomy selection after merging all chunks."""
-    primary_axis: str = Field(
-        description="The selected taxonomy dimension",
+class CodingDimensionConsolidatedResponse(BaseModel):
+    """Consolidated coding dimension selection after merging all chunks."""
+    primary_dimension: str = Field(
+        description="The selected coding dimension",
         examples=["WHAT", "WHY", "HOW", "WHO", "WHEN", "WHERE"]
     )
-    primary_axis_rationale: str = Field(
+    primary_dimension_rationale: str = Field(
         description="2-4 sentence explanation of why this dimension is the dominant organizing principle"
     )
-    primary_axis_description: str = Field(
-        description="Clear definition of the taxonomy axis at proper abstraction level, specific to this survey question"
+    primary_dimension_description: str = Field(
+        description="Clear definition of the coding dimension at proper abstraction level, specific to this survey question"
     )
 
 
@@ -578,17 +572,17 @@ Here is the context for the survey:
 </survey_context>
 
 **TAXONOMY FRAMEWORK**
-<taxonomy_framework>
-Here is the taxonomy lens you need to apply:
-- Global dimension {taxonomy_axis}; {axis_dimension_description}
-- Anchor: {axis_anchor} -> {taxonomy_actionable_type}
-= taxonomy_actionable_type {taxonomy_actionable_type}
+<taxonomy_instructions>
+Here is the taxonomy lens you need to apply: "{noun_phrase_descriptor}"
 
-Here is the canonical template you should use:
-- Template pattern: {axis_slot_pattern}
-- Slot guidance:
-{axis_slot_guidance}
-</taxonomy_framework>
+Instruction: {instruction}
+
+The pattern: {canonical_phrasing} 
+
+{marker} is defined as: {slot_guidance_second}
+The selected {taxonomy_axis}-concept: {taxonomy_actionable_type}
+
+</taxonomy_instructions>
 
 
 **RESPONSE TO ANALYZE**
@@ -603,7 +597,7 @@ Now follow these five steps to complete the extraction:
 
 **STEP 1: IDENTIFY AND SPLIT IDEAS**
 
-Identify all conceptually distinct instances in which the response describes or refers to a unique instance of the taxonomy_actionable_type (="{taxonomy_actionable_type}”), interpreted in light of the survey question.
+Identify all conceptually distinct instances in which the response describes or refers to a unique instance of the selected {taxonomy_axis}-concept, interpreted in light of the survey question.
 
 CRITICAL SPLITTING RULES:
 - Items joined by conjunctions (such as "and", "or", "en", "und", "et", "y", "ou") or commas that refer to different concepts MUST be split into separate ideas
@@ -613,74 +607,40 @@ CRITICAL SPLITTING RULES:
 - When in doubt about whether to split, err on the side of splitting. Over-splitting is preferable to under-splitting
 - Assign each unique concept a sequential idea_id starting from "1"
 
-If the response is empty, nonsensical, or irrelevant to the survey question, you will ultimately return an empty JSON array [].
+**STEP 2: COMPLETE THE PATTERN **
 
-**STEP 2: EXTRACT THE INSTANCE**
-
-For each unique idea identified in Step 1, extract the shortest verbatim span from the original response text that expresses that specific idea.
-
-Important: When ideas have been split from a compound phrase, the instance for each idea is ONLY the portion of the original text that belongs to that specific idea, not the entire compound phrase.
-
-**STEP 3: COMPLETE THE CANONICAL TEMPLATE**
-
-For each idea, reformulate it using the canonical template provided in the taxonomy framework.
+For each idea, reformulate it using the pattern provided in the taxonomy framework.
 
 Rules for template completion:
-- Begin with the fixed canonical_phrasing prefix exactly as provided (do NOT alter this)
-    - Remember, this is the canonical_phrasing prefix: "{canonical_phrasing}"
-- The template contains a marker token (shown in square brackets) that you must replace
-- Replace ONLY the marker token with content that aligns with the axis_anchor
-    - Remember, this is the axis_anchor: {axis_anchor}
-- The replacement content must be:
-  * Consistent with the axis_dimension_description and allowed concepts
-  * NOT one of any excluded concepts mentioned in the axis_slot_guidance
-  * Written in the language specified in the survey context
-- Follow any additional guidance provided in axis_slot_guidance
+- Begin with the fixed pattern prefix exactly as provided (do NOT alter this)
+- The template contains a marker token (shown in square brackets) that you must replace. 
+- This is the marker token: {axis_anchor}
+- Replace ONLY the marker token with  he shortest verbatim span from the original response text that expresses the unique idea identified in Step 1
+
+**STEP 3: CLASSIFY EACH IDEA**
+
+For each idea, assign a semantic classification in the specified language.
+
+1. **INSTANCE**: The verbatim span from the response expressing the idea (cleaned and minimally standardized)
+
+2. **NODE**: A canonical, reusable concept label
+   - Remove descriptive qualifiers (e.g., adjectives like "slow," "cheap," "great")
+   - Reduce to the base object, action, or concept (noun phrase)
+   - Must stay semantically equivalent to the instance
+   - If the instance already represents a base concept, the node may remain identical
+
+3. **SEMANTIC CATEGORY**: Classify the idea as one of these types (interpreted for the {taxonomy_axis} dimension):
+{semantic_category_table}
+
+4. **CATEGORY LABEL**: A concise descriptive label for the specific classification within the semantic category
+
+5. **ROOT**: Top-level domain framing implied by the survey question ({taxonomy_actionable_type} → {entity}), if identifiable
+
+**Priority Rules** (apply in order when uncertain):
+{priority_rules}
 
 
-**STEP 4: BUILD LIGHTWEIGHT TAXONOMY HIERARCHY**
-
-For each idea, construct a four-level taxonomy hierarchy in the specified language. Each level serves a distinct analytical purpose:
-
-**LEVEL 1 — INSTANCE (normalized mention)**
-A cleaned and standardized version of the respondent's original wording.
-- Must remain traceable to the original phrasing
-- May simplify adjectives or qualifiers for clarity
-- Should not introduce new abstraction beyond what was stated
-- Think: "What did the respondent literally mention?"
-
-**LEVEL 2 — NODE (reusable semantic concept)**
-The core semantic unit referenced in the instance.
-- Remove qualifiers and descriptors
-- Reduce to the base object or concept
-- Must be reusable across different responses
-- Represents what is being referred to, not how it is described
-- Think: "What object or concept is being mentioned?"
-
-**LEVEL 3 — CLASS (type of node)**
-A structural grouping that categorizes the node into a broader type.
-- Groups together similar nodes
-- Describes what kind of thing the node is
-- Should be descriptive of structure, not evaluation or sentiment
-- Think: "What type of thing is this node?"
-
-**LEVEL 4 — ROOT (overarching dimension)**
-The fixed analytical dimension under which all classes fall.
-- This should be the topic from the survey context
-- Represents the overarching analytical attribute or dimension
-- Must align with the predefined analytical framework
-- All classes must logically fit under this root
-- Think: "Within which analytical dimension does this class belong?"
-
-STRUCTURAL SUMMARY:
-```
-ROOT (topic of study)
-  └─> CLASS (structural grouping of what is said)
-      └─> NODE (core semantic unit of what is said)
-          └─> INSTANCE (normalized mention of what is said)
-```
-
-**STEP 5: ASSIGN IDs**
+**STEP 4: ASSIGN IDs**
 
 - Use the exact respondent_id provided in the response
 - Assign sequential idea_id values as strings: "1", "2", "3", etc., for each distinct idea
@@ -698,17 +658,18 @@ Begin processing now and provide your output as valid JSON matching the required
 CRITICAL: all output fields must be in {language}
 """
 
-class OntologyResponse(BaseModel):
-    """Base ontology — provides normalize_field validator.
+class SemanticTaxonomyResponse(BaseModel):
+    """Semantic taxonomy classification for extracted ideas.
     Field descriptions and examples are set per-axis in create_taxonomy_enriched_model()."""
     model_config = ConfigDict(populate_by_name=True)
 
     instance: str = ""
     node: str = ""
-    category: str = Field(default="", alias="class")
+    semantic_category: Literal["identity", "attribute", "function", "state", "evaluation", "relation"] = "attribute"
+    category_label: str = ""
     root: str = ""
 
-    @field_validator('instance', 'node', 'category', 'root', mode='before')
+    @field_validator('instance', 'node', 'category_label', 'root', mode='before')
     @classmethod
     def normalize_field(cls, v: str) -> str:
         if v is None:
@@ -754,9 +715,9 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     idea: str = Field(
         description="Complete idea statement beginning with the canonical_phrasing template"
     )
-    ontology: Optional[OntologyResponse] = Field(
+    taxonomy: Optional[SemanticTaxonomyResponse] = Field(
         default=None,
-        description="Hierarchical ontology: instance → node → class → root"
+        description="Semantic taxonomy: instance → node → semantic_category (category_label) → root"
     )
 
     @field_validator('idea', mode='before')
@@ -811,43 +772,49 @@ def _build_type_glossary() -> str | None:
     return " ".join(parts) if parts else None
 
 
-# Axis-specific Dutch examples for ontology fields.
+# Axis-specific Dutch examples for semantic taxonomy fields.
 # These reach the LLM via JSON Schema (unlike base class examples which get overridden).
-_ONTOLOGY_EXAMPLES = {
+_TAXONOMY_EXAMPLES = {
     "WHAT": {
         "instance": ["goede service", "te dure producten", "modern design"],
         "node": ["klantenservice", "prijsniveau", "productontwerp"],
-        "category": ["service", "kosten", "productkenmerken"],
+        "semantic_category": ["attribute", "evaluation", "attribute"],
+        "category_label": ["servicekwaliteit", "prijsbeoordeling", "vormgeving"],
         "root": ["klanttevredenheid"],
     },
     "HOW": {
         "instance": ["meer personeel inzetten", "sneller reageren"],
         "node": ["personeelsbezetting", "reactiesnelheid"],
-        "category": ["personeelsbeleid", "communicatie"],
+        "semantic_category": ["function", "function"],
+        "category_label": ["capaciteitsverbetering", "communicatiesnelheid"],
         "root": ["dienstverlening"],
     },
     "WHY": {
         "instance": ["te lang wachten", "geen alternatief"],
         "node": ["wachttijd", "beperkt aanbod"],
-        "category": ["tijdsfactoren", "marktfactoren"],
+        "semantic_category": ["state", "state"],
+        "category_label": ["wachtervaring", "marktbeperking"],
         "root": ["klanttevredenheid"],
     },
     "WHO": {
         "instance": ["oudere klanten", "nieuw personeel"],
         "node": ["senioren", "medewerkers"],
-        "category": ["leeftijdsgroepen", "personeel"],
+        "semantic_category": ["identity", "identity"],
+        "category_label": ["leeftijdsgroep", "personeelstype"],
         "root": ["betrokken partijen"],
     },
     "WHERE": {
         "instance": ["op de website", "in de winkel"],
         "node": ["website", "fysieke winkel"],
-        "category": ["digitale kanalen", "fysieke locaties"],
+        "semantic_category": ["identity", "identity"],
+        "category_label": ["digitaal kanaal", "fysieke locatie"],
         "root": ["contactkanalen"],
     },
     "WHEN": {
         "instance": ["in het weekend", "tijdens piekuren"],
         "node": ["weekendperiode", "piekbelasting"],
-        "category": ["weekpatronen", "capaciteitsdruk"],
+        "semantic_category": ["identity", "state"],
+        "category_label": ["weekpatroon", "capaciteitsdruk"],
         "root": ["tijdspatronen"],
     },
 }
@@ -866,7 +833,7 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
     # Enrich node description with dimension type constraint
     node_desc = prompt_rules.get(
         "node_instruction",
-        "Canonical, reusable ontology concept (noun phrase)"
+        "Canonical, reusable concept label (noun phrase)"
     )
     dimension_type = slot_type_map.get("dimension", {})
     if dimension_type.get("is_alias"):
@@ -874,17 +841,17 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
 
     # Type glossary for model-level description (definitions appear once, fields reference by name)
     glossary = _build_type_glossary()
-    ontology_config = ConfigDict(json_schema_extra={"description": glossary}) if glossary else None
+    taxonomy_config = ConfigDict(json_schema_extra={"description": glossary}) if glossary else None
 
     # Axis-specific examples (these actually reach the LLM via JSON Schema)
-    ex = _ONTOLOGY_EXAMPLES.get(axis, {})
+    ex = _TAXONOMY_EXAMPLES.get(axis, {})
 
-    # Create axis-specific OntologyResponse with tailored field descriptions
+    # Create axis-specific SemanticTaxonomyResponse with tailored field descriptions
     # Using create_model() so $defs key and title match in JSON Schema
-    config_kwargs = {"__config__": ontology_config} if ontology_config else {}
-    AxisOntologyResponse = create_model(
-        f"OntologyResponse_{axis}",
-        __base__=OntologyResponse,
+    config_kwargs = {"__config__": taxonomy_config} if taxonomy_config else {}
+    AxisSemanticTaxonomyResponse = create_model(
+        f"SemanticTaxonomyResponse_{axis}",
+        __base__=SemanticTaxonomyResponse,
         **config_kwargs,
         instance=(str, Field(
             description=prompt_rules.get(
@@ -897,13 +864,19 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
             description=node_desc,
             examples=ex.get("node", [])
         )),
-        category=(str, Field(
-            alias="class",
+        semantic_category=(
+            Literal["identity", "attribute", "function", "state", "evaluation", "relation"],
+            Field(
+                description=f"Semantic category for the {axis} dimension. One of: identity, attribute, function, state, evaluation, relation.",
+                examples=ex.get("semantic_category", [])
+            )
+        ),
+        category_label=(str, Field(
             description=prompt_rules.get(
-                "category_instruction",
-                "Immediate parent grouping of the node"
+                "category_label_instruction",
+                "Concise descriptive label for the specific classification within the semantic category"
             ),
-            examples=ex.get("category", [])
+            examples=ex.get("category_label", [])
         )),
         root=(str, Field(
             default="",
@@ -925,9 +898,9 @@ def create_taxonomy_enriched_model(axis: str, axis_data: dict, schema_data: dict
                 f"Must begin with the canonical_phrasing template."
             )
         )),
-        ontology=(Optional[AxisOntologyResponse], Field(
+        taxonomy=(Optional[AxisSemanticTaxonomyResponse], Field(
             default=None,
-            description="Hierarchical ontology: instance -> node -> class -> root"
+            description="Semantic taxonomy: instance → node → semantic_category (category_label) → root"
         )),
     )
 
