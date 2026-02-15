@@ -7,7 +7,6 @@ TEMPLATE_LOOKUP = {
     "axes": {
 
         "WHAT": {
-            "anchor": "entity_phenomenon",
             "noun_phrase_descriptor": "WHAT: the entity or phenomenon described",
 
             "dimension_description": (
@@ -17,7 +16,6 @@ TEMPLATE_LOOKUP = {
             ),
   
             "allowed_concepts": ["attribute", "feature", "property", "aspect", "capability", "specification", "structure"],
-            "excluded_concepts": ["action", "intervention", "pathway", "reason", "motive", "stakeholder", "timing", "location", "improvement", "goal", "method"],
 
             "schema": "DESCRIBE_ENTITY_DESCRIPTOR",
 
@@ -36,16 +34,15 @@ TEMPLATE_LOOKUP = {
             },
 
             "prompt_rules": {
-                "instance_instruction": "short verbatim or descriptive phrase",
-                "node_instruction": "short noun like phrase or label",
-                "category_instruction": "short noun like phrase or label",
-                "root_instruction": "short noun like phrase or label"
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one WHAT concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this WHAT concept. Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this idea represents (e.g., 'prijsniveau' for a pricing attribute).",
+                "root_instruction": "The primary topic aspect that this idea concerns, stable across responses (e.g., 'klanttevredenheid')."
             }
 
         },
 
         "WHO": {
-            "anchor": "target_actor",
             "noun_phrase_descriptor": "WHO: the target actor described",
 
             "dimension_description": (
@@ -54,7 +51,6 @@ TEMPLATE_LOOKUP = {
             ),
 
             "allowed_concepts": ["stakeholder", "role", "group", "beneficiary", "affected_party", "responsible_party", "user_segment", "decision_maker"],
-            "excluded_concepts": ["action", "reason_driver", "timing", "location", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "RELATE_ACTOR_TARGET",
 
@@ -73,15 +69,14 @@ TEMPLATE_LOOKUP = {
                     "A concise descriptive phrase that names and/or characterizes the relevant WHO target (e.g. actor, group, role, or identity)."
             },
             "prompt_rules": {
-                "instance_instruction": "Select the minimal contiguous verbatim span that expresses or references exactly one taxonomy-instance (as extracted in Step 2).",
-                "node_instruction": "Create a canonical, reusable label for the specific {taxonomy_actionable_type]-instance in light of {topic}. Generalize beyond the response wording; do not mix in other axes.",
-                "category_instruction": "Assign a broader, stable taxonomy concept that the node belongs to, interpreted in relation to the topic. It must be more general than the node and reusable across responses.",
-                "root_instruction": "Choose the primary topic aspect along the taxonomy axis that this category fundamentally concerns in light of the topic. Root names a part of the topic (not a more abstract axis concept) and should be stable across responses."
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one WHO concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this WHO concept (actor, group, role). Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this actor represents (e.g., 'leeftijdsgroep' for an identity-type actor).",
+                "root_instruction": "The primary topic aspect that this actor concerns, stable across responses (e.g., 'betrokken partijen')."
             }
         },
 
         "WHERE": {
-            "anchor": "location_context",
             "noun_phrase_descriptor": "WHERE: the location, context, or setting described",
 
             "dimension_description": (
@@ -90,7 +85,6 @@ TEMPLATE_LOOKUP = {
             ),
 
             "allowed_concepts": ["location", "touchpoint", "channel", "setting", "context", "platform", "market_context", "situation"],
-            "excluded_concepts": ["action", "reason_driver", "stakeholder", "timing", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "LOCATE_LOCATION_CONTEXT",
 
@@ -109,15 +103,14 @@ TEMPLATE_LOOKUP = {
                     "A concise descriptive phrase specifying the relevant WHERE concept (e.g. context, setting, location, or touchpoint)."
             },
             "prompt_rules": {
-                "instance_instruction": "Select the minimal contiguous verbatim span that expresses or references exactly one taxonomy-instance (as extracted in Step 2).",
-                "node_instruction": "Create a canonical, reusable label for the specific {taxonomy_actionable_type]-instance in light of {topic}. Generalize beyond the response wording; do not mix in other axes.",
-                "category_instruction": "Assign a broader, stable taxonomy concept that the node belongs to, interpreted in relation to the topic. It must be more general than the node and reusable across responses.",
-                "root_instruction": "Choose the primary topic aspect along the taxonomy axis that this category fundamentally concerns in light of the topic. Root names a part of the topic (not a more abstract axis concept) and should be stable across responses."
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one WHERE concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this WHERE concept (location, setting, context). Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this setting represents (e.g., 'digitaal kanaal' for an identity-type location).",
+                "root_instruction": "The primary topic aspect that this setting concerns, stable across responses (e.g., 'contactkanalen')."
             }
         },
 
         "WHEN": {
-            "anchor": "time_urgency",
             "noun_phrase_descriptor": "WHEN: a temporal pattern, timing, urgency, or frequency",
 
             "dimension_description": (
@@ -126,7 +119,6 @@ TEMPLATE_LOOKUP = {
             ),
 
             "allowed_concepts": ["time", "urgency", "frequency", "sequence", "availability_window", "lifecycle_stage", "deadline"],
-            "excluded_concepts": ["action", "reason_driver", "stakeholder", "location", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "LOCATE_TIME_URGENCY",
 
@@ -145,15 +137,14 @@ TEMPLATE_LOOKUP = {
                     "A concise descriptive phrase expressing the WHEN concept (e.g. timing, frequency, sequence, or urgency)"
             },
             "prompt_rules": {
-                "instance_instruction": "short verbatim or descriptive phrase",
-                "node_instruction": "short noun like phrase or label",
-                "category_instruction": "short noun like phrase or label",
-                "root_instruction": "short noun like phrase or label"
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one WHEN concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this WHEN concept (timing, frequency, urgency). Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this temporal concept represents (e.g., 'weekpatroon' for an identity-type period).",
+                "root_instruction": "The primary topic aspect that this temporal concept concerns, stable across responses (e.g., 'tijdspatronen')."
             }
         },
 
         "HOW": {
-            "anchor": "outcome_enabler",
             "noun_phrase_descriptor": "HOW: an outcome-enabling mechanism or pathway",
 
             "dimension_description": (
@@ -175,7 +166,6 @@ TEMPLATE_LOOKUP = {
                 "tactic",
                 "other_outcome_enabler"
             ],
-            "excluded_concepts": ["static_attribute", "reason_driver", "stakeholder_identity", "timing", "location", "current_attribute"],
 
             "schema": "EXPRESS_OUTCOME_ENABLER_DESCRIPTIVE",
 
@@ -192,18 +182,17 @@ TEMPLATE_LOOKUP = {
                 "[OUTCOME]": 
                     "A concise noun phrase naming the intended or observed outcome, result, or state of affairs.",
                 "[OUTCOME_ENABLER]": 
-                    "A concise phrase specifying the the HOW concept (e.g. recommendation, intervention, execution pathway, action mechanism or procedure)."
+                    "A concise phrase specifying the HOW concept (e.g. recommendation, intervention, execution pathway, action mechanism or procedure)."
             },
             "prompt_rules": {
-                "instance_instruction": "Select the minimal contiguous verbatim span that expresses or references exactly one taxonomy-instance (as extracted in Step 2).",
-                "node_instruction": "Create a canonical, reusable label for the specific {taxonomy_actionable_type]-instance in light of {topic}. Generalize beyond the response wording; do not mix in other axes.",
-                "category_instruction": "Assign a broader, stable taxonomy concept that the node belongs to, interpreted in relation to the topic. It must be more general than the node and reusable across responses.",
-                "root_instruction": "Choose the primary topic aspect along the taxonomy axis that this category fundamentally concerns in light of the topic. Root names a part of the topic (not a more abstract axis concept) and should be stable across responses."
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one HOW concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this HOW concept (mechanism, intervention, pathway). Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this mechanism represents (e.g., 'capaciteitsverbetering' for a function-type enabler).",
+                "root_instruction": "The primary topic aspect that this mechanism concerns, stable across responses (e.g., 'dienstverlening')."
             }
         },
 
         "WHY": {
-            "anchor": "reason_driver",
             "noun_phrase_descriptor": "WHY: reasons, causes, and explanations",
 
             "dimension_description": (
@@ -212,7 +201,6 @@ TEMPLATE_LOOKUP = {
             ),
 
             "allowed_concepts": ["reason", "motivation", "concern", "constraint", "goal", "tradeoff_driver", "intention", "desired_outcome", "justification", "other_reason"],
-            "excluded_concepts": ["product_feature", "intervention", "process_step", "stakeholder", "timing", "location", "method", "attribute"],
 
             "schema": "EXPRESS_REASON_DRIVER",
 
@@ -232,10 +220,10 @@ TEMPLATE_LOOKUP = {
                     "A concise noun phrase naming the preference, choice, behavior, or outcome being explained."
             },
             "prompt_rules": {
-                "instance_instruction": "Select the minimal contiguous verbatim span that expresses or references exactly one taxonomy-instance (as extracted in Step 2).",
-                "node_instruction": "Create a canonical, reusable label for the specific {taxonomy_actionable_type]-instance in light of {topic}. Generalize beyond the response wording; do not mix in other axes.",
-                "category_instruction": "Assign a broader, stable taxonomy concept that the node belongs to, interpreted in relation to the topic. It must be more general than the node and reusable across responses.",
-                "root_instruction": "Choose the primary topic aspect along the taxonomy axis that this category fundamentally concerns in light of the topic. Root names a part of the topic (not a more abstract axis concept) and should be stable across responses."
+                "instance_instruction": "Select the minimal verbatim span expressing exactly one WHY concept from the response.",
+                "node_instruction": "Create a canonical, reusable noun-phrase label for this WHY concept (reason, motivation, concern). Generalize beyond the response wording; do not mix in other axes.",
+                "category_label_instruction": "A concise subcategory label naming what kind of semantic_category this reason represents (e.g., 'wachtervaring' for a state-type concern).",
+                "root_instruction": "The primary topic aspect that this reason concerns, stable across responses (e.g., 'klanttevredenheid')."
             }
         }
     },
@@ -274,15 +262,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "ENTITY_DESCRIPTOR":{ "required": True, "type": "noun_like_phrase" },
-            },
-            "structural_forms": [
-                "<anchor> → <descriptor>",
-                "<descriptor> of <anchor>"
-            ],
-            "notes": [
-                "Descriptor must be WHAT-only (attribute/feature/aspect).",
-                "Descriptor must be noun-like; avoid actions, causes, actors, times, places."
-            ]
+            }
         },
 
         # WHY — reason_driver (motivations/goals/values/concerns/trade-offs)
@@ -290,15 +270,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "CAUSE": {"required": True, "type": "noun_phrase"},
                 "EFFECT": {"required": True, "type": "noun_like_phrase"}
-            },
-            "structural_forms": [
-                "<cause> → <effect>",
-                "<effect> because of <cause>"
-            ],
-            "notes": [
-                "Do not invert directionality unless the prompt explicitly asks for effect-to-cause.",
-                "Avoid methods/interventions here; those belong in HOW."
-            ]
+            }
         },
 
         # HOW — descriptive outcome-enabler
@@ -306,14 +278,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "OUTCOME": {"required": True, "type": "noun_phrase"},
                 "OUTCOME_ENABLER": {"required": True, "type": "noun_like_phrase"}
-            },
-            "structural_forms": [
-                "<outcome> → <enabler>",
-                "<outcome> is achieved by <enabler>"
-            ],
-            "notes": [
-                "Avoid modals (should/could/must) unless the question explicitly asks for recommendations.",
-            ]
+            }
         },
 
         # WHO — actor_target
@@ -321,14 +286,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "ACTOR_TARGET": {"required": True, "type": "noun_like_phrase"}
-            },
-            "structural_forms": [
-                "<anchor> → <actor>",
-                "<service> is for <actor>"
-            ],
-            "notes": [
-                "ACTOR_TARGET must be a person/group/role; do not encode motivations, methods, time, or place."
-            ]
+            }
         },
 
         # WHEN — time_urgency
@@ -336,14 +294,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "TIME_URGENCY": {"required": True, "type": "noun_like_phrase"}
-            },
-            "structural_forms": [
-                "<anchor> @ <time>",
-                "<issue> occurs during <time>"
-            ],
-            "notes": [
-                "TIME_URGENCY should express timing/frequency/sequence/urgency as a noun_like_phrase."
-            ]
+            }
         },
 
         # WHERE — location_context
@@ -351,14 +302,7 @@ TEMPLATE_LOOKUP = {
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "LOCATION_CONTEXT": {"required": True, "type": "noun_like_phrase"}
-            },
-            "structural_forms": [
-               "<anchor> @ <place/context>",
-              "<experience> takes place in <place/context>"
-            ],
-            "notes": [
-                "LOCATION_CONTEXT should be physical, institutional, or digital; keep it as a noun_like_phrase."
-            ]
+            }
         }
     },
 
