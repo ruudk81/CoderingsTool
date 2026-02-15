@@ -16,15 +16,14 @@ TEMPLATE_LOOKUP = {
                 "Variations in responses usually reflect differences in specific WHAT concepts, including attributes, features, properties, or aspects of the focal entity."
             ),
   
-            "allowed_concepts": ["attribute", "feature", "property", "aspect"],
-            "excluded_concepts": ["action", "intervention", "pathway", "reason", "motive", "stakeholder", "timing", "location"],
+            "allowed_concepts": ["attribute", "feature", "property", "aspect", "capability", "specification", "structure"],
+            "excluded_concepts": ["action", "intervention", "pathway", "reason", "motive", "stakeholder", "timing", "location", "improvement", "goal", "method"],
 
             "schema": "DESCRIBE_ENTITY_DESCRIPTOR",
 
             "instruction": (
                 "Identify each distinct WHAT idea expressed in the response. "
-                "For each idea, produce one concise descriptive realization of a WHAT concept (e.g., an attribute, feature, property, or aspect)," 
-                "formatted according to the pattern."
+                "For each idea, produce one concise descriptive realization of a WHAT concept, formatted according to the pattern."
             ),
 
             "pattern": "[ANCHOR_SUBJECT] → [ENTITY_PHENOMENON_DESCRIPTOR]",
@@ -33,7 +32,7 @@ TEMPLATE_LOOKUP = {
                 "[ANCHOR_SUBJECT]": 
                     "The focal entity or phenomenon in {language}.",
                 "[ENTITY_PHENOMENON_DESCRIPTOR]": 
-                    "A concise phrase describing a WHAT concept of the entity or phenomenon (e.g., an attribute, feature, property, or aspect)."
+                    "A concise phrase describing a WHAT concept of the entity or phenomenon."
             },
 
             "prompt_rules": {
@@ -54,8 +53,8 @@ TEMPLATE_LOOKUP = {
                 "Differences in responses are mainly about describing a target actor, group, identity, or role, including target audiences, stakeholders, and beneficiaries."
             ),
 
-            "allowed_concepts": ["stakeholder", "role", "group", "beneficiary", "affected_party", "responsible_party"],
-            "excluded_concepts": ["action", "reason_driver", "timing", "location", "product_feature"],
+            "allowed_concepts": ["stakeholder", "role", "group", "beneficiary", "affected_party", "responsible_party", "user_segment", "decision_maker"],
+            "excluded_concepts": ["action", "reason_driver", "timing", "location", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "RELATE_ACTOR_TARGET",
 
@@ -90,8 +89,8 @@ TEMPLATE_LOOKUP = {
                 "Differences in responses are mainly about describing context, setting, or location (physical, institutional, or digital)."
             ),
 
-            "allowed_concepts": ["location", "touchpoint","channel", "setting", "context"],
-            "excluded_concepts": ["action", "reason_driver", "stakeholder", "timing", "product_feature"],
+            "allowed_concepts": ["location", "touchpoint", "channel", "setting", "context", "platform", "market_context", "situation"],
+            "excluded_concepts": ["action", "reason_driver", "stakeholder", "timing", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "LOCATE_LOCATION_CONTEXT",
 
@@ -126,8 +125,8 @@ TEMPLATE_LOOKUP = {
                 "Differences in responses are mainly about describing temporality, timing, urgency, or frequency."
             ),
 
-            "allowed_concepts": ["time", "urgency", "frequency", "sequence", "availability_window"],
-            "excluded_concepts": ["action", "reason_driver", "stakeholder", "location", "product_feature"],
+            "allowed_concepts": ["time", "urgency", "frequency", "sequence", "availability_window", "lifecycle_stage", "deadline"],
+            "excluded_concepts": ["action", "reason_driver", "stakeholder", "location", "product_feature", "method", "motivation", "attribute"],
 
             "schema": "LOCATE_TIME_URGENCY",
 
@@ -172,9 +171,11 @@ TEMPLATE_LOOKUP = {
                 "execution_pathway",
                 "procedure",
                 "workflow_step",
+                "tool",
+                "tactic",
                 "other_outcome_enabler"
             ],
-            "excluded_concepts": ["static_attribute", "reason_driver", "stakeholder_identity", "timing", "location"],
+            "excluded_concepts": ["static_attribute", "reason_driver", "stakeholder_identity", "timing", "location", "current_attribute"],
 
             # IMPORTANT: HOW schema differs depending on whether the QUESTION is prescriptive.
             "schema": {
@@ -214,8 +215,8 @@ TEMPLATE_LOOKUP = {
                 "Differences in responses are mainly about reasons, causes, and explanations."
             ),
 
-            "allowed_concepts": ["reason", "motivation", "concern", "constraint", "goal", "tradeoff_driver", "other_reason"],
-            "excluded_concepts": ["product_feature", "intervention", "process_step", "stakeholder", "timing", "location"],
+            "allowed_concepts": ["reason", "motivation", "concern", "constraint", "goal", "tradeoff_driver", "intention", "desired_outcome", "justification", "other_reason"],
+            "excluded_concepts": ["product_feature", "intervention", "process_step", "stakeholder", "timing", "location", "method", "attribute"],
 
             "schema": "EXPRESS_REASON_DRIVER",
 
@@ -448,6 +449,160 @@ TEMPLATE_LOOKUP = {
             "notes": [
                 "LOCATION_CONTEXT should be physical, institutional, or digital; keep it as a noun_like_phrase."
             ]
+        }
+    },
+
+    # =========================================================
+    # Layer 3 — Dimension-conditioned semantic taxonomy
+    # =========================================================
+    # Universal classification scheme reinterpreted per coding dimension.
+    # Prevents dimensional leakage by providing structured categories
+    # with dimension-specific interpretations.
+
+    "dimension_taxonomy": {
+        "universal_categories": ["identity", "attribute", "function", "state", "evaluation", "relation"],
+
+        "category_definitions": {
+            "identity": "What type or kind of thing it is",
+            "attribute": "Inherent properties or characteristics",
+            "function": "What it does or its purpose/role",
+            "state": "Temporary or situational condition",
+            "evaluation": "Subjective judgment or assessment",
+            "relation": "Connections, dependencies, or comparisons"
+        },
+
+        "priority_rules": [
+            "If subjective judgment → evaluation",
+            "If time-bound or situational → state",
+            "If action/purpose → function",
+            "If inherent property → attribute",
+            "If category/type → identity"
+        ],
+
+        "dimensions": {
+
+            "WHAT": {
+                "instruction_goal": "Describe what the anchor entity is or has — without prescribing change.",
+                "unit_of_analysis": "noun phrases describing features, capabilities, specifications, structure, or inherent properties",
+                "axis_interpretation": {
+                    "identity": "What it is",
+                    "attribute": "What it has",
+                    "function": "What it does",
+                    "state": "Condition it is in",
+                    "evaluation": "Judgment about it",
+                    "relation": "How it connects to others"
+                },
+                "decision_reminder": [
+                    "If subjective judgment → evaluation",
+                    "If time-bound or situational → state",
+                    "If action/purpose → function",
+                    "If inherent property → attribute",
+                    "If category/type → identity"
+                ]
+            },
+
+            "WHY": {
+                "instruction_goal": "Identify differences in motivations, goals, values, concerns, or trade-offs related to the anchor entity.",
+                "unit_of_analysis": "clauses or noun phrases expressing reasoning",
+                "axis_interpretation": {
+                    "identity": "The type of goal or value being pursued",
+                    "attribute": "An enduring priority or value orientation",
+                    "function": "The purpose the entity serves for the actor",
+                    "state": "A temporary concern or situational pressure",
+                    "evaluation": "A value judgment driving preference",
+                    "relation": "Trade-offs or competing motivations"
+                },
+                "decision_reminder": [
+                    "If subjective judgment → evaluation",
+                    "If temporary pressure → state",
+                    "If purpose → function",
+                    "If enduring value orientation → attribute",
+                    "If type of goal → identity"
+                ]
+            },
+
+            "HOW": {
+                "instruction_goal": "Identify differences in mechanisms, actions, processes, workflows, tactics, or implementation approaches that enable the outcome.",
+                "unit_of_analysis": "action-oriented clauses",
+                "axis_interpretation": {
+                    "identity": "Type of mechanism or approach",
+                    "attribute": "Characteristic of the method (e.g., scalable, automated)",
+                    "function": "What the method accomplishes",
+                    "state": "Stage in a process",
+                    "evaluation": "Judgment of effectiveness",
+                    "relation": "Dependency between steps"
+                },
+                "decision_reminder": [
+                    "If it describes how to get from current to desired state → function",
+                    "If it describes what currently exists → identity",
+                    "If subjective judgment of method → evaluation",
+                    "If characteristic of method → attribute",
+                    "If process dependency → relation"
+                ]
+            },
+
+            "WHO": {
+                "instruction_goal": "Identify differences in who is involved, targeted, affected, or responsible relative to the anchor.",
+                "unit_of_analysis": "noun phrases referencing actors",
+                "axis_interpretation": {
+                    "identity": "Actor type or role",
+                    "attribute": "Characteristic of the actor",
+                    "function": "Role the actor performs",
+                    "state": "Temporary role or involvement",
+                    "evaluation": "Judgment of actor",
+                    "relation": "Power or dependency relationship"
+                },
+                "decision_reminder": [
+                    "If actor type or category → identity",
+                    "If inherent characteristic of actor → attribute",
+                    "If role/function performed → function",
+                    "If temporary involvement → state",
+                    "If judgment of actor → evaluation",
+                    "If power/dependency relationship → relation"
+                ]
+            },
+
+            "WHEN": {
+                "instruction_goal": "Identify differences in timing, urgency, lifecycle stage, sequence, or frequency.",
+                "unit_of_analysis": "temporal markers and urgency expressions",
+                "axis_interpretation": {
+                    "identity": "Type of lifecycle stage",
+                    "attribute": "Typical duration",
+                    "function": "Temporal role (e.g., trigger phase)",
+                    "state": "Current time-bound condition",
+                    "evaluation": "Urgency assessment",
+                    "relation": "Sequence dependency"
+                },
+                "decision_reminder": [
+                    "If type of time period or stage → identity",
+                    "If typical duration → attribute",
+                    "If temporal trigger or role → function",
+                    "If current time-bound condition → state",
+                    "If urgency judgment → evaluation",
+                    "If sequence dependency → relation"
+                ]
+            },
+
+            "WHERE": {
+                "instruction_goal": "Identify differences in environment, channel, platform, or situational setting.",
+                "unit_of_analysis": "location, context, and setting references",
+                "axis_interpretation": {
+                    "identity": "Type of setting",
+                    "attribute": "Characteristic of environment",
+                    "function": "Role environment plays",
+                    "state": "Temporary situational context",
+                    "evaluation": "Judgment of context",
+                    "relation": "Contextual dependency"
+                },
+                "decision_reminder": [
+                    "If type of setting → identity",
+                    "If characteristic of environment → attribute",
+                    "If environmental role → function",
+                    "If temporary situation → state",
+                    "If judgment of context → evaluation",
+                    "If contextual dependency → relation"
+                ]
+            }
         }
     }
 }

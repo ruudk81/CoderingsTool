@@ -90,10 +90,10 @@ def print_idea_details(idea: models.IdeasExtractedSubmodel, indent: str = "  "):
     cleaned = clean_idea(idea.idea)
     print(f"{indent}Idea: {cleaned}")
 
-    # Ontology (flat fields)
-    ont_parts = [v for v in (idea.instance, idea.node, idea.category, idea.root) if v]
-    if ont_parts:
-        print(f"{indent}  ontology: {' → '.join(ont_parts)}")
+    # Taxonomy (flat fields)
+    tax_parts = [v for v in (idea.instance, idea.node, idea.semantic_category, idea.category_label, idea.root) if v]
+    if tax_parts:
+        print(f"{indent}  taxonomy: {' → '.join(tax_parts)}")
 
 
 def main():

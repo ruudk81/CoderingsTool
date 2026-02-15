@@ -51,15 +51,15 @@ try:
         # Prompts
         CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
-        TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
+        CODING_DIMENSION_SCORING_PROMPT, CODING_DIMENSION_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
         # Response models
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        TaxonomyChunkResponse,
-        TaxonomyConsolidatedResponse,
+        CodingDimensionChunkResponse,
+        CodingDimensionConsolidatedResponse,
         SubjectExtractionResponse,
-        OntologyResponse,
+        SemanticTaxonomyResponse,
         TaxonomyEnrichedIdeaResponse,
         # Model factories (axis-specific response models)
         create_subject_extraction_model,
@@ -71,15 +71,15 @@ except ImportError:
         # Prompts
         CONSOLIDATE_SPECIFIERS_GROUP1, CONSOLIDATE_SPECIFIERS_GROUP2,
         CONTEXT_SPECIFIER_PROMPT1, CONTEXT_SPECIFIER_PROMPT2,
-        TAXONOMY_CHUNK_SCORING_PROMPT, TAXONOMY_CONSOLIDATION_PROMPT,
+        CODING_DIMENSION_SCORING_PROMPT, CODING_DIMENSION_CONSOLIDATION_PROMPT,
         TAXONOMY_AWARE_SUBJECT_PROMPT, TAXONOMY_ENRICHED_EXTRACTION_PROMPT,
         # Response models
         GenericSpecifierGroup1Response,
         GenericSpecifierGroup2Response,
-        TaxonomyChunkResponse,
-        TaxonomyConsolidatedResponse,
+        CodingDimensionChunkResponse,
+        CodingDimensionConsolidatedResponse,
         SubjectExtractionResponse,
-        OntologyResponse,
+        SemanticTaxonomyResponse,
         TaxonomyEnrichedIdeaResponse,
         # Model factories (axis-specific response models)
         create_subject_extraction_model,
@@ -286,6 +286,21 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     dimension_marker = slot_guidance_keys[1] if len(slot_guidance_keys) > 1 else TEMPLATE_LOOKUP["marker"]
     marker = TEMPLATE_LOOKUP["marker"]
 
+    # --- Dimension taxonomy data (semantic category table + priority rules) ---
+    dim_tax = TEMPLATE_LOOKUP.get("dimension_taxonomy", {})
+    dim_data = dim_tax.get("dimensions", {}).get(axis, {})
+    axis_interpretation = dim_data.get("axis_interpretation", {})
+
+    # Format semantic category table for prompt injection
+    category_table_lines = []
+    for cat, interpretation in axis_interpretation.items():
+        category_table_lines.append(f"- **{cat}**: {interpretation}")
+    semantic_category_table = "\n".join(category_table_lines) if category_table_lines else "No dimension-specific category table available."
+
+    # Format priority rules (prefer dimension-specific, fall back to universal)
+    decision_rules = dim_data.get("decision_reminder", dim_tax.get("priority_rules", []))
+    priority_rules = "\n".join(f"{i+1}. {r}" for i, r in enumerate(decision_rules)) if decision_rules else "Apply best judgment."
+
     return {
         # Keys for TAXONOMY_AWARE_SUBJECT_PROMPT
         "axis_anchor": axis_data["anchor"],
@@ -323,6 +338,11 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
         "slot_type_map": slot_type_map,
         # Axis-specific dimension marker (e.g., [OUTCOME_ENABLER] for HOW)
         "dimension_marker": dimension_marker,
+        # Second slot_guidance value (dimension slot description) for inline use
+        "slot_guidance_second": list(enriched_slot_guidance.values())[1] if len(enriched_slot_guidance) > 1 else "",
+        # Dimension taxonomy placeholders (semantic category table + priority rules)
+        "semantic_category_table": _escape_braces_for_format(semantic_category_table),
+        "priority_rules": _escape_braces_for_format(priority_rules),
     }
 
 
@@ -978,18 +998,18 @@ class IdeaExtractor:
                 "entity": response.entity
             }
 
-    async def _consolidate_taxonomy(self, chunk_results: List[Dict], context_specifiers: Dict) -> TaxonomyConsolidatedResponse:
+    async def _consolidate_taxonomy(self, chunk_results: List[Dict], context_specifiers: Dict) -> CodingDimensionConsolidatedResponse:
         """Consolidate taxonomy scores from chunks to select primary + secondary axis.
 
         Always calls LLM consolidation to generate context-specific axis description,
         even for single chunks.
 
         Args:
-            chunk_results: List of dicts with 'response' containing TaxonomyChunkResponse
+            chunk_results: List of dicts with 'response' containing CodingDimensionChunkResponse
             context_specifiers: Dict with domain, entity, topic, perspective, intent
 
         Returns:
-            TaxonomyConsolidatedResponse with selected axes and context-specific description
+            CodingDimensionConsolidatedResponse with selected axes and context-specific description
         """
         # Format chunk results for consolidation prompt with full context
         formatted_results = []
@@ -1002,14 +1022,13 @@ class IdeaExtractor:
             # Build full chunk summary (without dimension scores)
             chunk_text = f"""Chunk {idx + 1}:
   Primary dimension: {chunk_response.primary_dimension}
-  Taxonomy axis: {chunk_response.taxonomy_axis}
   Evidence:
 {evidence_text}
   Clarification: {chunk_response.clarification}"""
 
             formatted_results.append(chunk_text)
 
-        prompt = TAXONOMY_CONSOLIDATION_PROMPT.format(
+        prompt = CODING_DIMENSION_CONSOLIDATION_PROMPT.format(
             language=self.language,
             survey_question=self.var_lab,
             domain=context_specifiers.get('domain', ''),
@@ -1038,7 +1057,7 @@ class IdeaExtractor:
             response = await llm_create_async(
                 client=self.client,
                 model=self.model,
-                response_model=TaxonomyConsolidatedResponse,
+                response_model=CodingDimensionConsolidatedResponse,
                 prompt=prompt,
                 temperature=0.0
             )
@@ -1047,31 +1066,31 @@ class IdeaExtractor:
 
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"  Taxonomy consolidated:")
-            self.verbose_reporter.stat_line(f"    Primary: {response.primary_axis}")
-            self.verbose_reporter.stat_line(f"    Rationale: {response.primary_axis_rationale[:100]}...")
+            self.verbose_reporter.stat_line(f"    Primary: {response.primary_dimension}")
+            self.verbose_reporter.stat_line(f"    Rationale: {response.primary_dimension_rationale[:100]}...")
 
         return response
 
-    def _select_axis_from_single_chunk(self, chunk_response: TaxonomyChunkResponse) -> TaxonomyConsolidatedResponse:
+    def _select_axis_from_single_chunk(self, chunk_response: CodingDimensionChunkResponse) -> CodingDimensionConsolidatedResponse:
         """Select primary axis from a single chunk (no consolidation needed).
 
         Args:
-            chunk_response: TaxonomyChunkResponse with primary_dimension
+            chunk_response: CodingDimensionChunkResponse with primary_dimension
 
         Returns:
-            TaxonomyConsolidatedResponse with selected axes
+            CodingDimensionConsolidatedResponse with selected axes
         """
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"  Taxonomy (single chunk selection):")
             self.verbose_reporter.stat_line(f"    Primary: {chunk_response.primary_dimension}")
 
-        return TaxonomyConsolidatedResponse(
-            primary_axis=chunk_response.primary_dimension,
-            primary_axis_rationale=f"Selected from single chunk analysis: {chunk_response.taxonomy_axis}",
-            primary_axis_description=chunk_response.taxonomy_axis
+        return CodingDimensionConsolidatedResponse(
+            primary_dimension=chunk_response.primary_dimension,
+            primary_dimension_rationale=f"Selected from single chunk analysis: {chunk_response.primary_dimension}",
+            primary_dimension_description=chunk_response.clarification
         )
 
-    async def _extract_generic_specifiers(self) -> Tuple[Dict[str, str], TaxonomyConsolidatedResponse]:
+    async def _extract_generic_specifiers(self) -> Tuple[Dict[str, str], CodingDimensionConsolidatedResponse]:
         """Extract context specifiers first, then taxonomy axis with context awareness.
 
         Two-phase extraction:
@@ -1079,7 +1098,7 @@ class IdeaExtractor:
         - Phase 2: Extract taxonomy axis scoring with context specifiers available
 
         Returns:
-            Tuple of (context_specifiers dict, TaxonomyConsolidatedResponse)
+            Tuple of (context_specifiers dict, CodingDimensionConsolidatedResponse)
         """
         sample_size = min(GENERIC_SPECIFIER_SAMPLE_MAX, max(int(0.2 * len(self.responses)), GENERIC_SPECIFIER_SAMPLE_MIN))
         sample = random.sample(self.responses, min(sample_size, len(self.responses)))
@@ -1147,10 +1166,10 @@ class IdeaExtractor:
             self.verbose_reporter.stat_line(f"  Using fallback context defaults: {context_specifiers}")
 
             # Fallback taxonomy (skip phase 2)
-            taxonomy_result = TaxonomyConsolidatedResponse(
-                primary_axis="WHAT",
-                primary_axis_rationale="Fallback default - no context specifiers available",
-                primary_axis_description=""
+            taxonomy_result = CodingDimensionConsolidatedResponse(
+                primary_dimension="WHAT",
+                primary_dimension_rationale="Fallback default - no context specifiers available",
+                primary_dimension_description=""
             )
             return context_specifiers, taxonomy_result
 
@@ -1202,22 +1221,22 @@ class IdeaExtractor:
             for r in taxonomy_results:
                 chunk_resp = r['response']
                 self.verbose_reporter.stat_line(
-                    f"    Chunk {r['chunk_idx']+1} (Taxonomy): Primary={chunk_resp.primary_dimension}, Axis={chunk_resp.taxonomy_axis}"
+                    f"    Chunk {r['chunk_idx']+1} (Taxonomy): Dim={chunk_resp.primary_dimension}"
                 )
 
         # Consolidate Taxonomy
         if not taxonomy_results:
             self.verbose_reporter.stat_line(f"  Warning: No taxonomy results - using fallback")
-            taxonomy_consolidated = TaxonomyConsolidatedResponse(
-                primary_axis="WHAT",
-                primary_axis_rationale="Fallback default - no taxonomy results available",
-                primary_axis_description=""
+            taxonomy_consolidated = CodingDimensionConsolidatedResponse(
+                primary_dimension="WHAT",
+                primary_dimension_rationale="Fallback default - no taxonomy results available",
+                primary_dimension_description=""
             )
         else:
             taxonomy_consolidated = await self._consolidate_taxonomy(taxonomy_results, context_specifiers)
 
         self.verbose_reporter.stat_line(f"  Context results: {context_specifiers}")
-        self.verbose_reporter.stat_line(f"  Taxonomy: primary={taxonomy_consolidated.primary_axis}")
+        self.verbose_reporter.stat_line(f"  Taxonomy: primary={taxonomy_consolidated.primary_dimension}")
         return context_specifiers, taxonomy_consolidated
 
     async def _process_generic_specifier_tasks(self, tasks: List[Dict]) -> List[Dict]:
@@ -1300,7 +1319,7 @@ class IdeaExtractor:
                         # Group 3: Taxonomy axis scoring (context-aware)
                         # Extract context specifiers from task (passed from phase 1)
                         ctx = task.get('context_specifiers', {})
-                        prompt = TAXONOMY_CHUNK_SCORING_PROMPT.format(
+                        prompt = CODING_DIMENSION_SCORING_PROMPT.format(
                             language=self.language,
                             survey_question=self.var_lab,
                             chunk_responses=task['chunk_text'],
@@ -1311,7 +1330,7 @@ class IdeaExtractor:
                             entity=ctx.get('entity', ''),
                             topic=ctx.get('topic', '')
                         )
-                        response_model = TaxonomyChunkResponse
+                        response_model = CodingDimensionChunkResponse
                         # Capture first taxonomy chunk scoring prompt
                         if self.prompt_printer and not self._captured_taxonomy_chunk:
                             self.prompt_printer.capture_prompt(
@@ -1528,7 +1547,12 @@ class IdeaExtractor:
             axis_instance_instruction=lookup_data["axis_instance_instruction"],
             axis_root_instruction=lookup_data["axis_root_instruction"],
             noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
+            slot_guidance_second=lookup_data["slot_guidance_second"],
             canonical_term=subject,
+            instruction=lookup_data["axis_instruction"],
+            # Dimension taxonomy placeholders
+            semantic_category_table=lookup_data["semantic_category_table"],
+            priority_rules=lookup_data["priority_rules"],
         )
 
     def estimate_tokens(self, prompt: str) -> int:
@@ -1839,8 +1863,8 @@ class IdeaExtractor:
                     for i, idea_response in enumerate(response):
                         normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                         if normalized and normalized not in ["", "NA", "N/A"]:
-                            # Extract ontology fields (flat)
-                            ontology_resp = getattr(idea_response, 'ontology', None)
+                            # Extract taxonomy fields (flat)
+                            taxonomy_resp = getattr(idea_response, 'taxonomy', None)
 
                             # Clean idea text
                             idea_text = self._format_idea_text(normalized)
@@ -1848,10 +1872,11 @@ class IdeaExtractor:
                             ideas.append(models.IdeasExtractedSubmodel(
                                 idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                 idea=idea_text,
-                                instance=ontology_resp.instance if ontology_resp else "",
-                                node=ontology_resp.node if ontology_resp else "",
-                                category=ontology_resp.category if ontology_resp else "",
-                                root=ontology_resp.root if ontology_resp else "",
+                                instance=taxonomy_resp.instance if taxonomy_resp else "",
+                                node=taxonomy_resp.node if taxonomy_resp else "",
+                                semantic_category=taxonomy_resp.semantic_category if taxonomy_resp else "",
+                                category_label=taxonomy_resp.category_label if taxonomy_resp else "",
+                                root=taxonomy_resp.root if taxonomy_resp else "",
                             ))
 
                     if ideas:
@@ -1885,16 +1910,17 @@ class IdeaExtractor:
                             for i, idea_response in enumerate(retry_response):
                                 normalized = self._normalize_idea_text(idea_response.idea) if idea_response.idea else ""
                                 if normalized and normalized not in ["", "NA", "N/A"]:
-                                    ontology_resp = getattr(idea_response, 'ontology', None)
+                                    taxonomy_resp = getattr(idea_response, 'taxonomy', None)
                                     idea_text = self._format_idea_text(normalized)
                                     response_idea_id = getattr(idea_response, 'idea_id', None) or str(i+1)
                                     retry_ideas.append(models.IdeasExtractedSubmodel(
                                         idea_id=f"{task['respondent_id']}_{response_idea_id}",
                                         idea=idea_text,
-                                        instance=ontology_resp.instance if ontology_resp else "",
-                                        node=ontology_resp.node if ontology_resp else "",
-                                        category=ontology_resp.category if ontology_resp else "",
-                                        root=ontology_resp.root if ontology_resp else "",
+                                        instance=taxonomy_resp.instance if taxonomy_resp else "",
+                                        node=taxonomy_resp.node if taxonomy_resp else "",
+                                        semantic_category=taxonomy_resp.semantic_category if taxonomy_resp else "",
+                                        category_label=taxonomy_resp.category_label if taxonomy_resp else "",
+                                        root=taxonomy_resp.root if taxonomy_resp else "",
                                     ))
                             if retry_ideas:
                                 logger.info(f"Task {task['respondent_id']}: empty-ideas retry {empty_retry+1} succeeded ({len(retry_ideas)} ideas)")
@@ -2342,9 +2368,9 @@ class IdeaExtractor:
         self.generic_specifiers, taxonomy_result = await self._extract_generic_specifiers()
 
         # Store taxonomy axis info for use in idea extraction
-        self.taxonomy_axis = taxonomy_result.primary_axis
-        self.taxonomy_rationale = taxonomy_result.primary_axis_rationale
-        self.taxonomy_axis_description = taxonomy_result.primary_axis_description  # Dynamic context-specific description
+        self.taxonomy_axis = taxonomy_result.primary_dimension
+        self.taxonomy_rationale = taxonomy_result.primary_dimension_rationale
+        self.taxonomy_axis_description = taxonomy_result.primary_dimension_description  # Dynamic context-specific description
 
         # Sample phrases are no longer extracted from axis scores (removed dimension_scores)
         self.taxonomy_sample_phrases = []
@@ -2640,12 +2666,13 @@ class IdeaExtractor:
                         idea_words = idea.idea.split()
                         total_idea_length += len(idea_words)
                         idea_count += 1
-                        # Store full idea info including ontology
+                        # Store full idea info including taxonomy
                         valid_ideas.append({
                             'idea': idea.idea,
                             'instance': idea.instance,
                             'node': idea.node,
-                            'category': idea.category,
+                            'semantic_category': idea.semantic_category,
+                            'category_label': idea.category_label,
                             'root': idea.root,
                         })
 
@@ -2682,10 +2709,10 @@ class IdeaExtractor:
                     cleaned_idea = re.sub(r"\[.*?\]", "", idea_info['idea'])
                     cleaned_idea = re.sub(r"\s+", " ", cleaned_idea).strip()
                     print(f'    → "{cleaned_idea}"')
-                    # Show ontology if available
-                    ont_parts = [idea_info[f] for f in ('instance', 'node', 'category', 'root') if idea_info.get(f)]
-                    if ont_parts:
-                        print(f'      ontology: {" → ".join(ont_parts)}')
+                    # Show taxonomy if available
+                    tax_parts = [idea_info[f] for f in ('instance', 'node', 'semantic_category', 'category_label', 'root') if idea_info.get(f)]
+                    if tax_parts:
+                        print(f'      taxonomy: {" → ".join(tax_parts)}')
                 if example != response_examples[-1]:
                     print()
 
