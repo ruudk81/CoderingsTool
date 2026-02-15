@@ -23,7 +23,7 @@ import statistics
 import itertools
 import logging
 import unicodedata
-from typing import Dict, List, Optional, Union, Literal, Tuple
+from typing import Dict, List, Optional, Union, Tuple
 from dataclasses import dataclass
 from collections import deque
 import numpy as np
@@ -59,8 +59,6 @@ try:
         CodingDimensionChunkResponse,
         CodingDimensionConsolidatedResponse,
         SubjectExtractionResponse,
-        SemanticTaxonomyResponse,
-        TaxonomyEnrichedIdeaResponse,
         # Model factories (axis-specific response models)
         create_subject_extraction_model,
         create_taxonomy_enriched_model,
@@ -79,8 +77,6 @@ except ImportError:
         CodingDimensionChunkResponse,
         CodingDimensionConsolidatedResponse,
         SubjectExtractionResponse,
-        SemanticTaxonomyResponse,
-        TaxonomyEnrichedIdeaResponse,
         # Model factories (axis-specific response models)
         create_subject_extraction_model,
         create_taxonomy_enriched_model,
@@ -107,9 +103,7 @@ from config_ideaExtractor import (
 
 # === UTILS ========================================================================================================
 from utils.verboseReporter import VerboseReporter, ProcessingStats
-from utils.cached_resources import get_openai_client, get_tiktoken_encoding
-
-async_client = get_openai_client(OPENAI_API_KEY)
+from utils.cached_resources import get_tiktoken_encoding
 
 
 # === TEMPLATE LOOKUP HELPER =============================================================================================
@@ -194,15 +188,12 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
     Returns:
         dict with keys for both prompts:
         - Subject prompt: axis_anchor, axis_dimension_description,
-          axis_included_concepts, axis_excluded_concepts, axis_pattern,
-          axis_slot_guidance, noun_phrase_descriptor, axis_slots,
-          axis_structural_forms, axis_instruction
-        - Extraction prompt: axis_anchor, axis_dimension_description,
-          axis_allowed_concepts, axis_excluded_concepts, axis_disambiguation_rules,
-          marker, axis_slot_guidance, axis_node_instruction,
-          axis_category_instruction, axis_taxonomy_phrase_instruction, axis_focus_rules
+          axis_included_concepts, axis_pattern, noun_phrase_descriptor,
+          axis_slots, axis_instruction, dimension_marker, slot_type_map
+        - Extraction prompt: axis_anchor, marker, noun_phrase_descriptor,
+          slot_guidance_second, axis_instruction, semantic_category_table,
+          priority_rules
     """
-    import json
 
     # Fallback to WHAT if axis not found
     axis_data = TEMPLATE_LOOKUP["axes"].get(axis, TEMPLATE_LOOKUP["axes"]["WHAT"])
@@ -255,31 +246,8 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
             slots_formatted_lines.append(f"- {slot_name}: {slot_desc}")
     slots_formatted = "\n".join(slots_formatted_lines)
 
-    # Serialize enriched slot_guidance to JSON and escape braces for .format()
-    slot_guidance_json = _escape_braces_for_format(
-        json.dumps(enriched_slot_guidance, indent=2)
-    )
-
-    # Structural forms from template_schema (not from axis)
-    structural_forms = schema_data.get("structural_forms", [])
-    forms_formatted = "\n".join(f"  {f}" for f in structural_forms)
-
-    # Schema notes (optional additional guidance)
-    schema_notes = schema_data.get("notes", [])
-    notes_formatted = "\n".join(f"- {n}" for n in schema_notes)
-
-    # Extract prompt_rules (axis-specific instructions for extraction prompt)
-    prompt_rules = axis_data.get("prompt_rules", {})
-    focus_rules_list = prompt_rules.get("focus_rules", [])
-    focus_rules_formatted = "\n".join(f"- {r}" for r in focus_rules_list)
-
-    # Disambiguation rules (optional, only on HOW axis)
-    disambiguation_rules = axis_data.get("disambiguation_rules", [])
-    disambiguation_formatted = "\n".join(f"- {r}" for r in disambiguation_rules) if disambiguation_rules else "None"
-
-    # Concepts as comma-separated strings
+    # Concepts as comma-separated strings (used by subject prompt)
     allowed_concepts_str = ", ".join(axis_data.get("allowed_concepts", []))
-    excluded_concepts_str = ", ".join(axis_data.get("excluded_concepts", []))
 
     # Marker token: axis-specific dimension slot name (e.g., [OUTCOME_ENABLER] for HOW)
     slot_guidance_keys = list(slot_guidance.keys())
@@ -306,34 +274,12 @@ def _format_lookup_for_axis(axis: str, language: str = "") -> dict:
         "axis_anchor": axis_data["anchor"],
         "axis_dimension_description": axis_data["dimension_description"],
         "axis_included_concepts": allowed_concepts_str,
-        "axis_excluded_concepts": excluded_concepts_str,
         "axis_pattern": _escape_braces_for_format(axis_pattern),
-        "axis_slot_guidance": slot_guidance_json,
         "noun_phrase_descriptor": axis_data.get("noun_phrase_descriptor", ""),
         "axis_slots": slots_formatted,
-        "axis_structural_forms": _escape_braces_for_format(forms_formatted),
         "axis_instruction": axis_data.get("instruction", ""),
-        "schema_notes": _escape_braces_for_format(notes_formatted),
         # Keys for TAXONOMY_ENRICHED_EXTRACTION_PROMPT
-        "axis_allowed_concepts": allowed_concepts_str,
-        "axis_disambiguation_rules": disambiguation_formatted,
         "marker": marker,
-        "axis_node_instruction": _escape_braces_for_format(
-            prompt_rules.get("node_instruction", "")
-        ),
-        "axis_category_instruction": _escape_braces_for_format(
-            prompt_rules.get("category_instruction", "")
-        ),
-        "axis_taxonomy_phrase_instruction": _escape_braces_for_format(
-            prompt_rules.get("taxonomy_phrase_instruction", "")
-        ),
-        "axis_focus_rules": _escape_braces_for_format(focus_rules_formatted),
-        "axis_instance_instruction": _escape_braces_for_format(
-            prompt_rules.get("instance_instruction", "")
-        ),
-        "axis_root_instruction": _escape_braces_for_format(
-            prompt_rules.get("root_instruction", "")
-        ),
         # Resolved type_system info for factory functions
         "slot_type_map": slot_type_map,
         # Axis-specific dimension marker (e.g., [OUTCOME_ENABLER] for HOW)
@@ -477,12 +423,6 @@ class LatencyTracker:
         # Apply margin and configurable bounds
         return max(config.adaptive_timeout_min_seconds, min(config.adaptive_timeout_max_seconds, timeout * config.adaptive_timeout_margin))
 
-    def get_avg_latency(self):
-        """Get average latency for concurrency calculations"""
-        if not self.values:
-            return DEFAULT_LATENCY_SECONDS
-        return self.ema if self.ema is not None else DEFAULT_LATENCY_SECONDS
-
 
 # === OPTIMAL STRATEGY CLASSES ========================================================================================================
 
@@ -571,11 +511,6 @@ class RealTimeTPMTracker:
 
             # Extrapolate to per-minute rate
             return (total_tokens / elapsed) * 60
-
-    async def get_utilization(self, tpm_limit: int) -> float:
-        """Get current TPM utilization as a percentage."""
-        current_tpm = await self.get_current_tpm()
-        return (current_tpm / tpm_limit) * 100 if tpm_limit > 0 else 0.0
 
 
 class PIDThroughputController:
@@ -676,20 +611,6 @@ class PIDThroughputController:
         self.last_error = 0.0
         self.last_time = None
 
-    def get_stats(self) -> dict:
-        """Get controller statistics."""
-        recent = list(self.adjustment_history)[-5:] if self.adjustment_history else []
-        return {
-            "target_utilization": self.target,
-            "integral": self.integral,
-            "last_error": self.last_error,
-            "recent_adjustments": recent,
-            "kp_up": self.kp_up,
-            "kp_down": self.kp_down,
-            "ki": self.ki,
-            "kd": self.kd
-        }
-
 
 # === BOOTSTRAP MEASUREMENT SYSTEM ========================================================================================================
 @dataclass
@@ -787,7 +708,6 @@ class IdeaExtractor:
         self.output_token_history = deque(maxlen=OUTPUT_HISTORY_MAXLEN)
         self.output_ratio_history = deque(maxlen=OUTPUT_RATIO_HISTORY_MAXLEN)  # Track output/input ratios
         self.estimation_errors = deque(maxlen=ERROR_WINDOW_SIZE)
-        self.first_prompt_tokens = None
 
         # Rolling average of actual total tokens
         self.actual_total_tokens = deque(maxlen=ERROR_WINDOW_SIZE)
@@ -806,8 +726,6 @@ class IdeaExtractor:
         self.taxonomy_axis = None
         self.taxonomy_rationale = None
         self.taxonomy_axis_description = None  # Dynamic context-specific description
-        self.taxonomy_sample_phrases = []  # Sample phrases from responses for dynamic examples
-
         # Template prefix for embedding (V3: restored for normalized clustering)
         self.template_prefix = None
 
@@ -973,8 +891,6 @@ class IdeaExtractor:
                 temperature=0.0
             )
 
-            await self.tpm_bucket.reconcile(0)
-
         if hasattr(self, 'verbose_reporter') and self.verbose_reporter.enabled:
             if group == 1:
                 self.verbose_reporter.stat_line(
@@ -1062,33 +978,12 @@ class IdeaExtractor:
                 temperature=0.0
             )
 
-            await self.tpm_bucket.reconcile(0)
-
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"  Taxonomy consolidated:")
             self.verbose_reporter.stat_line(f"    Primary: {response.primary_dimension}")
             self.verbose_reporter.stat_line(f"    Rationale: {response.primary_dimension_rationale[:100]}...")
 
         return response
-
-    def _select_axis_from_single_chunk(self, chunk_response: CodingDimensionChunkResponse) -> CodingDimensionConsolidatedResponse:
-        """Select primary axis from a single chunk (no consolidation needed).
-
-        Args:
-            chunk_response: CodingDimensionChunkResponse with primary_dimension
-
-        Returns:
-            CodingDimensionConsolidatedResponse with selected axes
-        """
-        if self.verbose_reporter.enabled:
-            self.verbose_reporter.stat_line(f"  Taxonomy (single chunk selection):")
-            self.verbose_reporter.stat_line(f"    Primary: {chunk_response.primary_dimension}")
-
-        return CodingDimensionConsolidatedResponse(
-            primary_dimension=chunk_response.primary_dimension,
-            primary_dimension_rationale=f"Selected from single chunk analysis: {chunk_response.primary_dimension}",
-            primary_dimension_description=chunk_response.clarification
-        )
 
     async def _extract_generic_specifiers(self) -> Tuple[Dict[str, str], CodingDimensionConsolidatedResponse]:
         """Extract context specifiers first, then taxonomy axis with context awareness.
@@ -1356,8 +1251,6 @@ class IdeaExtractor:
                         temperature=0.0
                     )
 
-                    await self.tpm_bucket.reconcile(0)
-
                     results.append({
                         'task_id': task['task_id'],
                         'group': task['group'],
@@ -1474,7 +1367,6 @@ class IdeaExtractor:
                     "WHY": f"the subject should achieve {fb_marker}",
                     "HOW": f"the subject should {fb_marker}",
                     "WHO": f"the stakeholder needs {fb_marker}",
-                    "SENTIMENT": f"the subject is {fb_marker}",
                     "WHEN": f"the subject should {fb_marker}",
                     "WHERE": f"the subject at {fb_marker}",
                 }
@@ -1533,22 +1425,9 @@ class IdeaExtractor:
             canonical_phrasing=phrasing_template,
             # Axis-specific placeholders from template_lookup
             axis_anchor=lookup_data["axis_anchor"],
-            axis_dimension_description=lookup_data["axis_dimension_description"],
-            axis_allowed_concepts=lookup_data["axis_allowed_concepts"],
-            axis_excluded_concepts=lookup_data["axis_excluded_concepts"],
-            axis_disambiguation_rules=lookup_data["axis_disambiguation_rules"],
             marker=lookup_data["marker"],
-            axis_slot_pattern=lookup_data["axis_pattern"],
-            axis_slot_guidance=lookup_data["axis_slot_guidance"],
-            axis_node_instruction=lookup_data["axis_node_instruction"],
-            axis_category_instruction=lookup_data["axis_category_instruction"],
-            axis_taxonomy_phrase_instruction=lookup_data["axis_taxonomy_phrase_instruction"],
-            axis_focus_rules=lookup_data["axis_focus_rules"],
-            axis_instance_instruction=lookup_data["axis_instance_instruction"],
-            axis_root_instruction=lookup_data["axis_root_instruction"],
             noun_phrase_descriptor=lookup_data["noun_phrase_descriptor"],
             slot_guidance_second=lookup_data["slot_guidance_second"],
-            canonical_term=subject,
             instruction=lookup_data["axis_instruction"],
             # Dimension taxonomy placeholders
             semantic_category_table=lookup_data["semantic_category_table"],
@@ -2083,7 +1962,7 @@ class IdeaExtractor:
             taxonomy_secondary_axis=None,
             taxonomy_rationale=self.taxonomy_rationale or '',
             taxonomy_axis_description=self.taxonomy_axis_description or '',
-            taxonomy_sample_phrases=self.taxonomy_sample_phrases or [],
+            taxonomy_sample_phrases=[],
             taxonomy_actionable_type=self.taxonomy_actionable_type or '',
 
             # Timestamp
@@ -2372,9 +2251,6 @@ class IdeaExtractor:
         self.taxonomy_rationale = taxonomy_result.primary_dimension_rationale
         self.taxonomy_axis_description = taxonomy_result.primary_dimension_description  # Dynamic context-specific description
 
-        # Sample phrases are no longer extracted from axis scores (removed dimension_scores)
-        self.taxonomy_sample_phrases = []
-
         if self.verbose_reporter.enabled:
             self.verbose_reporter.stat_line(f"\nTaxonomy axis selected: {self.taxonomy_axis}")
             if self.taxonomy_axis_description:
@@ -2641,8 +2517,7 @@ class IdeaExtractor:
                 'quality_filter_code': response.quality_filter_code
             })
 
-        if nest_asyncio:
-            nest_asyncio.apply()
+        nest_asyncio.apply()
         self._results = asyncio.run(self.process_all_tasks_async(tasks))
 
         self._stats.output_count = len(self._results)
@@ -2719,27 +2594,3 @@ class IdeaExtractor:
         self.verbose_reporter.step_complete("Idea extraction completed")
 
         return self._results
-
-    def summary(self) -> Dict[str, Union[int, float]]:
-        """Generate summary statistics"""
-        total = len(self._results)
-        processed = sum(1 for r in self._results
-                       if r.response_ideas and
-                       not any(idea.idea.startswith("PROCESSING_ERROR") or idea.idea == "NOT_PROCESSED"
-                              for idea in r.response_ideas))
-        failed = total - processed
-
-        total_ideas = sum(r.idea_count for r in self._results)
-        unique_ideas = len(set(idea.idea for r in self._results
-                              for idea in r.response_ideas
-                              if not idea.idea.startswith("PROCESSING_ERROR") and idea.idea not in ["NA", "NOT_PROCESSED"]))
-
-        return {
-            "total_responses": total,
-            "processed_responses": processed,
-            "failed_responses": failed,
-            "success_rate": round((processed / total) * 100, 2) if total > 0 else 0,
-            "total_ideas": total_ideas,
-            "unique_ideas": unique_ideas,
-            "avg_ideas_per_response": round(total_ideas / total, 2) if total > 0 else 0
-        }

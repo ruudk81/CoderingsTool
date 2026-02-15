@@ -39,7 +39,7 @@ TEMPLATE_LOOKUP = {
                 "instance_instruction": "short verbatim or descriptive phrase",
                 "node_instruction": "short noun like phrase or label",
                 "category_instruction": "short noun like phrase or label",
-                "root_instruction": "shot noun like phrase or label"
+                "root_instruction": "short noun like phrase or label"
             }
 
         },
@@ -148,7 +148,7 @@ TEMPLATE_LOOKUP = {
                 "instance_instruction": "short verbatim or descriptive phrase",
                 "node_instruction": "short noun like phrase or label",
                 "category_instruction": "short noun like phrase or label",
-                "root_instruction": "shot noun like phrase or label"
+                "root_instruction": "short noun like phrase or label"
             }
         },
 
@@ -177,11 +177,7 @@ TEMPLATE_LOOKUP = {
             ],
             "excluded_concepts": ["static_attribute", "reason_driver", "stakeholder_identity", "timing", "location", "current_attribute"],
 
-            # IMPORTANT: HOW schema differs depending on whether the QUESTION is prescriptive.
-            "schema": {
-                "default": "EXPRESS_OUTCOME_ENABLER_DESCRIPTIVE",
-                "if_question_is_recommendation_or_improvement": "EXPRESS_OUTCOME_ENABLER_PRESCRIPTIVE"
-            },
+            "schema": "EXPRESS_OUTCOME_ENABLER_DESCRIPTIVE",
 
             "instruction": (
                 "Identify each distinct HOW idea expressed in the response.\n"
@@ -270,182 +266,96 @@ TEMPLATE_LOOKUP = {
             
     "template_schemas": {
         # Notes:
-        # - relation_examples are NON-BINDING; illustrate options only.
-        # - concrete selection is done in {language} downstream.
         # - Each schema is intended to bind to exactly ONE axis (MECE guardrail).
         # - Slot text must fit naturally into the schema pattern.
 
-        # -------------------------
-        # WHAT — entity_descriptor
-        # Descriptive only: properties/attributes/aspects AS-IS.
-        # -------------------------
+        # WHAT — entity_descriptor (descriptive only: properties/attributes/aspects AS-IS)
         "DESCRIBE_ENTITY_DESCRIPTOR": {
-            "axis_binding": "WHAT",
-            "binding": "non_binding",
-
-             # Prefer the arrow form for normalization
-            "pattern": "[ANCHOR_SUBJECT] → [ENTITY_DESCRIPTOR]",
-
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "ENTITY_DESCRIPTOR":{ "required": True, "type": "noun_like_phrase" },
             },
-
             "structural_forms": [
                 "<anchor> → <descriptor>",
                 "<descriptor> of <anchor>"
             ],
-
             "notes": [
                 "Descriptor must be WHAT-only (attribute/feature/aspect).",
                 "Descriptor must be noun-like; avoid actions, causes, actors, times, places."
             ]
         },
 
-        # -------------------------
-        # WHY — reason_driver
-        # Motivations/goals/values/concerns/constraints/trade-offs.
-        # -------------------------
+        # WHY — reason_driver (motivations/goals/values/concerns/trade-offs)
         "EXPRESS_REASON_DRIVER": {
-            "axis_binding": "WHY",
-            "binding": "non_binding",
-
-            "pattern": "[CAUSE] → [EFFECT]",
-
             "slots": {
                 "CAUSE": {"required": True, "type": "noun_phrase"},
                 "EFFECT": {"required": True, "type": "noun_like_phrase"}
             },
-
             "structural_forms": [
                 "<cause> → <effect>",
                 "<effect> because of <cause>"
             ],
-
             "notes": [
                 "Do not invert directionality unless the prompt explicitly asks for effect-to-cause.",
                 "Avoid methods/interventions here; those belong in HOW."
             ]
         },
 
-        # -------------------------
         # HOW — descriptive outcome-enabler
-        # Use when the question asks 'how does it work / how did it happen / how do you cope'
-        # -------------------------
         "EXPRESS_OUTCOME_ENABLER_DESCRIPTIVE": {
-            "axis_binding": "HOW",
-            "binding": "non_binding",
-
-            "pattern": "[OUTCOME] → [OUTCOME_ENABLER]",
-
             "slots": {
                 "OUTCOME": {"required": True, "type": "noun_phrase"},
                 "OUTCOME_ENABLER": {"required": True, "type": "noun_like_phrase"}
             },
-
             "structural_forms": [
                 "<outcome> → <enabler>",
                 "<outcome> is achieved by <enabler>"
             ],
-
             "notes": [
                 "Avoid modals (should/could/must) unless the question explicitly asks for recommendations.",
             ]
         },
 
-        # -------------------------
-        # HOW — prescriptive outcome-enabler
-        # Use only when the question asks for improvements/recommendations.
-        # -------------------------
-        "EXPRESS_OUTCOME_ENABLER_PRESCRIPTIVE": {
-            "axis_binding": "HOW",
-            "binding": "non_binding",
-
-            "pattern": "[OUTCOME] → [RECOMMENDED_ENABLER]",
-
-            "slots": {
-                "OUTCOME": {"required": True, "type": "noun_phrase"},
-                "RECOMMENDED_ENABLER": {"required": True, "type": "noun_like_phrase"}
-            },
-
-            "structural_forms": [
-                "<outcome> → <recommended enabler>",
-                "<outcome> should be enabled by <recommended enabler>"
-            ],
-
-            "notes": [
-                "Use prescriptive wording ONLY if the question explicitly requests it.",
-                "Keep the recommendation itself as a noun_like_phrase when possible (e.g., 'more staff', 'simplified forms')."
-            ]
-        },
-
-        # -------------------------
         # WHO — actor_target
-        # -------------------------
         "RELATE_ACTOR_TARGET": {
-            "axis_binding": "WHO",
-            "binding": "non_binding",
-
-            "pattern": "[ANCHOR_SUBJECT] → [ACTOR_TARGET]",
-
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "ACTOR_TARGET": {"required": True, "type": "noun_like_phrase"}
             },
-
             "structural_forms": [
                 "<anchor> → <actor>",
                 "<service> is for <actor>"
             ],
-
             "notes": [
                 "ACTOR_TARGET must be a person/group/role; do not encode motivations, methods, time, or place."
             ]
         },
 
-        # -------------------------
         # WHEN — time_urgency
-        # -------------------------
         "LOCATE_TIME_URGENCY": {
-            "axis_binding": "WHEN",
-            "binding": "non_binding",
-
-            "pattern": "[ANCHOR_SUBJECT] @ [TIME_URGENCY]",
-
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "TIME_URGENCY": {"required": True, "type": "noun_like_phrase"}
             },
-
             "structural_forms": [
                 "<anchor> @ <time>",
                 "<issue> occurs during <time>"
             ],
-
             "notes": [
                 "TIME_URGENCY should express timing/frequency/sequence/urgency as a noun_like_phrase."
             ]
         },
 
-        # -------------------------
         # WHERE — location_context
-        # -------------------------
         "LOCATE_LOCATION_CONTEXT": {
-            "axis_binding": "WHERE",
-            "binding": "non_binding",
-
-            "pattern": "[ANCHOR_SUBJECT] @ [LOCATION_CONTEXT]",
-
             "slots": {
                 "ANCHOR_SUBJECT": {"required": True, "type": "noun_phrase"},
                 "LOCATION_CONTEXT": {"required": True, "type": "noun_like_phrase"}
             },
-
             "structural_forms": [
                "<anchor> @ <place/context>",
               "<experience> takes place in <place/context>"
             ],
-
             "notes": [
                 "LOCATION_CONTEXT should be physical, institutional, or digital; keep it as a noun_like_phrase."
             ]
@@ -460,17 +370,6 @@ TEMPLATE_LOOKUP = {
     # with dimension-specific interpretations.
 
     "dimension_taxonomy": {
-        "universal_categories": ["identity", "attribute", "function", "state", "evaluation", "relation"],
-
-        "category_definitions": {
-            "identity": "What type or kind of thing it is",
-            "attribute": "Inherent properties or characteristics",
-            "function": "What it does or its purpose/role",
-            "state": "Temporary or situational condition",
-            "evaluation": "Subjective judgment or assessment",
-            "relation": "Connections, dependencies, or comparisons"
-        },
-
         "priority_rules": [
             "If subjective judgment → evaluation",
             "If time-bound or situational → state",
@@ -482,8 +381,6 @@ TEMPLATE_LOOKUP = {
         "dimensions": {
 
             "WHAT": {
-                "instruction_goal": "Describe what the anchor entity is or has — without prescribing change.",
-                "unit_of_analysis": "noun phrases describing features, capabilities, specifications, structure, or inherent properties",
                 "axis_interpretation": {
                     "identity": "What it is",
                     "attribute": "What it has",
@@ -502,8 +399,6 @@ TEMPLATE_LOOKUP = {
             },
 
             "WHY": {
-                "instruction_goal": "Identify differences in motivations, goals, values, concerns, or trade-offs related to the anchor entity.",
-                "unit_of_analysis": "clauses or noun phrases expressing reasoning",
                 "axis_interpretation": {
                     "identity": "The type of goal or value being pursued",
                     "attribute": "An enduring priority or value orientation",
@@ -522,8 +417,6 @@ TEMPLATE_LOOKUP = {
             },
 
             "HOW": {
-                "instruction_goal": "Identify differences in mechanisms, actions, processes, workflows, tactics, or implementation approaches that enable the outcome.",
-                "unit_of_analysis": "action-oriented clauses",
                 "axis_interpretation": {
                     "identity": "Type of mechanism or approach",
                     "attribute": "Characteristic of the method (e.g., scalable, automated)",
@@ -542,8 +435,6 @@ TEMPLATE_LOOKUP = {
             },
 
             "WHO": {
-                "instruction_goal": "Identify differences in who is involved, targeted, affected, or responsible relative to the anchor.",
-                "unit_of_analysis": "noun phrases referencing actors",
                 "axis_interpretation": {
                     "identity": "Actor type or role",
                     "attribute": "Characteristic of the actor",
@@ -563,8 +454,6 @@ TEMPLATE_LOOKUP = {
             },
 
             "WHEN": {
-                "instruction_goal": "Identify differences in timing, urgency, lifecycle stage, sequence, or frequency.",
-                "unit_of_analysis": "temporal markers and urgency expressions",
                 "axis_interpretation": {
                     "identity": "Type of lifecycle stage",
                     "attribute": "Typical duration",
@@ -584,8 +473,6 @@ TEMPLATE_LOOKUP = {
             },
 
             "WHERE": {
-                "instruction_goal": "Identify differences in environment, channel, platform, or situational setting.",
-                "unit_of_analysis": "location, context, and setting references",
                 "axis_interpretation": {
                     "identity": "Type of setting",
                     "attribute": "Characteristic of environment",

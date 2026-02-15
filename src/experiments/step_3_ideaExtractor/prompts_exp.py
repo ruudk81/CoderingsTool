@@ -9,7 +9,7 @@ Migration: Response models co-located with prompts following instructor schema p
 Original source: src/prompts.py (STEP 3: IDEA EXTRACTION section)
 """
 
-from typing import Any, ClassVar, List, Literal, Optional, Union
+from typing import ClassVar, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, create_model
 
 # =============================================================================
@@ -661,7 +661,6 @@ CRITICAL: all output fields must be in {language}
 class SemanticTaxonomyResponse(BaseModel):
     """Semantic taxonomy classification for extracted ideas.
     Field descriptions and examples are set per-axis in create_taxonomy_enriched_model()."""
-    model_config = ConfigDict(populate_by_name=True)
 
     instance: str = ""
     node: str = ""
@@ -684,10 +683,6 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     """Response model for taxonomy-enriched idea extraction."""
     # Class variables for axis-aware validation
     _template_prefix: ClassVar[str] = ""
-    _allowed_concepts: ClassVar[list] = []
-    _excluded_concepts: ClassVar[list] = []
-    _axis: ClassVar[str] = ""
-    _node_instruction: ClassVar[str] = ""
     _dimension_marker: ClassVar[str] = "[ACTIONABLE_TAXONOMY_DIMENSION]"
 
     @classmethod
@@ -698,10 +693,6 @@ class TaxonomyEnrichedIdeaResponse(BaseModel):
     @classmethod
     def set_axis_context(cls, axis: str, axis_data: dict, dimension_marker: str = ""):
         """Inject axis-specific rules for post-parse validation."""
-        cls._axis = axis
-        cls._allowed_concepts = axis_data.get("allowed_concepts", [])
-        cls._excluded_concepts = axis_data.get("excluded_concepts", [])
-        cls._node_instruction = axis_data.get("prompt_rules", {}).get("node_instruction", "")
         if dimension_marker:
             cls._dimension_marker = dimension_marker
 
