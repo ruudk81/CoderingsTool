@@ -1,8 +1,7 @@
 # === FOLDERS TO IGNORE ===
-BERTopic*/
+BERTopic - CLONE/
 data/
 exports/
-data/cache/
 data/exports/
 backup/
 env/

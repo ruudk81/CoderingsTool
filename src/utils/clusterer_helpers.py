@@ -22,11 +22,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Any, Set
 
 import numpy as np
+import scipy.sparse as sp
+from abc import ABC, abstractmethod
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer, TfidfTransformer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.utils import check_array
 from kneed import KneeLocator
 import hdbscan
 import umap
@@ -2187,6 +2191,461 @@ def extract_text_for_format(
     return idea_text
 
 
+# =============================================================================
+# SECTION 6a: REPRESENTATION MODELS (inlined from representation/)
+# =============================================================================
+
+
+class BaseRepresentation(ABC):
+    """Base class for cluster representation models"""
+
+    @abstractmethod
+    def extract_topics(
+        self,
+        cluster_id: int,
+        ctfidf_scores: np.ndarray,
+        vocabulary: List[str],
+        cluster_texts: List[str],
+        embeddings: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> List[Tuple[str, float]]:
+        """
+        Extract representative keywords for a cluster
+
+        Args:
+            cluster_id: Cluster identifier
+            ctfidf_scores: c-TF-IDF scores for this cluster (1D array)
+            vocabulary: Feature names from vectorizer
+            cluster_texts: Original idea texts in this cluster
+            embeddings: Optional embeddings for ideas in cluster
+            **kwargs: Additional model-specific parameters
+
+        Returns:
+            List of (keyword, score) tuples, ordered by relevance
+        """
+        pass
+
+
+class ClassTfidfTransformer(TfidfTransformer):
+    """
+    A Class-based TF-IDF procedure using scikit-learn's TfidfTransformer as a base.
+
+    c-TF-IDF is a TF-IDF formula adapted for multiple classes by joining all documents per class.
+    Each class is converted to a single document instead of a set of documents.
+
+    The formula:
+    1. Term Frequency: Frequency of each word x for each class c, L1 normalized
+    2. Inverse Document Frequency: log(1 + (avg_words_per_class / freq_of_word_across_classes))
+    3. With BM25 weighting: log(1 + ((avg_nr_samples - df + 0.5) / (df + 0.5)))
+    """
+
+    def __init__(self):
+        """Initialize with BERTopic's recommended settings"""
+        self.bm25_weighting = True
+        self.reduce_frequent_words = True
+        super(ClassTfidfTransformer, self).__init__()
+
+    def fit(self, X: sp.csr_matrix):
+        """Learn the idf vector (global term weights)."""
+        X = check_array(X, accept_sparse=("csr", "csc"))
+        if not sp.issparse(X):
+            X = sp.csr_matrix(X)
+        dtype = np.float64
+
+        if self.use_idf:
+            _, n_features = X.shape
+            df = np.squeeze(np.asarray(X.sum(axis=0)))
+            avg_nr_samples = int(X.sum(axis=1).mean())
+
+            if self.bm25_weighting:
+                idf = np.log(1 + ((avg_nr_samples - df + 0.5) / (df + 0.5)))
+            else:
+                idf = np.log((avg_nr_samples / df) + 1)
+
+            self._idf_diag = sp.diags(
+                idf,
+                offsets=0,
+                shape=(n_features, n_features),
+                format="csr",
+                dtype=dtype,
+            )
+
+        return self
+
+    def transform(self, X: sp.csr_matrix):
+        """Transform a count-based matrix to c-TF-IDF."""
+        if self.use_idf:
+            X = normalize(X, axis=1, norm="l1", copy=False)
+            if self.reduce_frequent_words:
+                X.data = np.sqrt(X.data)
+            X = X * self._idf_diag
+        return X
+
+
+class CTfidfRepresentation(BaseRepresentation):
+    """
+    c-TF-IDF keyword extraction for clusters.
+
+    Wrapper around ClassTfidfTransformer that provides a complete keyword
+    extraction pipeline compatible with CoderingsTool's cluster structure.
+    """
+
+    def __init__(
+        self,
+        top_k: int = 15,
+        bm25_weighting: bool = True,
+        reduce_frequent_words: bool = True,
+        ngram_range: Tuple[int, int] = (1, 2),
+        min_df: int = 1,
+        max_df: float = 0.95,
+        language: str = "nl"
+    ):
+        self.top_k = top_k
+        self.bm25_weighting = bm25_weighting
+        self.reduce_frequent_words = reduce_frequent_words
+        self.ngram_range = ngram_range
+        self.min_df = min_df
+        self.max_df = max_df
+        self.language = language
+
+        self.transformer = ClassTfidfTransformer()
+        self.transformer.bm25_weighting = bm25_weighting
+        self.transformer.reduce_frequent_words = reduce_frequent_words
+
+        self.vectorizer = None
+        self.vocabulary = None
+        self.ctfidf_matrix = None
+
+    def extract_keywords(
+        self,
+        clusters: Dict[int, List[str]],
+        verbose: bool = False
+    ) -> Dict[int, List[Tuple[str, float]]]:
+        """Extract top keywords for each cluster using c-TF-IDF."""
+        if not clusters:
+            if verbose:
+                print("[c-TF-IDF] Warning: No clusters provided")
+            return {}
+
+        cluster_ids = sorted(clusters.keys())
+        cluster_docs = [" ".join(clusters[cid]) for cid in cluster_ids]
+
+        if verbose:
+            print(f"\n[c-TF-IDF] Processing {len(cluster_docs)} clusters")
+            print(f"[c-TF-IDF] Config: ngrams={self.ngram_range}, min_df={self.min_df}, "
+                  f"max_df={self.max_df}, bm25={self.bm25_weighting}")
+
+        self.vectorizer = CountVectorizer(
+            ngram_range=self.ngram_range,
+            min_df=self.min_df,
+            max_df=self.max_df,
+            lowercase=True,
+            token_pattern=r"(?u)\b\w\w+\b"
+        )
+
+        try:
+            count_matrix = self.vectorizer.fit_transform(cluster_docs)
+            self.vocabulary = self.vectorizer.get_feature_names_out()
+
+            if verbose:
+                print(f"[c-TF-IDF] Vocabulary size: {len(self.vocabulary)}")
+                print(f"[c-TF-IDF] Matrix shape: {count_matrix.shape}")
+
+        except ValueError as e:
+            if verbose:
+                print(f"[c-TF-IDF] Error: Vectorization failed: {e}")
+            return {}
+
+        self.ctfidf_matrix = self.transformer.fit_transform(count_matrix)
+
+        cluster_keywords = {}
+        for idx, cluster_id in enumerate(cluster_ids):
+            ctfidf_scores = self.ctfidf_matrix[idx].toarray()[0]
+            keywords = self.extract_topics(
+                cluster_id=cluster_id,
+                ctfidf_scores=ctfidf_scores,
+                vocabulary=self.vocabulary,
+                cluster_texts=clusters[cluster_id]
+            )
+            cluster_keywords[cluster_id] = keywords
+
+        if verbose:
+            print(f"[c-TF-IDF] Extracted keywords for {len(cluster_keywords)} clusters\n")
+
+        return cluster_keywords
+
+    def extract_topics(
+        self,
+        cluster_id: int,
+        ctfidf_scores: np.ndarray,
+        vocabulary: List[str],
+        cluster_texts: List[str],
+        embeddings: np.ndarray = None,
+        **kwargs
+    ) -> List[Tuple[str, float]]:
+        """Extract top keywords for a single cluster."""
+        top_indices = np.argsort(ctfidf_scores)[-self.top_k:][::-1]
+        keywords = [
+            (vocabulary[i], float(ctfidf_scores[i]))
+            for i in top_indices
+            if ctfidf_scores[i] > 0
+        ]
+        return keywords
+
+    def get_cluster_summary(
+        self,
+        cluster_id: int,
+        keywords: List[Tuple[str, float]],
+        max_keywords: int = None
+    ) -> str:
+        """Generate a text summary of cluster keywords."""
+        if max_keywords:
+            keywords = keywords[:max_keywords]
+        summary_parts = [f"Cluster {cluster_id} c-TF-IDF keywords:"]
+        for i, (keyword, score) in enumerate(keywords, 1):
+            summary_parts.append(f"  {i}. {keyword:<30} ({score:.4f})")
+        return "\n".join(summary_parts)
+
+
+class MMRRepresentation(BaseRepresentation):
+    """
+    MMR keyword selection balancing relevance and diversity.
+
+    Formula: MMR = argmax[lambda * relevance(w) - (1-lambda) * max_similarity(w, selected)]
+    """
+
+    def __init__(
+        self,
+        diversity: float = 0.3,
+        top_k: int = 10,
+        candidate_multiplier: int = 3
+    ):
+        if not 0.0 <= diversity <= 1.0:
+            raise ValueError(f"diversity must be between 0.0 and 1.0, got {diversity}")
+        self.diversity = diversity
+        self.top_k = top_k
+        self.candidate_multiplier = candidate_multiplier
+
+    def extract_topics(
+        self,
+        cluster_id: int,
+        ctfidf_scores: np.ndarray,
+        vocabulary: List[str],
+        cluster_texts: List[str],
+        embeddings: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> List[Tuple[str, float]]:
+        """Extract keywords using MMR for diversity."""
+        n_candidates = min(
+            self.top_k * self.candidate_multiplier,
+            len([s for s in ctfidf_scores if s > 0])
+        )
+        if n_candidates == 0:
+            return []
+
+        candidate_indices = np.argsort(ctfidf_scores)[-n_candidates:][::-1]
+        candidate_keywords = [vocabulary[i] for i in candidate_indices]
+        candidate_scores = ctfidf_scores[candidate_indices]
+
+        if candidate_scores.max() > 0:
+            normalized_scores = candidate_scores / candidate_scores.max()
+        else:
+            normalized_scores = candidate_scores
+
+        word_similarity = self._calculate_word_similarity(candidate_keywords, cluster_texts)
+
+        selected_keywords = []
+        selected_indices = []
+
+        for _ in range(min(self.top_k, len(candidate_keywords))):
+            if len(selected_indices) == 0:
+                best_idx = 0
+            else:
+                mmr_scores = []
+                for idx in range(len(candidate_keywords)):
+                    if idx in selected_indices:
+                        mmr_scores.append(-np.inf)
+                        continue
+                    relevance = normalized_scores[idx]
+                    similarities = [
+                        word_similarity[idx, sel_idx]
+                        for sel_idx in selected_indices
+                    ]
+                    max_similarity = max(similarities) if similarities else 0.0
+                    mmr = self.diversity * relevance - (1 - self.diversity) * max_similarity
+                    mmr_scores.append(mmr)
+                best_idx = np.argmax(mmr_scores)
+
+            selected_indices.append(best_idx)
+            keyword = candidate_keywords[best_idx]
+            score = float(candidate_scores[best_idx])
+            selected_keywords.append((keyword, score))
+
+        return selected_keywords
+
+    def _calculate_word_similarity(
+        self,
+        keywords: List[str],
+        cluster_texts: List[str]
+    ) -> np.ndarray:
+        """Calculate word similarity matrix based on co-occurrence in texts."""
+        n_keywords = len(keywords)
+        occurrence = np.zeros((len(cluster_texts), n_keywords), dtype=int)
+
+        for text_idx, text in enumerate(cluster_texts):
+            text_lower = text.lower()
+            for kw_idx, keyword in enumerate(keywords):
+                if keyword.lower() in text_lower:
+                    occurrence[text_idx, kw_idx] = 1
+
+        similarity = np.zeros((n_keywords, n_keywords))
+        for i in range(n_keywords):
+            for j in range(i, n_keywords):
+                if i == j:
+                    similarity[i, j] = 1.0
+                else:
+                    vec_i = occurrence[:, i]
+                    vec_j = occurrence[:, j]
+                    norm_i = np.linalg.norm(vec_i)
+                    norm_j = np.linalg.norm(vec_j)
+                    if norm_i > 0 and norm_j > 0:
+                        sim = np.dot(vec_i, vec_j) / (norm_i * norm_j)
+                    else:
+                        sim = 0.0
+                    similarity[i, j] = sim
+                    similarity[j, i] = sim
+
+        return similarity
+
+    def get_diversity_stats(
+        self,
+        keywords: List[Tuple[str, float]],
+        cluster_texts: List[str]
+    ) -> dict:
+        """Calculate diversity statistics for selected keywords."""
+        if not keywords:
+            return {"avg_similarity": 0.0, "min_similarity": 0.0, "max_similarity": 0.0}
+
+        keyword_list = [kw for kw, _ in keywords]
+        similarity_matrix = self._calculate_word_similarity(keyword_list, cluster_texts)
+
+        n = len(keyword_list)
+        pairwise_sims = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                pairwise_sims.append(similarity_matrix[i, j])
+
+        if not pairwise_sims:
+            return {"avg_similarity": 0.0, "min_similarity": 0.0, "max_similarity": 0.0}
+
+        return {
+            "avg_similarity": float(np.mean(pairwise_sims)),
+            "min_similarity": float(np.min(pairwise_sims)),
+            "max_similarity": float(np.max(pairwise_sims)),
+            "n_keywords": len(keywords)
+        }
+
+
+class TfidfRepresentation(BaseRepresentation):
+    """
+    Basic TF-IDF keyword extraction per cluster.
+
+    Computes TF-IDF independently for each cluster's texts, treating each
+    text as a document.
+    """
+
+    def __init__(
+        self,
+        top_k: int = 15,
+        ngram_range: Tuple[int, int] = (1, 2),
+        min_df: int = 1,
+        max_df: float = 0.95
+    ):
+        self.top_k = top_k
+        self.ngram_range = ngram_range
+        self.min_df = min_df
+        self.max_df = max_df
+
+    def extract_keywords(
+        self,
+        clusters: Dict[int, List[str]],
+        verbose: bool = False
+    ) -> Dict[int, List[Tuple[str, float]]]:
+        """Extract top keywords for each cluster using per-cluster TF-IDF."""
+        if not clusters:
+            if verbose:
+                print("[TF-IDF] Warning: No clusters provided")
+            return {}
+
+        if verbose:
+            print(f"\n[TF-IDF] Processing {len(clusters)} clusters (per-cluster)")
+
+        cluster_keywords = {}
+        for cluster_id, texts in sorted(clusters.items()):
+            if len(texts) < 2:
+                if verbose:
+                    print(f"[TF-IDF] Cluster {cluster_id}: skipped (only {len(texts)} text)")
+                cluster_keywords[cluster_id] = []
+                continue
+            keywords = self._extract_cluster_keywords(cluster_id, texts, verbose)
+            cluster_keywords[cluster_id] = keywords
+
+        if verbose:
+            print(f"[TF-IDF] Extracted keywords for {len(cluster_keywords)} clusters\n")
+
+        return cluster_keywords
+
+    def _extract_cluster_keywords(
+        self,
+        cluster_id: int,
+        texts: List[str],
+        verbose: bool = False
+    ) -> List[Tuple[str, float]]:
+        """Extract keywords from a single cluster's texts using TF-IDF."""
+        try:
+            effective_min_df = min(self.min_df, max(1, len(texts) // 3))
+            vectorizer = TfidfVectorizer(
+                ngram_range=self.ngram_range,
+                min_df=effective_min_df,
+                max_df=self.max_df,
+                lowercase=True,
+                token_pattern=r"(?u)\b\w\w+\b"
+            )
+            tfidf_matrix = vectorizer.fit_transform(texts)
+            vocabulary = vectorizer.get_feature_names_out()
+
+            if len(vocabulary) == 0:
+                if verbose:
+                    print(f"[TF-IDF] Cluster {cluster_id}: no vocabulary extracted")
+                return []
+
+            avg_scores = np.array(tfidf_matrix.mean(axis=0)).flatten()
+            top_indices = np.argsort(avg_scores)[-self.top_k:][::-1]
+            keywords = [
+                (vocabulary[i], float(avg_scores[i]))
+                for i in top_indices
+                if avg_scores[i] > 0
+            ]
+            return keywords
+
+        except ValueError as e:
+            if verbose:
+                print(f"[TF-IDF] Cluster {cluster_id}: error - {e}")
+            return []
+
+    def extract_topics(
+        self,
+        cluster_id: int,
+        ctfidf_scores: np.ndarray,
+        vocabulary: List[str],
+        cluster_texts: List[str],
+        embeddings: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> List[Tuple[str, float]]:
+        """Extract keywords using BaseRepresentation interface."""
+        return self._extract_cluster_keywords(cluster_id, cluster_texts, verbose=False)
+
+
 class RepresentationEngine:
     """
     Keyword extraction for clusters using multiple representation methods.
@@ -2215,41 +2674,25 @@ class RepresentationEngine:
             self._ctfidf = None
 
         if self._ctfidf is None:
-            try:
-                from experiments.representation.ctfidf_representation import CTfidfRepresentation
-
-                self._ctfidf = CTfidfRepresentation(
-                    top_k=self.config.ctfidf_top_k,
-                    bm25_weighting=self.config.ctfidf_bm25_weighting,
-                    reduce_frequent_words=self.config.ctfidf_reduce_frequent_words,
-                    ngram_range=effective_range,
-                    min_df=self.config.ctfidf_min_df,
-                    max_df=0.95,
-                    language="nl"
-                )
-                self._current_ngram_range = effective_range
-            except ImportError as e:
-                raise ImportError(
-                    f"Could not import CTfidfRepresentation: {e}. "
-                    "Make sure the representation module is available."
-                )
+            self._ctfidf = CTfidfRepresentation(
+                top_k=self.config.ctfidf_top_k,
+                bm25_weighting=self.config.ctfidf_bm25_weighting,
+                reduce_frequent_words=self.config.ctfidf_reduce_frequent_words,
+                ngram_range=effective_range,
+                min_df=self.config.ctfidf_min_df,
+                max_df=0.95,
+                language="nl"
+            )
+            self._current_ngram_range = effective_range
 
     def _ensure_mmr(self):
         """Lazy initialization of MMR model."""
         if self._mmr is None:
-            try:
-                from experiments.representation.mmr_representation import MMRRepresentation
-
-                self._mmr = MMRRepresentation(
-                    diversity=self.config.mmr_diversity,
-                    top_k=self.config.ctfidf_top_k,
-                    candidate_multiplier=self.config.mmr_candidate_multiplier
-                )
-            except ImportError as e:
-                raise ImportError(
-                    f"Could not import MMRRepresentation: {e}. "
-                    "Make sure the representation module is available."
-                )
+            self._mmr = MMRRepresentation(
+                diversity=self.config.mmr_diversity,
+                top_k=self.config.ctfidf_top_k,
+                candidate_multiplier=self.config.mmr_candidate_multiplier
+            )
 
     def _ensure_tfidf(self, ngram_range: Optional[Tuple[int, int]] = None):
         """Lazy initialization of basic TF-IDF model."""
@@ -2259,19 +2702,11 @@ class RepresentationEngine:
             self._tfidf = None
 
         if self._tfidf is None:
-            try:
-                from experiments.representation.tfidf_representation import TfidfRepresentation
-
-                self._tfidf = TfidfRepresentation(
-                    top_k=self.config.ctfidf_top_k,
-                    ngram_range=effective_range,
-                    min_df=self.config.ctfidf_min_df
-                )
-            except ImportError as e:
-                raise ImportError(
-                    f"Could not import TfidfRepresentation: {e}. "
-                    "Make sure the representation module is available."
-                )
+            self._tfidf = TfidfRepresentation(
+                top_k=self.config.ctfidf_top_k,
+                ngram_range=effective_range,
+                min_df=self.config.ctfidf_min_df
+            )
 
     def extract_keywords(
         self,

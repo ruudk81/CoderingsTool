@@ -11,7 +11,7 @@ from pathlib import Path
 src_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(src_dir))
 
-import models
+from experiments import models_exp as models
 from config import CacheConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 

@@ -21,32 +21,32 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 AXIS_LABEL_CONTRACT = {
   "WHAT": {
     "theme_head": "topic",  # or "object"
-    "must_be": "topic/object/attribute (a thing being referenced)",
+    "must_be": "topic/object/attribute (descrbing a thing or phenomenon)",
     "must_not_be": "action/method, intent/outcome, actor, evaluation, time, location"
   },
   "WHY": {
     "theme_head": "motive", # or "intent"
-     "must_be": "intent/purpose/reason (a goal or desired outcome)",
+     "must_be": "intent/purpose/reason (describing a goal or desired outcome)",
     "must_not_be": "action/method, topic/object, actor, evaluation, time, location"
   },
   "HOW": {
-    "theme_head": "mechanism", # or "practice"
-    "must_be": "action/method/mechanism (a practice or way of doing)",
+    "theme_head": "outcome enabler", # or "practice"
+    "must_be": "action/intervention/mechanism (describing an outcome enabler or way of doing)",
     "must_not_be": "intent/outcome, topic/object, actor, evaluation, time, location"
   },
   "WHO": {
     "theme_head": "actor", # or "stakeholder"
-    "must_be": "actor/target group (a person/group/stakeholder)",
+    "must_be": "actor/target group (describing a person/group/stakeholder/role/identity)",
     "must_not_be": "action/method, intent/outcome, topic/object, evaluation, time, location"
   },
   "WHEN": {
     "theme_head": "timing", # or "time-reference"
-    "must_be": "time/urgency/sequence reference",
+    "must_be": "time/urgency/sequence reference  (describing a temperal pattern or context)",
     "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, location"
   },
   "WHERE": {
     "theme_head": "context",  #or "setting"
-    "must_be": "location/context/channel/setting",
+    "must_be": "location/context/channel/setting  (describing physiccal or digitcal location or environment)",
     "must_not_be": "action/method, intent/outcome, topic/object, actor, evaluation, time"
   }
 }
@@ -56,46 +56,52 @@ AXIS_LABEL_CONTRACT = {
 # -----------------------------------------------------------------------------
 
 CLUSTER_SUMMARY_PROMPT = """
-You are a qualitative researcher responsible for extracting ATOMIC {taxonomy_actionable_type}-{theme_head} THEMES from descriptive codes representing survey responses to a survey question.
-An ATOMIC {taxonomy_actionable_type}-{theme_head} THEME is a single, indivisible {taxonomy_actionable_type} or {theme_head} present in the data.
+You are a qualitative researcher tasked with refining pre-extracted MECE (Mutually Exclusive, Collectively Exhaustive) topics from survey responses. 
+Your goal is to produce two outputs:
 
-Atomicity rules (must all be satisfied):
-- The theme expresses exactly ONE semantic nucleus.
-- The theme label contains exactly ONE head noun.
-- The label must NOT contain "and", "or", "/", commas, or multiple content nouns.
-- If a label could be split into two meaningful labels, it is NOT atomic.
-- If multiple aspects appear in the cluster, you MUST split them into separate atomic themes. Do NOT invent meta-parent or umbrella concepts.
+1. **Cluster-level Central Organizing Concepts (COCs)** — analytic syntheses that explain what unifies the cluster as a whole
+2. **Atomic, grounded themes** — operational coding categories that function as stand-alone codes within a specified taxonomy axis
 
-{taxonomy_actionable_type}-{theme_head} rules:
+Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided topics and key expressions.
+
+## Survey Context
+
+First, here is the context for the survey data you'll be analyzing:
+
+<survey_context>
+- Survey question asked: "{survey_question}"
+- Language of responses: {language}
+- Domain (subject area): {domain}
+- Topic (specific focus): {topic}
+- Perspective (whose viewpoint): {perspective}
+- Intent (purpose of responses): {intent}
+- Entity (what/who is being discussed): {entity}
+</survey_context>
+
+## Taxonomy 
+
+All themes you identify must adhere to these taxonomy rules
+
+<taxonomy_rules>
 - Themes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
 - Labels naming are {must_be} VALID.
 - Labels naming are {must_not_be} INVALID.
+</taxonomy_rules>
 
-Grounding rules:
-- Themes must be directly supported by the descriptive codes.
-- Do not introduce themes not present in the cluster.
 
-Dimension constraint:
-All themes MUST remain strictly within the specified taxonomy axis: {taxonomy_axis}: {taxonomy_axis_description}.
+## Key Definitions
 
----
+**Central Organizing Concept (COC):** A short analytic statement (not a code label) that captures what ties the cluster together as a whole. COCs are interpretive and describe shared patterns across multiple topics. They are NOT used as coding labels.
 
-SURVEY CONTEXT
+**Atomic theme:** A single, separable idea that could function as a stand-alone code in a codebook. It must have exactly one semantic nucleus and cannot bundle multiple distinct ideas together.
 
-<survey_context>
-Survey question: "{survey_question}"
-Language: {language}
-Domain: {domain}
-Topic: {topic}
-Perspective: {perspective}
-Intent: {intent}
-Entity: {entity}
-</survey_context>
+**MECE:** Mutually Exclusive, Collectively Exhaustive — themes should not overlap in meaning, and together should cover all relevant concepts in the data.
 
----
+## Cluster Data to Analyze
 
-CLUSTER DATA
+Here is the pre-extracted cluster data containing topics and key expressions from survey responses:
 
+<cluster_data>
 <cluster_id>
 {cluster_id}
 </cluster_id>
@@ -103,57 +109,246 @@ CLUSTER DATA
 <cluster_text>
 {cluster_text}
 </cluster_text>
+</cluster_data>
 
----
+Each topic in the cluster includes:
+- A topic label
+- An inclusion definition
+- Key expressions from original responses
 
-LABEL CONSTRAINTS
+Use these as your ONLY evidence base. Do not introduce concepts not present in this data.
+
+## Cluster Analysis (COCs)
+
+Identify 1–2 Central Organizing Concepts that explain what unifies this cluster of responses.
+
+COCs should:
+- Be analytic and interpretive, not literal labels from the data
+- Describe a shared pattern across multiple topics in the cluster
+- NOT be used as coding labels themselves
+- Capture the conceptual thread that ties the cluster together
+
+## Theme Identification Rules
+
+Each theme you identify must satisfy ALL of these criteria:
+
+1. **Atomicity:** Express exactly ONE COC with one semantic nucleus
+2. **Boundary compliance:** Fall strictly within the specified taxonomy axis
+3. **Grounding:** Be directly supported by the provided key expressions
+4. **Specificity:** Avoid repeating the perspective, domain, topic, or entity from the survey context in the label
+5. **Operationality:** Be precise enough to function as a real code in a codebook
+
+## Theme Label Constraints
 
 Theme labels must:
-- Be a noun phrase of 1-3 words.
-- Exactly one semantic head (one core concept); modifiers allowed
-- no coordination (and/or), no lists, no multi-concept bundles
-- Name only the {taxonomy_actionable_type}-{theme_head} present.
-- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
+- Be a noun phrase of 1–4 words (maximum 10 words if absolutely necessary)
+- Contain one semantic head (modifiers are allowed)
+- Avoid "and/or," slashes, commas, or lists
+- Name only the relevant concept within the taxonomy axis
+- Be precise enough to distinguish from other themes
 
----
+## Theme Definition Constraints
 
-DEFINITION CONSTRAINTS
+Each theme definition must:
+- Be 30 words or fewer
+- Describe observable assignment cues (what respondents say or describe)
+- Avoid discussing causes, motives, conditions, or outcomes
+- Avoid repeating the perspective, domain, topic, or entity from the survey context
+- Be concrete enough to guide consistent coding decisions
 
-Theme definitions must:
-- Use 30 words or fewer.
-- Describe what belongs in this theme.
-- Use observable assignment cues (behaviors, expressions, practices).
-- Avoid causes, conditions, interpretations, or outcomes.
-- Avoid repeating {perspective}, {domain}, {topic}, or {entity}.
+## Assignment Examples Requirements
 
----
+For each theme, you must provide:
 
-REQUIRED ANALYSIS STEPS
+**Inclusion examples (2–3):** Observable cues for what counts as this theme
+- Start with action verbs (e.g., "Describes…," "Mentions…," "Reports…")
+- Be concrete and traceable to the provided key expressions
+- Show what should be coded to this theme
 
-1. Identify distinct {taxonomy_actionable_type}-{theme_head} in light of the survey quesition that is present in the cluster.
-2. List 1-5 candidate {taxonomy_actionable_type}-{theme_head}s. Each must be a 1-3 word noun phrase satisfying atomic label rules.
-3. If more than one {taxonomy_actionable_type}-{theme_head}s is found, treat them as separate potential atomic themes.
-4. For each {taxonomy_actionable_type}-{theme_head}, verify grounding in cluster codes.
-5. Do not merge {taxonomy_actionable_type}-{theme_head}s into umbrella or meta-parent concepts.
-6. Select only {taxonomy_actionable_type}-{theme_head}s that are clearly supported by the data.
-7. Produce final theme entries only for valid atomic {taxonomy_actionable_type}-{theme_head}s.
+**Exclusion examples (1–2):** Boundary cases that should NOT be coded here
+- Start with action verbs
+- Clarify what might be confused with this theme but doesn't belong
+- Help distinguish from similar themes
 
----
+**Near neighbor:** The closest potentially confusable theme
+- Identify the label of the most similar theme
+- Provide one sentence explaining how to tell them apart
+- If no meaningful neighbor exists, write "Unknown"
 
-FINAL OUTPUT FORMAT
+## Required Analysis Steps
 
-After analysis, output valid JSON as instruced by the response schema provided.
+Before providing your final output, document your reasoning in the analysis field:
 
----
+1. State the 1–2 cluster-level COCs you identified
+2. Explain whether you kept, split, or merged topics — and why
+3. Note any themes you discarded due to weak grounding in the data
+4. Justify why you have one theme versus multiple themes
 
-OUTPUT REQUIREMENTS
+## Output Requirements
 
-- All field values must be written in {language}
-- The cluster_id must be exactly "{cluster_id}" as provided
-- Conduct your entire analysis in {language}
-- If multiple themes are identified, include each as a separate object with sequential theme_id values
-- Provide 2-3 inclusion examples and 1-2 exclusion examples for each theme
-- Assignment examples should be short, concrete, and start with verbs
+1. Write all output in the same language as the survey responses
+2. Follow the response schema exactly
+3. For each valid atomic theme, include:
+   - theme_id (sequential starting at 1)
+   - theme_label (1-4 word noun phrase)
+   - theme_clarification (≤30 words)
+   - abstraction_level ("L1-topic" or "L2-action-mechanism")
+   - assignment_examples (inclusion, exclusion, near_neighbor)
+4. In the analysis field, document your COCs and refinement decisions
+5. Output valid JSON that matches the response schema structure
+
+Begin your analysis now. Think carefully through the cluster data, identify the unifying COCs, refine the topics into atomic themes, and provide your output in valid JSON format.
+"""
+
+# -----------------------------------------------------------------------------
+# CLUSTER_SUMMARY_PROMPT_MECE: variant that takes pre-extracted MECE topics
+# instead of raw sampled ideas. Same atomicity/taxonomy/label/output rules.
+# -----------------------------------------------------------------------------
+
+CLUSTER_SUMMARY_PROMPT_MECE = """
+You are a qualitative researcher tasked with refining pre-extracted MECE (Mutually Exclusive, Collectively Exhaustive) topics from survey responses. 
+Your goal is to produce two outputs:
+
+1. **Cluster-level Central Organizing Concepts (COCs)** — analytic syntheses that explain what unifies the cluster as a whole
+2. **Atomic, grounded themes** — operational coding categories that function as stand-alone codes within a specified taxonomy axis
+
+Your work is interpretive but strictly data-bound: you may organize and name patterns, but you must not introduce concepts absent from the provided topics and key expressions.
+
+## Survey Context
+
+First, here is the context for the survey data you'll be analyzing:
+
+<survey_context>
+- Survey question asked: "{survey_question}"
+- Language of responses: {language}
+- Domain (subject area): {domain}
+- Topic (specific focus): {topic}
+- Perspective (whose viewpoint): {perspective}
+- Intent (purpose of responses): {intent}
+- Entity (what/who is being discussed): {entity}
+</survey_context>
+
+## Taxonomy 
+
+All themes you identify must adhere to these taxonomy rules
+
+<taxonomy_rules>
+- Themes must describe only the dimension defined by {taxonomy_axis} ({taxonomy_actionable_type}s or {theme_head}s).
+- Labels naming are {must_be} VALID.
+- Labels naming are {must_not_be} INVALID.
+</taxonomy_rules>
+
+
+## Key Definitions
+
+**Central Organizing Concept (COC):** A short analytic statement (not a code label) that captures what ties the cluster together as a whole. COCs are interpretive and describe shared patterns across multiple topics. They are NOT used as coding labels.
+
+**Atomic theme:** A single, separable idea that could function as a stand-alone code in a codebook. It must have exactly one semantic nucleus and cannot bundle multiple distinct ideas together.
+
+**MECE:** Mutually Exclusive, Collectively Exhaustive — themes should not overlap in meaning, and together should cover all relevant concepts in the data.
+
+## Cluster Data to Analyze
+
+Here is the pre-extracted cluster data containing topics and key expressions from survey responses:
+
+<cluster_data>
+<cluster_id>
+{cluster_id}
+</cluster_id>
+
+<cluster_text>
+{cluster_text}
+</cluster_text>
+</cluster_data>
+
+Each topic in the cluster includes:
+- A topic label
+- An inclusion definition
+- Key expressions from original responses
+
+Use these as your ONLY evidence base. Do not introduce concepts not present in this data.
+
+## Cluster Analysis (COCs)
+
+Identify 1–2 Central Organizing Concepts that explain what unifies this cluster of responses.
+
+COCs should:
+- Be analytic and interpretive, not literal labels from the data
+- Describe a shared pattern across multiple topics in the cluster
+- NOT be used as coding labels themselves
+- Capture the conceptual thread that ties the cluster together
+
+## Theme Identification Rules
+
+Each theme you identify must satisfy ALL of these criteria:
+
+1. **Atomicity:** Express exactly ONE COC with one semantic nucleus
+2. **Boundary compliance:** Fall strictly within the specified taxonomy axis
+3. **Grounding:** Be directly supported by the provided key expressions
+4. **Specificity:** Avoid repeating the perspective, domain, topic, or entity from the survey context in the label
+5. **Operationality:** Be precise enough to function as a real code in a codebook
+
+## Theme Label Constraints
+
+Theme labels must:
+- Be a noun phrase of 1–4 words (maximum 10 words if absolutely necessary)
+- Contain one semantic head (modifiers are allowed)
+- Avoid "and/or," slashes, commas, or lists
+- Name only the relevant concept within the taxonomy axis
+- Be precise enough to distinguish from other themes
+
+## Theme Definition Constraints
+
+Each theme definition must:
+- Be 30 words or fewer
+- Describe observable assignment cues (what respondents say or describe)
+- Avoid discussing causes, motives, conditions, or outcomes
+- Avoid repeating the perspective, domain, topic, or entity from the survey context
+- Be concrete enough to guide consistent coding decisions
+
+
+## Assignment Examples Requirements
+
+For each theme, you must provide:
+
+**Inclusion examples (2–3):** Observable cues for what counts as this theme
+- Start with action verbs (e.g., "Describes…," "Mentions…," "Reports…")
+- Be concrete and traceable to the provided key expressions
+- Show what should be coded to this theme
+
+**Exclusion examples (1–2):** Boundary cases that should NOT be coded here
+- Start with action verbs
+- Clarify what might be confused with this theme but doesn't belong
+- Help distinguish from similar themes
+
+**Near neighbor:** The closest potentially confusable theme
+- Identify the label of the most similar theme
+- Provide one sentence explaining how to tell them apart
+- If no meaningful neighbor exists, write "Unknown"
+
+## Required Analysis Steps
+
+Before providing your final output, document your reasoning in the analysis field:
+
+1. State the 1–2 cluster-level COCs you identified
+2. Explain whether you kept, split, or merged topics — and why
+3. Note any themes you discarded due to weak grounding in the data
+4. Justify why you have one theme versus multiple themes
+
+## Output Requirements
+
+1. Write all output in the same language as the survey responses
+2. Follow the response schema exactly
+3. For each valid atomic theme, include:
+   - theme_id (sequential starting at 1)
+   - theme_label (1-4 word noun phrase)
+   - theme_clarification (≤30 words)
+   - abstraction_level ("L1-topic" or "L2-action-mechanism")
+   - assignment_examples (inclusion, exclusion, near_neighbor)
+4. In the analysis field, document your COCs and refinement decisions
+5. Output valid JSON that matches the response schema structure
+
+Begin your analysis now. Think carefully through the cluster data, identify the unifying COCs, refine the topics into atomic themes, and provide your output in valid JSON format.
 """
 
 class NearNeighbor(BaseModel):

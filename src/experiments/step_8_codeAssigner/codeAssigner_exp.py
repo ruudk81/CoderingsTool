@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # === MODELS ========================================================================================================
 from pydantic import BaseModel, field_validator
-import models
+from experiments import models_exp as models
 
 # === CONFIG ========================================================================================================
 from config import OPENAI_API_KEY, DEFAULT_LANGUAGE, ModelConfig, CodeAssignmentConfig, DEFAULT_CODE_ASSIGNMENT_CONFIG, ProcessingConfig, DEFAULT_PROCESSING_CONFIG, GENERAL_CODE_LABELS, MISCELLANEOUS_CODE_LABELS, API_PROVIDER, FALLBACK_TPM, FALLBACK_RPM
@@ -1919,12 +1919,15 @@ class CodeAssigner:
                         # From IdeasExtractedSubmodel
                         idea_id=idea_submodel.idea_id,
                         idea=idea_submodel.idea,
-                        taxonomy_phrase=getattr(idea_submodel, 'taxonomy_phrase', ''),
-                        parent_category=getattr(idea_submodel, 'parent_category', ''),
-                        sentiment=getattr(idea_submodel, 'sentiment', 'neutral'),
-                        sense=getattr(idea_submodel, 'sense', 'factual'),
+                        instance=getattr(idea_submodel, 'instance', ''),
+                        node=getattr(idea_submodel, 'node', ''),
+                        semantic_category=getattr(idea_submodel, 'semantic_category', ''),
+                        category_label=getattr(idea_submodel, 'category_label', ''),
+                        root=getattr(idea_submodel, 'root', ''),
                         # From EmbeddingsSubmodel
                         idea_embedding=getattr(idea_submodel, 'idea_embedding', None),
+                        node_embedding=getattr(idea_submodel, 'node_embedding', None),
+                        category_embedding=getattr(idea_submodel, 'category_embedding', None),
                         taxonomy_embedding=getattr(idea_submodel, 'taxonomy_embedding', None),
                         # From ClusterSubmodel
                         initial_cluster=getattr(idea_submodel, 'initial_cluster', None),

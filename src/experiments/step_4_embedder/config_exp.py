@@ -11,11 +11,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 EmbeddingTextFormat = Literal[
-    "idea", "taxonomy_phrase", "idea_without_template_prefix",
-    "both_taxonomy_phrase", "ontology", "both_ontology", "all"
+    "idea", "node", "category", "taxonomy", "all"
 ]
-
-BOTH_MODE_IDEA_FORMAT: Literal["idea", "idea_without_template_prefix"] = "idea_without_template_prefix"
 
 
 # =============================================================================
@@ -31,18 +28,11 @@ class EmbeddingPass:
 
 
 MULTI_PASS_SPECS = {
-    "both_taxonomy_phrase": [
-        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
-        EmbeddingPass("taxonomy_phrase", "taxonomy_embedding", "taxonomy_phrase"),
-    ],
-    "both_ontology": [
-        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
-        EmbeddingPass("ontology", "ontology_embedding", "ontology string"),
-    ],
     "all": [
-        EmbeddingPass(BOTH_MODE_IDEA_FORMAT, "idea_embedding", "idea text"),
-        EmbeddingPass("taxonomy_phrase", "taxonomy_embedding", "taxonomy_phrase"),
-        EmbeddingPass("ontology", "ontology_embedding", "ontology string"),
+        EmbeddingPass("idea",     "idea_embedding",     "idea text (template_prefix + idea)"),
+        EmbeddingPass("node",     "node_embedding",     "node (canonical concept)"),
+        EmbeddingPass("category", "category_embedding", "semantic_category"),
+        EmbeddingPass("taxonomy", "taxonomy_embedding", "taxonomy chain (node → category_label → semantic_category → root)"),
     ],
 }
 
@@ -53,10 +43,8 @@ class EmbedderConfigExp:
 
     Production defaults copied from config_embedder.py EmbedderConfig.
     """
-    # Text format: "idea", "taxonomy_phrase", "idea_without_template_prefix",
-    #              "both_taxonomy_phrase", "ontology", "both_ontology", "all"
-    embedding_text_format: EmbeddingTextFormat = "both_ontology"
-
+    # Text format: "idea", "node", "category", "taxonomy", "all"
+    embedding_text_format: EmbeddingTextFormat = "all"
     # Provider: "openai" or "gemini"
     provider: str = "openai"
 

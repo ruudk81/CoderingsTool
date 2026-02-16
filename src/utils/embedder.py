@@ -154,15 +154,11 @@ class Embedder:
     def _format_ontology_text(self, idea) -> str:
         """Format ontology fields into embedding text: 'instance - node (category)'.
 
-        Falls back to idea.idea when ontology is None or all fields are empty.
+        Falls back to idea.idea when all ontology fields are empty.
         """
-        ontology = getattr(idea, 'ontology', None)
-        if ontology is None:
-            return idea.idea
-
-        instance = (getattr(ontology, 'instance', '') or '').strip()
-        node = (getattr(ontology, 'node', '') or '').strip()
-        category = (getattr(ontology, 'category', '') or '').strip()
+        instance = (getattr(idea, 'instance', '') or '').strip()
+        node = (getattr(idea, 'node', '') or '').strip()
+        category = (getattr(idea, 'category', '') or '').strip()
 
         parts = []
         if instance:
@@ -533,9 +529,13 @@ class Embedder:
                     embedding_data = {
                         'idea_id': response_idea.idea_id,
                         'idea': response_idea.idea,
-                        # Pass through clean fields from input
+                        # Pass through flat ontology fields
+                        'instance': getattr(response_idea, 'instance', '') or '',
+                        'node': getattr(response_idea, 'node', '') or '',
+                        'category': getattr(response_idea, 'category', '') or '',
+                        'root': getattr(response_idea, 'root', '') or '',
+                        # Legacy fields (kept for downstream compat)
                         'taxonomy_phrase': getattr(response_idea, 'taxonomy_phrase', '') or '',
-                        'ontology': getattr(response_idea, 'ontology', None),
                         'sentiment': getattr(response_idea, 'sentiment', 'neutral') or 'neutral',
                         'sense': getattr(response_idea, 'sense', 'factual') or 'factual',
                     }

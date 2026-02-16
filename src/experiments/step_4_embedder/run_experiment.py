@@ -36,7 +36,7 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-import models
+from experiments import models_exp as models
 from config import CacheConfig, ModelConfig
 from config_embedder import EmbedderConfig
 
@@ -186,18 +186,22 @@ def run_experiment(config: ExperimentConfig = None):
 
     elapsed_time = time.time() - start_time
 
-    # Count embeddings
-    embeddings_count = sum(
-        1 for resp in embedded_text
-        if resp.response_ideas
-        for idea in resp.response_ideas
-        if idea.idea_embedding is not None
-    )
+    # Count embeddings per type
+    embed_fields = ['idea_embedding', 'node_embedding', 'category_embedding', 'taxonomy_embedding']
+    for field in embed_fields:
+        count = sum(
+            1 for resp in embedded_text
+            if resp.response_ideas
+            for idea in resp.response_ideas
+            if getattr(idea, field, None) is not None
+        )
+        verbose_reporter.stat_line(f"  {field}: {count}")
 
     cache_manager.save_to_cache(embedded_text, config.filename, "embeddings", variable_key, elapsed_time, var_lab=var_lab)
 
-    verbose_reporter.stat_line(f"Output: {embeddings_count} embeddings generated")
-    verbose_reporter.stat_line(f"Rate: {embeddings_count / elapsed_time:.1f} embeddings/sec")
+    total_ideas = sum(len(resp.response_ideas) for resp in embedded_text if resp.response_ideas)
+    verbose_reporter.stat_line(f"Output: {total_ideas} ideas embedded")
+    verbose_reporter.stat_line(f"Rate: {total_ideas / elapsed_time:.1f} ideas/sec")
     print(f"\n'Embedding experiment' completed in {elapsed_time:.2f} seconds.\n")
 
     return embedded_text, embedder

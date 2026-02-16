@@ -1,3 +1,5 @@
+#%%
+ 
 """
 Step 8: Code Assigner Experiment Runner
 
@@ -32,7 +34,7 @@ from typing import Optional
 # =============================================================================
 # SHARED IMPORTS (from production)
 # =============================================================================
-import models
+from experiments import models_exp as models
 from config import CacheConfig, ModelConfig
 from utils.cacheManager import CacheManager, generate_enhanced_variable_key
 from utils.verboseReporter import VerboseReporter
